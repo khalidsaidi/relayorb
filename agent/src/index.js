@@ -50,7 +50,9 @@ function initFirestore(projectId) {
     credential,
     projectId: projectId || undefined,
   })
-  return admin.firestore()
+  const db = admin.firestore()
+  db.settings({ ignoreUndefinedProperties: true })
+  return db
 }
 
 function createDeduper(limit = 200) {
@@ -115,6 +117,7 @@ class FreqtradeAdapter {
     this.password = bot.api?.password
     this.accessToken = null
     this.deduper = createDeduper()
+    this.signalDeduper = createDeduper()
   }
 
   async login() {
@@ -202,10 +205,49 @@ class FreqtradeAdapter {
     })
   }
 
+  extractSignalsFromLogs(entries) {
+    const signals = []
+    for (const entry of entries) {
+      const message = entry?.message ? String(entry.message) : ""
+      const lower = message.toLowerCase()
+      let side = null
+      if (lower.includes("entering trade") || lower.includes("buy")) side = "buy"
+      if (lower.includes("exiting trade") || lower.includes("sell")) side = "sell"
+      if (!side) continue
+
+      const pair =
+        entry?.data?.pair ||
+        entry?.data?.market ||
+        (message.match(/([A-Z0-9]{2,}[/-][A-Z0-9]{2,})/i) || [])[1]
+
+      signals.push({
+        side,
+        strength: 0.65,
+        message: pair ? `${side.toUpperCase()} signal for ${pair}` : message,
+        data: { pair, source: "logs", raw: entry?.data ?? null },
+      })
+    }
+    return signals
+  }
+
+  extractSignalsFromOpenTrades(openTrades) {
+    if (!Array.isArray(openTrades)) return []
+    return openTrades.map((trade) => {
+      const pair = trade?.pair || trade?.symbol || null
+      return {
+        side: "buy",
+        strength: 0.55,
+        message: pair ? `Active trade ${pair}` : "Active trade",
+        data: { pair, source: "open_trades", raw: trade },
+      }
+    })
+  }
+
   async poll() {
     const state = {}
     let status = "offline"
     const events = []
+    const signals = []
 
     try {
       await this.request("/ping", { auth: false })
@@ -246,6 +288,14 @@ class FreqtradeAdapter {
           data: entry.data,
         })
       }
+
+      const logSignals = this.extractSignalsFromLogs(normalized)
+      for (const signal of logSignals) {
+        const key = JSON.stringify(signal)
+        if (this.signalDeduper.has(key)) continue
+        this.signalDeduper.add(key)
+        signals.push(signal)
+      }
     } catch (err) {
       events.push({
         type: "log",
@@ -254,11 +304,18 @@ class FreqtradeAdapter {
       })
     }
 
-    const summary = {
-      positions: Array.isArray(state.openTrades) ? state.openTrades.length : undefined,
+    const tradeSignals = this.extractSignalsFromOpenTrades(state.openTrades)
+    for (const signal of tradeSignals) {
+      const key = JSON.stringify(signal)
+      if (this.signalDeduper.has(key)) continue
+      this.signalDeduper.add(key)
+      signals.push(signal)
     }
 
-    return { status, summary, state, events }
+    const openPositions = Array.isArray(state.openTrades) ? state.openTrades.length : undefined
+    const summary = typeof openPositions === "number" ? { positions: openPositions } : undefined
+
+    return { status, summary, state, events, signals }
   }
 
   async executeCommand(type, payload) {
@@ -296,6 +353,7 @@ class HummingbotAdapter {
     this.username = bot.api?.username
     this.password = bot.api?.password
     this.remoteId = bot.api?.remoteId || bot.id
+    this.signalDeduper = createDeduper()
   }
 
   authHeader() {
@@ -321,6 +379,7 @@ class HummingbotAdapter {
   async poll() {
     const state = {}
     let status = "offline"
+    const signals = []
 
     try {
       state.bots = await this.request("/bot-orchestration/bots")
@@ -339,7 +398,36 @@ class HummingbotAdapter {
       state.status = { error: String(err) }
     }
 
-    return { status, state }
+    try {
+      state.orders = await this.request("/trading/orders")
+    } catch (err) {
+      state.orders = { error: String(err) }
+    }
+
+    const orders = Array.isArray(state.orders)
+      ? state.orders
+      : Array.isArray(state.orders?.orders)
+        ? state.orders.orders
+        : []
+
+    for (const order of orders.slice(0, 20)) {
+      const sideRaw = order?.side || order?.trade_type || order?.order_side || ""
+      const side = typeof sideRaw === "string" ? sideRaw.toLowerCase() : ""
+      if (!["buy", "sell"].includes(side)) continue
+      const pair = order?.market || order?.trading_pair || order?.symbol || null
+      const signal = {
+        side,
+        strength: 0.6,
+        message: pair ? `${side.toUpperCase()} order ${pair}` : `${side.toUpperCase()} order`,
+        data: { pair, source: "orders", raw: order },
+      }
+      const key = JSON.stringify(signal)
+      if (this.signalDeduper.has(key)) continue
+      this.signalDeduper.add(key)
+      signals.push(signal)
+    }
+
+    return { status, state, signals }
   }
 
   async executeCommand(type, payload) {
@@ -393,6 +481,7 @@ class JesseAdapter {
     this.baseUrl = bot.api?.baseUrl
     this.password = bot.api?.password
     this.token = null
+    this.signalDeduper = createDeduper()
   }
 
   async login() {
@@ -445,6 +534,7 @@ class JesseAdapter {
   async poll() {
     const state = {}
     let status = "offline"
+    const signals = []
 
     try {
       state.general = await this.request("/system/general-info", { method: "POST" })
@@ -453,7 +543,36 @@ class JesseAdapter {
       return { status, state: { error: String(err) } }
     }
 
-    return { status, state }
+    try {
+      state.orders = await this.request("/live/orders", { method: "POST" })
+    } catch (err) {
+      state.orders = { error: String(err) }
+    }
+
+    const orders = Array.isArray(state.orders)
+      ? state.orders
+      : Array.isArray(state.orders?.orders)
+        ? state.orders.orders
+        : []
+
+    for (const order of orders.slice(0, 20)) {
+      const sideRaw = order?.side || order?.type || ""
+      const side = typeof sideRaw === "string" ? sideRaw.toLowerCase() : ""
+      if (!["buy", "sell"].includes(side)) continue
+      const pair = order?.symbol || order?.pair || order?.trading_pair || null
+      const signal = {
+        side,
+        strength: 0.6,
+        message: pair ? `${side.toUpperCase()} order ${pair}` : `${side.toUpperCase()} order`,
+        data: { pair, source: "orders", raw: order },
+      }
+      const key = JSON.stringify(signal)
+      if (this.signalDeduper.has(key)) continue
+      this.signalDeduper.add(key)
+      signals.push(signal)
+    }
+
+    return { status, state, signals }
   }
 
   async executeCommand(type, payload) {
