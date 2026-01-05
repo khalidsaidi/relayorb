@@ -18,9 +18,13 @@ services:
     image: freqtradeorg/freqtrade:stable
     restart: unless-stopped
     volumes:
-      - ./freqtrade:/freqtrade
+      - ./freqtrade/user_data:/freqtrade/user_data
     command: >
-      trade --config /freqtrade/config.json
+      trade
+      --logfile /freqtrade/user_data/logs/freqtrade.log
+      --db-url sqlite:////freqtrade/user_data/tradesv3.sqlite
+      --config /freqtrade/user_data/config.json
+      --strategy SampleStrategy
 
   hummingbot-api:
     image: hummingbot/hummingbot-api:latest
@@ -89,6 +93,12 @@ services:
       - ./jesse/.env
     volumes:
       - ./jesse:/workspace
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
 
 volumes:
   emqx-data: {}

@@ -13,7 +13,8 @@ This stack runs the real bots plus the RelayOrb agent on a single host. The UI s
 1) Copy the sample configs:
 ```bash
 cp agent-config/config.example.json agent-config/config.json
-cp freqtrade/config.example.json freqtrade/config.json
+mkdir -p freqtrade/user_data
+cp freqtrade/user_data/config.example.json freqtrade/user_data/config.json
 cp hummingbot/.env.example hummingbot/.env
 cp jesse/.env.example jesse/.env
 ```
