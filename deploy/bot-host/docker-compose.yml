@@ -1,0 +1,97 @@
+services:
+  relayorb-agent:
+    build: ../../agent
+    restart: unless-stopped
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
+      - RELAYORB_CONFIG_PATH=/config/config.json
+      - NODE_ENV=production
+    volumes:
+      - ./agent-config/config.json:/config/config.json:ro
+      - ./secrets/service-account.json:/secrets/service-account.json:ro
+    depends_on:
+      - freqtrade
+      - hummingbot-api
+      - jesse
+
+  freqtrade:
+    image: freqtradeorg/freqtrade:stable
+    restart: unless-stopped
+    volumes:
+      - ./freqtrade:/freqtrade
+    command: >
+      trade --config /freqtrade/config.json
+
+  hummingbot-api:
+    image: hummingbot/hummingbot-api:latest
+    restart: unless-stopped
+    env_file:
+      - ./hummingbot/.env
+    environment:
+      - BROKER_HOST=emqx
+      - DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@postgres:5432/hummingbot_api
+      - GATEWAY_URL=http://host.docker.internal:15888
+    volumes:
+      - ./hummingbot/bots:/hummingbot-api/bots
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - postgres
+      - emqx
+
+  emqx:
+    image: emqx:5
+    restart: unless-stopped
+    environment:
+      - EMQX_NAME=emqx
+      - EMQX_HOST=node1.emqx.local
+      - EMQX_CLUSTER__DISCOVERY_STRATEGY=static
+      - EMQX_CLUSTER__STATIC__SEEDS=[emqx@node1.emqx.local]
+      - EMQX_LOADED_PLUGINS=emqx_recon,emqx_retainer,emqx_management,emqx_dashboard
+    volumes:
+      - emqx-data:/opt/emqx/data
+      - emqx-log:/opt/emqx/log
+      - emqx-etc:/opt/emqx/etc
+    networks:
+      default:
+        aliases:
+          - node1.emqx.local
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx_ctl", "status"]
+      interval: 5s
+      timeout: 25s
+      retries: 5
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=hummingbot_api
+      - POSTGRES_USER=hbot
+      - POSTGRES_PASSWORD=hummingbot-api
+      - POSTGRES_INITDB_ARGS=--encoding=UTF8
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./hummingbot/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hbot -d hummingbot_api"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  jesse:
+    image: salehmir/jesse:latest
+    restart: unless-stopped
+    working_dir: /workspace
+    command: ["jesse", "run"]
+    env_file:
+      - ./jesse/.env
+    volumes:
+      - ./jesse:/workspace
+
+volumes:
+  emqx-data: {}
+  emqx-log: {}
+  emqx-etc: {}
+  postgres-data: {}

@@ -17,6 +17,17 @@ dist-ssr
 .firebase/
 relayorb-firebase-service-account.json
 relayorb-firebase-adminsdk-fbsvc-7210dc6126.json
+agent/config.json
+deploy/bot-host/agent-config/config.json
+deploy/bot-host/freqtrade/config.json
+deploy/bot-host/hummingbot/.env
+deploy/bot-host/jesse/.env
+deploy/bot-host/secrets/
+deploy/bot-host/hummingbot/bots/
+deploy/bot-host/freqtrade/user_data/
+deploy/bot-host/freqtrade/data/
+deploy/bot-host/jesse/*
+!deploy/bot-host/jesse/.env.example
 playwright-report/
 test-results/
 

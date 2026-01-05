@@ -1,0 +1,13 @@
+{
+  "name": "relayorb-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "RelayOrb bot-host agent that bridges bot APIs to Firestore",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.7.0"
+  }
+}

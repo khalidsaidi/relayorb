@@ -1,0 +1,40 @@
+{
+  "firestore": {
+    "projectId": "relayorb"
+  },
+  "bots": [
+    {
+      "id": "freqtrade-1",
+      "name": "Freqtrade Paper",
+      "engine": "freqtrade",
+      "pollIntervalSeconds": 10,
+      "api": {
+        "baseUrl": "http://freqtrade:8080/api/v1",
+        "username": "Freqtrader",
+        "password": "CHANGE_ME"
+      }
+    },
+    {
+      "id": "hummingbot-1",
+      "name": "Hummingbot API",
+      "engine": "hummingbot",
+      "pollIntervalSeconds": 15,
+      "api": {
+        "baseUrl": "http://hummingbot-api:8000",
+        "username": "admin",
+        "password": "CHANGE_ME",
+        "remoteId": "hummingbot-1"
+      }
+    },
+    {
+      "id": "jesse-1",
+      "name": "Jesse",
+      "engine": "jesse",
+      "pollIntervalSeconds": 15,
+      "api": {
+        "baseUrl": "http://jesse:3000",
+        "password": "CHANGE_ME"
+      }
+    }
+  ]
+}
