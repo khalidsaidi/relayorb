@@ -40,4 +40,5 @@ docker compose up -d
 - Freqtrade runs in dry-run mode by default. Add exchange keys only when ready.
 - Hummingbot API uses the Docker socket to orchestrate bots; that’s why `/var/run/docker.sock` is mounted.
 - Jesse requires a valid `.env` with a non-empty `PASSWORD`.
+- Jesse runs with its own Postgres container; keep the `POSTGRES_*` values in `jesse/.env` consistent.
 - No ports are exposed publicly by default. Use SSH port-forwarding if you need to reach APIs.

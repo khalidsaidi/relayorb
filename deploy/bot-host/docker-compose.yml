@@ -95,6 +95,20 @@ services:
       - ./jesse:/workspace
     depends_on:
       - redis
+      - jesse-postgres
+
+  jesse-postgres:
+    image: postgres:16
+    restart: unless-stopped
+    env_file:
+      - ./jesse/.env
+    volumes:
+      - jesse-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7
@@ -105,3 +119,4 @@ volumes:
   emqx-log: {}
   emqx-etc: {}
   postgres-data: {}
+  jesse-postgres-data: {}
