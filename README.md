@@ -23,15 +23,16 @@ Private control deck for monitoring and commanding multiple trading-bot framewor
 
 ## Firestore Schema
 
-- `bots/{botId}`: metadata + status + heartbeat + summary
+- `bots/{botId}`: metadata + status + heartbeat + summary + desiredConfig + capabilities
 - `bots/{botId}/events/{eventId}`: normalized event stream
+- `bots/{botId}/signals/{signalId}`: trading signal feed
 - `bots/{botId}/commands/{commandId}`: command queue from UI
 
 ## Commands
 
 The UI queues commands with:
 
-- `type`: `start | stop | restart | backtest | paper | live | reload_config`
+- `type`: `start | stop | restart | backtest | paper | live | reload_config | configure`
 - `payload`: optional JSON
 - `status`: `queued` initially
 

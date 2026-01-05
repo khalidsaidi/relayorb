@@ -8,6 +8,17 @@
       "name": "Freqtrade Paper",
       "engine": "freqtrade",
       "pollIntervalSeconds": 10,
+      "desiredConfig": {
+        "mode": "signal",
+        "exchange": "kraken",
+        "timeframe": "5m",
+        "pairs": ["BTC/EUR", "ETH/EUR"]
+      },
+      "capabilities": {
+        "exchanges": ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
+        "timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"],
+        "modes": ["signal", "paper", "live"]
+      },
       "api": {
         "baseUrl": "http://freqtrade:8080/api/v1",
         "username": "Freqtrader",
@@ -19,6 +30,17 @@
       "name": "Hummingbot API",
       "engine": "hummingbot",
       "pollIntervalSeconds": 15,
+      "desiredConfig": {
+        "mode": "signal",
+        "exchange": "binance",
+        "timeframe": "1m",
+        "pairs": ["BTC-USDT", "ETH-USDT"]
+      },
+      "capabilities": {
+        "exchanges": ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
+        "timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"],
+        "modes": ["signal", "paper", "live"]
+      },
       "api": {
         "baseUrl": "http://hummingbot-api:8000",
         "username": "admin",
@@ -31,6 +53,17 @@
       "name": "Jesse",
       "engine": "jesse",
       "pollIntervalSeconds": 15,
+      "desiredConfig": {
+        "mode": "signal",
+        "exchange": "binance",
+        "timeframe": "1m",
+        "pairs": ["BTC-USDT"]
+      },
+      "capabilities": {
+        "exchanges": ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
+        "timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"],
+        "modes": ["signal", "paper", "live"]
+      },
       "api": {
         "baseUrl": "http://jesse:3000",
         "password": "CHANGE_ME"

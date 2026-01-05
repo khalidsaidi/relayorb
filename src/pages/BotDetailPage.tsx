@@ -8,18 +8,22 @@ import {
   onSnapshot,
   orderBy,
   query,
+  setDoc,
   serverTimestamp,
 } from "firebase/firestore"
 import { toast } from "sonner"
 import { db, firebaseEnabled } from "@/lib/firebase"
-import type { BotCommandType, BotDoc, BotEventDoc } from "@/lib/types"
+import type { BotCommandType, BotDesiredConfig, BotDoc, BotEventDoc, BotMode } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { StatusBadge } from "@/components/StatusBadge"
 import { formatTimestamp } from "@/lib/format"
 import { useAuth } from "@/features/auth/AuthProvider"
+import { DEFAULT_EXCHANGES, DEFAULT_MODES, DEFAULT_TIMEFRAMES, parsePairs, uniqueList } from "@/lib/universe"
 
 const commandOptions: { type: BotCommandType; label: string }[] = [
   { type: "start", label: "Start" },
@@ -41,7 +45,36 @@ export default function BotDetailPage() {
   const [payload, setPayload] = useState("{}")
   const [payloadError, setPayloadError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
+  const [exchange, setExchange] = useState("")
+  const [pairsInput, setPairsInput] = useState("")
+  const [timeframe, setTimeframe] = useState("")
+  const [mode, setMode] = useState<BotMode>("signal")
+  const [configSaving, setConfigSaving] = useState(false)
+  const [configDirty, setConfigDirty] = useState(false)
   const commandDisabled = sending || !firebaseEnabled
+  const configDisabled = configSaving || !firebaseEnabled
+  const timeframeTrimmed = timeframe.trim()
+  const timeframeInvalid = timeframeTrimmed.length > 0 && !/^\d+[mhdw]$/i.test(timeframeTrimmed)
+
+  const desiredConfigKey = useMemo(
+    () => JSON.stringify(bot?.desiredConfig ?? {}),
+    [bot?.desiredConfig]
+  )
+
+  const exchangeOptions = useMemo(
+    () => uniqueList([...DEFAULT_EXCHANGES, ...(bot?.capabilities?.exchanges ?? [])]),
+    [bot?.capabilities?.exchanges]
+  )
+
+  const timeframeOptions = useMemo(
+    () => uniqueList([...DEFAULT_TIMEFRAMES, ...(bot?.capabilities?.timeframes ?? [])]),
+    [bot?.capabilities?.timeframes]
+  )
+
+  const modeOptions = useMemo(
+    () => (bot?.capabilities?.modes?.length ? bot.capabilities.modes : Array.from(DEFAULT_MODES)),
+    [bot?.capabilities?.modes]
+  )
 
   useEffect(() => {
     if (!botId || !firebaseEnabled || !db) {
@@ -85,6 +118,16 @@ export default function BotDetailPage() {
     })
   }, [botId])
 
+  useEffect(() => {
+    if (!bot) return
+    const desired = bot.desiredConfig
+    setExchange(desired?.exchange ?? "")
+    setTimeframe(desired?.timeframe ?? "")
+    setMode(desired?.mode ?? "signal")
+    setPairsInput((desired?.pairs ?? []).join(", "))
+    setConfigDirty(false)
+  }, [bot?.id, desiredConfigKey])
+
   const summary = useMemo(() => {
     return [
       { label: "Positions", value: bot?.summary?.positions ?? "—" },
@@ -93,7 +136,7 @@ export default function BotDetailPage() {
     ]
   }, [bot])
 
-  async function queueCommand(type: BotCommandType) {
+  async function queueCommand(type: BotCommandType, overridePayload?: Record<string, unknown>) {
     if (!botId) return
     if (!firebaseEnabled || !db) {
       toast.error("Firebase not configured")
@@ -103,15 +146,17 @@ export default function BotDetailPage() {
     setPayloadError(null)
     setSending(true)
 
-    let parsedPayload: Record<string, unknown> | undefined
-    const trimmed = payload.trim()
-    if (trimmed.length > 0) {
-      try {
-        parsedPayload = JSON.parse(trimmed)
-      } catch (err) {
-        setPayloadError("Payload must be valid JSON")
-        setSending(false)
-        return
+    let parsedPayload: Record<string, unknown> | undefined = overridePayload
+    if (!overridePayload) {
+      const trimmed = payload.trim()
+      if (trimmed.length > 0) {
+        try {
+          parsedPayload = JSON.parse(trimmed)
+        } catch (err) {
+          setPayloadError("Payload must be valid JSON")
+          setSending(false)
+          return
+        }
       }
     }
 
@@ -133,6 +178,58 @@ export default function BotDetailPage() {
     } finally {
       setSending(false)
     }
+  }
+
+  async function saveUniverseConfig() {
+    if (!botId) return
+    if (!firebaseEnabled || !db) {
+      toast.error("Firebase not configured")
+      return
+    }
+
+    setConfigSaving(true)
+    if (timeframeInvalid) {
+      toast.error("Timeframe must look like 1m, 1h, 1d")
+      setConfigSaving(false)
+      return
+    }
+    const pairs = parsePairs(pairsInput).map((pair) => pair.toUpperCase())
+    const config: BotDesiredConfig = { mode }
+    if (exchange.trim()) config.exchange = exchange.trim()
+    if (timeframe.trim()) config.timeframe = timeframe.trim()
+    if (pairs.length > 0) config.pairs = pairs
+
+    try {
+      await setDoc(
+        doc(db, "bots", botId),
+        {
+          desiredConfig: config,
+          desiredConfigUpdatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      )
+      setConfigDirty(false)
+      toast.success("Universe saved")
+    } catch (err) {
+      toast.error("Failed to save universe")
+    } finally {
+      setConfigSaving(false)
+    }
+  }
+
+  async function applyUniverseConfig() {
+    if (timeframeInvalid) {
+      toast.error("Timeframe must look like 1m, 1h, 1d")
+      return
+    }
+    const pairs = parsePairs(pairsInput).map((pair) => pair.toUpperCase())
+    const payload: Record<string, unknown> = {
+      mode,
+    }
+    if (exchange.trim()) payload.exchange = exchange.trim()
+    if (timeframe.trim()) payload.timeframe = timeframe.trim()
+    if (pairs.length > 0) payload.pairs = pairs
+    await queueCommand("configure", payload)
   }
 
   return (
@@ -193,43 +290,146 @@ export default function BotDetailPage() {
           </CardContent>
         </Card>
 
-        <Card className="reveal" style={{ "--delay": "180ms" } as CSSProperties}>
-          <CardHeader>
-            <CardTitle className="text-base">Command Console</CardTitle>
-            <div className="text-xs text-muted-foreground">
-              Commands are queued into <code>bots/{botId}/commands</code>.
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="grid gap-2">
-              {commandOptions.map((option) => (
-                <Button
-                  key={option.type}
-                  variant="outline"
-                  className="justify-start"
-                  disabled={commandDisabled}
-                  onClick={() => queueCommand(option.type)}
-                >
-                  {option.label}
-                </Button>
-              ))}
-            </div>
-            {!firebaseEnabled && (
+        <div className="space-y-4">
+          <Card className="reveal" style={{ "--delay": "180ms" } as CSSProperties}>
+            <CardHeader>
+              <CardTitle className="text-base">Trading Universe</CardTitle>
               <div className="text-xs text-muted-foreground">
-                Firebase is not configured. Update <code>.env</code> to enable commands.
+                Choose the exchange, pairs, and timeframe for this bot. Saved configs are applied when adapters reload.
               </div>
-            )}
-            <div className="space-y-2">
-              <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Optional JSON payload</div>
-              <Textarea
-                value={payload}
-                onChange={(event) => setPayload(event.target.value)}
-                className="min-h-28 font-mono text-xs"
-              />
-              {payloadError && <div className="text-xs text-destructive">{payloadError}</div>}
-            </div>
-          </CardContent>
-        </Card>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="exchange">Exchange</Label>
+                <Input
+                  id="exchange"
+                  list="exchange-options"
+                  value={exchange}
+                  onChange={(event) => {
+                    setExchange(event.target.value)
+                    setConfigDirty(true)
+                  }}
+                  placeholder="kraken"
+                />
+                <datalist id="exchange-options">
+                  {exchangeOptions.map((option) => (
+                    <option key={option} value={option} />
+                  ))}
+                </datalist>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="pairs">Pairs (comma or newline separated)</Label>
+                <Textarea
+                  id="pairs"
+                  value={pairsInput}
+                  onChange={(event) => {
+                    setPairsInput(event.target.value)
+                    setConfigDirty(true)
+                  }}
+                  className="min-h-24 font-mono text-xs"
+                  placeholder="BTC/USDT, ETH/USDT"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="timeframe">Timeframe</Label>
+                <Input
+                  id="timeframe"
+                  list="timeframe-options"
+                  value={timeframe}
+                  onChange={(event) => {
+                    setTimeframe(event.target.value)
+                    setConfigDirty(true)
+                  }}
+                  placeholder="5m"
+                />
+                <datalist id="timeframe-options">
+                  {timeframeOptions.map((option) => (
+                    <option key={option} value={option} />
+                  ))}
+                </datalist>
+                {timeframeInvalid && (
+                  <div className="text-xs text-destructive">Timeframe should look like 1m, 1h, 1d.</div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label>Mode</Label>
+                <div className="flex flex-wrap gap-2">
+                  {modeOptions.map((option) => (
+                    <Button
+                      key={option}
+                      type="button"
+                      variant={mode === option ? "default" : "outline"}
+                      onClick={() => {
+                        setMode(option)
+                        setConfigDirty(true)
+                      }}
+                    >
+                      {option}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              {bot?.capabilities && (
+                <div className="rounded-lg border border-border/60 bg-muted/40 p-3 text-xs text-muted-foreground">
+                  <div>Exchanges: {bot.capabilities.exchanges?.length ? bot.capabilities.exchanges.join(", ") : "any"}</div>
+                  <div>Timeframes: {bot.capabilities.timeframes?.length ? bot.capabilities.timeframes.join(", ") : "any"}</div>
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={saveUniverseConfig} disabled={configDisabled}>
+                  {configSaving ? "Saving..." : "Save Universe"}
+                </Button>
+                <Button variant="outline" onClick={applyUniverseConfig} disabled={commandDisabled}>
+                  Apply Config
+                </Button>
+                {configDirty && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="reveal" style={{ "--delay": "220ms" } as CSSProperties}>
+            <CardHeader>
+              <CardTitle className="text-base">Command Console</CardTitle>
+              <div className="text-xs text-muted-foreground">
+                Commands are queued into <code>bots/{botId}/commands</code>.
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid gap-2">
+                {commandOptions.map((option) => (
+                  <Button
+                    key={option.type}
+                    variant="outline"
+                    className="justify-start"
+                    disabled={commandDisabled}
+                    onClick={() => queueCommand(option.type)}
+                  >
+                    {option.label}
+                  </Button>
+                ))}
+              </div>
+              {!firebaseEnabled && (
+                <div className="text-xs text-muted-foreground">
+                  Firebase is not configured. Update <code>.env</code> to enable commands.
+                </div>
+              )}
+              <div className="space-y-2">
+                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Optional JSON payload</div>
+                <Textarea
+                  value={payload}
+                  onChange={(event) => setPayload(event.target.value)}
+                  className="min-h-28 font-mono text-xs"
+                />
+                {payloadError && <div className="text-xs text-destructive">{payloadError}</div>}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       </div>
 
       <Card className="reveal" style={{ "--delay": "240ms" } as CSSProperties}>

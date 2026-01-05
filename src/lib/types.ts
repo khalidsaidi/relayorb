@@ -17,6 +17,23 @@ export type BotCommandType =
   | "paper"
   | "live"
   | "reload_config"
+  | "configure"
+
+export type BotMode = "signal" | "paper" | "live"
+
+export type BotCapabilities = {
+  exchanges?: string[]
+  timeframes?: string[]
+  modes?: BotMode[]
+}
+
+export type BotDesiredConfig = {
+  mode?: BotMode
+  exchange?: string
+  pairs?: string[]
+  timeframe?: string
+  updatedAt?: Timestamp
+}
 
 export type BotDoc = {
   id: string
@@ -25,6 +42,8 @@ export type BotDoc = {
   status?: BotStatus
   lastHeartbeat?: Timestamp
   updatedAt?: Timestamp
+  capabilities?: BotCapabilities
+  desiredConfig?: BotDesiredConfig
   summary?: {
     positions?: number
     orders?: number
@@ -38,6 +57,16 @@ export type BotEventDoc = {
   botId: string
   type?: string
   severity?: "info" | "warn" | "error" | "fill" | "order" | "position" | "system"
+  message?: string
+  createdAt?: Timestamp
+  data?: Record<string, unknown>
+}
+
+export type BotSignalDoc = {
+  id: string
+  botId: string
+  side?: "buy" | "sell" | "hold"
+  strength?: number
   message?: string
   createdAt?: Timestamp
   data?: Record<string, unknown>

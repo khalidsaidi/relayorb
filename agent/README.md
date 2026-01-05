@@ -5,6 +5,7 @@ The RelayOrb agent runs alongside your bots and bridges bot APIs to Firestore. I
 ## What it does
 - Updates `bots/{botId}` with status, heartbeat, and state.
 - Writes normalized events to `bots/{botId}/events`.
+- Writes normalized signals to `bots/{botId}/signals` when adapters emit them.
 - Watches `bots/{botId}/commands` and executes queued commands.
 
 ## Config
@@ -19,6 +20,8 @@ Key fields:
 - `bots[].engine`: `freqtrade | hummingbot | jesse`.
 - `bots[].api.baseUrl`: Bot API base URL.
 - `bots[].api.username/password`: Auth credentials where required.
+- `bots[].desiredConfig`: Seed trading universe config (mode, exchange, pairs, timeframe).
+- `bots[].capabilities`: Supported exchanges/timeframes/modes for UI pickers.
 
 ## Auth
 The agent uses Firebase Admin credentials. Provide one of:
@@ -77,3 +80,7 @@ Some commands require payloads. Examples:
 ```
 
 The agent passes payloads through to the underlying bot APIs.
+
+### Configure universe
+Use the `configure` command type (from the UI) to apply the current desired config.
+Adapters that cannot apply config return a note and keep the desired config stored in Firestore.

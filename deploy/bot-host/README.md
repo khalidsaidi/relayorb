@@ -30,6 +30,7 @@ docker run --rm -it -v "$PWD/jesse:/workspace" salehmir/jesse jesse make-project
 ```
 
 4) Update `agent-config/config.json` with real credentials and ensure each bot `baseUrl` matches the Docker service name.
+   - Optional: seed `desiredConfig` (mode/exchange/pairs/timeframe) and `capabilities` lists for the UI pickers.
 
 ## Start the stack
 ```bash
@@ -41,4 +42,5 @@ docker compose up -d
 - Hummingbot API uses the Docker socket to orchestrate bots; that’s why `/var/run/docker.sock` is mounted.
 - Jesse requires a valid `.env` with a non-empty `PASSWORD`.
 - Jesse runs with its own Postgres container; keep the `POSTGRES_*` values in `jesse/.env` consistent.
+- The UI stores the trading universe in Firestore. Use the "Apply Config" action to trigger adapters; some bots still require manual config updates.
 - No ports are exposed publicly by default. Use SSH port-forwarding if you need to reach APIs.

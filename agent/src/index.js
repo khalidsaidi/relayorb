@@ -11,6 +11,24 @@ const log = (message) => {
   console.log(`[relayorb-agent ${stamp}] ${message}`)
 }
 
+const DEFAULT_CAPABILITIES = {
+  freqtrade: {
+    exchanges: ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
+    timeframes: ["1m", "5m", "15m", "1h", "4h", "1d"],
+    modes: ["signal", "paper", "live"],
+  },
+  hummingbot: {
+    exchanges: ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
+    timeframes: ["1m", "5m", "15m", "1h", "4h", "1d"],
+    modes: ["signal", "paper", "live"],
+  },
+  jesse: {
+    exchanges: ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
+    timeframes: ["1m", "5m", "15m", "1h", "4h", "1d"],
+    modes: ["signal", "paper", "live"],
+  },
+}
+
 function resolveConfigPath() {
   const rawPath = process.env[CONFIG_ENV] || DEFAULT_CONFIG
   return path.isAbsolute(rawPath) ? rawPath : path.resolve(process.cwd(), rawPath)
@@ -51,6 +69,17 @@ function createDeduper(limit = 200) {
         }
       }
     },
+  }
+}
+
+function resolveCapabilities(bot) {
+  const base = DEFAULT_CAPABILITIES[bot.engine] || {}
+  if (!bot.capabilities) return base
+
+  return {
+    exchanges: bot.capabilities.exchanges?.length ? bot.capabilities.exchanges : base.exchanges,
+    timeframes: bot.capabilities.timeframes?.length ? bot.capabilities.timeframes : base.timeframes,
+    modes: bot.capabilities.modes?.length ? bot.capabilities.modes : base.modes,
   }
 }
 
@@ -247,6 +276,9 @@ class FreqtradeAdapter {
       case "reload_config":
         await this.request("/reload_config", { method: "POST" })
         return { status: "online" }
+      case "configure":
+        await this.request("/reload_config", { method: "POST" })
+        return { status: "online", result: { applied: true } }
       case "backtest":
       case "paper":
       case "live":
@@ -331,6 +363,15 @@ class HummingbotAdapter {
           body: payload,
         })
         return { status: "online" }
+      case "configure":
+        if (!payload || Object.keys(payload).length === 0) {
+          throw new Error("configure requires a payload")
+        }
+        await this.request(`/bot-orchestration/bots/${encodeURIComponent(this.remoteId)}/config`, {
+          method: "PUT",
+          body: payload,
+        })
+        return { status: "online", result: { applied: true } }
       case "backtest":
         if (!payload || Object.keys(payload).length === 0) {
           throw new Error("backtest requires a payload")
@@ -454,6 +495,8 @@ class JesseAdapter {
         await this.request("/live", { method: "POST", body: payload.start })
         return { status: "online" }
       }
+      case "configure":
+        return { result: { applied: false, note: "Apply config in the Jesse project and restart the bot." } }
       case "reload_config":
       case "start":
         throw new Error(`Jesse uses live/paper commands. Use 'live' or 'paper' with payload instead of '${type}'.`)
@@ -478,16 +521,26 @@ function createAdapter(bot) {
 
 async function ensureBotDoc(db, bot) {
   const docRef = db.collection("bots").doc(bot.id)
-  await docRef.set(
-    {
-      id: bot.id,
-      name: bot.name || bot.id,
-      engine: bot.engine,
-      status: "unknown",
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  )
+  const snap = await docRef.get()
+  const existing = snap.exists ? snap.data() : {}
+  const capabilities = resolveCapabilities(bot)
+  const patch = {
+    id: bot.id,
+    name: bot.name || bot.id,
+    engine: bot.engine,
+    status: "unknown",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }
+
+  if (capabilities && Object.keys(capabilities).length > 0) {
+    patch.capabilities = capabilities
+  }
+
+  if (!existing?.desiredConfig && bot.desiredConfig) {
+    patch.desiredConfig = bot.desiredConfig
+  }
+
+  await docRef.set(patch, { merge: true })
 }
 
 async function writeEvents(db, botId, events) {
@@ -508,6 +561,24 @@ async function writeEvents(db, botId, events) {
   await batch.commit()
 }
 
+async function writeSignals(db, botId, signals) {
+  if (!signals || signals.length === 0) return
+  const ref = db.collection("bots").doc(botId).collection("signals")
+  const batch = db.batch()
+  for (const signal of signals.slice(0, 50)) {
+    const docRef = ref.doc()
+    batch.set(docRef, {
+      botId,
+      side: signal.side || null,
+      strength: typeof signal.strength === "number" ? signal.strength : null,
+      message: signal.message || "",
+      data: signal.data || null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    })
+  }
+  await batch.commit()
+}
+
 async function applyUpdate(db, bot, update) {
   const patch = {
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -519,6 +590,7 @@ async function applyUpdate(db, bot, update) {
 
   await db.collection("bots").doc(bot.id).set(patch, { merge: true })
   await writeEvents(db, bot.id, update?.events || [])
+  await writeSignals(db, bot.id, update?.signals || [])
 }
 
 async function markBotError(db, bot, err) {
@@ -593,6 +665,16 @@ function startCommandListener(db, bot, adapter) {
           completedAt: admin.firestore.FieldValue.serverTimestamp(),
           result: result?.result || null,
         })
+        if (commandType === "configure" && payload && Object.keys(payload).length > 0) {
+          await db.collection("bots").doc(bot.id).set(
+            {
+              desiredConfig: payload,
+              desiredConfigUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              lastConfigAppliedAt: admin.firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          )
+        }
         if (result?.status) {
           await db.collection("bots").doc(bot.id).set(
             {

@@ -59,6 +59,8 @@ export default function BotsPage() {
                 <TableRow>
                   <TableHead>ID</TableHead>
                   <TableHead>Engine</TableHead>
+                  <TableHead>Exchange</TableHead>
+                  <TableHead>Timeframe</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Last Heartbeat</TableHead>
                 </TableRow>
@@ -66,7 +68,7 @@ export default function BotsPage() {
               <TableBody>
                 {bots.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={4} className="text-sm opacity-70">
+                    <TableCell colSpan={6} className="text-sm opacity-70">
                       No bots yet. Create a <code>bots</code> collection in Firestore and start writing docs.
                     </TableCell>
                   </TableRow>
@@ -79,6 +81,12 @@ export default function BotsPage() {
                         </Link>
                       </TableCell>
                       <TableCell>{bot.engine || "unknown"}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {bot.desiredConfig?.exchange || "—"}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {bot.desiredConfig?.timeframe || "—"}
+                      </TableCell>
                       <TableCell>
                         <StatusBadge status={bot.status} />
                       </TableCell>
