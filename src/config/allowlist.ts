@@ -1,4 +1,4 @@
-export const ADMIN_ALLOWLIST = ["khalidsaidi662@gmail.com"]
+export const ADMIN_ALLOWLIST = ["khalidsaidi66@gmail.com"]
 
 export function isAllowedEmail(email?: string | null) {
   if (!email) return false
