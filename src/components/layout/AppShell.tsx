@@ -109,8 +109,8 @@ export function AppShell() {
           </div>
         </aside>
 
-        <main className="flex flex-col">
-          <header className="flex items-center justify-between border-b/60 bg-background/70 px-4 py-3 backdrop-blur-xl md:px-6">
+        <main className="flex min-w-0 flex-col">
+          <header className="flex min-w-0 items-center justify-between border-b/60 bg-background/70 px-4 py-3 backdrop-blur-xl md:px-6">
             <div className="flex items-center gap-3">
               <Sheet>
                 <SheetTrigger asChild>
@@ -149,7 +149,7 @@ export function AppShell() {
                     <Avatar className="h-7 w-7">
                       <AvatarFallback>{initials}</AvatarFallback>
                     </Avatar>
-                    <span className="ml-2 hidden text-sm sm:inline">
+                    <span className="ml-2 hidden max-w-[180px] truncate text-sm sm:inline">
                       {user?.displayName || user?.email || "User"}
                     </span>
                   </Button>
@@ -162,7 +162,9 @@ export function AppShell() {
           </header>
 
           <div className="flex-1 p-4 md:p-6">
-            <Outlet />
+            <div className="mx-auto w-full max-w-6xl">
+              <Outlet />
+            </div>
           </div>
         </main>
       </div>
