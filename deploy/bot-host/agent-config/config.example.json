@@ -12,7 +12,15 @@
         "mode": "signal",
         "exchange": "kraken",
         "timeframe": "5m",
-        "pairs": ["BTC/EUR", "ETH/EUR"]
+        "pairs": ["BTC/EUR", "ETH/EUR"],
+        "strategy": "mean-reversion-v1",
+        "risk": {
+          "maxPositionSize": 0.5,
+          "maxDailyLoss": 250
+        },
+        "advanced": {
+          "notes": "Freqtrade strategy overrides"
+        }
       },
       "capabilities": {
         "exchanges": ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
@@ -34,7 +42,15 @@
         "mode": "signal",
         "exchange": "binance",
         "timeframe": "1m",
-        "pairs": ["BTC-USDT", "ETH-USDT"]
+        "pairs": ["BTC-USDT", "ETH-USDT"],
+        "strategy": "market-making-v1",
+        "risk": {
+          "maxPositionSize": 1,
+          "maxOpenOrders": 6
+        },
+        "advanced": {
+          "notes": "Hummingbot strategy overrides"
+        }
       },
       "capabilities": {
         "exchanges": ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
@@ -57,7 +73,15 @@
         "mode": "signal",
         "exchange": "binance",
         "timeframe": "1m",
-        "pairs": ["BTC-USDT"]
+        "pairs": ["BTC-USDT"],
+        "strategy": "trend-follow-v1",
+        "risk": {
+          "maxDailyLoss": 150,
+          "maxLeverage": 2
+        },
+        "advanced": {
+          "notes": "Jesse route overrides"
+        }
       },
       "capabilities": {
         "exchanges": ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],

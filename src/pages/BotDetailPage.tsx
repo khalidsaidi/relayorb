@@ -49,6 +49,13 @@ export default function BotDetailPage() {
   const [pairsInput, setPairsInput] = useState("")
   const [timeframe, setTimeframe] = useState("")
   const [mode, setMode] = useState<BotMode>("signal")
+  const [strategy, setStrategy] = useState("")
+  const [riskMaxPositionSize, setRiskMaxPositionSize] = useState("")
+  const [riskMaxDailyLoss, setRiskMaxDailyLoss] = useState("")
+  const [riskMaxOpenOrders, setRiskMaxOpenOrders] = useState("")
+  const [riskMaxLeverage, setRiskMaxLeverage] = useState("")
+  const [advancedConfigText, setAdvancedConfigText] = useState("")
+  const [advancedConfigError, setAdvancedConfigError] = useState<string | null>(null)
   const [configSaving, setConfigSaving] = useState(false)
   const [configDirty, setConfigDirty] = useState(false)
   const commandDisabled = sending || !firebaseEnabled
@@ -125,6 +132,13 @@ export default function BotDetailPage() {
     setTimeframe(desired?.timeframe ?? "")
     setMode(desired?.mode ?? "signal")
     setPairsInput((desired?.pairs ?? []).join(", "))
+    setStrategy(desired?.strategy ?? "")
+    setRiskMaxPositionSize(desired?.risk?.maxPositionSize?.toString() ?? "")
+    setRiskMaxDailyLoss(desired?.risk?.maxDailyLoss?.toString() ?? "")
+    setRiskMaxOpenOrders(desired?.risk?.maxOpenOrders?.toString() ?? "")
+    setRiskMaxLeverage(desired?.risk?.maxLeverage?.toString() ?? "")
+    setAdvancedConfigText(desired?.advanced ? JSON.stringify(desired.advanced, null, 2) : "")
+    setAdvancedConfigError(null)
     setConfigDirty(false)
   }, [bot?.id, desiredConfigKey])
 
@@ -135,6 +149,29 @@ export default function BotDetailPage() {
       { label: "PnL", value: bot?.summary?.pnl ?? "—" },
     ]
   }, [bot])
+
+  function parseOptionalNumber(value: string) {
+    const trimmed = value.trim()
+    if (!trimmed) return undefined
+    const parsed = Number(trimmed)
+    return Number.isFinite(parsed) ? parsed : undefined
+  }
+
+  function parseAdvancedConfig() {
+    const trimmed = advancedConfigText.trim()
+    if (!trimmed) {
+      setAdvancedConfigError(null)
+      return undefined
+    }
+    try {
+      const parsed = JSON.parse(trimmed)
+      setAdvancedConfigError(null)
+      return parsed as Record<string, unknown>
+    } catch (err) {
+      setAdvancedConfigError("Advanced config must be valid JSON")
+      return null
+    }
+  }
 
   async function queueCommand(type: BotCommandType, overridePayload?: Record<string, unknown>) {
     if (!botId) return
@@ -193,11 +230,31 @@ export default function BotDetailPage() {
       setConfigSaving(false)
       return
     }
+    const advancedConfig = parseAdvancedConfig()
+    if (advancedConfig === null) {
+      setConfigSaving(false)
+      return
+    }
     const pairs = parsePairs(pairsInput).map((pair) => pair.toUpperCase())
     const config: BotDesiredConfig = { mode }
     if (exchange.trim()) config.exchange = exchange.trim()
     if (timeframe.trim()) config.timeframe = timeframe.trim()
     if (pairs.length > 0) config.pairs = pairs
+    if (strategy.trim()) config.strategy = strategy.trim()
+
+    const risk = {
+      maxPositionSize: parseOptionalNumber(riskMaxPositionSize),
+      maxDailyLoss: parseOptionalNumber(riskMaxDailyLoss),
+      maxOpenOrders: parseOptionalNumber(riskMaxOpenOrders),
+      maxLeverage: parseOptionalNumber(riskMaxLeverage),
+    }
+    if (Object.values(risk).some((value) => value !== undefined)) {
+      config.risk = risk
+    }
+
+    if (advancedConfig) {
+      config.advanced = advancedConfig
+    }
 
     try {
       await setDoc(
@@ -222,6 +279,10 @@ export default function BotDetailPage() {
       toast.error("Timeframe must look like 1m, 1h, 1d")
       return
     }
+    const advancedConfig = parseAdvancedConfig()
+    if (advancedConfig === null) {
+      return
+    }
     const pairs = parsePairs(pairsInput).map((pair) => pair.toUpperCase())
     const payload: Record<string, unknown> = {
       mode,
@@ -229,6 +290,20 @@ export default function BotDetailPage() {
     if (exchange.trim()) payload.exchange = exchange.trim()
     if (timeframe.trim()) payload.timeframe = timeframe.trim()
     if (pairs.length > 0) payload.pairs = pairs
+    if (strategy.trim()) payload.strategy = strategy.trim()
+
+    const risk = {
+      maxPositionSize: parseOptionalNumber(riskMaxPositionSize),
+      maxDailyLoss: parseOptionalNumber(riskMaxDailyLoss),
+      maxOpenOrders: parseOptionalNumber(riskMaxOpenOrders),
+      maxLeverage: parseOptionalNumber(riskMaxLeverage),
+    }
+    if (Object.values(risk).some((value) => value !== undefined)) {
+      payload.risk = risk
+    }
+    if (advancedConfig) {
+      payload.advanced = advancedConfig
+    }
     await queueCommand("configure", payload)
   }
 
@@ -293,9 +368,9 @@ export default function BotDetailPage() {
         <div className="space-y-4">
           <Card className="reveal" style={{ "--delay": "180ms" } as CSSProperties}>
             <CardHeader>
-              <CardTitle className="text-base">Trading Universe</CardTitle>
+              <CardTitle className="text-base">Trading Universe & Config</CardTitle>
               <div className="text-xs text-muted-foreground">
-                Choose the exchange, pairs, and timeframe for this bot. Saved configs are applied when adapters reload.
+                Choose exchange, pairs, timeframe, and advanced config. Saved configs are applied when adapters reload.
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -371,6 +446,107 @@ export default function BotDetailPage() {
                     </Button>
                   ))}
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="strategy">Strategy</Label>
+                <Input
+                  id="strategy"
+                  value={strategy}
+                  onChange={(event) => {
+                    setStrategy(event.target.value)
+                    setConfigDirty(true)
+                  }}
+                  placeholder="mean-reversion-v1"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Risk guardrails</Label>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="risk-max-position" className="text-xs text-muted-foreground">
+                      Max position size
+                    </Label>
+                    <Input
+                      id="risk-max-position"
+                      type="number"
+                      inputMode="decimal"
+                      value={riskMaxPositionSize}
+                      onChange={(event) => {
+                        setRiskMaxPositionSize(event.target.value)
+                        setConfigDirty(true)
+                      }}
+                      placeholder="0.5"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="risk-max-loss" className="text-xs text-muted-foreground">
+                      Max daily loss
+                    </Label>
+                    <Input
+                      id="risk-max-loss"
+                      type="number"
+                      inputMode="decimal"
+                      value={riskMaxDailyLoss}
+                      onChange={(event) => {
+                        setRiskMaxDailyLoss(event.target.value)
+                        setConfigDirty(true)
+                      }}
+                      placeholder="250"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="risk-max-orders" className="text-xs text-muted-foreground">
+                      Max open orders
+                    </Label>
+                    <Input
+                      id="risk-max-orders"
+                      type="number"
+                      inputMode="numeric"
+                      value={riskMaxOpenOrders}
+                      onChange={(event) => {
+                        setRiskMaxOpenOrders(event.target.value)
+                        setConfigDirty(true)
+                      }}
+                      placeholder="5"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="risk-max-leverage" className="text-xs text-muted-foreground">
+                      Max leverage
+                    </Label>
+                    <Input
+                      id="risk-max-leverage"
+                      type="number"
+                      inputMode="decimal"
+                      value={riskMaxLeverage}
+                      onChange={(event) => {
+                        setRiskMaxLeverage(event.target.value)
+                        setConfigDirty(true)
+                      }}
+                      placeholder="2"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="advanced-config">Advanced config (JSON)</Label>
+                <Textarea
+                  id="advanced-config"
+                  value={advancedConfigText}
+                  onChange={(event) => {
+                    setAdvancedConfigText(event.target.value)
+                    setAdvancedConfigError(null)
+                    setConfigDirty(true)
+                  }}
+                  className="min-h-36 font-mono text-xs"
+                  placeholder='{"strategy": {"param": 1}}'
+                />
+                {advancedConfigError && (
+                  <div className="text-xs text-destructive">{advancedConfigError}</div>
+                )}
               </div>
 
               {bot?.capabilities && (

@@ -32,6 +32,14 @@ export type BotDesiredConfig = {
   exchange?: string
   pairs?: string[]
   timeframe?: string
+  strategy?: string
+  risk?: {
+    maxPositionSize?: number
+    maxDailyLoss?: number
+    maxOpenOrders?: number
+    maxLeverage?: number
+  }
+  advanced?: Record<string, unknown>
   updatedAt?: Timestamp
 }
 

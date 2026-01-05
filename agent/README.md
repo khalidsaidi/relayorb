@@ -21,6 +21,9 @@ Key fields:
 - `bots[].api.baseUrl`: Bot API base URL.
 - `bots[].api.username/password`: Auth credentials where required.
 - `bots[].desiredConfig`: Seed trading universe config (mode, exchange, pairs, timeframe).
+- `bots[].desiredConfig.strategy`: Optional strategy identifier.
+- `bots[].desiredConfig.risk`: Optional guardrails (maxPositionSize, maxDailyLoss, maxOpenOrders, maxLeverage).
+- `bots[].desiredConfig.advanced`: Free-form JSON payload passed to configure commands.
 - `bots[].capabilities`: Supported exchanges/timeframes/modes for UI pickers.
 
 ## Auth
