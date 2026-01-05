@@ -35,6 +35,58 @@ const commandOptions: { type: BotCommandType; label: string }[] = [
   { type: "reload_config", label: "Reload Config" },
 ]
 
+type JesseRoute = {
+  id: string
+  exchange: string
+  symbol: string
+  timeframe: string
+  strategy: string
+}
+
+const STRATEGY_PRESETS: Record<string, string[]> = {
+  freqtrade: [
+    "SampleStrategy",
+    "ElliotWaveOscillator",
+    "RSI",
+    "EMACross",
+    "BollingerBands",
+  ],
+  hummingbot: [
+    "pure_market_making",
+    "cross_exchange_market_making",
+    "hedge",
+    "amm_arb",
+    "twap",
+    "xemm",
+  ],
+  jesse: ["TrendFollowing", "MeanReversion", "RSI2", "MACD", "BollingerBands"],
+  default: ["default"],
+}
+
+function makeId() {
+  return Math.random().toString(36).slice(2, 10)
+}
+
+function normalizePair(pair: string, separator: "/" | "-") {
+  const trimmed = pair.trim().toUpperCase()
+  if (!trimmed) return trimmed
+  if (separator === "/") return trimmed.replace(/-/g, "/")
+  return trimmed.replace(/\//g, "-")
+}
+
+function extractEngineAdvanced(advanced: unknown, engine?: string) {
+  if (!advanced || typeof advanced !== "object" || Array.isArray(advanced)) return null
+  const record = advanced as Record<string, unknown>
+  if (engine) {
+    const nested =
+      record[engine] ?? record[`${engine}Config`] ?? record[`${engine}_config`]
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      return nested as Record<string, unknown>
+    }
+  }
+  return record
+}
+
 export default function BotDetailPage() {
   const { botId } = useParams()
   const { user } = useAuth()
@@ -54,13 +106,22 @@ export default function BotDetailPage() {
   const [riskMaxDailyLoss, setRiskMaxDailyLoss] = useState("")
   const [riskMaxOpenOrders, setRiskMaxOpenOrders] = useState("")
   const [riskMaxLeverage, setRiskMaxLeverage] = useState("")
+  const [hbOrderAmount, setHbOrderAmount] = useState("")
+  const [hbBidSpread, setHbBidSpread] = useState("")
+  const [hbAskSpread, setHbAskSpread] = useState("")
+  const [hbOrderRefreshTime, setHbOrderRefreshTime] = useState("")
+  const [hbOrderRefreshTolerance, setHbOrderRefreshTolerance] = useState("")
+  const [hbMinProfitability, setHbMinProfitability] = useState("")
+  const [jesseRoutes, setJesseRoutes] = useState<JesseRoute[]>([])
   const [advancedConfigText, setAdvancedConfigText] = useState("")
   const [advancedConfigError, setAdvancedConfigError] = useState<string | null>(null)
   const [configSaving, setConfigSaving] = useState(false)
   const [configDirty, setConfigDirty] = useState(false)
   const commandDisabled = sending || !firebaseEnabled
   const configDisabled = configSaving || !firebaseEnabled
+  const exchangeTrimmed = exchange.trim()
   const timeframeTrimmed = timeframe.trim()
+  const strategyTrimmed = strategy.trim()
   const timeframeInvalid = timeframeTrimmed.length > 0 && !/^\d+[mhdw]$/i.test(timeframeTrimmed)
 
   const desiredConfigKey = useMemo(
@@ -83,6 +144,11 @@ export default function BotDetailPage() {
     [bot?.capabilities?.modes]
   )
 
+  const strategyOptions = useMemo(() => {
+    const engineKey = bot?.engine ?? "default"
+    return STRATEGY_PRESETS[engineKey] ?? STRATEGY_PRESETS.default
+  }, [bot?.engine])
+
   const engineConfigLabel = useMemo(() => {
     switch (bot?.engine) {
       case "freqtrade":
@@ -98,52 +164,210 @@ export default function BotDetailPage() {
 
   const engineConfigTemplate = useMemo(() => {
     if (bot?.engine === "freqtrade") {
+      const riskMaxOpen = parseOptionalNumber(riskMaxOpenOrders)
+      const riskMaxPosition = parseOptionalNumber(riskMaxPositionSize)
+      const freqtradePairs = parsePairs(pairsInput)
+      const freqtradePairList =
+        freqtradePairs.length > 0
+          ? freqtradePairs.map((pair) => normalizePair(pair, "/"))
+          : ["BTC/EUR"]
       return JSON.stringify(
         {
           exchange: {
-            name: exchange || "kraken",
-            pair_whitelist: parsePairs(pairsInput).map((pair) => pair.toUpperCase()) || ["BTC/EUR"],
+            name: exchangeTrimmed || "kraken",
+            pair_whitelist: freqtradePairList,
           },
-          timeframe: timeframe || "5m",
+          timeframe: timeframeTrimmed || "5m",
           dry_run: mode !== "live",
-          strategy: strategy || "SampleStrategy",
+          strategy: strategyTrimmed || "SampleStrategy",
+          ...(riskMaxOpen !== undefined ? { max_open_trades: riskMaxOpen } : {}),
+          ...(riskMaxPosition !== undefined ? { stake_amount: riskMaxPosition } : {}),
         },
         null,
         2
       )
     }
     if (bot?.engine === "hummingbot") {
+      const params: Record<string, number> = {}
+      const orderAmount = parseOptionalNumber(hbOrderAmount)
+      const bidSpread = parseOptionalNumber(hbBidSpread)
+      const askSpread = parseOptionalNumber(hbAskSpread)
+      const orderRefreshTime = parseOptionalNumber(hbOrderRefreshTime)
+      const orderRefreshTolerance = parseOptionalNumber(hbOrderRefreshTolerance)
+      const minProfitability = parseOptionalNumber(hbMinProfitability)
+      if (orderAmount !== undefined) params.order_amount = orderAmount
+      if (bidSpread !== undefined) params.bid_spread = bidSpread
+      if (askSpread !== undefined) params.ask_spread = askSpread
+      if (orderRefreshTime !== undefined) params.order_refresh_time = orderRefreshTime
+      if (orderRefreshTolerance !== undefined) {
+        params.order_refresh_tolerance_pct = orderRefreshTolerance
+      }
+      if (minProfitability !== undefined) params.min_profitability = minProfitability
+      const hummingbotPairs = parsePairs(pairsInput)
+      const hummingbotMarkets =
+        hummingbotPairs.length > 0
+          ? hummingbotPairs.map((pair) => normalizePair(pair, "-"))
+          : ["BTC-USDT"]
       return JSON.stringify(
         {
-          strategy: strategy || "pure_market_making",
-          exchange: exchange || "binance",
-          markets: parsePairs(pairsInput).map((pair) => pair.toUpperCase()) || ["BTC-USDT"],
-          timeframe: timeframe || "1m",
-          params: {},
+          strategy: strategyTrimmed || "pure_market_making",
+          exchange: exchangeTrimmed || "binance",
+          markets: hummingbotMarkets,
+          timeframe: timeframeTrimmed || "1m",
+          params,
         },
         null,
         2
       )
     }
     if (bot?.engine === "jesse") {
+      const routes =
+        jesseRoutes.length > 0
+          ? jesseRoutes.map((route) => ({
+              exchange: route.exchange || exchangeTrimmed || "Binance",
+              symbol: normalizePair(route.symbol || "BTC-USDT", "-"),
+              timeframe: route.timeframe || timeframeTrimmed || "1m",
+              strategy: route.strategy || strategyTrimmed || "TrendFollowing",
+            }))
+          : [
+              {
+                exchange: exchangeTrimmed || "Binance",
+                symbol: normalizePair(parsePairs(pairsInput)[0] || "BTC-USDT", "-"),
+                timeframe: timeframeTrimmed || "1m",
+                strategy: strategyTrimmed || "TrendFollowing",
+              },
+            ]
       return JSON.stringify(
         {
-          routes: [
-            {
-              exchange: exchange || "Binance",
-              symbol: (parsePairs(pairsInput)[0] || "BTC-USDT").toUpperCase().replace("/", "-"),
-              timeframe: timeframe || "1m",
-              strategy: strategy || "TrendFollowing",
-            },
-          ],
+          routes,
           data_routes: [],
+          config: {
+            exchange: exchangeTrimmed || "Binance",
+            timeframe: timeframeTrimmed || "1m",
+            mode,
+          },
         },
         null,
         2
       )
     }
     return JSON.stringify({ config: {} }, null, 2)
-  }, [bot?.engine, exchange, pairsInput, timeframe, mode, strategy])
+  }, [
+    bot?.engine,
+    exchangeTrimmed,
+    pairsInput,
+    timeframeTrimmed,
+    mode,
+    strategyTrimmed,
+    riskMaxOpenOrders,
+    riskMaxPositionSize,
+    hbOrderAmount,
+    hbBidSpread,
+    hbAskSpread,
+    hbOrderRefreshTime,
+    hbOrderRefreshTolerance,
+    hbMinProfitability,
+    jesseRoutes,
+  ])
+
+  const wizardConfig = useMemo(() => {
+    const pairs = parsePairs(pairsInput)
+    const pairsSlash = pairs.map((pair) => normalizePair(pair, "/"))
+    const pairsDash = pairs.map((pair) => normalizePair(pair, "-"))
+    if (bot?.engine === "freqtrade") {
+      const config: Record<string, unknown> = {}
+      if (exchangeTrimmed || pairsSlash.length > 0) {
+        const exchangeConfig: Record<string, unknown> = {}
+        if (exchangeTrimmed) exchangeConfig.name = exchangeTrimmed.toLowerCase()
+        if (pairsSlash.length > 0) exchangeConfig.pair_whitelist = pairsSlash
+        config.exchange = exchangeConfig
+      }
+      if (timeframeTrimmed) config.timeframe = timeframeTrimmed
+      if (strategyTrimmed) config.strategy = strategyTrimmed
+      const riskMaxOpen = parseOptionalNumber(riskMaxOpenOrders)
+      const riskMaxPosition = parseOptionalNumber(riskMaxPositionSize)
+      if (riskMaxOpen !== undefined) config.max_open_trades = riskMaxOpen
+      if (riskMaxPosition !== undefined) config.stake_amount = riskMaxPosition
+      return Object.keys(config).length > 0 ? config : null
+    }
+    if (bot?.engine === "hummingbot") {
+      const config: Record<string, unknown> = {}
+      if (strategyTrimmed) config.strategy = strategyTrimmed
+      if (exchangeTrimmed) config.exchange = exchangeTrimmed
+      if (pairsDash.length > 0) config.markets = pairsDash
+      if (timeframeTrimmed) config.timeframe = timeframeTrimmed
+      const params: Record<string, number> = {}
+      const orderAmount = parseOptionalNumber(hbOrderAmount)
+      const bidSpread = parseOptionalNumber(hbBidSpread)
+      const askSpread = parseOptionalNumber(hbAskSpread)
+      const orderRefreshTime = parseOptionalNumber(hbOrderRefreshTime)
+      const orderRefreshTolerance = parseOptionalNumber(hbOrderRefreshTolerance)
+      const minProfitability = parseOptionalNumber(hbMinProfitability)
+      if (orderAmount !== undefined) params.order_amount = orderAmount
+      if (bidSpread !== undefined) params.bid_spread = bidSpread
+      if (askSpread !== undefined) params.ask_spread = askSpread
+      if (orderRefreshTime !== undefined) params.order_refresh_time = orderRefreshTime
+      if (orderRefreshTolerance !== undefined) {
+        params.order_refresh_tolerance_pct = orderRefreshTolerance
+      }
+      if (minProfitability !== undefined) params.min_profitability = minProfitability
+      if (Object.keys(params).length > 0) config.params = params
+      return Object.keys(config).length > 0 ? config : null
+    }
+    if (bot?.engine === "jesse") {
+      const hasDefaults =
+        exchangeTrimmed || timeframeTrimmed || strategyTrimmed || pairs.length > 0
+      if (jesseRoutes.length === 0 && !hasDefaults) return null
+      const routes = (jesseRoutes.length > 0
+        ? jesseRoutes
+        : [
+            {
+              exchange: exchangeTrimmed,
+              symbol: pairsDash[0] ?? "",
+              timeframe: timeframeTrimmed,
+              strategy: strategyTrimmed,
+            },
+          ]
+      ).map((route) => ({
+        exchange: route.exchange || exchangeTrimmed || "Binance",
+        symbol: normalizePair(route.symbol || pairsDash[0] || "BTC-USDT", "-"),
+        timeframe: route.timeframe || timeframeTrimmed || "1m",
+        strategy: route.strategy || strategyTrimmed || "TrendFollowing",
+      }))
+      const advanced: Record<string, unknown> = {
+        routes,
+        data_routes: [],
+      }
+      const config: Record<string, unknown> = {}
+      if (exchangeTrimmed) config.exchange = exchangeTrimmed
+      if (timeframeTrimmed) config.timeframe = timeframeTrimmed
+      if (mode) config.mode = mode
+      if (Object.keys(config).length > 0) advanced.config = config
+      return advanced
+    }
+    return null
+  }, [
+    bot?.engine,
+    exchangeTrimmed,
+    pairsInput,
+    timeframeTrimmed,
+    mode,
+    strategyTrimmed,
+    riskMaxOpenOrders,
+    riskMaxPositionSize,
+    hbOrderAmount,
+    hbBidSpread,
+    hbAskSpread,
+    hbOrderRefreshTime,
+    hbOrderRefreshTolerance,
+    hbMinProfitability,
+    jesseRoutes,
+  ])
+
+  const wizardConfigText = useMemo(
+    () => (wizardConfig ? JSON.stringify(wizardConfig, null, 2) : ""),
+    [wizardConfig]
+  )
 
   useEffect(() => {
     if (!botId || !firebaseEnabled || !db) {
@@ -190,19 +414,117 @@ export default function BotDetailPage() {
   useEffect(() => {
     if (!bot) return
     const desired = bot.desiredConfig
-    setExchange(desired?.exchange ?? "")
-    setTimeframe(desired?.timeframe ?? "")
+    const advanced = extractEngineAdvanced(desired?.advanced, bot.engine)
+    let fallbackExchange = ""
+    let fallbackPairs: string[] = []
+    let fallbackTimeframe = ""
+    let fallbackStrategy = ""
+
+    if (advanced) {
+      if (bot.engine === "freqtrade") {
+        const exchangeConfig = advanced.exchange as Record<string, unknown> | undefined
+        if (exchangeConfig?.name) fallbackExchange = String(exchangeConfig.name)
+        if (Array.isArray(exchangeConfig?.pair_whitelist)) {
+          fallbackPairs = exchangeConfig.pair_whitelist.map((pair) =>
+            normalizePair(String(pair), "/")
+          )
+        }
+        if (advanced.timeframe) fallbackTimeframe = String(advanced.timeframe)
+        if (advanced.strategy) fallbackStrategy = String(advanced.strategy)
+      }
+
+      if (bot.engine === "hummingbot") {
+        if (advanced.exchange) fallbackExchange = String(advanced.exchange)
+        if (Array.isArray(advanced.markets)) {
+          fallbackPairs = advanced.markets.map((pair) => normalizePair(String(pair), "/"))
+        }
+        if (advanced.timeframe) fallbackTimeframe = String(advanced.timeframe)
+        if (advanced.strategy) fallbackStrategy = String(advanced.strategy)
+      }
+
+      if (bot.engine === "jesse") {
+        const routes = Array.isArray(advanced.routes) ? advanced.routes : []
+        const config = advanced.config as Record<string, unknown> | undefined
+        if (config?.exchange) fallbackExchange = String(config.exchange)
+        if (config?.timeframe) fallbackTimeframe = String(config.timeframe)
+        if (routes.length > 0) {
+          const firstRoute = routes[0] as Record<string, unknown>
+          if (!fallbackExchange && firstRoute.exchange) {
+            fallbackExchange = String(firstRoute.exchange)
+          }
+          if (!fallbackTimeframe && firstRoute.timeframe) {
+            fallbackTimeframe = String(firstRoute.timeframe)
+          }
+          if (firstRoute.strategy) fallbackStrategy = String(firstRoute.strategy)
+          if (firstRoute.symbol) {
+            fallbackPairs = [normalizePair(String(firstRoute.symbol), "/")]
+          }
+        }
+      }
+    }
+
+    const exchangeValue = desired?.exchange || fallbackExchange
+    const timeframeValue = desired?.timeframe || fallbackTimeframe
+    const strategyValue = desired?.strategy || fallbackStrategy
+    const pairsValue =
+      desired?.pairs && desired.pairs.length > 0 ? desired.pairs : fallbackPairs
+
+    setExchange(exchangeValue || "")
+    setTimeframe(timeframeValue || "")
     setMode(desired?.mode ?? "signal")
-    setPairsInput((desired?.pairs ?? []).join(", "))
-    setStrategy(desired?.strategy ?? "")
+    setPairsInput(pairsValue.join(", "))
+    setStrategy(strategyValue || "")
     setRiskMaxPositionSize(desired?.risk?.maxPositionSize?.toString() ?? "")
     setRiskMaxDailyLoss(desired?.risk?.maxDailyLoss?.toString() ?? "")
     setRiskMaxOpenOrders(desired?.risk?.maxOpenOrders?.toString() ?? "")
     setRiskMaxLeverage(desired?.risk?.maxLeverage?.toString() ?? "")
     setAdvancedConfigText(desired?.advanced ? JSON.stringify(desired.advanced, null, 2) : "")
+    if (bot.engine === "hummingbot") {
+      const params = (advanced?.params as Record<string, unknown> | undefined) ?? {}
+      setHbOrderAmount(params.order_amount?.toString() ?? "")
+      setHbBidSpread(params.bid_spread?.toString() ?? "")
+      setHbAskSpread(params.ask_spread?.toString() ?? "")
+      setHbOrderRefreshTime(params.order_refresh_time?.toString() ?? "")
+      setHbOrderRefreshTolerance(params.order_refresh_tolerance_pct?.toString() ?? "")
+      setHbMinProfitability(params.min_profitability?.toString() ?? "")
+    } else {
+      setHbOrderAmount("")
+      setHbBidSpread("")
+      setHbAskSpread("")
+      setHbOrderRefreshTime("")
+      setHbOrderRefreshTolerance("")
+      setHbMinProfitability("")
+    }
+
+    if (bot.engine === "jesse") {
+      const routes = Array.isArray(advanced?.routes) ? advanced.routes : []
+      if (routes.length > 0) {
+        setJesseRoutes(
+          routes.map((route) => ({
+            id: makeId(),
+            exchange: String(route.exchange ?? ""),
+            symbol: String(route.symbol ?? ""),
+            timeframe: String(route.timeframe ?? ""),
+            strategy: String(route.strategy ?? ""),
+          }))
+        )
+      } else {
+        setJesseRoutes([
+          {
+            id: makeId(),
+            exchange: exchangeValue || "Binance",
+            symbol: normalizePair(pairsValue[0] || "BTC-USDT", "-"),
+            timeframe: timeframeValue || "1m",
+            strategy: strategyValue || "TrendFollowing",
+          },
+        ])
+      }
+    } else {
+      setJesseRoutes([])
+    }
     setAdvancedConfigError(null)
     setConfigDirty(false)
-  }, [bot?.id, desiredConfigKey])
+  }, [bot?.id, bot?.engine, desiredConfigKey])
 
   const summary = useMemo(() => {
     return [
@@ -233,6 +555,49 @@ export default function BotDetailPage() {
       setAdvancedConfigError("Advanced config must be valid JSON")
       return null
     }
+  }
+
+  function resolveAdvancedConfig() {
+    const parsed = parseAdvancedConfig()
+    if (parsed === null) return null
+    if (parsed !== undefined) return parsed
+    return wizardConfig ?? undefined
+  }
+
+  function applyWizardConfigText() {
+    const template = wizardConfigText || engineConfigTemplate
+    if (!template) return
+    setAdvancedConfigText(template)
+    setAdvancedConfigError(null)
+    setConfigDirty(true)
+  }
+
+  function buildJesseRoute(): JesseRoute {
+    const basePair = parsePairs(pairsInput)[0] || "BTC-USDT"
+    return {
+      id: makeId(),
+      exchange: exchangeTrimmed || "Binance",
+      symbol: normalizePair(basePair, "-"),
+      timeframe: timeframeTrimmed || "1m",
+      strategy: strategyTrimmed || "TrendFollowing",
+    }
+  }
+
+  function updateJesseRoute(id: string, patch: Partial<JesseRoute>) {
+    setJesseRoutes((prev) =>
+      prev.map((route) => (route.id === id ? { ...route, ...patch } : route))
+    )
+    setConfigDirty(true)
+  }
+
+  function addJesseRoute() {
+    setJesseRoutes((prev) => [...prev, buildJesseRoute()])
+    setConfigDirty(true)
+  }
+
+  function removeJesseRoute(id: string) {
+    setJesseRoutes((prev) => prev.filter((route) => route.id !== id))
+    setConfigDirty(true)
   }
 
   async function queueCommand(type: BotCommandType, overridePayload?: Record<string, unknown>) {
@@ -292,25 +657,28 @@ export default function BotDetailPage() {
       setConfigSaving(false)
       return
     }
-    const advancedConfig = parseAdvancedConfig()
+    const advancedConfig = resolveAdvancedConfig()
     if (advancedConfig === null) {
       setConfigSaving(false)
       return
     }
     const pairs = parsePairs(pairsInput).map((pair) => pair.toUpperCase())
     const config: BotDesiredConfig = { mode }
-    if (exchange.trim()) config.exchange = exchange.trim()
-    if (timeframe.trim()) config.timeframe = timeframe.trim()
+    if (exchangeTrimmed) config.exchange = exchangeTrimmed
+    if (timeframeTrimmed) config.timeframe = timeframeTrimmed
     if (pairs.length > 0) config.pairs = pairs
-    if (strategy.trim()) config.strategy = strategy.trim()
+    if (strategyTrimmed) config.strategy = strategyTrimmed
 
-    const risk = {
-      maxPositionSize: parseOptionalNumber(riskMaxPositionSize),
-      maxDailyLoss: parseOptionalNumber(riskMaxDailyLoss),
-      maxOpenOrders: parseOptionalNumber(riskMaxOpenOrders),
-      maxLeverage: parseOptionalNumber(riskMaxLeverage),
-    }
-    if (Object.values(risk).some((value) => value !== undefined)) {
+    const risk: NonNullable<BotDesiredConfig["risk"]> = {}
+    const maxPositionSize = parseOptionalNumber(riskMaxPositionSize)
+    const maxDailyLoss = parseOptionalNumber(riskMaxDailyLoss)
+    const maxOpenOrders = parseOptionalNumber(riskMaxOpenOrders)
+    const maxLeverage = parseOptionalNumber(riskMaxLeverage)
+    if (maxPositionSize !== undefined) risk.maxPositionSize = maxPositionSize
+    if (maxDailyLoss !== undefined) risk.maxDailyLoss = maxDailyLoss
+    if (maxOpenOrders !== undefined) risk.maxOpenOrders = maxOpenOrders
+    if (maxLeverage !== undefined) risk.maxLeverage = maxLeverage
+    if (Object.keys(risk).length > 0) {
       config.risk = risk
     }
 
@@ -341,7 +709,7 @@ export default function BotDetailPage() {
       toast.error("Timeframe must look like 1m, 1h, 1d")
       return
     }
-    const advancedConfig = parseAdvancedConfig()
+    const advancedConfig = resolveAdvancedConfig()
     if (advancedConfig === null) {
       return
     }
@@ -349,18 +717,21 @@ export default function BotDetailPage() {
     const payload: Record<string, unknown> = {
       mode,
     }
-    if (exchange.trim()) payload.exchange = exchange.trim()
-    if (timeframe.trim()) payload.timeframe = timeframe.trim()
+    if (exchangeTrimmed) payload.exchange = exchangeTrimmed
+    if (timeframeTrimmed) payload.timeframe = timeframeTrimmed
     if (pairs.length > 0) payload.pairs = pairs
-    if (strategy.trim()) payload.strategy = strategy.trim()
+    if (strategyTrimmed) payload.strategy = strategyTrimmed
 
-    const risk = {
-      maxPositionSize: parseOptionalNumber(riskMaxPositionSize),
-      maxDailyLoss: parseOptionalNumber(riskMaxDailyLoss),
-      maxOpenOrders: parseOptionalNumber(riskMaxOpenOrders),
-      maxLeverage: parseOptionalNumber(riskMaxLeverage),
-    }
-    if (Object.values(risk).some((value) => value !== undefined)) {
+    const risk: NonNullable<BotDesiredConfig["risk"]> = {}
+    const maxPositionSize = parseOptionalNumber(riskMaxPositionSize)
+    const maxDailyLoss = parseOptionalNumber(riskMaxDailyLoss)
+    const maxOpenOrders = parseOptionalNumber(riskMaxOpenOrders)
+    const maxLeverage = parseOptionalNumber(riskMaxLeverage)
+    if (maxPositionSize !== undefined) risk.maxPositionSize = maxPositionSize
+    if (maxDailyLoss !== undefined) risk.maxDailyLoss = maxDailyLoss
+    if (maxOpenOrders !== undefined) risk.maxOpenOrders = maxOpenOrders
+    if (maxLeverage !== undefined) risk.maxLeverage = maxLeverage
+    if (Object.keys(risk).length > 0) {
       payload.risk = risk
     }
     if (advancedConfig) {
@@ -511,19 +882,6 @@ export default function BotDetailPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="strategy">Strategy</Label>
-                <Input
-                  id="strategy"
-                  value={strategy}
-                  onChange={(event) => {
-                    setStrategy(event.target.value)
-                    setConfigDirty(true)
-                  }}
-                  placeholder="mean-reversion-v1"
-                />
-              </div>
-
-              <div className="space-y-2">
                 <Label>Risk guardrails</Label>
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="space-y-1">
@@ -593,6 +951,256 @@ export default function BotDetailPage() {
                 </div>
               </div>
 
+              <div className="space-y-3 rounded-lg border border-border/60 bg-muted/30 p-4">
+                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                  Engine Wizard
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="strategy">Strategy preset</Label>
+                  <Input
+                    id="strategy"
+                    list="strategy-options"
+                    value={strategy}
+                    onChange={(event) => {
+                      setStrategy(event.target.value)
+                      setConfigDirty(true)
+                    }}
+                    placeholder={
+                      bot?.engine === "hummingbot"
+                        ? "pure_market_making"
+                        : bot?.engine === "jesse"
+                        ? "TrendFollowing"
+                        : "SampleStrategy"
+                    }
+                  />
+                  {strategyOptions.length > 0 && (
+                    <datalist id="strategy-options">
+                      {strategyOptions.map((option) => (
+                        <option key={option} value={option} />
+                      ))}
+                    </datalist>
+                  )}
+                </div>
+
+                {bot?.engine === "hummingbot" && (
+                  <div className="space-y-3">
+                    <div className="text-xs text-muted-foreground">
+                      Configure core Hummingbot params. These are written under <code>params</code>.
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="space-y-1">
+                        <Label htmlFor="hb-order-amount" className="text-xs text-muted-foreground">
+                          Order amount
+                        </Label>
+                        <Input
+                          id="hb-order-amount"
+                          type="number"
+                          inputMode="decimal"
+                          value={hbOrderAmount}
+                          onChange={(event) => {
+                            setHbOrderAmount(event.target.value)
+                            setConfigDirty(true)
+                          }}
+                          placeholder="0.01"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="hb-bid-spread" className="text-xs text-muted-foreground">
+                          Bid spread (%)
+                        </Label>
+                        <Input
+                          id="hb-bid-spread"
+                          type="number"
+                          inputMode="decimal"
+                          value={hbBidSpread}
+                          onChange={(event) => {
+                            setHbBidSpread(event.target.value)
+                            setConfigDirty(true)
+                          }}
+                          placeholder="0.6"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="hb-ask-spread" className="text-xs text-muted-foreground">
+                          Ask spread (%)
+                        </Label>
+                        <Input
+                          id="hb-ask-spread"
+                          type="number"
+                          inputMode="decimal"
+                          value={hbAskSpread}
+                          onChange={(event) => {
+                            setHbAskSpread(event.target.value)
+                            setConfigDirty(true)
+                          }}
+                          placeholder="0.6"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label
+                          htmlFor="hb-order-refresh-time"
+                          className="text-xs text-muted-foreground"
+                        >
+                          Order refresh time (s)
+                        </Label>
+                        <Input
+                          id="hb-order-refresh-time"
+                          type="number"
+                          inputMode="decimal"
+                          value={hbOrderRefreshTime}
+                          onChange={(event) => {
+                            setHbOrderRefreshTime(event.target.value)
+                            setConfigDirty(true)
+                          }}
+                          placeholder="30"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label
+                          htmlFor="hb-order-refresh-tolerance"
+                          className="text-xs text-muted-foreground"
+                        >
+                          Refresh tolerance (%)
+                        </Label>
+                        <Input
+                          id="hb-order-refresh-tolerance"
+                          type="number"
+                          inputMode="decimal"
+                          value={hbOrderRefreshTolerance}
+                          onChange={(event) => {
+                            setHbOrderRefreshTolerance(event.target.value)
+                            setConfigDirty(true)
+                          }}
+                          placeholder="0.2"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label
+                          htmlFor="hb-min-profitability"
+                          className="text-xs text-muted-foreground"
+                        >
+                          Min profitability (%)
+                        </Label>
+                        <Input
+                          id="hb-min-profitability"
+                          type="number"
+                          inputMode="decimal"
+                          value={hbMinProfitability}
+                          onChange={(event) => {
+                            setHbMinProfitability(event.target.value)
+                            setConfigDirty(true)
+                          }}
+                          placeholder="0.1"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {bot?.engine === "jesse" && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-medium">Routes</div>
+                      <Button type="button" variant="outline" size="sm" onClick={addJesseRoute}>
+                        Add route
+                      </Button>
+                    </div>
+                    {jesseRoutes.length === 0 ? (
+                      <div className="text-xs text-muted-foreground">
+                        No routes configured yet.
+                      </div>
+                    ) : (
+                      jesseRoutes.map((route) => (
+                        <div
+                          key={route.id}
+                          className="rounded-md border border-border/60 bg-background/70 p-3 space-y-2"
+                        >
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <div className="space-y-1">
+                              <Label
+                                htmlFor={`jesse-exchange-${route.id}`}
+                                className="text-xs text-muted-foreground"
+                              >
+                                Exchange
+                              </Label>
+                              <Input
+                                id={`jesse-exchange-${route.id}`}
+                                list="exchange-options"
+                                value={route.exchange}
+                                onChange={(event) =>
+                                  updateJesseRoute(route.id, { exchange: event.target.value })
+                                }
+                                placeholder={exchangeTrimmed || "Binance"}
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label
+                                htmlFor={`jesse-symbol-${route.id}`}
+                                className="text-xs text-muted-foreground"
+                              >
+                                Symbol
+                              </Label>
+                              <Input
+                                id={`jesse-symbol-${route.id}`}
+                                value={route.symbol}
+                                onChange={(event) =>
+                                  updateJesseRoute(route.id, { symbol: event.target.value })
+                                }
+                                placeholder="BTC-USDT"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label
+                                htmlFor={`jesse-timeframe-${route.id}`}
+                                className="text-xs text-muted-foreground"
+                              >
+                                Timeframe
+                              </Label>
+                              <Input
+                                id={`jesse-timeframe-${route.id}`}
+                                list="timeframe-options"
+                                value={route.timeframe}
+                                onChange={(event) =>
+                                  updateJesseRoute(route.id, { timeframe: event.target.value })
+                                }
+                                placeholder={timeframeTrimmed || "1m"}
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label
+                                htmlFor={`jesse-strategy-${route.id}`}
+                                className="text-xs text-muted-foreground"
+                              >
+                                Strategy
+                              </Label>
+                              <Input
+                                id={`jesse-strategy-${route.id}`}
+                                list="strategy-options"
+                                value={route.strategy}
+                                onChange={(event) =>
+                                  updateJesseRoute(route.id, { strategy: event.target.value })
+                                }
+                                placeholder={strategyTrimmed || "TrendFollowing"}
+                              />
+                            </div>
+                          </div>
+                          <div className="flex justify-end">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => removeJesseRoute(route.id)}
+                            >
+                              Remove
+                            </Button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
                   <Label htmlFor="advanced-config">{engineConfigLabel}</Label>
@@ -600,13 +1208,9 @@ export default function BotDetailPage() {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    onClick={() => {
-                      setAdvancedConfigText(engineConfigTemplate)
-                      setAdvancedConfigError(null)
-                      setConfigDirty(true)
-                    }}
+                    onClick={applyWizardConfigText}
                   >
-                    Insert template
+                    Use wizard JSON
                   </Button>
                 </div>
                 <Textarea
