@@ -17,6 +17,8 @@ dist-ssr
 .firebase/
 relayorb-firebase-service-account.json
 relayorb-firebase-adminsdk-fbsvc-7210dc6126.json
+playwright-report/
+test-results/
 
 # Editor directories and files
 .vscode/*

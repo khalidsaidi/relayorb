@@ -133,7 +133,7 @@ export default function DashboardPage() {
               <div className="text-sm opacity-70">Loading events…</div>
             ) : events.length === 0 ? (
               <div className="text-sm opacity-70">
-                No events yet. Adapters should write to <code>bots/{\"{botId}\"}/events</code>.
+                No events yet. Adapters should write to <code>bots/{'{botId}'}/events</code>.
               </div>
             ) : (
               <div className="space-y-3">
