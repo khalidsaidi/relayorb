@@ -5,6 +5,9 @@ import admin from "firebase-admin"
 
 const CONFIG_ENV = "RELAYORB_CONFIG_PATH"
 const DEFAULT_CONFIG = "config.json"
+const FREQTRADE_CONFIG_PATH = process.env.RELAYORB_FREQTRADE_CONFIG || ""
+const HUMMINGBOT_BOTS_DIR = process.env.RELAYORB_HUMMINGBOT_DIR || ""
+const JESSE_PROJECT_DIR = process.env.RELAYORB_JESSE_DIR || ""
 
 const log = (message) => {
   const stamp = new Date().toISOString()
@@ -87,6 +90,170 @@ function resolveCapabilities(bot) {
 
 function withBaseUrl(baseUrl, endpoint) {
   return `${baseUrl.replace(/\/$/, "")}${endpoint}`
+}
+
+async function readJsonFile(filePath) {
+  try {
+    const raw = await fs.readFile(filePath, "utf8")
+    return JSON.parse(raw)
+  } catch (err) {
+    return null
+  }
+}
+
+async function writeJsonFile(filePath, data) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true })
+  await fs.writeFile(filePath, JSON.stringify(data, null, 2) + "\n")
+}
+
+async function writeYamlFromJson(filePath, data) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true })
+  await fs.writeFile(filePath, JSON.stringify(data, null, 2) + "\n")
+}
+
+function normalizePair(pair, separator) {
+  if (!pair) return pair
+  const trimmed = String(pair).trim().toUpperCase()
+  if (separator === "/") return trimmed.replace(/-/g, "/")
+  if (separator === "-") return trimmed.replace(/\//g, "-")
+  return trimmed
+}
+
+function mergeDeep(target, source) {
+  if (!source || typeof source !== "object") return target
+  for (const [key, value] of Object.entries(source)) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const base = target[key] && typeof target[key] === "object" ? target[key] : {}
+      target[key] = mergeDeep({ ...base }, value)
+      continue
+    }
+    if (value !== undefined) {
+      target[key] = value
+    }
+  }
+  return target
+}
+
+function resolveAdvanced(payload, engine) {
+  if (!payload || typeof payload !== "object") return null
+  const advanced = payload.advanced
+  if (!advanced || typeof advanced !== "object") return null
+  if (engine && advanced[engine]) return advanced[engine]
+  if (engine && advanced[`${engine}Config`]) return advanced[`${engine}Config`]
+  if (engine && advanced[`${engine}_config`]) return advanced[`${engine}_config`]
+  return advanced
+}
+
+function buildRelayorbMeta(payload) {
+  if (!payload || typeof payload !== "object") return {}
+  const meta = {
+    exchange: payload.exchange,
+    pairs: payload.pairs,
+    timeframe: payload.timeframe,
+    mode: payload.mode,
+    strategy: payload.strategy,
+    risk: payload.risk,
+  }
+  return Object.fromEntries(Object.entries(meta).filter(([, value]) => value !== undefined))
+}
+
+async function applyFreqtradeConfig(payload) {
+  if (!FREQTRADE_CONFIG_PATH) {
+    return { applied: false, note: "Missing RELAYORB_FREQTRADE_CONFIG" }
+  }
+  const existing = (await readJsonFile(FREQTRADE_CONFIG_PATH)) || {}
+  const patch = {}
+
+  const pairs = Array.isArray(payload.pairs) ? payload.pairs : []
+  if (payload.exchange || pairs.length > 0) {
+    const exchange = { ...(existing.exchange || {}) }
+    if (payload.exchange) exchange.name = String(payload.exchange).toLowerCase()
+    if (pairs.length > 0) exchange.pair_whitelist = pairs.map((pair) => normalizePair(pair, "/"))
+    patch.exchange = exchange
+  }
+
+  if (payload.timeframe) patch.timeframe = payload.timeframe
+  if (payload.strategy) patch.strategy = payload.strategy
+  if (payload.mode) patch.dry_run = payload.mode !== "live"
+
+  if (payload.risk?.maxOpenOrders !== undefined) patch.max_open_trades = payload.risk.maxOpenOrders
+  if (payload.risk?.maxPositionSize !== undefined) patch.stake_amount = payload.risk.maxPositionSize
+
+  const advanced = resolveAdvanced(payload, "freqtrade")
+  const merged = mergeDeep(mergeDeep({ ...existing }, patch), advanced || {})
+  await writeJsonFile(FREQTRADE_CONFIG_PATH, merged)
+  return { applied: true, path: FREQTRADE_CONFIG_PATH }
+}
+
+async function applyHummingbotConfig(botId, payload) {
+  if (!HUMMINGBOT_BOTS_DIR) {
+    return { applied: false, note: "Missing RELAYORB_HUMMINGBOT_DIR" }
+  }
+
+  const botDir = path.join(HUMMINGBOT_BOTS_DIR, botId)
+  const confDir = path.join(botDir, "conf")
+  const advanced = resolveAdvanced(payload, "hummingbot") || {}
+  const config = { ...advanced }
+
+  const pairs = Array.isArray(payload.pairs) ? payload.pairs : []
+  if (payload.strategy && !config.strategy) config.strategy = payload.strategy
+  if (payload.exchange && !config.exchange) config.exchange = payload.exchange
+  if (pairs.length > 0 && !config.markets) {
+    config.markets = pairs.map((pair) => normalizePair(pair, "-"))
+  }
+  if (payload.timeframe && !config.timeframe) config.timeframe = payload.timeframe
+
+  const relayorbMeta = buildRelayorbMeta(payload)
+  if (Object.keys(relayorbMeta).length > 0) {
+    config.relayorb = { ...(config.relayorb || {}), ...relayorbMeta }
+  }
+
+  await writeYamlFromJson(path.join(confDir, "conf.yml"), config)
+  await writeJsonFile(path.join(botDir, "relayorb.json"), { config, payload })
+  return { applied: true, path: path.join(confDir, "conf.yml") }
+}
+
+async function applyJesseConfig(payload) {
+  if (!JESSE_PROJECT_DIR) {
+    return { applied: false, note: "Missing RELAYORB_JESSE_DIR" }
+  }
+
+  const configDir = path.join(JESSE_PROJECT_DIR, "config")
+  const advanced = resolveAdvanced(payload, "jesse") || {}
+  const exchange = payload.exchange || advanced.exchange || "Binance"
+  const timeframe = payload.timeframe || advanced.timeframe || "1m"
+  const strategy = payload.strategy || advanced.strategy || "DefaultStrategy"
+
+  const pairs = Array.isArray(payload.pairs) ? payload.pairs : []
+  const routes =
+    Array.isArray(advanced.routes) && advanced.routes.length
+      ? advanced.routes
+      : pairs.map((pair) => ({
+          exchange,
+          symbol: normalizePair(pair, "-"),
+          timeframe,
+          strategy,
+        }))
+
+  const dataRoutes =
+    advanced.data_routes || advanced.dataRoutes || []
+
+  await writeJsonFile(path.join(configDir, "routes.json"), {
+    routes,
+    data_routes: dataRoutes,
+  })
+
+  const relayorbMeta = buildRelayorbMeta(payload)
+  const config = { ...(advanced.config || {}) }
+  if (!config.exchange) config.exchange = exchange
+  if (!config.timeframe) config.timeframe = timeframe
+  if (payload.mode && !config.mode) config.mode = payload.mode
+  if (Object.keys(relayorbMeta).length > 0) {
+    config.relayorb = { ...(config.relayorb || {}), ...relayorbMeta }
+  }
+  await writeJsonFile(path.join(configDir, "config.json"), config)
+  await writeJsonFile(path.join(JESSE_PROJECT_DIR, "relayorb.json"), { config, payload })
+  return { applied: true, path: path.join(configDir, "routes.json") }
 }
 
 async function fetchJson(url, options = {}) {
@@ -334,8 +501,9 @@ class FreqtradeAdapter {
         await this.request("/reload_config", { method: "POST" })
         return { status: "online" }
       case "configure":
+        const freqtradeResult = await applyFreqtradeConfig(payload || {})
         await this.request("/reload_config", { method: "POST" })
-        return { status: "online", result: { applied: true } }
+        return { status: "online", result: freqtradeResult }
       case "backtest":
       case "paper":
       case "live":
@@ -455,11 +623,13 @@ class HummingbotAdapter {
         if (!payload || Object.keys(payload).length === 0) {
           throw new Error("configure requires a payload")
         }
+        const hummingbotResult = await applyHummingbotConfig(this.remoteId, payload)
+        const configPayload = resolveAdvanced(payload, "hummingbot") || payload
         await this.request(`/bot-orchestration/bots/${encodeURIComponent(this.remoteId)}/config`, {
           method: "PUT",
-          body: payload,
+          body: configPayload,
         })
-        return { status: "online", result: { applied: true } }
+        return { status: "online", result: hummingbotResult }
       case "backtest":
         if (!payload || Object.keys(payload).length === 0) {
           throw new Error("backtest requires a payload")
@@ -615,7 +785,13 @@ class JesseAdapter {
         return { status: "online" }
       }
       case "configure":
-        return { result: { applied: false, note: "Apply config in the Jesse project and restart the bot." } }
+        const jesseResult = await applyJesseConfig(payload || {})
+        return {
+          result: {
+            ...jesseResult,
+            note: "Config written. Restart Jesse to apply routes.",
+          },
+        }
       case "reload_config":
       case "start":
         throw new Error(`Jesse uses live/paper commands. Use 'live' or 'paper' with payload instead of '${type}'.`)

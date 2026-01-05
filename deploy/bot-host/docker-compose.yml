@@ -6,9 +6,15 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
       - RELAYORB_CONFIG_PATH=/config/config.json
       - NODE_ENV=production
+      - RELAYORB_FREQTRADE_CONFIG=/relayorb/freqtrade/user_data/config.json
+      - RELAYORB_HUMMINGBOT_DIR=/relayorb/hummingbot/bots
+      - RELAYORB_JESSE_DIR=/relayorb/jesse
     volumes:
       - ./agent-config/config.json:/config/config.json:ro
       - ./secrets/service-account.json:/secrets/service-account.json:ro
+      - ./freqtrade/user_data:/relayorb/freqtrade/user_data
+      - ./hummingbot/bots:/relayorb/hummingbot/bots
+      - ./jesse:/relayorb/jesse
     depends_on:
       - freqtrade
       - hummingbot-api

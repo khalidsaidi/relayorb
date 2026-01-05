@@ -38,6 +38,9 @@ The UI queues commands with:
 
 Adapters should update command status as they execute.
 
+## Engine Config
+The bot detail screen includes a full engine config JSON editor per bot. Saved configs are stored in Firestore and applied by the agent (when config sync is enabled on the bot host).
+
 ## Firebase Rules
 
 Rules are configured to allow access only for the email allowlist. Update both the app allowlist and `firestore.rules` to match.

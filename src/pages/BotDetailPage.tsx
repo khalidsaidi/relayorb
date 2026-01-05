@@ -83,6 +83,68 @@ export default function BotDetailPage() {
     [bot?.capabilities?.modes]
   )
 
+  const engineConfigLabel = useMemo(() => {
+    switch (bot?.engine) {
+      case "freqtrade":
+        return "Freqtrade Config (JSON)"
+      case "hummingbot":
+        return "Hummingbot Strategy Config (JSON)"
+      case "jesse":
+        return "Jesse Routes Config (JSON)"
+      default:
+        return "Engine Config (JSON)"
+    }
+  }, [bot?.engine])
+
+  const engineConfigTemplate = useMemo(() => {
+    if (bot?.engine === "freqtrade") {
+      return JSON.stringify(
+        {
+          exchange: {
+            name: exchange || "kraken",
+            pair_whitelist: parsePairs(pairsInput).map((pair) => pair.toUpperCase()) || ["BTC/EUR"],
+          },
+          timeframe: timeframe || "5m",
+          dry_run: mode !== "live",
+          strategy: strategy || "SampleStrategy",
+        },
+        null,
+        2
+      )
+    }
+    if (bot?.engine === "hummingbot") {
+      return JSON.stringify(
+        {
+          strategy: strategy || "pure_market_making",
+          exchange: exchange || "binance",
+          markets: parsePairs(pairsInput).map((pair) => pair.toUpperCase()) || ["BTC-USDT"],
+          timeframe: timeframe || "1m",
+          params: {},
+        },
+        null,
+        2
+      )
+    }
+    if (bot?.engine === "jesse") {
+      return JSON.stringify(
+        {
+          routes: [
+            {
+              exchange: exchange || "Binance",
+              symbol: (parsePairs(pairsInput)[0] || "BTC-USDT").toUpperCase().replace("/", "-"),
+              timeframe: timeframe || "1m",
+              strategy: strategy || "TrendFollowing",
+            },
+          ],
+          data_routes: [],
+        },
+        null,
+        2
+      )
+    }
+    return JSON.stringify({ config: {} }, null, 2)
+  }, [bot?.engine, exchange, pairsInput, timeframe, mode, strategy])
+
   useEffect(() => {
     if (!botId || !firebaseEnabled || !db) {
       setLoadingBot(false)
@@ -532,7 +594,21 @@ export default function BotDetailPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="advanced-config">Advanced config (JSON)</Label>
+                <div className="flex items-center justify-between gap-2">
+                  <Label htmlFor="advanced-config">{engineConfigLabel}</Label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setAdvancedConfigText(engineConfigTemplate)
+                      setAdvancedConfigError(null)
+                      setConfigDirty(true)
+                    }}
+                  >
+                    Insert template
+                  </Button>
+                </div>
                 <Textarea
                   id="advanced-config"
                   value={advancedConfigText}
@@ -542,7 +618,7 @@ export default function BotDetailPage() {
                     setConfigDirty(true)
                   }}
                   className="min-h-36 font-mono text-xs"
-                  placeholder='{"strategy": {"param": 1}}'
+                  placeholder={engineConfigTemplate}
                 />
                 {advancedConfigError && (
                   <div className="text-xs text-destructive">{advancedConfigError}</div>

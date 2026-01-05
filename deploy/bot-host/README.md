@@ -43,4 +43,5 @@ docker compose up -d
 - Jesse requires a valid `.env` with a non-empty `PASSWORD`.
 - Jesse runs with its own Postgres container; keep the `POSTGRES_*` values in `jesse/.env` consistent.
 - The UI stores the trading universe in Firestore. Use the "Apply Config" action to trigger adapters; some bots still require manual config updates.
+- The agent can write config files directly when mounted: Freqtrade `user_data/config.json`, Hummingbot `bots/<id>/conf/conf.yml`, Jesse `config/routes.json`.
 - No ports are exposed publicly by default. Use SSH port-forwarding if you need to reach APIs.

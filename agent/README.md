@@ -31,6 +31,11 @@ The agent uses Firebase Admin credentials. Provide one of:
 - `GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json`, or
 - Run on GCP with an attached service account that has Firestore access.
 
+Optional config sync env vars:
+- `RELAYORB_FREQTRADE_CONFIG` path to `config.json`
+- `RELAYORB_HUMMINGBOT_DIR` path to hummingbot bots directory
+- `RELAYORB_JESSE_DIR` path to the Jesse project directory
+
 ## Run locally
 ```bash
 npm install
@@ -87,3 +92,8 @@ The agent passes payloads through to the underlying bot APIs.
 ### Configure universe
 Use the `configure` command type (from the UI) to apply the current desired config.
 Adapters that cannot apply config return a note and keep the desired config stored in Firestore.
+
+When config sync env vars are set, the agent will also translate and write bot-specific config files:
+- Freqtrade: updates the JSON config and reloads it
+- Hummingbot: writes a `conf.yml` in the bot folder and sends a config payload to the API
+- Jesse: writes `config/routes.json` and `config/config.json`
