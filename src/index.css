@@ -47,38 +47,38 @@
 }
 
 :root {
-  --radius: 0.9rem;
-  --background: oklch(0.985 0.01 250);
-  --foreground: oklch(0.2 0.02 260);
-  --card: oklch(0.99 0.01 250);
-  --card-foreground: oklch(0.2 0.02 260);
-  --popover: oklch(0.99 0.01 250);
-  --popover-foreground: oklch(0.2 0.02 260);
-  --primary: oklch(0.55 0.16 215);
-  --primary-foreground: oklch(0.99 0.01 250);
-  --secondary: oklch(0.94 0.02 240);
-  --secondary-foreground: oklch(0.2 0.02 260);
-  --muted: oklch(0.96 0.01 250);
-  --muted-foreground: oklch(0.5 0.03 250);
-  --accent: oklch(0.9 0.05 90);
-  --accent-foreground: oklch(0.25 0.05 90);
-  --destructive: oklch(0.6 0.22 25);
-  --border: oklch(0.88 0.015 250);
-  --input: oklch(0.88 0.015 250);
-  --ring: oklch(0.6 0.12 215);
-  --chart-1: oklch(0.62 0.14 210);
-  --chart-2: oklch(0.66 0.16 150);
-  --chart-3: oklch(0.68 0.16 90);
-  --chart-4: oklch(0.62 0.18 30);
-  --chart-5: oklch(0.52 0.14 260);
+  --radius: 1rem;
+  --background: oklch(0.965 0.01 250);
+  --foreground: oklch(0.22 0.02 255);
+  --card: oklch(0.985 0.01 250);
+  --card-foreground: oklch(0.22 0.02 255);
+  --popover: oklch(0.985 0.01 250);
+  --popover-foreground: oklch(0.22 0.02 255);
+  --primary: oklch(0.52 0.12 210);
+  --primary-foreground: oklch(0.985 0.01 250);
+  --secondary: oklch(0.93 0.01 250);
+  --secondary-foreground: oklch(0.22 0.02 255);
+  --muted: oklch(0.945 0.01 250);
+  --muted-foreground: oklch(0.48 0.02 250);
+  --accent: oklch(0.9 0.04 100);
+  --accent-foreground: oklch(0.28 0.05 100);
+  --destructive: oklch(0.6 0.2 25);
+  --border: oklch(0.86 0.01 250);
+  --input: oklch(0.86 0.01 250);
+  --ring: oklch(0.58 0.1 210);
+  --chart-1: oklch(0.6 0.13 210);
+  --chart-2: oklch(0.64 0.14 150);
+  --chart-3: oklch(0.66 0.14 90);
+  --chart-4: oklch(0.6 0.16 30);
+  --chart-5: oklch(0.5 0.12 260);
   --sidebar: oklch(0.975 0.01 250);
-  --sidebar-foreground: oklch(0.2 0.02 260);
-  --sidebar-primary: oklch(0.55 0.16 215);
-  --sidebar-primary-foreground: oklch(0.99 0.01 250);
-  --sidebar-accent: oklch(0.93 0.03 220);
-  --sidebar-accent-foreground: oklch(0.2 0.02 260);
-  --sidebar-border: oklch(0.88 0.015 250);
-  --sidebar-ring: oklch(0.6 0.12 215);
+  --sidebar-foreground: oklch(0.22 0.02 255);
+  --sidebar-primary: oklch(0.52 0.12 210);
+  --sidebar-primary-foreground: oklch(0.985 0.01 250);
+  --sidebar-accent: oklch(0.92 0.02 220);
+  --sidebar-accent-foreground: oklch(0.22 0.02 255);
+  --sidebar-border: oklch(0.86 0.01 250);
+  --sidebar-ring: oklch(0.58 0.1 210);
 }
 
 .dark {
@@ -147,18 +147,18 @@
 .app-bg {
   position: relative;
   overflow-x: hidden;
-  background: radial-gradient(1200px circle at 8% -12%, oklch(0.88 0.1 210 / 38%), transparent 60%),
-    radial-gradient(900px circle at 110% 12%, oklch(0.92 0.08 80 / 40%), transparent 55%),
-    linear-gradient(180deg, oklch(0.99 0.01 250), oklch(0.95 0.02 250));
+  background: radial-gradient(1200px circle at 5% -12%, oklch(0.9 0.05 210 / 24%), transparent 60%),
+    radial-gradient(900px circle at 110% 12%, oklch(0.92 0.04 100 / 20%), transparent 55%),
+    linear-gradient(180deg, oklch(0.985 0.01 250), oklch(0.95 0.01 250));
 }
 
 .app-grid {
   position: absolute;
   inset: 0;
-  background-image: linear-gradient(transparent 0 48px, oklch(0.9 0.02 240 / 30%) 48px 49px),
-    linear-gradient(90deg, transparent 0 48px, oklch(0.9 0.02 240 / 30%) 48px 49px);
-  background-size: 120px 120px;
-  opacity: 0.3;
+  background-image: linear-gradient(transparent 0 64px, oklch(0.88 0.02 240 / 12%) 64px 65px),
+    linear-gradient(90deg, transparent 0 64px, oklch(0.88 0.02 240 / 12%) 64px 65px);
+  background-size: 160px 160px;
+  opacity: 0.12;
   pointer-events: none;
   mix-blend-mode: multiply;
 }
@@ -172,31 +172,31 @@
 
 .app-orb {
   position: absolute;
-  width: 360px;
-  height: 360px;
+  width: 320px;
+  height: 320px;
   border-radius: 999px;
-  filter: blur(30px);
-  opacity: 0.4;
+  filter: blur(40px);
+  opacity: 0.22;
   animation: float 16s ease-in-out infinite;
 }
 
 .app-orb-a {
-  top: -160px;
-  left: -120px;
-  background: radial-gradient(circle, oklch(0.65 0.16 215 / 35%), transparent 65%);
+  top: -180px;
+  left: -140px;
+  background: radial-gradient(circle, oklch(0.6 0.12 210 / 25%), transparent 65%);
 }
 
 .app-orb-b {
-  top: 10%;
-  right: -160px;
-  background: radial-gradient(circle, oklch(0.7 0.14 140 / 35%), transparent 60%);
+  top: 5%;
+  right: -180px;
+  background: radial-gradient(circle, oklch(0.62 0.12 140 / 25%), transparent 60%);
   animation-delay: -6s;
 }
 
 .app-orb-c {
-  bottom: -200px;
-  left: 30%;
-  background: radial-gradient(circle, oklch(0.8 0.12 70 / 30%), transparent 65%);
+  bottom: -220px;
+  left: 35%;
+  background: radial-gradient(circle, oklch(0.7 0.1 80 / 20%), transparent 65%);
   animation-delay: -10s;
 }
 

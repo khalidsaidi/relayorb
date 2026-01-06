@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react"
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { Link, useParams } from "react-router-dom"
 import {
   addDoc,
@@ -26,7 +26,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Sheet,
   SheetContent,
@@ -195,6 +197,8 @@ export default function BotDetailPage() {
   const [configDirty, setConfigDirty] = useState(false)
   const [recommendations, setRecommendations] = useState<MarketHotTrade[]>([])
   const [loadingRecommendations, setLoadingRecommendations] = useState(true)
+  const [detailTab, setDetailTab] = useState("overview")
+  const configCardRef = useRef<HTMLDivElement | null>(null)
   const commandDisabled = sending || !firebaseEnabled
   const configDisabled = configSaving || !firebaseEnabled
   const exchangeTrimmed = exchange.trim()
@@ -216,14 +220,26 @@ export default function BotDetailPage() {
     [bot?.desiredConfig]
   )
 
+  const pairsPreview = useMemo(() => parsePairs(pairsInput), [pairsInput])
+
   const exchangeOptions = useMemo(
-    () => uniqueList([...DEFAULT_EXCHANGES, ...(bot?.capabilities?.exchanges ?? [])]),
-    [bot?.capabilities?.exchanges]
+    () =>
+      uniqueList([
+        ...DEFAULT_EXCHANGES,
+        ...(bot?.capabilities?.exchanges ?? []),
+        ...(exchangeTrimmed ? [exchangeTrimmed] : []),
+      ]),
+    [bot?.capabilities?.exchanges, exchangeTrimmed]
   )
 
   const timeframeOptions = useMemo(
-    () => uniqueList([...DEFAULT_TIMEFRAMES, ...(bot?.capabilities?.timeframes ?? [])]),
-    [bot?.capabilities?.timeframes]
+    () =>
+      uniqueList([
+        ...DEFAULT_TIMEFRAMES,
+        ...(bot?.capabilities?.timeframes ?? []),
+        ...(timeframeTrimmed ? [timeframeTrimmed] : []),
+      ]),
+    [bot?.capabilities?.timeframes, timeframeTrimmed]
   )
 
   const modeOptions = useMemo(
@@ -233,8 +249,9 @@ export default function BotDetailPage() {
 
   const strategyOptions = useMemo(() => {
     const engineKey = bot?.engine ?? "default"
-    return STRATEGY_PRESETS[engineKey] ?? STRATEGY_PRESETS.default
-  }, [bot?.engine])
+    const presets = STRATEGY_PRESETS[engineKey] ?? STRATEGY_PRESETS.default
+    return uniqueList([...presets, ...(strategyTrimmed ? [strategyTrimmed] : [])])
+  }, [bot?.engine, strategyTrimmed])
 
   const engineConfigLabel = useMemo(() => {
     switch (bot?.engine) {
@@ -698,10 +715,17 @@ export default function BotDetailPage() {
     if (!bot) return
     const desired = bot.desiredConfig
     const advanced = extractEngineAdvanced(desired?.advanced, bot.engine)
-    let fallbackExchange = ""
+    const defaultExchange =
+      bot.capabilities?.exchanges?.[0] ?? DEFAULT_EXCHANGES[0] ?? ""
+    const defaultTimeframe =
+      bot.capabilities?.timeframes?.[0] ?? DEFAULT_TIMEFRAMES[0] ?? ""
+    const defaultStrategy =
+      (STRATEGY_PRESETS[bot.engine ?? "default"] ?? STRATEGY_PRESETS.default)[0] ??
+      ""
+    let fallbackExchange = defaultExchange
     let fallbackPairs: string[] = []
-    let fallbackTimeframe = ""
-    let fallbackStrategy = ""
+    let fallbackTimeframe = defaultTimeframe
+    let fallbackStrategy = defaultStrategy
 
     setBaselineAdvanced(advanced ? { ...advanced } : null)
 
@@ -1176,12 +1200,22 @@ export default function BotDetailPage() {
     const nextExchange = trade.exchange || exchangeTrimmed
     const nextTimeframe = trade.timeframe || timeframeTrimmed || "1m"
 
+    const mergedPairs = uniqueList([
+      ...parsePairs(pairsInput).map((pair) => normalizePair(pair, "/")),
+      pairSlash,
+    ])
+
     setExchange(nextExchange || "")
-    setPairsInput(pairSlash)
+    setPairsInput(mergedPairs.join(", "))
     setTimeframe(nextTimeframe)
     setStrategy(nextStrategy)
     setConfigDirty(true)
     setAdvancedConfigError(null)
+    setDetailTab("config")
+    toast.success("Recommendation applied to config")
+    setTimeout(() => {
+      configCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+    }, 0)
 
     if (bot?.engine === "jesse") {
       setJesseRoutes([
@@ -1509,206 +1543,283 @@ export default function BotDetailPage() {
           </CardContent>
         </Card>
 
-        <div className="space-y-4 lg:order-1">
-          <Card className="reveal" style={{ "--delay": "160ms" } as CSSProperties}>
-            <CardHeader>
-              <CardTitle className="text-base">AI Recommendations</CardTitle>
-              <div className="text-xs text-muted-foreground">
-                Curated hot trades with bot consensus and market momentum.
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {!firebaseEnabled ? (
-                <div className="text-sm opacity-70">Connect Firebase to load recommendations.</div>
-              ) : loadingRecommendations ? (
-                <div className="text-sm opacity-70">Loading recommendations…</div>
-              ) : recommendations.length === 0 ? (
-                <div className="text-sm opacity-70">
-                  No recommendations yet. Deploy the market intel worker to populate this feed.
-                </div>
-              ) : (
-                recommendations.slice(0, 3).map((trade) => (
-                  <div
-                    key={`${trade.assetClass}-${trade.symbol}`}
-                    className="rounded-xl border border-border/60 bg-background/70 p-3"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        <div className="text-sm font-semibold">{trade.symbol}</div>
-                        <div className="text-xs text-muted-foreground">{trade.assetClass}</div>
-                      </div>
-                      <Badge variant="outline">
-                        Score {trade.score?.toFixed(1) ?? "—"}
-                      </Badge>
+        <div className="space-y-4">
+          <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-4">
+            <TabsList className="grid w-full grid-cols-2 gap-2 md:grid-cols-4">
+              <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="config">Config</TabsTrigger>
+              <TabsTrigger value="commands">Commands</TabsTrigger>
+              <TabsTrigger value="events">Events</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="overview" className="space-y-4">
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Card className="reveal" style={{ "--delay": "160ms" } as CSSProperties}>
+                  <CardHeader>
+                    <CardTitle className="text-base">AI Recommendations</CardTitle>
+                    <div className="text-xs text-muted-foreground">
+                      Curated hot trades with bot consensus and market momentum.
                     </div>
-                    {trade.rationale && (
-                      <div className="mt-2 text-xs text-muted-foreground">
-                        {trade.rationale}
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {!firebaseEnabled ? (
+                      <div className="text-sm opacity-70">
+                        Connect Firebase to load recommendations.
                       </div>
+                    ) : loadingRecommendations ? (
+                      <div className="text-sm opacity-70">Loading recommendations...</div>
+                    ) : recommendations.length === 0 ? (
+                      <div className="text-sm opacity-70">
+                        No recommendations yet. Deploy the market intel worker to populate this feed.
+                      </div>
+                    ) : (
+                      recommendations.slice(0, 3).map((trade) => (
+                        <div
+                          key={`${trade.assetClass}-${trade.symbol}`}
+                          className="rounded-xl border border-border/60 bg-background/70 p-3"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div>
+                              <div className="text-sm font-semibold">{trade.symbol}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {trade.assetClass}
+                              </div>
+                            </div>
+                            <Badge variant="outline">
+                              Score {trade.score?.toFixed(1) ?? "--"}
+                            </Badge>
+                          </div>
+                          {trade.rationale && (
+                            <div className="mt-2 text-xs text-muted-foreground">
+                              {trade.rationale}
+                            </div>
+                          )}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="mt-3 w-full"
+                            onClick={() => applyRecommendation(trade)}
+                            disabled={!firebaseEnabled}
+                          >
+                            Use recommendation
+                          </Button>
+                        </div>
+                      ))
                     )}
+                  </CardContent>
+                </Card>
+
+                <Card className="reveal" style={{ "--delay": "190ms" } as CSSProperties}>
+                  <CardHeader className="flex-row items-center justify-between space-y-0">
+                    <CardTitle className="text-base">Active Universe</CardTitle>
+                    <Badge variant="outline">{pairsPreview.length} pairs</Badge>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <div className="rounded-lg border border-border/60 bg-background/70 p-3">
+                        <div className="text-xs text-muted-foreground">Exchange</div>
+                        <div className="text-sm font-medium">{exchangeTrimmed || "--"}</div>
+                      </div>
+                      <div className="rounded-lg border border-border/60 bg-background/70 p-3">
+                        <div className="text-xs text-muted-foreground">Timeframe</div>
+                        <div className="text-sm font-medium">{timeframeTrimmed || "--"}</div>
+                      </div>
+                      <div className="rounded-lg border border-border/60 bg-background/70 p-3">
+                        <div className="text-xs text-muted-foreground">Mode</div>
+                        <div className="text-sm font-medium">{mode || "--"}</div>
+                      </div>
+                      <div className="rounded-lg border border-border/60 bg-background/70 p-3">
+                        <div className="text-xs text-muted-foreground">Strategy</div>
+                        <div className="text-sm font-medium">{strategyTrimmed || "--"}</div>
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-border/60 bg-muted/30 p-3 text-sm">
+                      {pairsPreview.length === 0
+                        ? "No pairs selected yet."
+                        : pairsPreview
+                            .slice(0, 6)
+                            .map((pair) => pair.toUpperCase())
+                            .join(", ")}
+                      {pairsPreview.length > 6 && (
+                        <span className="ml-2 text-xs text-muted-foreground">
+                          +{pairsPreview.length - 6} more
+                        </span>
+                      )}
+                    </div>
                     <Button
+                      type="button"
                       variant="outline"
                       size="sm"
-                      className="mt-3 w-full"
-                      onClick={() => applyRecommendation(trade)}
-                      disabled={!firebaseEnabled}
+                      onClick={() => setDetailTab("config")}
                     >
-                      Use recommendation
+                      Open config
                     </Button>
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
+                  </CardContent>
+                </Card>
+              </div>
+            </TabsContent>
 
-          <Card className="reveal" style={{ "--delay": "200ms" } as CSSProperties}>
+            <TabsContent value="config" className="space-y-4">
+          <Card
+            ref={configCardRef}
+            className="reveal"
+            style={{ "--delay": "200ms" } as CSSProperties}
+          >
             <CardHeader>
               <CardTitle className="text-base">Trading Universe & Config</CardTitle>
               <div className="text-xs text-muted-foreground">
                 Choose exchange, pairs, timeframe, and advanced config. Saved configs are applied when adapters reload.
               </div>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="exchange">Exchange</Label>
-                <Input
-                  id="exchange"
-                  list="exchange-options"
-                  value={exchange}
-                  onChange={(event) => {
-                    setExchange(event.target.value)
-                    setConfigDirty(true)
-                  }}
-                  placeholder="kraken"
-                />
-                <datalist id="exchange-options">
-                  {exchangeOptions.map((option) => (
-                    <option key={option} value={option} />
-                  ))}
-                </datalist>
-              </div>
+            <CardContent className="space-y-6">
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div className="space-y-4">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="exchange">Exchange</Label>
+                      <Select
+                        id="exchange"
+                        value={exchange}
+                        onChange={(event) => {
+                          setExchange(event.target.value)
+                          setConfigDirty(true)
+                        }}
+                      >
+                        <option value="">Select exchange</option>
+                        {exchangeOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="pairs">Pairs (comma or newline separated)</Label>
-                <Textarea
-                  id="pairs"
-                  value={pairsInput}
-                  onChange={(event) => {
-                    setPairsInput(event.target.value)
-                    setConfigDirty(true)
-                  }}
-                  className="min-h-24 font-mono text-xs"
-                  placeholder="BTC/USDT, ETH/USDT"
-                />
-              </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="timeframe">Timeframe</Label>
+                      <Select
+                        id="timeframe"
+                        value={timeframe}
+                        onChange={(event) => {
+                          setTimeframe(event.target.value)
+                          setConfigDirty(true)
+                        }}
+                      >
+                        <option value="">Select timeframe</option>
+                        {timeframeOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </Select>
+                      {timeframeInvalid && (
+                        <div className="text-xs text-destructive">
+                          Timeframe should look like 1m, 1h, 1d.
+                        </div>
+                      )}
+                    </div>
+                  </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="timeframe">Timeframe</Label>
-                <Input
-                  id="timeframe"
-                  list="timeframe-options"
-                  value={timeframe}
-                  onChange={(event) => {
-                    setTimeframe(event.target.value)
-                    setConfigDirty(true)
-                  }}
-                  placeholder="5m"
-                />
-                <datalist id="timeframe-options">
-                  {timeframeOptions.map((option) => (
-                    <option key={option} value={option} />
-                  ))}
-                </datalist>
-                {timeframeInvalid && (
-                  <div className="text-xs text-destructive">Timeframe should look like 1m, 1h, 1d.</div>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <Label>Mode</Label>
-                <div className="flex flex-wrap gap-2">
-                  {modeOptions.map((option) => (
-                    <Button
-                      key={option}
-                      type="button"
-                      variant={mode === option ? "default" : "outline"}
-                      onClick={() => {
-                        setMode(option)
+                  <div className="space-y-2">
+                    <Label htmlFor="pairs">Pairs (comma or newline separated)</Label>
+                    <Textarea
+                      id="pairs"
+                      value={pairsInput}
+                      onChange={(event) => {
+                        setPairsInput(event.target.value)
                         setConfigDirty(true)
                       }}
-                    >
-                      {option}
-                    </Button>
-                  ))}
+                      className="min-h-24 font-mono text-xs"
+                      placeholder="BTC/USDT, ETH/USDT"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Mode</Label>
+                    <div className="flex flex-wrap gap-2">
+                      {modeOptions.map((option) => (
+                        <Button
+                          key={option}
+                          type="button"
+                          variant={mode === option ? "default" : "outline"}
+                          onClick={() => {
+                            setMode(option)
+                            setConfigDirty(true)
+                          }}
+                        >
+                          {option}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
-              </div>
 
-              <div className="space-y-2">
-                <Label>Risk guardrails</Label>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div className="space-y-1">
-                    <Label htmlFor="risk-max-position" className="text-xs text-muted-foreground">
-                      Max position size
-                    </Label>
-                    <Input
-                      id="risk-max-position"
-                      type="number"
-                      inputMode="decimal"
-                      value={riskMaxPositionSize}
-                      onChange={(event) => {
-                        setRiskMaxPositionSize(event.target.value)
-                        setConfigDirty(true)
-                      }}
-                      placeholder="0.5"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="risk-max-loss" className="text-xs text-muted-foreground">
-                      Max daily loss
-                    </Label>
-                    <Input
-                      id="risk-max-loss"
-                      type="number"
-                      inputMode="decimal"
-                      value={riskMaxDailyLoss}
-                      onChange={(event) => {
-                        setRiskMaxDailyLoss(event.target.value)
-                        setConfigDirty(true)
-                      }}
-                      placeholder="250"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="risk-max-orders" className="text-xs text-muted-foreground">
-                      Max open orders
-                    </Label>
-                    <Input
-                      id="risk-max-orders"
-                      type="number"
-                      inputMode="numeric"
-                      value={riskMaxOpenOrders}
-                      onChange={(event) => {
-                        setRiskMaxOpenOrders(event.target.value)
-                        setConfigDirty(true)
-                      }}
-                      placeholder="5"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="risk-max-leverage" className="text-xs text-muted-foreground">
-                      Max leverage
-                    </Label>
-                    <Input
-                      id="risk-max-leverage"
-                      type="number"
-                      inputMode="decimal"
-                      value={riskMaxLeverage}
-                      onChange={(event) => {
-                        setRiskMaxLeverage(event.target.value)
-                        setConfigDirty(true)
-                      }}
-                      placeholder="2"
-                    />
+                <div className="space-y-2">
+                  <Label>Risk guardrails</Label>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <Label htmlFor="risk-max-position" className="text-xs text-muted-foreground">
+                        Max position size
+                      </Label>
+                      <Input
+                        id="risk-max-position"
+                        type="number"
+                        inputMode="decimal"
+                        value={riskMaxPositionSize}
+                        onChange={(event) => {
+                          setRiskMaxPositionSize(event.target.value)
+                          setConfigDirty(true)
+                        }}
+                        placeholder="0.5"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="risk-max-loss" className="text-xs text-muted-foreground">
+                        Max daily loss
+                      </Label>
+                      <Input
+                        id="risk-max-loss"
+                        type="number"
+                        inputMode="decimal"
+                        value={riskMaxDailyLoss}
+                        onChange={(event) => {
+                          setRiskMaxDailyLoss(event.target.value)
+                          setConfigDirty(true)
+                        }}
+                        placeholder="250"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="risk-max-orders" className="text-xs text-muted-foreground">
+                        Max open orders
+                      </Label>
+                      <Input
+                        id="risk-max-orders"
+                        type="number"
+                        inputMode="numeric"
+                        value={riskMaxOpenOrders}
+                        onChange={(event) => {
+                          setRiskMaxOpenOrders(event.target.value)
+                          setConfigDirty(true)
+                        }}
+                        placeholder="5"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="risk-max-leverage" className="text-xs text-muted-foreground">
+                        Max leverage
+                      </Label>
+                      <Input
+                        id="risk-max-leverage"
+                        type="number"
+                        inputMode="decimal"
+                        value={riskMaxLeverage}
+                        onChange={(event) => {
+                          setRiskMaxLeverage(event.target.value)
+                          setConfigDirty(true)
+                        }}
+                        placeholder="2"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1741,6 +1852,24 @@ export default function BotDetailPage() {
                         <option key={option} value={option} />
                       ))}
                     </datalist>
+                  )}
+                  {strategyOptions.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {strategyOptions.map((option) => (
+                        <Button
+                          key={`strategy-${option}`}
+                          type="button"
+                          size="sm"
+                          variant={strategyTrimmed === option ? "secondary" : "outline"}
+                          onClick={() => {
+                            setStrategy(option)
+                            setConfigDirty(true)
+                          }}
+                        >
+                          {option}
+                        </Button>
+                      ))}
+                    </div>
                   )}
                 </div>
 
@@ -2935,7 +3064,9 @@ export default function BotDetailPage() {
               </div>
             </CardContent>
           </Card>
+        </TabsContent>
 
+        <TabsContent value="commands" className="space-y-4">
           <Card className="reveal" style={{ "--delay": "220ms" } as CSSProperties}>
             <CardHeader>
               <CardTitle className="text-base">Command Console</CardTitle>
@@ -2973,41 +3104,45 @@ export default function BotDetailPage() {
               </div>
             </CardContent>
           </Card>
-        </div>
-      </div>
+        </TabsContent>
 
-      <Card className="reveal" style={{ "--delay": "240ms" } as CSSProperties}>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-base">Recent Events</CardTitle>
-          <Badge variant="outline">{events.length}</Badge>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {!firebaseEnabled ? (
-            <div className="text-sm opacity-70">Configure Firebase to load events.</div>
-          ) : loadingEvents ? (
-            <div className="text-sm opacity-70">Loading events…</div>
-          ) : events.length === 0 ? (
-            <div className="text-sm opacity-70">No events yet.</div>
-          ) : (
-            events.map((event) => (
-              <div key={event.id} className="rounded-lg border border-border/60 bg-background/70 p-3">
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span className="font-mono">{event.type || "event"}</span>
-                  <span>{formatTimestamp(event.createdAt)}</span>
-                </div>
-                <div className="mt-2 break-words text-sm font-medium">
-                  {event.message || "Adapter emitted an event without a message."}
-                </div>
-                {event.data && (
-                  <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-3 text-xs">
-                    {JSON.stringify(event.data, null, 2)}
-                  </pre>
-                )}
-              </div>
-            ))
-          )}
-        </CardContent>
-      </Card>
+        <TabsContent value="events" className="space-y-4">
+          <Card className="reveal" style={{ "--delay": "240ms" } as CSSProperties}>
+            <CardHeader className="flex-row items-center justify-between space-y-0">
+              <CardTitle className="text-base">Recent Events</CardTitle>
+              <Badge variant="outline">{events.length}</Badge>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {!firebaseEnabled ? (
+                <div className="text-sm opacity-70">Configure Firebase to load events.</div>
+              ) : loadingEvents ? (
+                <div className="text-sm opacity-70">Loading events…</div>
+              ) : events.length === 0 ? (
+                <div className="text-sm opacity-70">No events yet.</div>
+              ) : (
+                events.map((event) => (
+                  <div key={event.id} className="rounded-lg border border-border/60 bg-background/70 p-3">
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span className="font-mono">{event.type || "event"}</span>
+                      <span>{formatTimestamp(event.createdAt)}</span>
+                    </div>
+                    <div className="mt-2 break-words text-sm font-medium">
+                      {event.message || "Adapter emitted an event without a message."}
+                    </div>
+                    {event.data && (
+                      <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-3 text-xs">
+                        {JSON.stringify(event.data, null, 2)}
+                      </pre>
+                    )}
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </div>
+    </div>
     </div>
   )
 }

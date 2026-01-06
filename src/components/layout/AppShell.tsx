@@ -1,4 +1,4 @@
-import { type ReactNode } from "react"
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react"
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/sheet"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
-import { LayoutDashboard, Bot, LogOut, Menu, Activity } from "lucide-react"
+import { LayoutDashboard, Bot, LogOut, Menu, Activity, PanelLeft, PanelRight } from "lucide-react"
 import { useAuth } from "@/features/auth/auth-context"
 import { auth, firebaseEnabled } from "@/lib/firebase"
 import { signOut } from "firebase/auth"
@@ -34,6 +34,8 @@ const navItems: NavItem[] = [
   { to: "/bots", label: "Bots", icon: <Bot className="h-4 w-4" /> },
 ]
 
+const SIDEBAR_STORAGE_KEY = "relayorb.sidebar.collapsed"
+
 function usePageTitle() {
   const { pathname } = useLocation()
   if (pathname.startsWith("/bots/")) return "Bot Detail"
@@ -42,13 +44,20 @@ function usePageTitle() {
   return "Dashboard"
 }
 
-function NavItemLink({ to, icon, label }: NavItem) {
+function NavItemLink({
+  to,
+  icon,
+  label,
+  collapsed,
+}: NavItem & { collapsed?: boolean }) {
   return (
     <NavLink
       to={to}
+      aria-label={label}
       className={({ isActive }) =>
         [
-          "flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-muted-foreground transition",
+          "flex items-center rounded-xl px-3 py-2 text-sm font-medium text-muted-foreground transition",
+          collapsed ? "justify-center" : "gap-2",
           isActive
             ? "bg-background/80 text-foreground shadow-sm ring-1 ring-border/60"
             : "hover:bg-muted/60 hover:text-foreground",
@@ -56,7 +65,7 @@ function NavItemLink({ to, icon, label }: NavItem) {
       }
     >
       {icon}
-      <span>{label}</span>
+      <span className={collapsed ? "sr-only" : ""}>{label}</span>
     </NavLink>
   )
 }
@@ -65,6 +74,14 @@ export function AppShell() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const pageTitle = usePageTitle()
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false
+    return localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1"
+  })
+
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, sidebarCollapsed ? "1" : "0")
+  }, [sidebarCollapsed])
 
   async function doSignOut() {
     if (!firebaseEnabled || !auth) return
@@ -79,6 +96,8 @@ export function AppShell() {
       .slice(0, 2)
       .join("") || "U"
 
+  const sidebarWidth = sidebarCollapsed ? "84px" : "260px"
+
   return (
     <div className="app-bg min-h-svh">
       <div className="app-orbs" aria-hidden="true">
@@ -88,26 +107,40 @@ export function AppShell() {
       </div>
       <div className="app-grid" aria-hidden="true" />
 
-      <div className="relative z-10 grid min-h-svh md:grid-cols-[260px_1fr]">
-        <aside className="hidden md:flex flex-col border-r/60 bg-background/70 backdrop-blur-xl">
+      <div
+        className="relative z-10 grid min-h-svh md:grid-cols-[var(--sidebar-width)_1fr]"
+        style={{ "--sidebar-width": sidebarWidth } as CSSProperties}
+      >
+        <aside
+          className={[
+            "hidden md:flex flex-col border-r/60 bg-background/70 backdrop-blur-xl transition-[width] duration-300",
+            sidebarCollapsed ? "w-[84px]" : "w-[260px]",
+          ].join(" ")}
+        >
           <div className="flex items-center justify-between px-5 py-4">
-            <div>
-              <div className="text-xs uppercase tracking-[0.25em] opacity-60">RelayOrb</div>
-              <div className="text-lg font-semibold">Control Deck</div>
+            <div className={sidebarCollapsed ? "text-center" : ""}>
+              <div className="text-xs uppercase tracking-[0.25em] opacity-60">
+                {sidebarCollapsed ? "RO" : "RelayOrb"}
+              </div>
+              {!sidebarCollapsed && <div className="text-lg font-semibold">Control Deck</div>}
             </div>
           </div>
 
           <nav className="flex flex-col gap-1 px-4">
             {navItems.map((item) => (
-              <NavItemLink key={item.to} {...item} />
+              <NavItemLink key={item.to} {...item} collapsed={sidebarCollapsed} />
             ))}
           </nav>
 
           <div className="mt-auto px-4 pb-4">
             <Separator className="my-4" />
-            <Button variant="outline" className="w-full" onClick={doSignOut}>
-              <LogOut className="mr-2 h-4 w-4" />
-              Sign out
+            <Button
+              variant="outline"
+              className={sidebarCollapsed ? "h-10 w-10 p-0" : "w-full"}
+              onClick={doSignOut}
+            >
+              <LogOut className={sidebarCollapsed ? "h-4 w-4" : "mr-2 h-4 w-4"} />
+              {!sidebarCollapsed && "Sign out"}
             </Button>
           </div>
         </aside>
@@ -127,11 +160,24 @@ export function AppShell() {
                   </SheetHeader>
                   <nav className="mt-4 flex flex-col gap-1">
                     {navItems.map((item) => (
-                      <NavItemLink key={item.to} {...item} />
+                      <NavItemLink key={item.to} {...item} collapsed={false} />
                     ))}
                   </nav>
                 </SheetContent>
               </Sheet>
+
+              <Button
+                variant="ghost"
+                size="icon"
+                className="hidden md:inline-flex"
+                onClick={() => setSidebarCollapsed((prev) => !prev)}
+              >
+                {sidebarCollapsed ? (
+                  <PanelRight className="h-4 w-4" />
+                ) : (
+                  <PanelLeft className="h-4 w-4" />
+                )}
+              </Button>
 
               <div>
                 <div className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Console</div>
@@ -165,7 +211,7 @@ export function AppShell() {
           </header>
 
           <div className="flex-1 p-4 md:p-6">
-            <div className="mx-auto w-full max-w-6xl">
+            <div className="mx-auto w-full max-w-7xl">
               <Outlet />
             </div>
           </div>

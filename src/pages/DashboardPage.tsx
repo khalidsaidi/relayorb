@@ -68,6 +68,33 @@ const POPULAR_CRYPTO = [
   "ADA/USDT",
   "DOGE/USDT",
   "AVAX/USDT",
+  "LINK/USDT",
+  "MATIC/USDT",
+  "DOT/USDT",
+  "LTC/USDT",
+  "ATOM/USDT",
+  "TRX/USDT",
+  "NEAR/USDT",
+  "OP/USDT",
+  "ARB/USDT",
+  "INJ/USDT",
+  "RNDR/USDT",
+  "IMX/USDT",
+  "SUI/USDT",
+  "APT/USDT",
+  "TIA/USDT",
+  "UNI/USDT",
+  "AAVE/USDT",
+  "FIL/USDT",
+  "ICP/USDT",
+  "XLM/USDT",
+  "BCH/USDT",
+  "ETC/USDT",
+  "HBAR/USDT",
+  "FTM/USDT",
+  "GALA/USDT",
+  "PEPE/USDT",
+  "SHIB/USDT",
 ]
 
 const POPULAR_STOCKS = [
@@ -81,6 +108,30 @@ const POPULAR_STOCKS = [
   "AMD",
   "NFLX",
   "INTC",
+  "AVGO",
+  "ORCL",
+  "CRM",
+  "JPM",
+  "V",
+  "MA",
+  "BRK.B",
+  "SPY",
+  "QQQ",
+  "VTI",
+  "DIA",
+  "IWM",
+  "TSM",
+  "COST",
+  "WMT",
+  "KO",
+  "PEP",
+  "DIS",
+  "NKE",
+  "BA",
+  "ADBE",
+  "PYPL",
+  "XOM",
+  "CVX",
 ]
 
 const POPULAR_FX = [
@@ -92,6 +143,23 @@ const POPULAR_FX = [
   "NZD/USD",
   "USD/CAD",
   "EUR/JPY",
+  "GBP/JPY",
+  "EUR/GBP",
+  "AUD/JPY",
+  "CAD/JPY",
+  "EUR/AUD",
+  "USD/SEK",
+  "USD/NOK",
+  "USD/MXN",
+  "USD/CNH",
+  "EUR/CAD",
+  "GBP/CAD",
+  "AUD/NZD",
+  "CHF/JPY",
+  "NZD/JPY",
+  "EUR/NZD",
+  "EUR/CHF",
+  "GBP/CHF",
 ]
 
 const LLM_INTERVAL_OPTIONS = [15, 30, 60, 120, 240]
@@ -506,6 +574,24 @@ export default function DashboardPage() {
     setForexSelection((prev) => addSelection(prev, value, normalizeSymbol))
   }
 
+  function addCustomCrypto() {
+    if (!normalizedCryptoSearch) return
+    setCryptoSelection((prev) => addSelection(prev, normalizedCryptoSearch, normalizeSymbol))
+    setCryptoSearch("")
+  }
+
+  function addCustomStock() {
+    if (!normalizedStockSearch) return
+    setStockSelection((prev) => addSelection(prev, normalizedStockSearch, normalizeTicker))
+    setStockSearch("")
+  }
+
+  function addCustomForex() {
+    if (!normalizedForexSearch) return
+    setForexSelection((prev) => addSelection(prev, normalizedForexSearch, normalizeSymbol))
+    setForexSearch("")
+  }
+
   function filterOptions(
     options: string[],
     query: string,
@@ -689,6 +775,20 @@ export default function DashboardPage() {
     [forexSuggestions, forexSearch, forexSelection]
   )
 
+  const normalizedCryptoSearch = normalizeSymbol(cryptoSearch)
+  const normalizedStockSearch = normalizeTicker(stockSearch)
+  const normalizedForexSearch = normalizeSymbol(forexSearch)
+
+  const canAddCrypto = Boolean(
+    normalizedCryptoSearch && !cryptoSelection.includes(normalizedCryptoSearch)
+  )
+  const canAddStock = Boolean(
+    normalizedStockSearch && !stockSelection.includes(normalizedStockSearch)
+  )
+  const canAddForex = Boolean(
+    normalizedForexSearch && !forexSelection.includes(normalizedForexSearch)
+  )
+
   const primaryCryptoOptions = useMemo(
     () =>
       filterOptions(
@@ -868,10 +968,24 @@ export default function DashboardPage() {
       updatedAt: serverTimestamp(),
     }
 
+    const prevUniverse = universe
+    const prevCrypto = cryptoSelection
+    const prevStocks = stockSelection
+    const prevForex = forexSelection
+
+    setUniverse(payload)
+    setCryptoSelection(payload.crypto.symbols ?? [])
+    setStockSelection(payload.stocks.symbols ?? [])
+    setForexSelection(payload.forex.pairs ?? [])
+
     try {
       await setDoc(doc(db, "market", "universe"), payload, { merge: true })
       toast.success("Added to universe")
     } catch {
+      setUniverse(prevUniverse)
+      setCryptoSelection(prevCrypto)
+      setStockSelection(prevStocks)
+      setForexSelection(prevForex)
       toast.error("Failed to update universe")
     }
   }
@@ -942,6 +1056,22 @@ export default function DashboardPage() {
       updatedAt: serverTimestamp(),
     }
 
+    const prevUniverse = universe
+    const prevCrypto = cryptoSelection
+    const prevStocks = stockSelection
+    const prevForex = forexSelection
+    const prevPrimaryCrypto = primaryCryptoSelection
+    const prevPrimaryStocks = primaryStockSelection
+    const prevPrimaryForex = primaryForexSelection
+
+    setUniverse(universePayload)
+    setCryptoSelection(universePayload.crypto.symbols ?? [])
+    setStockSelection(universePayload.stocks.symbols ?? [])
+    setForexSelection(universePayload.forex.pairs ?? [])
+    setPrimaryCryptoSelection(controlsPayload.primaryAssets?.crypto ?? [])
+    setPrimaryStockSelection(controlsPayload.primaryAssets?.stocks ?? [])
+    setPrimaryForexSelection(controlsPayload.primaryAssets?.forex ?? [])
+
     try {
       await Promise.all([
         setDoc(doc(db, "market", "universe"), universePayload, { merge: true }),
@@ -949,18 +1079,39 @@ export default function DashboardPage() {
       ])
       toast.success("Added to primary picks")
     } catch {
+      setUniverse(prevUniverse)
+      setCryptoSelection(prevCrypto)
+      setStockSelection(prevStocks)
+      setForexSelection(prevForex)
+      setPrimaryCryptoSelection(prevPrimaryCrypto)
+      setPrimaryStockSelection(prevPrimaryStocks)
+      setPrimaryForexSelection(prevPrimaryForex)
       toast.error("Failed to update primary picks")
     }
   }
 
+  const universeTotal =
+    cryptoSelection.length + stockSelection.length + forexSelection.length
+  const visibleCrypto = cryptoSelection.slice(0, 6)
+  const visibleStocks = stockSelection.slice(0, 6)
+  const visibleForex = forexSelection.slice(0, 6)
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="text-xs uppercase tracking-[0.35em] text-muted-foreground">Dip Radar</div>
-          <div className="text-2xl font-semibold">Opportunities</div>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-2">
+          <div className="text-xs uppercase tracking-[0.35em] text-muted-foreground">
+            Market Radar
+          </div>
+          <div className="text-2xl font-semibold">Trade Opportunities</div>
+          <div className="text-sm text-muted-foreground">
+            Spot high-probability dips and momentum shifts across your universe.
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" onClick={() => setUniverseOpen(true)}>
+            Manage assets
+          </Button>
           <Button
             variant="outline"
             onClick={startOfflineBots}
@@ -972,23 +1123,18 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 bg-background/70 px-4 py-3 text-xs">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline">Horizon {dipHorizon}</Badge>
-          <Badge variant="outline">Risk {riskProfile}</Badge>
-          <Badge variant="outline">Focus {assetFocusLabel}</Badge>
-        </div>
-        <Button variant="outline" size="sm" onClick={() => setUniverseOpen(true)}>
-          Tune preferences
-        </Button>
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-border/60 bg-background/70 px-4 py-3 text-xs">
+        <Badge variant="outline">Horizon {dipHorizon}</Badge>
+        <Badge variant="outline">Risk {riskProfile}</Badge>
+        <Badge variant="outline">Focus {assetFocusLabel}</Badge>
       </div>
 
       <Dialog open={universeOpen} onOpenChange={setUniverseOpen}>
-        <DialogContent className="w-[min(96vw,980px)] sm:max-w-4xl">
+        <DialogContent className="w-[min(96vw,1100px)] sm:max-w-5xl">
           <DialogHeader>
-            <DialogTitle>Market Preferences</DialogTitle>
+            <DialogTitle>Asset Universe</DialogTitle>
             <DialogDescription>
-              Choose your universe and tune how often the AI refreshes.
+              Pick assets to track. Use popular lists, trending picks, or search to add.
             </DialogDescription>
           </DialogHeader>
 
@@ -1098,6 +1244,9 @@ export default function DashboardPage() {
               </TabsContent>
 
               <TabsContent value="universe" className="space-y-4">
+                <div className="text-xs text-muted-foreground">
+                  Add assets from the curated lists or search by symbol. Use Add to save picks.
+                </div>
                 <Tabs defaultValue="crypto" className="space-y-4">
                   <TabsList className="grid w-full grid-cols-3">
                     <TabsTrigger value="crypto">Crypto</TabsTrigger>
@@ -1165,27 +1314,53 @@ export default function DashboardPage() {
                       </div>
                     )}
                     <div className="grid gap-3 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <Input
-                            value={cryptoSearch}
-                            onChange={(event) => setCryptoSearch(event.target.value)}
-                            placeholder="Search crypto pairs"
-                          />
-                          {cryptoSearch && (
+                      <div className="space-y-3">
+                        <div className="space-y-2">
+                          <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                            Add custom pair
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Input
+                              className="w-auto flex-1 min-w-[200px]"
+                              value={cryptoSearch}
+                              onChange={(event) => setCryptoSearch(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault()
+                                  addCustomCrypto()
+                                }
+                              }}
+                              placeholder="Search or add (e.g. BTC/USDT)"
+                            />
                             <Button
                               type="button"
-                              variant="ghost"
+                              variant="secondary"
                               size="sm"
-                              onClick={() => setCryptoSearch("")}
+                              onClick={addCustomCrypto}
+                              disabled={!canAddCrypto}
                             >
-                              Clear
+                              Add
                             </Button>
+                            {cryptoSearch && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setCryptoSearch("")}
+                              >
+                                Clear
+                              </Button>
+                            )}
+                          </div>
+                          {canAddCrypto && (
+                            <div className="text-xs text-muted-foreground">
+                              Add {normalizedCryptoSearch} to your universe.
+                            </div>
                           )}
                         </div>
                         <div className="space-y-2">
                           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                            More picks
+                            {cryptoSearch ? "Search results" : "More picks"}
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {filteredCryptoOptions.length === 0 ? (
@@ -1300,27 +1475,53 @@ export default function DashboardPage() {
                       </div>
                     )}
                     <div className="grid gap-3 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <Input
-                            value={stockSearch}
-                            onChange={(event) => setStockSearch(event.target.value)}
-                            placeholder="Search stock tickers"
-                          />
-                          {stockSearch && (
+                      <div className="space-y-3">
+                        <div className="space-y-2">
+                          <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                            Add custom ticker
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Input
+                              className="w-auto flex-1 min-w-[200px]"
+                              value={stockSearch}
+                              onChange={(event) => setStockSearch(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault()
+                                  addCustomStock()
+                                }
+                              }}
+                              placeholder="Search or add (e.g. AAPL)"
+                            />
                             <Button
                               type="button"
-                              variant="ghost"
+                              variant="secondary"
                               size="sm"
-                              onClick={() => setStockSearch("")}
+                              onClick={addCustomStock}
+                              disabled={!canAddStock}
                             >
-                              Clear
+                              Add
                             </Button>
+                            {stockSearch && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setStockSearch("")}
+                              >
+                                Clear
+                              </Button>
+                            )}
+                          </div>
+                          {canAddStock && (
+                            <div className="text-xs text-muted-foreground">
+                              Add {normalizedStockSearch} to your universe.
+                            </div>
                           )}
                         </div>
                         <div className="space-y-2">
                           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                            More picks
+                            {stockSearch ? "Search results" : "More picks"}
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {filteredStockOptions.length === 0 ? (
@@ -1438,27 +1639,53 @@ export default function DashboardPage() {
                       </div>
                     )}
                     <div className="grid gap-3 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <Input
-                            value={forexSearch}
-                            onChange={(event) => setForexSearch(event.target.value)}
-                            placeholder="Search FX pairs"
-                          />
-                          {forexSearch && (
+                      <div className="space-y-3">
+                        <div className="space-y-2">
+                          <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                            Add custom pair
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Input
+                              className="w-auto flex-1 min-w-[200px]"
+                              value={forexSearch}
+                              onChange={(event) => setForexSearch(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault()
+                                  addCustomForex()
+                                }
+                              }}
+                              placeholder="Search or add (e.g. EUR/USD)"
+                            />
                             <Button
                               type="button"
-                              variant="ghost"
+                              variant="secondary"
                               size="sm"
-                              onClick={() => setForexSearch("")}
+                              onClick={addCustomForex}
+                              disabled={!canAddForex}
                             >
-                              Clear
+                              Add
                             </Button>
+                            {forexSearch && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setForexSearch("")}
+                              >
+                                Clear
+                              </Button>
+                            )}
+                          </div>
+                          {canAddForex && (
+                            <div className="text-xs text-muted-foreground">
+                              Add {normalizedForexSearch} to your universe.
+                            </div>
                           )}
                         </div>
                         <div className="space-y-2">
                           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                            More picks
+                            {forexSearch ? "Search results" : "More picks"}
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {filteredForexOptions.length === 0 ? (
@@ -1749,181 +1976,184 @@ export default function DashboardPage() {
         </TabsList>
 
         <TabsContent value="opportunities" className="space-y-4">
-          <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
-            <div className="space-y-4">
-              <Card className="reveal" style={{ "--delay": "140ms" } as CSSProperties}>
-                <CardHeader className="flex-row items-center justify-between space-y-0">
-                  <div>
-                    <CardTitle className="text-base">Dip Radar</CardTitle>
-                    <div className="text-xs text-muted-foreground">
-                      Horizon {dipHorizon} • {riskProfile} risk • {assetFocusLabel}
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)]">
+            <div className="min-w-0 space-y-4">
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Card className="reveal" style={{ "--delay": "140ms" } as CSSProperties}>
+                  <CardHeader className="flex-row items-center justify-between space-y-0">
+                    <div>
+                      <CardTitle className="text-base">Dip Radar</CardTitle>
+                      <div className="text-xs text-muted-foreground">
+                        Horizon {dipHorizon} • {riskProfile} risk • {assetFocusLabel}
+                      </div>
                     </div>
-                  </div>
-                  <Badge variant="outline">{dipIdeas.length} picks</Badge>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {!firebaseEnabled ? (
-                    <div className="text-sm opacity-70">Connect Firebase to load market intel.</div>
-                  ) : loadingHotTrades ? (
-                    <div className="text-sm opacity-70">Scanning for dips...</div>
-                  ) : dipIdeas.length === 0 ? (
-                    <div className="text-sm opacity-70">
-                      No dip opportunities yet. Adjust horizon or risk to widen the scan.
-                    </div>
-                  ) : (
-                    dipIdeas.map((trade) => {
-                      const horizonChange = getHorizonChange(trade, dipHorizon)
-                      return (
-                        <div
-                          key={`dip-${trade.assetClass}-${trade.symbol}`}
-                          className="rounded-xl border border-border/60 bg-background/70 p-3 shadow-[0_16px_40px_-36px_rgba(15,23,42,0.6)]"
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div>
-                              <div className="text-sm font-semibold">{trade.symbol}</div>
-                              <div className="text-xs text-muted-foreground">
-                                {trade.name || trade.assetClass}
+                    <Badge variant="outline">{dipIdeas.length} picks</Badge>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {!firebaseEnabled ? (
+                      <div className="text-sm opacity-70">
+                        Connect Firebase to load market intel.
+                      </div>
+                    ) : loadingHotTrades ? (
+                      <div className="text-sm opacity-70">Scanning for dips...</div>
+                    ) : dipIdeas.length === 0 ? (
+                      <div className="text-sm opacity-70">
+                        No dip opportunities yet. Adjust horizon or risk to widen the scan.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {dipIdeas.map((trade) => {
+                          const horizonChange = getHorizonChange(trade, dipHorizon)
+                          return (
+                            <div
+                              key={`dip-${trade.assetClass}-${trade.symbol}`}
+                              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 bg-background/70 p-3"
+                            >
+                              <div className="min-w-0 space-y-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className="text-sm font-semibold">{trade.symbol}</div>
+                                  <Badge variant="outline" className="uppercase">
+                                    {trade.assetClass}
+                                  </Badge>
+                                  {isPrimaryTrade(trade) && (
+                                    <Badge variant="secondary">Primary</Badge>
+                                  )}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {trade.name || trade.assetClass} · {dipHorizon} move:{" "}
+                                  {horizonChange === null ? "--" : formatChange(horizonChange)}
+                                </div>
+                                {trade.rationale && (
+                                  <div className="text-xs text-muted-foreground">
+                                    {trade.rationale}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant="outline" className={scoreTone(trade.score)}>
+                                  Score {trade.score?.toFixed(1) ?? "--"}
+                                </Badge>
+                                <Badge variant="outline">
+                                  {trade.signals?.total ? `${trade.signals.total} signals` : "No signals"}
+                                </Badge>
+                                {!isPrimaryTrade(trade) && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => addTradeToPrimary(trade)}
+                                    disabled={!firebaseEnabled}
+                                  >
+                                    Mark primary
+                                  </Button>
+                                )}
+                                {!isWatchlisted(trade) && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => addTradeToUniverse(trade)}
+                                    disabled={!firebaseEnabled}
+                                  >
+                                    Add to universe
+                                  </Button>
+                                )}
                               </div>
                             </div>
-                            <div className="flex items-center gap-2 text-xs">
-                              <Badge variant="outline" className="uppercase">
-                                {trade.assetClass}
-                              </Badge>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card className="reveal" style={{ "--delay": "180ms" } as CSSProperties}>
+                  <CardHeader className="flex-row items-center justify-between space-y-0">
+                    <div>
+                      <CardTitle className="text-base">Hot Trades</CardTitle>
+                      <div className="text-xs text-muted-foreground">
+                        Consensus + momentum + bot strength
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {hotTradesUpdatedAt && (
+                        <Badge variant="outline">{formatTimestamp(hotTradesUpdatedAt)}</Badge>
+                      )}
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {!firebaseEnabled ? (
+                      <div className="text-sm opacity-70">
+                        Connect Firebase to load market intel.
+                      </div>
+                    ) : loadingHotTrades ? (
+                      <div className="text-sm opacity-70">Loading hot trades...</div>
+                    ) : focusedHotTrades.length === 0 ? (
+                      <div className="text-sm opacity-70">
+                        No hot trades yet. Deploy the market intel worker to populate this feed.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {focusedHotTrades.slice(0, 6).map((trade) => (
+                          <div
+                            key={`${trade.assetClass}-${trade.symbol}`}
+                            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 bg-background/70 p-3"
+                          >
+                            <div className="min-w-0 space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="text-sm font-semibold">{trade.symbol}</div>
+                                <Badge variant="outline" className="uppercase">
+                                  {trade.assetClass}
+                                </Badge>
+                                {trade.side && (
+                                  <Badge
+                                    variant={signalBadgeVariant(trade.side)}
+                                    className="uppercase"
+                                  >
+                                    {trade.side}
+                                  </Badge>
+                                )}
+                                {isWatchlisted(trade) && (
+                                  <Badge variant="secondary">Watchlist</Badge>
+                                )}
+                                {isPrimaryTrade(trade) && (
+                                  <Badge variant="secondary">Primary</Badge>
+                                )}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                {trade.name || trade.assetClass} · 24h:{" "}
+                                {formatChange(trade.momentum?.change24h)}
+                                {trade.exchange ? ` · ${trade.exchange}` : ""}
+                              </div>
+                              {trade.rationale && (
+                                <div className="text-xs text-muted-foreground">
+                                  {trade.rationale}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
                               <Badge variant="outline" className={scoreTone(trade.score)}>
-                                Score {trade.score?.toFixed(1) ?? "—"}
+                                Score {trade.score?.toFixed(1) ?? "--"}
                               </Badge>
-                              {isPrimaryTrade(trade) && (
-                                <Badge variant="secondary">Primary</Badge>
+                              <Badge variant="outline">
+                                {trade.signals?.total ? `${trade.signals.total} signals` : "No signals"}
+                              </Badge>
+                              {!isWatchlisted(trade) && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => addTradeToUniverse(trade)}
+                                  disabled={!firebaseEnabled}
+                                >
+                                  Add to universe
+                                </Button>
                               )}
                             </div>
                           </div>
-                          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                            <span>
-                              {dipHorizon} move:{" "}
-                              {horizonChange === null ? "—" : formatChange(horizonChange)}
-                            </span>
-                            {trade.signals?.total ? (
-                              <span>{trade.signals.total} bot signals</span>
-                            ) : (
-                              <span>No bot signals yet</span>
-                            )}
-                          </div>
-                          {trade.rationale && (
-                            <div className="mt-2 text-sm text-muted-foreground">
-                              {trade.rationale}
-                            </div>
-                          )}
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            {!isPrimaryTrade(trade) && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => addTradeToPrimary(trade)}
-                                disabled={!firebaseEnabled}
-                              >
-                                Mark primary
-                              </Button>
-                            )}
-                            {!isWatchlisted(trade) && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => addTradeToUniverse(trade)}
-                                disabled={!firebaseEnabled}
-                              >
-                                Add to universe
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      )
-                    })
-                  )}
-                </CardContent>
-              </Card>
-
-              <Card className="reveal" style={{ "--delay": "180ms" } as CSSProperties}>
-                <CardHeader className="flex-row items-center justify-between space-y-0">
-                  <div>
-                    <CardTitle className="text-base">Hot Trades</CardTitle>
-                    <div className="text-xs text-muted-foreground">Consensus + momentum + bot strength</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {hotTradesUpdatedAt && (
-                      <Badge variant="outline">{formatTimestamp(hotTradesUpdatedAt)}</Badge>
-                    )}
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {!firebaseEnabled ? (
-                    <div className="text-sm opacity-70">Connect Firebase to load market intel.</div>
-                  ) : loadingHotTrades ? (
-                    <div className="text-sm opacity-70">Loading hot trades...</div>
-                  ) : focusedHotTrades.length === 0 ? (
-                    <div className="text-sm opacity-70">
-                      No hot trades yet. Deploy the market intel worker to populate this feed.
-                    </div>
-                  ) : (
-                    focusedHotTrades.slice(0, 6).map((trade) => (
-                      <div
-                        key={`${trade.assetClass}-${trade.symbol}`}
-                        className="rounded-xl border border-border/60 bg-background/70 p-3 shadow-[0_16px_40px_-36px_rgba(15,23,42,0.6)]"
-                      >
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div>
-                            <div className="text-sm font-semibold">{trade.symbol}</div>
-                            <div className="text-xs text-muted-foreground">
-                              {trade.name || trade.assetClass}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2 text-xs">
-                            <Badge variant="outline" className="uppercase">{trade.assetClass}</Badge>
-                            {trade.side && (
-                              <Badge variant={signalBadgeVariant(trade.side)} className="uppercase">
-                                {trade.side}
-                              </Badge>
-                            )}
-                            <Badge variant="outline" className={scoreTone(trade.score)}>
-                              Score {trade.score?.toFixed(1) ?? "—"}
-                            </Badge>
-                            {isWatchlisted(trade) && (
-                              <Badge variant="secondary">Watchlist</Badge>
-                            )}
-                            {isPrimaryTrade(trade) && (
-                              <Badge variant="secondary">Primary</Badge>
-                            )}
-                          </div>
-                        </div>
-                        <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                          <span>24h: {formatChange(trade.momentum?.change24h)}</span>
-                          {trade.signals?.total ? (
-                            <span>{trade.signals.total} bot signals</span>
-                          ) : (
-                            <span>No bot signals yet</span>
-                          )}
-                          {trade.exchange && <span>{trade.exchange}</span>}
-                        </div>
-                        {trade.rationale && (
-                          <div className="mt-2 text-sm text-muted-foreground">
-                            {trade.rationale}
-                          </div>
-                        )}
-                        {!isWatchlisted(trade) && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="mt-3"
-                            onClick={() => addTradeToUniverse(trade)}
-                            disabled={!firebaseEnabled}
-                          >
-                            Add to universe
-                          </Button>
-                        )}
+                        ))}
                       </div>
-                    ))
-                  )}
-                </CardContent>
-              </Card>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
 
               <div className="grid gap-4 md:grid-cols-2">
                 <Card className="reveal" style={{ "--delay": "240ms" } as CSSProperties}>
@@ -1970,7 +2200,10 @@ export default function DashboardPage() {
                       <div className="text-sm opacity-70">No sell ideas yet.</div>
                     ) : (
                       sellIdeas.map((trade) => (
-                        <div key={`sell-${trade.symbol}`} className="flex items-center justify-between">
+                        <div
+                          key={`sell-${trade.symbol}`}
+                          className="flex items-center justify-between"
+                        >
                           <div>
                             <div className="text-sm font-medium">{trade.symbol}</div>
                             <div className="text-xs text-muted-foreground">
@@ -1985,11 +2218,88 @@ export default function DashboardPage() {
                     )}
                   </CardContent>
                 </Card>
-
               </div>
             </div>
 
-            <div className="space-y-4">
+            <div className="min-w-0 space-y-4">
+              <Card className="reveal" style={{ "--delay": "200ms" } as CSSProperties}>
+                <CardHeader className="flex-row items-center justify-between space-y-0">
+                  <CardTitle className="text-base">Your Universe</CardTitle>
+                  <Badge variant="outline">{universeTotal} assets</Badge>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="space-y-2">
+                    <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                      Crypto
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {visibleCrypto.length === 0 ? (
+                        <span className="text-xs text-muted-foreground">No crypto pairs yet.</span>
+                      ) : (
+                        visibleCrypto.map((symbol) => (
+                          <Badge key={symbol} variant="secondary">
+                            {symbol}
+                          </Badge>
+                        ))
+                      )}
+                      {cryptoSelection.length > visibleCrypto.length && (
+                        <Badge variant="outline">
+                          +{cryptoSelection.length - visibleCrypto.length}
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                      Stocks
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {visibleStocks.length === 0 ? (
+                        <span className="text-xs text-muted-foreground">No stock tickers yet.</span>
+                      ) : (
+                        visibleStocks.map((symbol) => (
+                          <Badge key={symbol} variant="secondary">
+                            {symbol}
+                          </Badge>
+                        ))
+                      )}
+                      {stockSelection.length > visibleStocks.length && (
+                        <Badge variant="outline">
+                          +{stockSelection.length - visibleStocks.length}
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                      FX
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {visibleForex.length === 0 ? (
+                        <span className="text-xs text-muted-foreground">No FX pairs yet.</span>
+                      ) : (
+                        visibleForex.map((symbol) => (
+                          <Badge key={symbol} variant="secondary">
+                            {symbol}
+                          </Badge>
+                        ))
+                      )}
+                      {forexSelection.length > visibleForex.length && (
+                        <Badge variant="outline">
+                          +{forexSelection.length - visibleForex.length}
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                  <Button variant="outline" className="w-full" onClick={() => setUniverseOpen(true)}>
+                    Add or edit assets
+                  </Button>
+                  <div className="text-xs text-muted-foreground">
+                    Use Manage assets or tap Add to universe from Hot Trades.
+                  </div>
+                </CardContent>
+              </Card>
+
               <Card className="reveal" style={{ "--delay": "210ms" } as CSSProperties}>
                 <CardHeader>
                   <CardTitle className="text-base">Quick Actions</CardTitle>
