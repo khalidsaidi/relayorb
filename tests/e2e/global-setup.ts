@@ -10,6 +10,10 @@ function requireEnv(name: string) {
 }
 
 export default async function globalSetup() {
+  const target = process.env.RELAYORB_E2E_TARGET || "emulator"
+  if (target === "prod") {
+    return
+  }
   if (!process.env.FIRESTORE_EMULATOR_HOST) {
     throw new Error("FIRESTORE_EMULATOR_HOST is not set. Run tests via Firebase emulators.")
   }
@@ -24,7 +28,7 @@ export default async function globalSetup() {
 
   try {
     await auth.getUserByEmail(testEmail)
-  } catch (err) {
+  } catch {
     await auth.createUser({ email: testEmail, password: testPassword })
   }
 

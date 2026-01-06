@@ -18,7 +18,7 @@ import {
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { LayoutDashboard, Bot, LogOut, Menu, Activity } from "lucide-react"
-import { useAuth } from "@/features/auth/AuthProvider"
+import { useAuth } from "@/features/auth/auth-context"
 import { auth, firebaseEnabled } from "@/lib/firebase"
 import { signOut } from "firebase/auth"
 
@@ -48,8 +48,10 @@ function NavItemLink({ to, icon, label }: NavItem) {
       to={to}
       className={({ isActive }) =>
         [
-          "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition",
-          isActive ? "bg-muted font-medium" : "hover:bg-muted/70",
+          "flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-muted-foreground transition",
+          isActive
+            ? "bg-background/80 text-foreground shadow-sm ring-1 ring-border/60"
+            : "hover:bg-muted/60 hover:text-foreground",
         ].join(" ")
       }
     >
@@ -84,6 +86,7 @@ export function AppShell() {
         <span className="app-orb app-orb-b" />
         <span className="app-orb app-orb-c" />
       </div>
+      <div className="app-grid" aria-hidden="true" />
 
       <div className="relative z-10 grid min-h-svh md:grid-cols-[260px_1fr]">
         <aside className="hidden md:flex flex-col border-r/60 bg-background/70 backdrop-blur-xl">

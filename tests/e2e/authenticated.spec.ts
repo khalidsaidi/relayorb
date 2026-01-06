@@ -2,8 +2,10 @@ import { test, expect } from "@playwright/test"
 import { getAdmin } from "./utils/admin"
 
 const testEmail = process.env.VITE_E2E_TEST_EMAIL || ""
+const e2eTarget = process.env.RELAYORB_E2E_TARGET || "emulator"
 
 test.describe("RelayOrb authenticated flow", () => {
+  test.skip(e2eTarget === "prod", "Emulator-only authenticated tests")
   test.describe.configure({ mode: "serial" })
 
   test.beforeEach(async ({ page }) => {
@@ -12,11 +14,14 @@ test.describe("RelayOrb authenticated flow", () => {
     if (await testButton.count()) {
       await testButton.click()
     }
-    await expect(page.getByText("Fleet Health")).toBeVisible()
+    await expect(page.getByRole("tab", { name: "Opportunities" })).toBeVisible()
   })
 
   test("shows seeded bots and events on dashboard", async ({ page }) => {
-    await expect(page.getByText("Recent Event Stream")).toBeVisible()
+    await page.getByRole("tab", { name: "Advanced" }).click()
+    const eventStream = page.getByText("Recent Event Stream")
+    await eventStream.scrollIntoViewIfNeeded()
+    await expect(eventStream).toBeVisible()
     await expect(page.getByText("Freqtrade connected")).toBeVisible()
     await expect(page.getByText("Freqtrade Paper")).toBeVisible()
     await expect(page.getByText("3 bots tracked")).toBeVisible()

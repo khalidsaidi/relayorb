@@ -101,6 +101,27 @@ async function readJsonFile(filePath) {
   }
 }
 
+async function readFileTail(filePath, maxBytes = 65536) {
+  let handle = null
+  try {
+    handle = await fs.open(filePath, "r")
+    const stat = await handle.stat()
+    const size = stat.size
+    if (size === 0) return ""
+    const start = Math.max(0, size - maxBytes)
+    const length = size - start
+    const buffer = Buffer.alloc(length)
+    await handle.read(buffer, 0, length, start)
+    return buffer.toString("utf8")
+  } catch (err) {
+    return null
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => {})
+    }
+  }
+}
+
 async function writeJsonFile(filePath, data) {
   await fs.mkdir(path.dirname(filePath), { recursive: true })
   await fs.writeFile(filePath, JSON.stringify(data, null, 2) + "\n")
@@ -522,6 +543,7 @@ class HummingbotAdapter {
     this.password = bot.api?.password
     this.remoteId = bot.api?.remoteId || bot.id
     this.signalDeduper = createDeduper()
+    this.logDeduper = createDeduper()
   }
 
   authHeader() {
@@ -547,29 +569,60 @@ class HummingbotAdapter {
   async poll() {
     const state = {}
     let status = "offline"
+    const events = []
     const signals = []
+    let mqttActive = false
 
     try {
-      state.bots = await this.request("/bot-orchestration/bots")
+      state.service = await this.request("/bot-orchestration/status")
       status = "online"
     } catch (err) {
       return { status, state: { error: String(err) } }
     }
 
     try {
-      state.status = await this.request(`/bot-orchestration/bots/${encodeURIComponent(this.remoteId)}/status`)
-      const running = state.status?.status || state.status?.state || ""
-      if (typeof running === "string") {
-        status = running.toLowerCase().includes("run") ? "online" : "idle"
+      state.botStatus = await this.request(`/bot-orchestration/${encodeURIComponent(this.remoteId)}/status`)
+      const rawStatus =
+        state.botStatus?.data?.status ||
+        state.botStatus?.status ||
+        state.botStatus?.state ||
+        ""
+      const recentlyActive = state.botStatus?.data?.recently_active === true
+      if (typeof rawStatus === "string") {
+        const normalized = rawStatus.toLowerCase()
+        if (normalized.includes("run")) {
+          status = "online"
+        } else if (recentlyActive) {
+          status = "online"
+        } else if (normalized.includes("not_found") || normalized.includes("stop") || normalized.includes("idle")) {
+          status = "idle"
+        }
       }
     } catch (err) {
-      state.status = { error: String(err) }
+      state.botStatus = { error: String(err) }
     }
 
     try {
-      state.orders = await this.request("/trading/orders")
+      state.mqtt = await this.request("/bot-orchestration/mqtt")
+      const activeBots = state.mqtt?.data?.active_bots || state.mqtt?.active_bots || []
+      if (Array.isArray(activeBots) && activeBots.includes(this.remoteId)) {
+        mqttActive = true
+        status = "online"
+      }
+    } catch (err) {
+      state.mqtt = { error: String(err) }
+    }
+
+    try {
+      state.orders = await this.request("/trading/orders/active", { method: "POST", body: {} })
     } catch (err) {
       state.orders = { error: String(err) }
+    }
+
+    try {
+      state.trades = await this.request("/trading/trades", { method: "POST", body: {} })
+    } catch (err) {
+      state.trades = { error: String(err) }
     }
 
     const orders = Array.isArray(state.orders)
@@ -595,40 +648,139 @@ class HummingbotAdapter {
       signals.push(signal)
     }
 
-    return { status, state, signals }
+    const trades = Array.isArray(state.trades)
+      ? state.trades
+      : Array.isArray(state.trades?.trades)
+        ? state.trades.trades
+        : []
+
+    for (const trade of trades.slice(0, 20)) {
+      const sideRaw = trade?.side || trade?.trade_type || trade?.order_side || ""
+      const side = typeof sideRaw === "string" ? sideRaw.toLowerCase() : ""
+      if (!["buy", "sell"].includes(side)) continue
+      const pair = trade?.market || trade?.trading_pair || trade?.symbol || null
+      const signal = {
+        side,
+        strength: 0.7,
+        message: pair ? `${side.toUpperCase()} trade ${pair}` : `${side.toUpperCase()} trade`,
+        data: { pair, source: "trades", raw: trade },
+      }
+      const key = JSON.stringify(signal)
+      if (this.signalDeduper.has(key)) continue
+      this.signalDeduper.add(key)
+      signals.push(signal)
+    }
+
+    try {
+      await this.collectLogSignals(events, signals)
+    } catch (err) {
+      events.push({
+        type: "log",
+        severity: "warn",
+        message: `Hummingbot log parse failed: ${String(err)}`,
+      })
+    }
+
+    return { status, state, events, signals }
+  }
+
+  async collectLogSignals(events, signals) {
+    if (!HUMMINGBOT_BOTS_DIR) return
+    const logDir = path.join(HUMMINGBOT_BOTS_DIR, "instances", this.remoteId, "logs")
+    const logFiles = ["logs_simple_pmm.log", "logs_hummingbot.log"]
+    const marker = "EVENT_LOG - "
+
+    for (const file of logFiles) {
+      const raw = await readFileTail(path.join(logDir, file))
+      if (!raw) continue
+      const lines = raw.split("\n")
+      for (const line of lines) {
+        const idx = line.indexOf(marker)
+        if (idx === -1) continue
+        const jsonPart = line.slice(idx + marker.length).trim()
+        if (!jsonPart.startsWith("{")) continue
+        let data
+        try {
+          data = JSON.parse(jsonPart)
+        } catch (err) {
+          continue
+        }
+
+        const eventName = (data?.event_name || data?.event || "").toString()
+        const lowered = eventName.toLowerCase()
+        const side = lowered.includes("buy")
+          ? "buy"
+          : lowered.includes("sell")
+            ? "sell"
+            : null
+        if (!side) continue
+
+        const pair = data?.trading_pair || data?.symbol || data?.market || null
+        const message = pair
+          ? `${side.toUpperCase()} ${pair}`
+          : `${side.toUpperCase()} signal`
+        const signal = {
+          side,
+          strength: lowered.includes("filled") ? 0.8 : 0.6,
+          message,
+          data: { pair, source: "logs", event: eventName, raw: data },
+        }
+        const key = JSON.stringify(signal)
+        if (!this.signalDeduper.has(key)) {
+          this.signalDeduper.add(key)
+          signals.push(signal)
+        }
+
+        const eventKey = JSON.stringify({ eventName, pair, id: data?.order_id || data?.trade_id || data?.timestamp })
+        if (!this.logDeduper.has(eventKey)) {
+          this.logDeduper.add(eventKey)
+          events.push({
+            type: "log",
+            severity: "info",
+            message: `Hummingbot ${eventName}`,
+            data,
+          })
+        }
+      }
+    }
   }
 
   async executeCommand(type, payload) {
     switch (type) {
       case "start":
-        await this.request(`/bot-orchestration/bots/${encodeURIComponent(this.remoteId)}/start`, { method: "POST" })
+        await this.request("/bot-orchestration/start-bot", {
+          method: "POST",
+          body: { bot_name: this.remoteId },
+        })
         return { status: "online" }
       case "stop":
-        await this.request(`/bot-orchestration/bots/${encodeURIComponent(this.remoteId)}/stop`, { method: "POST" })
+        await this.request("/bot-orchestration/stop-bot", {
+          method: "POST",
+          body: { bot_name: this.remoteId },
+        })
         return { status: "idle" }
       case "restart":
-        await this.request(`/bot-orchestration/bots/${encodeURIComponent(this.remoteId)}/stop`, { method: "POST" })
-        await this.request(`/bot-orchestration/bots/${encodeURIComponent(this.remoteId)}/start`, { method: "POST" })
+        await this.request("/bot-orchestration/stop-bot", {
+          method: "POST",
+          body: { bot_name: this.remoteId },
+        })
+        await this.request("/bot-orchestration/start-bot", {
+          method: "POST",
+          body: { bot_name: this.remoteId },
+        })
         return { status: "online" }
       case "reload_config":
         if (!payload || Object.keys(payload).length === 0) {
           throw new Error("reload_config requires a payload")
         }
-        await this.request(`/bot-orchestration/bots/${encodeURIComponent(this.remoteId)}/config`, {
-          method: "PUT",
-          body: payload,
-        })
+        await this.updateControllerConfig(payload)
         return { status: "online" }
       case "configure":
         if (!payload || Object.keys(payload).length === 0) {
           throw new Error("configure requires a payload")
         }
         const hummingbotResult = await applyHummingbotConfig(this.remoteId, payload)
-        const configPayload = resolveAdvanced(payload, "hummingbot") || payload
-        await this.request(`/bot-orchestration/bots/${encodeURIComponent(this.remoteId)}/config`, {
-          method: "PUT",
-          body: configPayload,
-        })
+        await this.updateControllerConfig(payload)
         return { status: "online", result: hummingbotResult }
       case "backtest":
         if (!payload || Object.keys(payload).length === 0) {
@@ -642,6 +794,31 @@ class HummingbotAdapter {
       default:
         throw new Error(`Unsupported command: ${type}`)
     }
+  }
+
+  async updateControllerConfig(payload) {
+    const configPayload = resolveAdvanced(payload, "hummingbot") || payload || {}
+    const controllerName =
+      configPayload.controller ||
+      configPayload.controllerName ||
+      configPayload.controller_id ||
+      configPayload.controllerId
+    const controllerConfig =
+      configPayload.controllerConfig ||
+      configPayload.controller_config ||
+      configPayload.config
+
+    if (!controllerName || !controllerConfig) {
+      return
+    }
+
+    await this.request(
+      `/controllers/bots/${encodeURIComponent(this.remoteId)}/${encodeURIComponent(controllerName)}/config`,
+      {
+        method: "POST",
+        body: controllerConfig,
+      }
+    )
   }
 }
 

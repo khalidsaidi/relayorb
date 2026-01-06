@@ -21,11 +21,10 @@ function signalBadgeVariant(side?: string) {
 
 export default function SignalsPage() {
   const [signals, setSignals] = useState<BotSignalDoc[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => firebaseEnabled && !!db)
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
-      setLoading(false)
       return
     }
 
@@ -89,7 +88,7 @@ export default function SignalsPage() {
                   </div>
                 </div>
                 {signal.data && (
-                  <pre className="mt-2 max-h-32 overflow-auto rounded-md bg-muted/50 p-3 text-xs">
+                  <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-3 text-xs">
                     {JSON.stringify(signal.data, null, 2)}
                   </pre>
                 )}

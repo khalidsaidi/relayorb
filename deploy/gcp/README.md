@@ -51,6 +51,10 @@ docker compose up -d
 No inbound ports are required for RelayOrb control. The bot host only needs outbound access to Firestore.
 If you want to debug APIs, use SSH port forwarding instead of opening ports publicly.
 
+## Market Intel (Cloud Run)
+The market intel worker runs separately from the VM on Cloud Run so it only consumes resources when scheduled.
+See `deploy/market-intel/README.md` for deployment steps and scheduling.
+
 ## Notes
 - For higher availability, pin images to specific tags and enable VM monitoring.
 - Consider moving Postgres to Cloud SQL once you scale Hummingbot API usage.

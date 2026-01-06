@@ -122,12 +122,16 @@
   }
   html {
     @apply bg-background text-foreground;
+    width: 100%;
+    overflow-x: hidden;
   }
   body {
     @apply bg-background text-foreground;
     font-family: var(--font-sans);
     letter-spacing: -0.01em;
     overflow-x: hidden;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
   }
   code,
   pre {
@@ -136,6 +140,7 @@
   #root {
     min-height: 100%;
     overflow-x: hidden;
+    width: 100%;
   }
 }
 
@@ -145,6 +150,17 @@
   background: radial-gradient(1200px circle at 8% -12%, oklch(0.88 0.1 210 / 38%), transparent 60%),
     radial-gradient(900px circle at 110% 12%, oklch(0.92 0.08 80 / 40%), transparent 55%),
     linear-gradient(180deg, oklch(0.99 0.01 250), oklch(0.95 0.02 250));
+}
+
+.app-grid {
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(transparent 0 48px, oklch(0.9 0.02 240 / 30%) 48px 49px),
+    linear-gradient(90deg, transparent 0 48px, oklch(0.9 0.02 240 / 30%) 48px 49px);
+  background-size: 120px 120px;
+  opacity: 0.3;
+  pointer-events: none;
+  mix-blend-mode: multiply;
 }
 
 .app-orbs {
