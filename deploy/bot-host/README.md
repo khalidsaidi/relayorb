@@ -37,6 +37,11 @@ docker run --rm -it -v "$PWD/jesse:/workspace" salehmir/jesse jesse make-project
 docker compose up -d
 ```
 
+## Agent updates
+The bot host pulls a prebuilt agent image from `gcr.io/relayorb/relayorb-agent`. Use the
+"Update Agent" command in the UI to trigger a safe rolling update (pull + restart of the
+agent container only). The `relayorb-updater` service watches for these commands.
+
 ## Notes
 - Freqtrade runs in dry-run mode by default. Add exchange keys only when ready.
 - Hummingbot API uses the Docker socket to orchestrate bots; that’s why `/var/run/docker.sock` is mounted.

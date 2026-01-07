@@ -15,12 +15,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return
     }
 
-    return onAuthStateChanged(auth, (u) => {
+    const activeAuth = auth
+    return onAuthStateChanged(activeAuth, (u) => {
       if (u && !isAllowedEmail(u.email)) {
         setBlockedEmail(u.email ?? "unknown")
         setUser(null)
         setLoading(false)
-        void signOut(auth)
+        void signOut(activeAuth)
         return
       }
 

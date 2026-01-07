@@ -4,13 +4,17 @@ import {
   collection,
   collectionGroup,
   doc,
+  endAt,
+  getDocs,
   limit,
   onSnapshot,
   orderBy,
   query,
   setDoc,
+  startAt,
   serverTimestamp,
 } from "firebase/firestore"
+import type { DocumentData, QuerySnapshot } from "firebase/firestore"
 import { db, firebaseEnabled } from "@/lib/firebase"
 import type {
   BotDoc,
@@ -21,13 +25,19 @@ import type {
   MarketPopularDoc,
   MarketControlsDoc,
   MarketUniverseDoc,
+  MarketTrendingDoc,
+  MarketTrendItem,
+  SignalPerformanceDoc,
+  TrendHorizon,
+  TrendWeights,
 } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { formatTimestamp } from "@/lib/format"
+import { formatRelativeTimestamp, formatTimestamp } from "@/lib/format"
 import { StatusBadge } from "@/components/StatusBadge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Select } from "@/components/ui/select"
 import {
   Dialog,
   DialogContent,
@@ -163,7 +173,16 @@ const POPULAR_FX = [
 ]
 
 const LLM_INTERVAL_OPTIONS = [15, 30, 60, 120, 240]
+const NEWS_INTERVAL_OPTIONS = [15, 30, 60, 120, 240]
+const AUTO_TUNE_INTERVAL_OPTIONS = [6, 12, 24, 48]
 const DIP_HORIZON_OPTIONS: DipHorizon[] = ["1h", "24h", "7d"]
+const TREND_HORIZON_OPTIONS: TrendHorizon[] = ["15m", "1h", "24h", "7d"]
+const DEFAULT_TREND_WEIGHTS: Required<TrendWeights> = {
+  momentum: 40,
+  volume: 25,
+  signals: 20,
+  news: 15,
+}
 const RISK_OPTIONS: { value: RiskProfile; label: string }[] = [
   { value: "conservative", label: "Conservative" },
   { value: "balanced", label: "Balanced" },
@@ -182,8 +201,11 @@ export default function DashboardPage() {
   const [signals, setSignals] = useState<BotSignalDoc[]>([])
   const [hotTrades, setHotTrades] = useState<MarketHotTrade[]>([])
   const [hotTradesUpdatedAt, setHotTradesUpdatedAt] = useState<MarketHotTradesDoc["updatedAt"]>()
+  const [trending, setTrending] = useState<MarketTrendingDoc | null>(null)
+  const [trendingUpdatedAt, setTrendingUpdatedAt] = useState<MarketTrendingDoc["updatedAt"]>()
   const [popular, setPopular] = useState<MarketPopularDoc | null>(null)
   const [universe, setUniverse] = useState<MarketUniverseDoc | null>(null)
+  const [signalPerformance, setSignalPerformance] = useState<SignalPerformanceDoc | null>(null)
   const [universeOpen, setUniverseOpen] = useState(false)
   const [preferencesSaving, setPreferencesSaving] = useState(false)
   const [cryptoSelection, setCryptoSelection] = useState<string[]>([])
@@ -194,15 +216,49 @@ export default function DashboardPage() {
   const [primaryForexSelection, setPrimaryForexSelection] = useState<string[]>([])
   const [cryptoSearch, setCryptoSearch] = useState("")
   const [stockSearch, setStockSearch] = useState("")
+  const [stockSymbolMatches, setStockSymbolMatches] = useState<string[]>([])
+  const [stockSymbolLoading, setStockSymbolLoading] = useState(false)
   const [forexSearch, setForexSearch] = useState("")
+  const [quickStockMatches, setQuickStockMatches] = useState<string[]>([])
+  const [quickStockLoading, setQuickStockLoading] = useState(false)
   const [includeCryptoTrending, setIncludeCryptoTrending] = useState(true)
   const [includeStockTrending, setIncludeStockTrending] = useState(true)
   const [includeForexTrending, setIncludeForexTrending] = useState(true)
   const [llmIntervalMinutes, setLlmIntervalMinutes] = useState(30)
   const [llmEnabled, setLlmEnabled] = useState(true)
+  const [newsIntervalMinutes, setNewsIntervalMinutes] = useState(30)
+  const [newsEnabled, setNewsEnabled] = useState(true)
   const [dipHorizon, setDipHorizon] = useState<DipHorizon>("24h")
+  const [trendHorizon, setTrendHorizon] = useState<TrendHorizon>("15m")
+  const [trendMomentumWeight, setTrendMomentumWeight] = useState(
+    DEFAULT_TREND_WEIGHTS.momentum
+  )
+  const [trendVolumeWeight, setTrendVolumeWeight] = useState(
+    DEFAULT_TREND_WEIGHTS.volume
+  )
+  const [trendSignalsWeight, setTrendSignalsWeight] = useState(
+    DEFAULT_TREND_WEIGHTS.signals
+  )
+  const [trendNewsWeight, setTrendNewsWeight] = useState(
+    DEFAULT_TREND_WEIGHTS.news
+  )
+  const [autoTuneEnabled, setAutoTuneEnabled] = useState(true)
+  const [autoTuneWithAI, setAutoTuneWithAI] = useState(true)
+  const [autoTuneIntervalHours, setAutoTuneIntervalHours] = useState(6)
+  const [autoTuneLastAt, setAutoTuneLastAt] = useState<
+    MarketControlsDoc["autoTuneLastAt"]
+  >()
+  const [autoTuneNotes, setAutoTuneNotes] = useState("")
   const [riskProfile, setRiskProfile] = useState<RiskProfile>("balanced")
+  const [quickAssetClass, setQuickAssetClass] = useState<AssetClass>("crypto")
+  const [quickAssetInput, setQuickAssetInput] = useState("")
+  const [quickSuggestionIndex, setQuickSuggestionIndex] = useState(-1)
   const [assetFocus, setAssetFocus] = useState<AssetClass[]>([
+    "crypto",
+    "stock",
+    "forex",
+  ])
+  const [trendAssetFocus, setTrendAssetFocus] = useState<AssetClass[]>([
     "crypto",
     "stock",
     "forex",
@@ -211,7 +267,16 @@ export default function DashboardPage() {
   const [loadingEvents, setLoadingEvents] = useState(true)
   const [loadingSignals, setLoadingSignals] = useState(true)
   const [loadingHotTrades, setLoadingHotTrades] = useState(true)
+  const [loadingTrending, setLoadingTrending] = useState(true)
+  const [loadingPerformance, setLoadingPerformance] = useState(true)
   const [startingBots, setStartingBots] = useState(false)
+  const [refreshingJobs, setRefreshingJobs] = useState(false)
+
+  const refreshEndpoint = useMemo(() => {
+    const base = (import.meta.env.VITE_REFRESH_URL || "").trim()
+    if (!base) return ""
+    return `${base.replace(/\/+$/, "")}/refresh`
+  }, [])
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
@@ -267,6 +332,25 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
+      setLoadingPerformance(false)
+      return
+    }
+
+    const ref = doc(db, "analytics", "signalPerformance")
+    return onSnapshot(ref, (snap) => {
+      if (!snap.exists()) {
+        setSignalPerformance(null)
+        setLoadingPerformance(false)
+        return
+      }
+      const data = snap.data() as SignalPerformanceDoc
+      setSignalPerformance(data)
+      setLoadingPerformance(false)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!firebaseEnabled || !db) {
       return
     }
 
@@ -275,9 +359,22 @@ export default function DashboardPage() {
       if (!snap.exists()) {
         setLlmIntervalMinutes(30)
         setLlmEnabled(true)
+        setNewsIntervalMinutes(30)
+        setNewsEnabled(true)
         setDipHorizon("24h")
+        setTrendHorizon("15m")
+        setTrendMomentumWeight(DEFAULT_TREND_WEIGHTS.momentum)
+        setTrendVolumeWeight(DEFAULT_TREND_WEIGHTS.volume)
+        setTrendSignalsWeight(DEFAULT_TREND_WEIGHTS.signals)
+        setTrendNewsWeight(DEFAULT_TREND_WEIGHTS.news)
+        setAutoTuneEnabled(true)
+        setAutoTuneWithAI(true)
+        setAutoTuneIntervalHours(6)
+        setAutoTuneLastAt(undefined)
+        setAutoTuneNotes("")
         setRiskProfile("balanced")
         setAssetFocus(["crypto", "stock", "forex"])
+        setTrendAssetFocus(["crypto", "stock", "forex"])
         setPrimaryCryptoSelection([])
         setPrimaryStockSelection([])
         setPrimaryForexSelection([])
@@ -291,11 +388,56 @@ export default function DashboardPage() {
         setLlmIntervalMinutes(30)
       }
       setLlmEnabled(data.enableLLM !== false)
+      const parsedNews = Number(data.newsIntervalMinutes)
+      if (Number.isFinite(parsedNews) && NEWS_INTERVAL_OPTIONS.includes(parsedNews)) {
+        setNewsIntervalMinutes(parsedNews)
+      } else {
+        setNewsIntervalMinutes(30)
+      }
+      setNewsEnabled(data.enableNews !== false)
       const nextHorizon =
         data.dipHorizon && DIP_HORIZON_OPTIONS.includes(data.dipHorizon)
           ? data.dipHorizon
           : "24h"
       setDipHorizon(nextHorizon)
+      const nextTrendHorizon =
+        data.trendHorizon && TREND_HORIZON_OPTIONS.includes(data.trendHorizon)
+          ? data.trendHorizon
+          : "15m"
+      setTrendHorizon(nextTrendHorizon)
+      const weightMomentum =
+        typeof data.trendWeights?.momentum === "number"
+          ? data.trendWeights.momentum
+          : DEFAULT_TREND_WEIGHTS.momentum
+      const weightVolume =
+        typeof data.trendWeights?.volume === "number"
+          ? data.trendWeights.volume
+          : DEFAULT_TREND_WEIGHTS.volume
+      const weightSignals =
+        typeof data.trendWeights?.signals === "number"
+          ? data.trendWeights.signals
+          : DEFAULT_TREND_WEIGHTS.signals
+      const weightNews =
+        typeof data.trendWeights?.news === "number"
+          ? data.trendWeights.news
+          : DEFAULT_TREND_WEIGHTS.news
+      setTrendMomentumWeight(weightMomentum)
+      setTrendVolumeWeight(weightVolume)
+      setTrendSignalsWeight(weightSignals)
+      setTrendNewsWeight(weightNews)
+      const parsedAutoTuneInterval = Number(data.autoTuneIntervalHours)
+      setAutoTuneEnabled(data.autoTuneEnabled !== false)
+      setAutoTuneWithAI(data.autoTuneWithAI !== false)
+      if (
+        Number.isFinite(parsedAutoTuneInterval) &&
+        AUTO_TUNE_INTERVAL_OPTIONS.includes(parsedAutoTuneInterval)
+      ) {
+        setAutoTuneIntervalHours(parsedAutoTuneInterval)
+      } else {
+        setAutoTuneIntervalHours(6)
+      }
+      setAutoTuneLastAt(data.autoTuneLastAt)
+      setAutoTuneNotes(typeof data.autoTuneNotes === "string" ? data.autoTuneNotes : "")
       const nextRisk = RISK_OPTIONS.some((option) => option.value === data.riskProfile)
         ? (data.riskProfile as RiskProfile)
         : "balanced"
@@ -305,7 +447,10 @@ export default function DashboardPage() {
             ASSET_FOCUS_OPTIONS.some((option) => option.value === item)
           )
         : []
-      setAssetFocus(focus.length > 0 ? focus : ["crypto", "stock", "forex"])
+      const nextFocus: AssetClass[] =
+        focus.length > 0 ? focus : ["crypto", "stock", "forex"]
+      setAssetFocus(nextFocus)
+      setTrendAssetFocus(nextFocus)
       setPrimaryCryptoSelection(
         uniqueList((data.primaryAssets?.crypto ?? []).map(normalizeSymbol).filter(Boolean))
       )
@@ -341,6 +486,27 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
+      setLoadingTrending(false)
+      return
+    }
+
+    const ref = doc(db, "market", "trending")
+    return onSnapshot(ref, (snap) => {
+      if (!snap.exists()) {
+        setTrending(null)
+        setTrendingUpdatedAt(undefined)
+        setLoadingTrending(false)
+        return
+      }
+      const data = snap.data() as MarketTrendingDoc
+      setTrending(data)
+      setTrendingUpdatedAt(data.updatedAt)
+      setLoadingTrending(false)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!firebaseEnabled || !db) {
       return
     }
 
@@ -361,22 +527,52 @@ export default function DashboardPage() {
       return
     }
 
-    const eventsQuery = query(
-      collectionGroup(db, "events"),
-      orderBy("createdAt", "desc"),
-      limit(10)
-    )
+    const activeDb = db
+    let didFallback = false
+    let unsubscribe = () => {}
 
-    return onSnapshot(eventsQuery, (snap) => {
-      setEvents(
-        snap.docs.map((doc) => {
-          const data = doc.data() as Omit<BotEventDoc, "id" | "botId">
-          const botId = doc.ref.parent.parent?.id ?? "unknown"
-          return { id: doc.id, botId, ...data }
-        })
-      )
+    const handleSnapshot = (snap: QuerySnapshot<DocumentData>) => {
+      const nextEvents = snap.docs.map((doc) => {
+        const data = doc.data() as Omit<BotEventDoc, "id" | "botId">
+        const botId = doc.ref.parent.parent?.id ?? "unknown"
+        return { id: doc.id, botId, ...data }
+      })
+      nextEvents.sort((a, b) => {
+        const aTime = a.createdAt?.toMillis?.() ?? 0
+        const bTime = b.createdAt?.toMillis?.() ?? 0
+        return bTime - aTime
+      })
+      setEvents(nextEvents.slice(0, 10))
       setLoadingEvents(false)
-    })
+    }
+
+    const subscribe = (ordered: boolean) => {
+      const baseRef = collectionGroup(activeDb, "events")
+      const eventsQuery = ordered
+        ? query(baseRef, orderBy("createdAt", "desc"), limit(10))
+        : query(baseRef, limit(50))
+      unsubscribe = onSnapshot(
+        eventsQuery,
+        handleSnapshot,
+        (error) => {
+          const code =
+            typeof error === "object" && error && "code" in error
+              ? String(error.code)
+              : ""
+          if (ordered && code === "failed-precondition" && !didFallback) {
+            didFallback = true
+            unsubscribe()
+            subscribe(false)
+            return
+          }
+          console.error("Events listener error", error)
+          setLoadingEvents(false)
+        }
+      )
+    }
+
+    subscribe(true)
+    return () => unsubscribe()
   }, [])
 
   useEffect(() => {
@@ -385,23 +581,160 @@ export default function DashboardPage() {
       return
     }
 
-    const signalsQuery = query(
-      collectionGroup(db, "signals"),
-      orderBy("createdAt", "desc"),
-      limit(5)
-    )
+    const activeDb = db
+    let didFallback = false
+    let unsubscribe = () => {}
 
-    return onSnapshot(signalsQuery, (snap) => {
-      setSignals(
-        snap.docs.map((doc) => {
-          const data = doc.data() as Omit<BotSignalDoc, "id" | "botId">
-          const botId = doc.ref.parent.parent?.id ?? "unknown"
-          return { id: doc.id, botId, ...data }
-        })
-      )
+    const handleSnapshot = (snap: QuerySnapshot<DocumentData>) => {
+      const nextSignals = snap.docs.map((doc) => {
+        const data = doc.data() as Omit<BotSignalDoc, "id" | "botId">
+        const botId = doc.ref.parent.parent?.id ?? "unknown"
+        return { id: doc.id, botId, ...data }
+      })
+      nextSignals.sort((a, b) => {
+        const aTime = a.createdAt?.toMillis?.() ?? 0
+        const bTime = b.createdAt?.toMillis?.() ?? 0
+        return bTime - aTime
+      })
+      setSignals(nextSignals.slice(0, 5))
       setLoadingSignals(false)
-    })
+    }
+
+    const subscribe = (ordered: boolean) => {
+      const baseRef = collectionGroup(activeDb, "signals")
+      const signalsQuery = ordered
+        ? query(baseRef, orderBy("createdAt", "desc"), limit(5))
+        : query(baseRef, limit(30))
+      unsubscribe = onSnapshot(
+        signalsQuery,
+        handleSnapshot,
+        (error) => {
+          const code =
+            typeof error === "object" && error && "code" in error
+              ? String(error.code)
+              : ""
+          if (ordered && code === "failed-precondition" && !didFallback) {
+            didFallback = true
+            unsubscribe()
+            subscribe(false)
+            return
+          }
+          console.error("Signals listener error", error)
+          setLoadingSignals(false)
+        }
+      )
+    }
+
+    subscribe(true)
+    return () => unsubscribe()
   }, [])
+
+  useEffect(() => {
+    if (!firebaseEnabled || !db) {
+      setStockSymbolMatches([])
+      setStockSymbolLoading(false)
+      return
+    }
+
+    const activeDb = db
+    const trimmed = stockSearch.trim().toUpperCase().replace(/[^A-Z0-9.-]/g, "")
+    if (!trimmed || trimmed.length < 2) {
+      setStockSymbolMatches([])
+      setStockSymbolLoading(false)
+      return
+    }
+
+    let cancelled = false
+    const handle = setTimeout(async () => {
+      setStockSymbolLoading(true)
+      try {
+        const ref = collection(activeDb, "market_symbols_stocks")
+        const snap = await getDocs(
+          query(ref, orderBy("symbol"), startAt(trimmed), endAt(`${trimmed}\uf8ff`), limit(20))
+        )
+        if (cancelled) return
+        const matches = new Set<string>()
+        snap.docs.forEach((doc) => {
+          const data = doc.data() as { symbol?: string }
+          const normalized = String(data?.symbol || "")
+            .toUpperCase()
+            .trim()
+            .replace(/[^A-Z0-9.-]/g, "")
+          if (normalized) matches.add(normalized)
+        })
+        setStockSymbolMatches(Array.from(matches))
+      } catch {
+        if (!cancelled) {
+          setStockSymbolMatches([])
+        }
+      } finally {
+        if (!cancelled) {
+          setStockSymbolLoading(false)
+        }
+      }
+    }, 250)
+
+    return () => {
+      cancelled = true
+      clearTimeout(handle)
+    }
+  }, [stockSearch])
+
+  useEffect(() => {
+    if (!firebaseEnabled || !db || quickAssetClass !== "stock") {
+      setQuickStockMatches([])
+      setQuickStockLoading(false)
+      return
+    }
+
+    const activeDb = db
+    const trimmed = quickAssetInput.trim().toUpperCase().replace(/[^A-Z0-9.-]/g, "")
+    if (!trimmed || trimmed.length < 2) {
+      setQuickStockMatches([])
+      setQuickStockLoading(false)
+      return
+    }
+
+    let cancelled = false
+    const handle = setTimeout(async () => {
+      setQuickStockLoading(true)
+      try {
+        const ref = collection(activeDb, "market_symbols_stocks")
+        const snap = await getDocs(
+          query(ref, orderBy("symbol"), startAt(trimmed), endAt(`${trimmed}\uf8ff`), limit(25))
+        )
+        if (cancelled) return
+        const matches = new Set<string>()
+        snap.docs.forEach((doc) => {
+          const data = doc.data() as { symbol?: string }
+          const normalized = String(data?.symbol || "")
+            .toUpperCase()
+            .trim()
+            .replace(/[^A-Z0-9.-]/g, "")
+          if (normalized) matches.add(normalized)
+        })
+        setQuickStockMatches(Array.from(matches))
+      } catch {
+        if (!cancelled) {
+          setQuickStockMatches([])
+        }
+      } finally {
+        if (!cancelled) {
+          setQuickStockLoading(false)
+        }
+      }
+    }, 200)
+
+    return () => {
+      cancelled = true
+      clearTimeout(handle)
+    }
+  }, [quickAssetInput, quickAssetClass])
+
+  useEffect(() => {
+    setQuickSuggestionIndex(-1)
+  }, [quickAssetInput, quickAssetClass])
+
 
   const statusCounts = useMemo(() => {
     const counts: Record<string, number> = {
@@ -444,6 +777,7 @@ export default function DashboardPage() {
       toast.error("Firebase not configured")
       return
     }
+    const activeDb = db
     if (offlineBots.length === 0) {
       toast.message("All bots are already running")
       return
@@ -453,7 +787,7 @@ export default function DashboardPage() {
     try {
       await Promise.all(
         offlineBots.map((bot) =>
-          addDoc(collection(db, "bots", bot.id, "commands"), {
+          addDoc(collection(activeDb, "bots", bot.id, "commands"), {
             type: "start",
             status: "queued",
             createdAt: serverTimestamp(),
@@ -466,6 +800,50 @@ export default function DashboardPage() {
       toast.error("Failed to start bots")
     } finally {
       setStartingBots(false)
+    }
+  }
+
+  async function triggerRefresh() {
+    if (!firebaseEnabled || !db) {
+      toast.error("Firebase not configured")
+      return
+    }
+    if (!refreshEndpoint) {
+      toast.error("Refresh service not configured")
+      return
+    }
+    if (!user) {
+      toast.error("You must be signed in")
+      return
+    }
+
+    setRefreshingJobs(true)
+    try {
+      const token = await user.getIdToken(true)
+      const response = await fetch(refreshEndpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok) {
+        throw new Error(payload?.error || `Refresh failed (${response.status})`)
+      }
+      const jobNames = Array.isArray(payload?.jobs)
+        ? payload.jobs.map((job: { job?: string }) => job.job).filter(Boolean)
+        : []
+      toast.success(
+        jobNames.length > 0
+          ? `Refresh started: ${jobNames.join(", ")}`
+          : "Refresh started"
+      )
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Refresh failed")
+    } finally {
+      setRefreshingJobs(false)
     }
   }
 
@@ -483,6 +861,18 @@ export default function DashboardPage() {
     return `${sign}${value.toFixed(2)}%`
   }
 
+  function formatSentiment(value?: number) {
+    if (value === undefined || value === null || Number.isNaN(value)) return "—"
+    const sign = value >= 0 ? "+" : ""
+    return `${sign}${value.toFixed(2)}`
+  }
+
+  function formatPercent(value?: number) {
+    if (value === undefined || value === null || Number.isNaN(value)) return "—"
+    const sign = value >= 0 ? "+" : ""
+    return `${sign}${value.toFixed(2)}%`
+  }
+
   function getHorizonChange(trade: MarketHotTrade, horizon: DipHorizon) {
     const momentum = trade.momentum
     if (!momentum) return null
@@ -492,6 +882,37 @@ export default function DashboardPage() {
     if (typeof momentum.change1h === "number") return momentum.change1h
     if (typeof momentum.change7d === "number") return momentum.change7d
     return null
+  }
+
+  function getTrendMomentum(item: MarketTrendItem, horizon: TrendHorizon) {
+    const momentum = item?.momentum
+    if (!momentum) return { change: null, window: horizon }
+    const window = momentum.window ?? horizon
+    if (window === "15m" && typeof momentum.change15m === "number") {
+      return { change: momentum.change15m, window }
+    }
+    if (window === "1h" && typeof momentum.change1h === "number") {
+      return { change: momentum.change1h, window }
+    }
+    if (window === "24h" && typeof momentum.change24h === "number") {
+      return { change: momentum.change24h, window }
+    }
+    if (window === "7d" && typeof momentum.change7d === "number") {
+      return { change: momentum.change7d, window }
+    }
+    if (typeof momentum.change24h === "number") {
+      return { change: momentum.change24h, window: "24h" }
+    }
+    if (typeof momentum.change1h === "number") {
+      return { change: momentum.change1h, window: "1h" }
+    }
+    if (typeof momentum.change7d === "number") {
+      return { change: momentum.change7d, window: "7d" }
+    }
+    if (typeof momentum.change15m === "number") {
+      return { change: momentum.change15m, window: "15m" }
+    }
+    return { change: null, window }
   }
 
   function getDipThreshold(profile: RiskProfile) {
@@ -506,16 +927,194 @@ export default function DashboardPage() {
     }
   }
 
+  function renderPerformancePanel(horizon: DipHorizon) {
+    const stats = signalPerformance?.overall?.[horizon]
+    const topBots = signalPerformance?.topBots?.[horizon] ?? []
+    const assetStats = signalPerformance?.byAsset?.[horizon] ?? []
+    const topSymbols = signalPerformance?.topSymbols?.[horizon] ?? []
+    const bottomSymbols = signalPerformance?.bottomSymbols?.[horizon] ?? []
+    return (
+      <div className="space-y-3">
+        {!firebaseEnabled ? (
+          <div className="text-sm opacity-70">Connect Firebase to load accuracy data.</div>
+        ) : loadingPerformance ? (
+          <div className="text-sm opacity-70">Loading performance...</div>
+        ) : !stats ? (
+          <div className="text-sm opacity-70">
+            {signalPerformance?.overall &&
+            Object.keys(signalPerformance.overall).length > 0
+              ? "Only shorter horizons have results. 24h/7d appear once signals age."
+              : "No evaluations yet. Run the signal evaluator worker to populate accuracy data."}
+          </div>
+        ) : (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-lg border border-border/60 bg-background/70 p-3">
+                <div className="text-xs text-muted-foreground">Accuracy</div>
+                <div className="mt-1 text-2xl font-semibold">
+                  {stats.hitRate !== undefined ? `${stats.hitRate.toFixed(1)}%` : "—"}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {stats.count ?? 0} signals scored
+                </div>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-background/70 p-3">
+                <div className="text-xs text-muted-foreground">Avg return</div>
+                <div className="mt-1 text-2xl font-semibold">
+                  {formatPercent(stats.avgReturn)}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Horizon {horizon}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                Best performing bots
+              </div>
+              {topBots.length === 0 ? (
+                <div className="text-sm opacity-70">
+                  Not enough scored signals yet to rank bots.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {topBots.map((bot) => (
+                    <div
+                      key={bot.botId}
+                      className="flex items-center justify-between rounded-lg border border-border/60 bg-background/70 px-3 py-2 text-sm"
+                    >
+                      <div className="font-mono">{bot.botId}</div>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <span>{bot.count} signals</span>
+                        <span>{bot.hitRate.toFixed(1)}% hit</span>
+                        <span>{formatPercent(bot.avgReturn)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                Accuracy by asset
+              </div>
+              {assetStats.length === 0 ? (
+                <div className="text-sm opacity-70">No asset breakdown yet.</div>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {assetStats.map((asset) => {
+                    const label =
+                      asset.assetClass === "crypto"
+                        ? "Crypto"
+                        : asset.assetClass === "stock"
+                          ? "Stocks"
+                          : asset.assetClass === "forex"
+                            ? "FX"
+                            : asset.assetClass
+                    return (
+                      <div
+                        key={asset.assetClass}
+                        className="rounded-lg border border-border/60 bg-background/70 p-3"
+                      >
+                        <div className="text-xs text-muted-foreground">{label}</div>
+                        <div className="mt-1 text-lg font-semibold">
+                          {asset.hitRate.toFixed(1)}%
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {asset.count} signals • {formatPercent(asset.avgReturn)}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                  Best symbols
+                </div>
+                {topSymbols.length === 0 ? (
+                  <div className="text-sm opacity-70">No symbol ranking yet.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {topSymbols.map((symbol) => (
+                      <div
+                        key={`top-${symbol.symbol}`}
+                        className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-border/60 bg-background/70 px-3 py-2 text-sm"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-mono truncate">{symbol.symbol}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {symbol.assetClass ?? "unknown"}
+                          </div>
+                        </div>
+                        <div className="text-right text-xs text-muted-foreground">
+                          <div>{symbol.hitRate.toFixed(1)}% hit</div>
+                          <div>{formatPercent(symbol.avgReturn)}</div>
+                          <div>{symbol.count} signals</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                  Needs attention
+                </div>
+                {bottomSymbols.length === 0 ? (
+                  <div className="text-sm opacity-70">No symbol ranking yet.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {bottomSymbols.map((symbol) => (
+                      <div
+                        key={`bottom-${symbol.symbol}`}
+                        className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-border/60 bg-background/70 px-3 py-2 text-sm"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-mono truncate">{symbol.symbol}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {symbol.assetClass ?? "unknown"}
+                          </div>
+                        </div>
+                        <div className="text-right text-xs text-muted-foreground">
+                          <div>{symbol.hitRate.toFixed(1)}% hit</div>
+                          <div>{formatPercent(symbol.avgReturn)}</div>
+                          <div>{symbol.count} signals</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    )
+  }
+
   function normalizeSymbol(value: string) {
     const trimmed = value.trim().toUpperCase()
     if (!trimmed) return ""
-    if (trimmed.includes("/")) return trimmed.replace(/\s+/g, "")
-    if (trimmed.includes("-")) return trimmed.replace(/\s+/g, "").replace(/-/g, "/")
-    return trimmed.replace(/\s+/g, "")
+    const cleaned = trimmed.includes("-")
+      ? trimmed.replace(/\s+/g, "").replace(/-/g, "/")
+      : trimmed.replace(/\s+/g, "")
+    if (!cleaned) return ""
+    if (!/[A-Z]/.test(cleaned)) return ""
+    return cleaned
   }
 
   function normalizeTicker(value: string) {
-    return value.trim().toUpperCase().replace(/[^A-Z0-9.-]/g, "")
+    const cleaned = value.trim().toUpperCase().replace(/[^A-Z0-9.-]/g, "")
+    if (!cleaned) return ""
+    if (!/[A-Z]/.test(cleaned)) return ""
+    return cleaned
   }
 
   function uniqueList(values: string[]) {
@@ -552,6 +1151,15 @@ export default function DashboardPage() {
 
   function toggleAssetFocus(value: AssetClass) {
     setAssetFocus((prev) => {
+      const next = prev.includes(value)
+        ? prev.filter((item) => item !== value)
+        : [...prev, value]
+      return next.length > 0 ? next : prev
+    })
+  }
+
+  function toggleTrendFocus(value: AssetClass) {
+    setTrendAssetFocus((prev) => {
       const next = prev.includes(value)
         ? prev.filter((item) => item !== value)
         : [...prev, value]
@@ -632,6 +1240,24 @@ export default function DashboardPage() {
       forex: new Set(primaryForexSelection.map(normalizeSymbol).filter(Boolean)),
     }
   }, [primaryCryptoSelection, primaryStockSelection, primaryForexSelection])
+
+  const normalizedQuickAsset = useMemo(() => {
+    if (quickAssetClass === "stock") return normalizeTicker(quickAssetInput)
+    return normalizeSymbol(quickAssetInput)
+  }, [quickAssetClass, quickAssetInput])
+
+  const quickAssetExists = useMemo(() => {
+    if (!normalizedQuickAsset) return false
+    if (quickAssetClass === "stock") {
+      return watchlistSets.stocks.has(normalizeTicker(normalizedQuickAsset))
+    }
+    if (quickAssetClass === "forex") {
+      return watchlistSets.forex.has(normalizeSymbol(normalizedQuickAsset))
+    }
+    return watchlistSets.crypto.has(normalizeSymbol(normalizedQuickAsset))
+  }, [normalizedQuickAsset, quickAssetClass, watchlistSets])
+
+  const canQuickAdd = normalizedQuickAsset.length > 0 && !quickAssetExists
 
   const trendingCrypto = useMemo(() => {
     return uniqueList(
@@ -728,6 +1354,13 @@ export default function DashboardPage() {
     [popularStocks, trendingStocks, stockSelection]
   )
 
+  const stockSearchSuggestions = useMemo(() => {
+    if (!stockSearch || stockSymbolMatches.length === 0) {
+      return stockSuggestions
+    }
+    return uniqueList([...stockSymbolMatches, ...stockSuggestions])
+  }, [stockSearch, stockSymbolMatches, stockSuggestions])
+
   const forexSuggestions = useMemo(
     () =>
       uniqueList(
@@ -741,6 +1374,46 @@ export default function DashboardPage() {
       ),
     [popularFx, trendingFx, forexSelection]
   )
+
+  const quickSuggestions = useMemo(() => {
+    const limitCount = 25
+    if (quickAssetClass === "stock") {
+      const base = quickStockMatches.length > 0 ? quickStockMatches : stockSuggestions
+      return filterOptions(base, quickAssetInput, stockSelection, normalizeTicker, limitCount)
+    }
+    if (quickAssetClass === "forex") {
+      return filterOptions(
+        forexSuggestions,
+        quickAssetInput,
+        forexSelection,
+        normalizeSymbol,
+        limitCount
+      )
+    }
+    return filterOptions(
+      cryptoSuggestions,
+      quickAssetInput,
+      cryptoSelection,
+      normalizeSymbol,
+      limitCount
+    )
+  }, [
+    quickAssetClass,
+    quickAssetInput,
+    quickStockMatches,
+    stockSuggestions,
+    stockSelection,
+    forexSuggestions,
+    forexSelection,
+    cryptoSuggestions,
+    cryptoSelection,
+  ])
+
+  useEffect(() => {
+    setQuickSuggestionIndex((prev) =>
+      prev >= quickSuggestions.length ? -1 : prev
+    )
+  }, [quickSuggestions.length])
 
   const filteredCryptoOptions = useMemo(
     () =>
@@ -756,12 +1429,12 @@ export default function DashboardPage() {
   const filteredStockOptions = useMemo(
     () =>
       filterOptions(
-        stockSuggestions,
+        stockSearchSuggestions,
         stockSearch,
         stockSelection,
         normalizeTicker
       ),
-    [stockSuggestions, stockSearch, stockSelection]
+    [stockSearchSuggestions, stockSearch, stockSelection]
   )
 
   const filteredForexOptions = useMemo(
@@ -830,6 +1503,43 @@ export default function DashboardPage() {
     [hotTrades, assetFocusSet]
   )
 
+  const trendFocusSet = useMemo(() => new Set(trendAssetFocus), [trendAssetFocus])
+  const trendingBuckets = useMemo(() => {
+    const byHorizon = trending?.byHorizon?.[trendHorizon] ?? {}
+    return {
+      crypto: trendFocusSet.has("crypto") ? byHorizon.crypto ?? [] : [],
+      stock: trendFocusSet.has("stock") ? byHorizon.stock ?? [] : [],
+      forex: trendFocusSet.has("forex") ? byHorizon.forex ?? [] : [],
+    }
+  }, [trending, trendHorizon, trendFocusSet])
+
+  const trendWeightsDisplay = useMemo(() => {
+    return {
+      momentum:
+        typeof trending?.weights?.momentum === "number"
+          ? trending.weights.momentum
+          : trendMomentumWeight,
+      volume:
+        typeof trending?.weights?.volume === "number"
+          ? trending.weights.volume
+          : trendVolumeWeight,
+      signals:
+        typeof trending?.weights?.signals === "number"
+          ? trending.weights.signals
+          : trendSignalsWeight,
+      news:
+        typeof trending?.weights?.news === "number"
+          ? trending.weights.news
+          : trendNewsWeight,
+    }
+  }, [
+    trending,
+    trendMomentumWeight,
+    trendVolumeWeight,
+    trendSignalsWeight,
+    trendNewsWeight,
+  ])
+
   const buyIdeas = useMemo(
     () => focusedHotTrades.filter((trade) => trade.side === "buy").slice(0, 3),
     [focusedHotTrades]
@@ -851,15 +1561,43 @@ export default function DashboardPage() {
       .slice(0, 4)
   }, [focusedHotTrades, dipHorizon, riskProfile])
 
+  const nearDipIdeas = useMemo(() => {
+    if (dipIdeas.length > 0) return []
+    return focusedHotTrades
+      .map((trade) => ({
+        trade,
+        horizonChange: getHorizonChange(trade, dipHorizon),
+      }))
+      .filter((entry) => entry.horizonChange !== null)
+      .sort((a, b) => {
+        if (a.horizonChange === null && b.horizonChange === null) return 0
+        if (a.horizonChange === null) return 1
+        if (b.horizonChange === null) return -1
+        if (a.horizonChange !== b.horizonChange) {
+          return a.horizonChange - b.horizonChange
+        }
+        return (b.trade.score ?? 0) - (a.trade.score ?? 0)
+      })
+      .slice(0, 4)
+      .map((entry) => entry.trade)
+  }, [dipIdeas.length, focusedHotTrades, dipHorizon])
+
+  const dipDisplayMode = dipIdeas.length > 0 ? "strict" : nearDipIdeas.length > 0 ? "closest" : "empty"
+  const displayDipIdeas = dipDisplayMode === "strict" ? dipIdeas : nearDipIdeas
+
+  function isSymbolWatchlisted(assetClass: AssetClass, symbol: string) {
+    if (!symbol) return false
+    if (assetClass === "stock") {
+      return watchlistSets.stocks.has(normalizeTicker(symbol))
+    }
+    if (assetClass === "forex") {
+      return watchlistSets.forex.has(normalizeSymbol(symbol))
+    }
+    return watchlistSets.crypto.has(normalizeSymbol(symbol))
+  }
+
   function isWatchlisted(trade: MarketHotTrade) {
-    if (!trade.symbol) return false
-    if (trade.assetClass === "stock") {
-      return watchlistSets.stocks.has(normalizeTicker(trade.symbol))
-    }
-    if (trade.assetClass === "forex") {
-      return watchlistSets.forex.has(normalizeSymbol(trade.symbol))
-    }
-    return watchlistSets.crypto.has(normalizeSymbol(trade.symbol))
+    return trade.symbol ? isSymbolWatchlisted(trade.assetClass, trade.symbol) : false
   }
 
   function isPrimaryTrade(trade: MarketHotTrade) {
@@ -879,8 +1617,11 @@ export default function DashboardPage() {
       return
     }
 
+    const activeDb = db
     setPreferencesSaving(true)
     try {
+      const resolvedAssetFocus: AssetClass[] =
+        assetFocus.length > 0 ? assetFocus : ["crypto", "stock", "forex"]
       const payload: MarketUniverseDoc = {
         crypto: {
           includeTrending: includeCryptoTrending,
@@ -897,12 +1638,24 @@ export default function DashboardPage() {
         updatedAt: serverTimestamp(),
       }
 
-      const controls = {
+      const controls: MarketControlsDoc = {
         llmIntervalMinutes,
         enableLLM: llmEnabled,
+        newsIntervalMinutes,
+        enableNews: newsEnabled,
         dipHorizon,
+        trendHorizon,
+        trendWeights: {
+          momentum: trendMomentumWeight,
+          volume: trendVolumeWeight,
+          signals: trendSignalsWeight,
+          news: trendNewsWeight,
+        },
+        autoTuneEnabled,
+        autoTuneWithAI,
+        autoTuneIntervalHours,
         riskProfile,
-        assetFocus: assetFocus.length > 0 ? assetFocus : ["crypto", "stock", "forex"],
+        assetFocus: resolvedAssetFocus,
         primaryAssets: {
           crypto: uniqueList(primaryCryptoSelection.map(normalizeSymbol).filter(Boolean)),
           stocks: uniqueList(primaryStockSelection.map(normalizeTicker).filter(Boolean)),
@@ -912,8 +1665,8 @@ export default function DashboardPage() {
       }
 
       await Promise.all([
-        setDoc(doc(db, "market", "universe"), payload, { merge: true }),
-        setDoc(doc(db, "market", "controls"), controls, { merge: true }),
+        setDoc(doc(activeDb, "market", "universe"), payload, { merge: true }),
+        setDoc(doc(activeDb, "market", "controls"), controls, { merge: true }),
       ])
       toast.success("Preferences saved")
       setUniverseOpen(false)
@@ -924,13 +1677,14 @@ export default function DashboardPage() {
     }
   }
 
-  async function addTradeToUniverse(trade: MarketHotTrade) {
+  async function addTradeToUniverse(trade: { assetClass: AssetClass; symbol?: string | null }) {
     if (!firebaseEnabled || !db) {
       toast.error("Firebase not configured")
       return
     }
     if (!trade.symbol) return
 
+    const activeDb = db
     const cryptoSymbols = new Set(
       uniqueList((universe?.crypto?.symbols ?? []).map(normalizeSymbol).filter(Boolean))
     )
@@ -952,18 +1706,21 @@ export default function DashboardPage() {
       if (pair) cryptoSymbols.add(pair)
     }
 
+    const nextCrypto = Array.from(cryptoSymbols)
+    const nextStocks = Array.from(stockSymbols)
+    const nextForex = Array.from(forexPairs)
     const payload: MarketUniverseDoc = {
       crypto: {
         includeTrending: includeCryptoTrending,
-        symbols: Array.from(cryptoSymbols),
+        symbols: nextCrypto,
       },
       stocks: {
         includeTrending: includeStockTrending,
-        symbols: Array.from(stockSymbols),
+        symbols: nextStocks,
       },
       forex: {
         includeTrending: includeForexTrending,
-        pairs: Array.from(forexPairs),
+        pairs: nextForex,
       },
       updatedAt: serverTimestamp(),
     }
@@ -974,12 +1731,12 @@ export default function DashboardPage() {
     const prevForex = forexSelection
 
     setUniverse(payload)
-    setCryptoSelection(payload.crypto.symbols ?? [])
-    setStockSelection(payload.stocks.symbols ?? [])
-    setForexSelection(payload.forex.pairs ?? [])
+    setCryptoSelection(nextCrypto)
+    setStockSelection(nextStocks)
+    setForexSelection(nextForex)
 
     try {
-      await setDoc(doc(db, "market", "universe"), payload, { merge: true })
+      await setDoc(doc(activeDb, "market", "universe"), payload, { merge: true })
       toast.success("Added to universe")
     } catch {
       setUniverse(prevUniverse)
@@ -997,6 +1754,7 @@ export default function DashboardPage() {
     }
     if (!trade.symbol) return
 
+    const activeDb = db
     const cryptoSymbols = new Set(
       uniqueList((universe?.crypto?.symbols ?? []).map(normalizeSymbol).filter(Boolean))
     )
@@ -1031,27 +1789,33 @@ export default function DashboardPage() {
       }
     }
 
+    const nextCrypto = Array.from(cryptoSymbols)
+    const nextStocks = Array.from(stockSymbols)
+    const nextForex = Array.from(forexPairs)
+    const nextPrimaryCrypto = Array.from(primaryCrypto)
+    const nextPrimaryStocks = Array.from(primaryStocks)
+    const nextPrimaryForex = Array.from(primaryForex)
     const universePayload: MarketUniverseDoc = {
       crypto: {
         includeTrending: includeCryptoTrending,
-        symbols: Array.from(cryptoSymbols),
+        symbols: nextCrypto,
       },
       stocks: {
         includeTrending: includeStockTrending,
-        symbols: Array.from(stockSymbols),
+        symbols: nextStocks,
       },
       forex: {
         includeTrending: includeForexTrending,
-        pairs: Array.from(forexPairs),
+        pairs: nextForex,
       },
       updatedAt: serverTimestamp(),
     }
 
     const controlsPayload: MarketControlsDoc = {
       primaryAssets: {
-        crypto: Array.from(primaryCrypto),
-        stocks: Array.from(primaryStocks),
-        forex: Array.from(primaryForex),
+        crypto: nextPrimaryCrypto,
+        stocks: nextPrimaryStocks,
+        forex: nextPrimaryForex,
       },
       updatedAt: serverTimestamp(),
     }
@@ -1065,17 +1829,17 @@ export default function DashboardPage() {
     const prevPrimaryForex = primaryForexSelection
 
     setUniverse(universePayload)
-    setCryptoSelection(universePayload.crypto.symbols ?? [])
-    setStockSelection(universePayload.stocks.symbols ?? [])
-    setForexSelection(universePayload.forex.pairs ?? [])
-    setPrimaryCryptoSelection(controlsPayload.primaryAssets?.crypto ?? [])
-    setPrimaryStockSelection(controlsPayload.primaryAssets?.stocks ?? [])
-    setPrimaryForexSelection(controlsPayload.primaryAssets?.forex ?? [])
+    setCryptoSelection(nextCrypto)
+    setStockSelection(nextStocks)
+    setForexSelection(nextForex)
+    setPrimaryCryptoSelection(nextPrimaryCrypto)
+    setPrimaryStockSelection(nextPrimaryStocks)
+    setPrimaryForexSelection(nextPrimaryForex)
 
     try {
       await Promise.all([
-        setDoc(doc(db, "market", "universe"), universePayload, { merge: true }),
-        setDoc(doc(db, "market", "controls"), controlsPayload, { merge: true }),
+        setDoc(doc(activeDb, "market", "universe"), universePayload, { merge: true }),
+        setDoc(doc(activeDb, "market", "controls"), controlsPayload, { merge: true }),
       ])
       toast.success("Added to primary picks")
     } catch {
@@ -1088,6 +1852,25 @@ export default function DashboardPage() {
       setPrimaryForexSelection(prevPrimaryForex)
       toast.error("Failed to update primary picks")
     }
+  }
+
+  async function addQuickSymbol(symbol: string) {
+    const normalized =
+      quickAssetClass === "stock"
+        ? normalizeTicker(symbol)
+        : normalizeSymbol(symbol)
+    if (!normalized) return
+    await addTradeToUniverse({
+      assetClass: quickAssetClass,
+      symbol: normalized,
+    })
+    setQuickAssetInput("")
+    setQuickSuggestionIndex(-1)
+  }
+
+  async function addQuickAsset() {
+    if (!normalizedQuickAsset) return
+    await addQuickSymbol(normalizedQuickAsset)
   }
 
   const universeTotal =
@@ -1111,6 +1894,14 @@ export default function DashboardPage() {
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={() => setUniverseOpen(true)}>
             Manage assets
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={triggerRefresh}
+            disabled={!firebaseEnabled || refreshingJobs || !refreshEndpoint}
+            title={refreshEndpoint ? "Run market jobs now" : "Set VITE_REFRESH_URL to enable"}
+          >
+            {refreshingJobs ? "Refreshing..." : "Refresh now"}
           </Button>
           <Button
             variant="outline"
@@ -1185,6 +1976,42 @@ export default function DashboardPage() {
                   </div>
 
                   <div className="rounded-lg border border-border/60 bg-muted/30 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium">News cadence</div>
+                        <div className="text-xs text-muted-foreground">
+                          Marketaux headlines refresh on this schedule.
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant={newsEnabled ? "secondary" : "outline"}
+                        size="sm"
+                        onClick={() => setNewsEnabled((prev) => !prev)}
+                        aria-pressed={newsEnabled}
+                      >
+                        {newsEnabled ? "News on" : "News off"}
+                      </Button>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      <Label>News interval</Label>
+                      <div className="flex flex-wrap gap-2">
+                        {NEWS_INTERVAL_OPTIONS.map((option) => (
+                          <Button
+                            key={option}
+                            type="button"
+                            variant={newsIntervalMinutes === option ? "secondary" : "outline"}
+                            size="sm"
+                            onClick={() => setNewsIntervalMinutes(option)}
+                          >
+                            {option}m
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-border/60 bg-muted/30 p-4">
                     <div className="text-sm font-medium">Dip tuning</div>
                     <div className="text-xs text-muted-foreground">
                       Adjust the dip horizon, risk filter, and asset focus.
@@ -1238,6 +2065,219 @@ export default function DashboardPage() {
                           </Button>
                         ))}
                       </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-border/60 bg-muted/30 p-4 md:col-span-2">
+                    <div className="text-sm font-medium">Trend scoring</div>
+                    <div className="text-xs text-muted-foreground">
+                      Tune how we rank trending assets across horizons.
+                    </div>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>Trend horizon</Label>
+                        <div className="flex flex-wrap gap-2">
+                          {TREND_HORIZON_OPTIONS.map((option) => (
+                            <Button
+                              key={option}
+                              type="button"
+                              variant={trendHorizon === option ? "secondary" : "outline"}
+                              size="sm"
+                              onClick={() => setTrendHorizon(option)}
+                            >
+                              {option}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Weights (0-100)</Label>
+                        <div className="grid gap-2 sm:grid-cols-4">
+                          <div className="space-y-1">
+                            <Label className="text-xs text-muted-foreground">Momentum</Label>
+                            <Input
+                              type="number"
+                              inputMode="numeric"
+                              min={0}
+                              max={100}
+                              value={trendMomentumWeight}
+                              onChange={(event) => {
+                                const next = Number(event.target.value)
+                                if (Number.isFinite(next)) {
+                                  setTrendMomentumWeight(Math.max(0, Math.min(100, next)))
+                                }
+                              }}
+                            />
+                            <input
+                              type="range"
+                              min={0}
+                              max={100}
+                              step={1}
+                              value={trendMomentumWeight}
+                              onChange={(event) => {
+                                const next = Number(event.target.value)
+                                if (Number.isFinite(next)) {
+                                  setTrendMomentumWeight(Math.max(0, Math.min(100, next)))
+                                }
+                              }}
+                              className="h-2 w-full cursor-pointer accent-[hsl(var(--primary))]"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs text-muted-foreground">Volume</Label>
+                            <Input
+                              type="number"
+                              inputMode="numeric"
+                              min={0}
+                              max={100}
+                              value={trendVolumeWeight}
+                              onChange={(event) => {
+                                const next = Number(event.target.value)
+                                if (Number.isFinite(next)) {
+                                  setTrendVolumeWeight(Math.max(0, Math.min(100, next)))
+                                }
+                              }}
+                            />
+                            <input
+                              type="range"
+                              min={0}
+                              max={100}
+                              step={1}
+                              value={trendVolumeWeight}
+                              onChange={(event) => {
+                                const next = Number(event.target.value)
+                                if (Number.isFinite(next)) {
+                                  setTrendVolumeWeight(Math.max(0, Math.min(100, next)))
+                                }
+                              }}
+                              className="h-2 w-full cursor-pointer accent-[hsl(var(--primary))]"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs text-muted-foreground">Bot signals</Label>
+                            <Input
+                              type="number"
+                              inputMode="numeric"
+                              min={0}
+                              max={100}
+                              value={trendSignalsWeight}
+                              onChange={(event) => {
+                                const next = Number(event.target.value)
+                                if (Number.isFinite(next)) {
+                                  setTrendSignalsWeight(Math.max(0, Math.min(100, next)))
+                                }
+                              }}
+                            />
+                            <input
+                              type="range"
+                              min={0}
+                              max={100}
+                              step={1}
+                              value={trendSignalsWeight}
+                              onChange={(event) => {
+                                const next = Number(event.target.value)
+                                if (Number.isFinite(next)) {
+                                  setTrendSignalsWeight(Math.max(0, Math.min(100, next)))
+                                }
+                              }}
+                              className="h-2 w-full cursor-pointer accent-[hsl(var(--primary))]"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs text-muted-foreground">News</Label>
+                            <Input
+                              type="number"
+                              inputMode="numeric"
+                              min={0}
+                              max={100}
+                              value={trendNewsWeight}
+                              onChange={(event) => {
+                                const next = Number(event.target.value)
+                                if (Number.isFinite(next)) {
+                                  setTrendNewsWeight(Math.max(0, Math.min(100, next)))
+                                }
+                              }}
+                            />
+                            <input
+                              type="range"
+                              min={0}
+                              max={100}
+                              step={1}
+                              value={trendNewsWeight}
+                              onChange={(event) => {
+                                const next = Number(event.target.value)
+                                if (Number.isFinite(next)) {
+                                  setTrendNewsWeight(Math.max(0, Math.min(100, next)))
+                                }
+                              }}
+                              className="h-2 w-full cursor-pointer accent-[hsl(var(--primary))]"
+                            />
+                          </div>
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Total weight{" "}
+                          {trendMomentumWeight +
+                            trendVolumeWeight +
+                            trendSignalsWeight +
+                            trendNewsWeight}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-4 space-y-2">
+                      <Label>Auto-tune weights</Label>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          variant={autoTuneEnabled ? "secondary" : "outline"}
+                          size="sm"
+                          onClick={() => setAutoTuneEnabled((prev) => !prev)}
+                          aria-pressed={autoTuneEnabled}
+                        >
+                          {autoTuneEnabled ? "Auto-tune on" : "Auto-tune off"}
+                        </Button>
+                        <span className="text-xs text-muted-foreground">
+                          Adjusts weights from recent accuracy with optional AI nudging.
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          variant={autoTuneWithAI ? "secondary" : "outline"}
+                          size="sm"
+                          onClick={() => setAutoTuneWithAI((prev) => !prev)}
+                          disabled={!autoTuneEnabled}
+                          aria-pressed={autoTuneWithAI}
+                        >
+                          {autoTuneWithAI ? "AI assist on" : "AI assist off"}
+                        </Button>
+                        <span className="text-xs text-muted-foreground">
+                          Keeps changes small and logged.
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {AUTO_TUNE_INTERVAL_OPTIONS.map((option) => (
+                          <Button
+                            key={option}
+                            type="button"
+                            variant={
+                              autoTuneIntervalHours === option ? "secondary" : "outline"
+                            }
+                            size="sm"
+                            onClick={() => setAutoTuneIntervalHours(option)}
+                            disabled={!autoTuneEnabled}
+                          >
+                            {option}h
+                          </Button>
+                        ))}
+                      </div>
+                      {autoTuneLastAt ? (
+                        <div className="text-xs text-muted-foreground">
+                          Last tuned {formatRelativeTimestamp(autoTuneLastAt)}.
+                        </div>
+                      ) : null}
+                      {autoTuneNotes ? (
+                        <div className="text-xs text-muted-foreground">{autoTuneNotes}</div>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -1516,6 +2556,17 @@ export default function DashboardPage() {
                           {canAddStock && (
                             <div className="text-xs text-muted-foreground">
                               Add {normalizedStockSearch} to your universe.
+                            </div>
+                          )}
+                          {stockSearch && (
+                            <div className="text-xs text-muted-foreground">
+                              {stockSearch.length < 2
+                                ? "Type 2+ letters to search the cached global ticker list."
+                                : stockSymbolLoading
+                                  ? "Searching cached global tickers..."
+                                  : stockSymbolMatches.length > 0
+                                    ? `Showing ${stockSymbolMatches.length} cached matches.`
+                                    : "No cached matches found."}
                             </div>
                           )}
                         </div>
@@ -1987,7 +3038,7 @@ export default function DashboardPage() {
                         Horizon {dipHorizon} • {riskProfile} risk • {assetFocusLabel}
                       </div>
                     </div>
-                    <Badge variant="outline">{dipIdeas.length} picks</Badge>
+                    <Badge variant="outline">{displayDipIdeas.length} picks</Badge>
                   </CardHeader>
                   <CardContent className="space-y-3">
                     {!firebaseEnabled ? (
@@ -1996,13 +3047,19 @@ export default function DashboardPage() {
                       </div>
                     ) : loadingHotTrades ? (
                       <div className="text-sm opacity-70">Scanning for dips...</div>
-                    ) : dipIdeas.length === 0 ? (
+                    ) : displayDipIdeas.length === 0 ? (
                       <div className="text-sm opacity-70">
                         No dip opportunities yet. Adjust horizon or risk to widen the scan.
                       </div>
                     ) : (
                       <div className="space-y-3">
-                        {dipIdeas.map((trade) => {
+                        {dipDisplayMode === "closest" && (
+                          <div className="text-xs text-muted-foreground">
+                            No strict dips found. Showing the closest opportunities to your
+                            horizon.
+                          </div>
+                        )}
+                        {displayDipIdeas.map((trade) => {
                           const horizonChange = getHorizonChange(trade, dipHorizon)
                           return (
                             <div
@@ -2075,7 +3132,9 @@ export default function DashboardPage() {
                     </div>
                     <div className="flex items-center gap-2">
                       {hotTradesUpdatedAt && (
-                        <Badge variant="outline">{formatTimestamp(hotTradesUpdatedAt)}</Badge>
+                        <Badge variant="outline">
+                          Updated {formatRelativeTimestamp(hotTradesUpdatedAt)}
+                        </Badge>
                       )}
                     </div>
                   </CardHeader>
@@ -2150,6 +3209,200 @@ export default function DashboardPage() {
                           </div>
                         ))}
                       </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card className="reveal lg:col-span-2" style={{ "--delay": "210ms" } as CSSProperties}>
+                  <CardHeader className="flex-row items-center justify-between space-y-0">
+                    <div>
+                      <CardTitle className="text-base">Trending Now</CardTitle>
+                      <div className="text-xs text-muted-foreground">
+                        Weighted momentum, volume, and bot signals.
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {trendingUpdatedAt && (
+                        <Badge variant="outline">
+                          Updated {formatRelativeTimestamp(trendingUpdatedAt)}
+                        </Badge>
+                      )}
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {!firebaseEnabled ? (
+                      <div className="text-sm opacity-70">
+                        Connect Firebase to load trending data.
+                      </div>
+                    ) : loadingTrending ? (
+                      <div className="text-sm opacity-70">Loading trending list...</div>
+                    ) : !trending ? (
+                      <div className="text-sm opacity-70">
+                        No trending data yet. Deploy the market intel worker to populate this feed.
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {TREND_HORIZON_OPTIONS.map((option) => (
+                            <Button
+                              key={`trend-${option}`}
+                              type="button"
+                              size="sm"
+                              variant={trendHorizon === option ? "secondary" : "outline"}
+                              onClick={() => setTrendHorizon(option)}
+                            >
+                              {option}
+                            </Button>
+                          ))}
+                          <div className="w-full text-xs text-muted-foreground sm:ml-auto sm:w-auto">
+                            Weights: M{trendWeightsDisplay.momentum} · V{trendWeightsDisplay.volume} · S{trendWeightsDisplay.signals} · N{trendWeightsDisplay.news}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {ASSET_FOCUS_OPTIONS.map((option) => (
+                            <Button
+                              key={`trend-focus-${option.value}`}
+                              type="button"
+                              size="sm"
+                              variant={trendAssetFocus.includes(option.value) ? "secondary" : "outline"}
+                              onClick={() => toggleTrendFocus(option.value)}
+                            >
+                              {option.label}
+                            </Button>
+                          ))}
+                        </div>
+
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                          {(["crypto", "stock", "forex"] as AssetClass[]).map((assetClass) => {
+                            const list =
+                              assetClass === "crypto"
+                                ? trendingBuckets.crypto
+                                : assetClass === "stock"
+                                  ? trendingBuckets.stock
+                                  : trendingBuckets.forex
+                            if (!trendFocusSet.has(assetClass)) return null
+                            const label =
+                              assetClass === "crypto"
+                                ? "Crypto"
+                                : assetClass === "stock"
+                                  ? "Stocks"
+                                  : "FX"
+                            return (
+                              <div
+                                key={`trend-${assetClass}`}
+                                className="rounded-2xl border border-border/60 bg-background/60 p-4 space-y-3"
+                              >
+                                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                                  {label}
+                                </div>
+                                {list.length === 0 ? (
+                                  <div className="text-sm text-muted-foreground">
+                                    No picks yet.
+                                  </div>
+                                ) : (
+                                  list.map((item) => {
+                                    const momentum = getTrendMomentum(item, trendHorizon)
+                                    const momentumLabel = momentum.window ?? trendHorizon
+                                    const showNewsMetric = Boolean(
+                                      item.news?.count && item.news.count > 0
+                                    )
+                                    const metrics = [
+                                      { key: "momentum", label: "Momentum", value: item.components?.momentum },
+                                      { key: "volume", label: "Volume", value: item.components?.volume },
+                                      { key: "signals", label: "Signals", value: item.components?.signals },
+                                    ]
+                                    if (showNewsMetric) {
+                                      metrics.push({
+                                        key: "news",
+                                        label: "News",
+                                        value: item.components?.news,
+                                      })
+                                    }
+                                    return (
+                                      <div
+                                        key={`trend-${assetClass}-${item.symbol}`}
+                                        className="group min-w-0 rounded-2xl border border-border/60 bg-background/80 p-4 text-sm shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                                      >
+                                        <div className="flex items-start justify-between gap-4">
+                                          <div className="min-w-0">
+                                            <div className="text-sm font-semibold tracking-tight truncate">
+                                              {item.symbol}
+                                            </div>
+                                            <div className="mt-2 inline-flex items-center rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">
+                                              {momentumLabel} {formatChange(momentum.change ?? undefined)}
+                                            </div>
+                                            {item.signals?.total ? (
+                                              <div className="mt-2 text-[11px] text-muted-foreground">
+                                                {item.signals.total} signals · {item.signals.buy ?? 0} buy / {item.signals.sell ?? 0} sell
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                          <div className="flex flex-col items-end gap-2">
+                                            <Badge variant="outline" className={scoreTone(item.score)}>
+                                              {item.score?.toFixed(1) ?? "--"}
+                                            </Badge>
+                                            {!isSymbolWatchlisted(assetClass, item.symbol) && (
+                                              <Button
+                                                variant="secondary"
+                                                size="sm"
+                                                className="h-7 rounded-full px-3 text-xs"
+                                                onClick={() =>
+                                                  addTradeToUniverse({
+                                                    assetClass,
+                                                    symbol: item.symbol,
+                                                  })
+                                                }
+                                                disabled={!firebaseEnabled}
+                                              >
+                                                Add
+                                              </Button>
+                                            )}
+                                          </div>
+                                        </div>
+                                        <div className="mt-3 space-y-1">
+                                          {metrics.map((metric) => {
+                                            const value =
+                                              typeof metric.value === "number" ? metric.value : null
+                                            const clamped =
+                                              value === null ? 0 : Math.min(Math.max(value, 0), 100)
+                                            const display =
+                                              value === null ? "--" : Math.round(value).toString()
+                                            return (
+                                              <div
+                                                key={`${item.symbol}-${metric.key}`}
+                                                className="flex items-center gap-3 text-[11px] text-muted-foreground"
+                                              >
+                                                <span className="w-16 shrink-0 text-[10px] uppercase tracking-[0.2em]">
+                                                  {metric.label}
+                                                </span>
+                                                <div className="relative h-1.5 flex-1 rounded-full bg-muted/40">
+                                                  <div
+                                                    className="h-1.5 rounded-full bg-primary/60 transition"
+                                                    style={{ width: `${clamped}%` }}
+                                                  />
+                                                </div>
+                                                <span className="w-8 shrink-0 text-right font-mono text-[10px]">
+                                                  {display}
+                                                </span>
+                                              </div>
+                                            )
+                                          })}
+                                        </div>
+                                        {showNewsMetric ? (
+                                          <div className="mt-2 text-[11px] text-muted-foreground">
+                                            {item.news?.count} headlines · sentiment{" "}
+                                            {formatSentiment(item.news?.sentiment)}
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    )
+                                  })
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </>
                     )}
                   </CardContent>
                 </Card>
@@ -2230,6 +3483,143 @@ export default function DashboardPage() {
                 <CardContent className="space-y-3">
                   <div className="space-y-2">
                     <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                      Quick add
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Select
+                        className="w-auto min-w-[140px]"
+                        value={quickAssetClass}
+                        onChange={(event) =>
+                          setQuickAssetClass(event.target.value as AssetClass)
+                        }
+                      >
+                        <option value="crypto">Crypto</option>
+                        <option value="stock">Stocks</option>
+                        <option value="forex">FX</option>
+                      </Select>
+                      <div className="relative w-full min-w-[180px] flex-1">
+                        <Input
+                          className="w-full"
+                          value={quickAssetInput}
+                          onChange={(event) => setQuickAssetInput(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "ArrowDown") {
+                              if (quickSuggestions.length === 0) return
+                              event.preventDefault()
+                              setQuickSuggestionIndex((prev) =>
+                                Math.min(prev + 1, quickSuggestions.length - 1)
+                              )
+                              return
+                            }
+                            if (event.key === "ArrowUp") {
+                              if (quickSuggestions.length === 0) return
+                              event.preventDefault()
+                              setQuickSuggestionIndex((prev) => (prev <= 0 ? -1 : prev - 1))
+                              return
+                            }
+                            if (event.key === "Enter") {
+                              event.preventDefault()
+                              if (
+                                quickSuggestionIndex >= 0 &&
+                                quickSuggestionIndex < quickSuggestions.length
+                              ) {
+                                addQuickSymbol(quickSuggestions[quickSuggestionIndex])
+                              } else if (canQuickAdd) {
+                                addQuickAsset()
+                              }
+                            }
+                          }}
+                          placeholder={
+                            quickAssetClass === "stock"
+                              ? "Search tickers (e.g. AAPL)"
+                              : quickAssetClass === "forex"
+                              ? "Search pairs (e.g. EUR/USD)"
+                              : "Search pairs (e.g. BTC/USDT)"
+                          }
+                          role="combobox"
+                          aria-autocomplete="list"
+                          aria-expanded={quickAssetInput.trim().length > 0}
+                          aria-controls="quick-asset-list"
+                          aria-activedescendant={
+                            quickSuggestionIndex >= 0
+                              ? `quick-asset-option-${quickSuggestionIndex}`
+                              : undefined
+                          }
+                        />
+                        {quickAssetInput.trim().length > 0 && quickSuggestions.length > 0 && (
+                          <div className="absolute z-20 mt-1 w-full overflow-hidden rounded-lg border border-border bg-background shadow-lg">
+                            <div
+                              className="max-h-60 overflow-auto py-1"
+                              role="listbox"
+                              id="quick-asset-list"
+                            >
+                              {quickSuggestions.map((symbol, index) => (
+                                <button
+                                  key={`quick-${quickAssetClass}-${symbol}`}
+                                  type="button"
+                                  role="option"
+                                  aria-selected={index === quickSuggestionIndex}
+                                  id={`quick-asset-option-${index}`}
+                                  className={[
+                                    "flex w-full items-center justify-between px-3 py-2 text-left text-sm",
+                                    index === quickSuggestionIndex
+                                      ? "bg-muted text-foreground"
+                                      : "hover:bg-muted/60",
+                                  ].join(" ")}
+                                  onMouseDown={(event) => event.preventDefault()}
+                                  onClick={() => addQuickSymbol(symbol)}
+                                >
+                                  <span className="font-medium">{symbol}</span>
+                                  <span className="text-xs text-muted-foreground">
+                                    {quickAssetClass === "stock"
+                                      ? "Stock"
+                                      : quickAssetClass === "forex"
+                                      ? "FX"
+                                      : "Crypto"}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {quickAssetInput.trim().length > 0 && quickSuggestions.length === 0 && (
+                          <div className="absolute z-20 mt-1 w-full rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground shadow-lg">
+                            No matches found.
+                          </div>
+                        )}
+                      </div>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={addQuickAsset}
+                        disabled={!canQuickAdd}
+                      >
+                        Add
+                      </Button>
+                    </div>
+                    {quickAssetClass === "stock" && quickAssetInput && (
+                      <div className="text-xs text-muted-foreground">
+                        {quickAssetInput.trim().length < 2
+                          ? "Type 2+ letters to search the cached global ticker list."
+                          : quickStockLoading
+                            ? "Searching cached global tickers..."
+                            : quickStockMatches.length > 0
+                              ? `Showing ${quickStockMatches.length} cached matches.`
+                              : "No cached matches found."}
+                      </div>
+                    )}
+                    {!canQuickAdd && normalizedQuickAsset ? (
+                      <div className="text-xs text-muted-foreground">
+                        Already in your universe.
+                      </div>
+                    ) : (
+                      <div className="text-xs text-muted-foreground">
+                        Use Manage assets for bulk edits and trending picks.
+                      </div>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
                       Crypto
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -2237,7 +3627,7 @@ export default function DashboardPage() {
                         <span className="text-xs text-muted-foreground">No crypto pairs yet.</span>
                       ) : (
                         visibleCrypto.map((symbol) => (
-                          <Badge key={symbol} variant="secondary">
+                          <Badge key={symbol} variant="secondary" className="font-mono">
                             {symbol}
                           </Badge>
                         ))
@@ -2258,7 +3648,7 @@ export default function DashboardPage() {
                         <span className="text-xs text-muted-foreground">No stock tickers yet.</span>
                       ) : (
                         visibleStocks.map((symbol) => (
-                          <Badge key={symbol} variant="secondary">
+                          <Badge key={symbol} variant="secondary" className="font-mono">
                             {symbol}
                           </Badge>
                         ))
@@ -2279,7 +3669,7 @@ export default function DashboardPage() {
                         <span className="text-xs text-muted-foreground">No FX pairs yet.</span>
                       ) : (
                         visibleForex.map((symbol) => (
-                          <Badge key={symbol} variant="secondary">
+                          <Badge key={symbol} variant="secondary" className="font-mono">
                             {symbol}
                           </Badge>
                         ))
@@ -2335,6 +3725,38 @@ export default function DashboardPage() {
                   <div className="text-xs text-muted-foreground">
                     Open Advanced to view the full signal stream.
                   </div>
+                </CardContent>
+              </Card>
+
+              <Card className="reveal" style={{ "--delay": "260ms" } as CSSProperties}>
+                <CardHeader className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base">Prediction Accuracy</CardTitle>
+                    {signalPerformance?.updatedAt && (
+                      <Badge variant="outline">
+                        Updated {formatRelativeTimestamp(signalPerformance.updatedAt)}
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Signals vs market outcomes by horizon.
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <Tabs defaultValue="1h" className="space-y-3">
+                    <TabsList className="grid w-full grid-cols-3">
+                      {DIP_HORIZON_OPTIONS.map((option) => (
+                        <TabsTrigger key={option} value={option}>
+                          {option}
+                        </TabsTrigger>
+                      ))}
+                    </TabsList>
+                    {DIP_HORIZON_OPTIONS.map((option) => (
+                      <TabsContent key={`perf-${option}`} value={option}>
+                        {renderPerformancePanel(option)}
+                      </TabsContent>
+                    ))}
+                  </Tabs>
                 </CardContent>
               </Card>
             </div>

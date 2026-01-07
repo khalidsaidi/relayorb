@@ -1,6 +1,7 @@
 services:
   relayorb-agent:
-    build: ../../agent
+    image: gcr.io/relayorb/relayorb-agent:latest
+    pull_policy: always
     restart: unless-stopped
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
@@ -19,6 +20,24 @@ services:
       - freqtrade
       - hummingbot-api
       - jesse
+
+  relayorb-updater:
+    image: gcr.io/relayorb/relayorb-agent-updater:latest
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
+      - RELAYORB_CONFIG_PATH=/config/config.json
+      - RELAYORB_COMPOSE_PATH=/host/docker-compose.yml
+      - RELAYORB_COMPOSE_PROJECT=relayorb
+      - RELAYORB_AGENT_SERVICE=relayorb-agent
+    volumes:
+      - ./agent-config/config.json:/config/config.json:ro
+      - ./secrets/service-account.json:/secrets/service-account.json:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/host:ro
+    depends_on:
+      - relayorb-agent
 
   freqtrade:
     image: freqtradeorg/freqtrade:stable
@@ -39,7 +58,7 @@ services:
       - ./hummingbot/.env
     environment:
       - BROKER_HOST=emqx
-      - BOTS_PATH=/opt/relayorb/deploy/bot-host/hummingbot
+      - BOTS_PATH=/hummingbot-api/bots
       - DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@postgres:5432/hummingbot_api
       - GATEWAY_URL=http://host.docker.internal:15888
     volumes:

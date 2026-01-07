@@ -1,4 +1,6 @@
-import type { Timestamp } from "firebase/firestore"
+import type { FieldValue, Timestamp } from "firebase/firestore"
+
+type FirestoreTimestamp = Timestamp | FieldValue
 
 export type BotStatus =
   | "online"
@@ -18,6 +20,7 @@ export type BotCommandType =
   | "live"
   | "reload_config"
   | "configure"
+  | "update_agent"
 
 export type BotMode = "signal" | "paper" | "live"
 
@@ -73,11 +76,27 @@ export type BotEventDoc = {
 export type BotSignalDoc = {
   id: string
   botId: string
+  symbol?: string
   side?: "buy" | "sell" | "hold"
   strength?: number
   message?: string
   createdAt?: Timestamp
   data?: Record<string, unknown>
+  evaluation?: {
+    assetClass?: "crypto" | "stock" | "forex"
+    symbol?: string
+    evaluatedAt?: Timestamp
+    horizons?: Record<
+      string,
+      {
+        returnPct?: number
+        hit?: boolean
+        priceAtSignal?: number
+        priceAtHorizon?: number
+        source?: string
+      }
+    >
+  }
 }
 
 export type BotCommandDoc = {
@@ -89,11 +108,53 @@ export type BotCommandDoc = {
   requestedBy?: string
 }
 
+export type MarketTradeScoreComponents = {
+  base?: number
+  momentum?: number
+  shortMomentum?: number
+  consensus?: number
+  strength?: number
+  recency?: number
+  liquidity?: number
+  watchlist?: number
+  primary?: number
+}
+
+export type MarketTradeAnalysis = {
+  summary?: string
+  details?: string[]
+}
+
+export type MarketTradeTrendSnapshot = {
+  horizon?: TrendHorizon
+  score?: number
+  components?: {
+    momentum?: number
+    volume?: number
+    signals?: number
+    news?: number
+  }
+  momentum?: {
+    change15m?: number
+    change1h?: number
+    change24h?: number
+    change7d?: number
+    window?: TrendHorizon
+  }
+}
+
+export type MarketTradeNewsSnapshot = {
+  count?: number
+  sentiment?: number
+  score?: number
+}
+
 export type MarketHotTrade = {
   assetClass: "crypto" | "stock" | "forex"
   symbol: string
   name?: string
   exchange?: string
+  price?: number
   timeframe?: string
   side?: "buy" | "sell" | "hold"
   score?: number
@@ -111,14 +172,29 @@ export type MarketHotTrade = {
     strengthAvg?: number
     bots?: string[]
   }
+  scoreComponents?: MarketTradeScoreComponents
+  trend?: MarketTradeTrendSnapshot
+  news?: MarketTradeNewsSnapshot
+  analysis?: MarketTradeAnalysis
   source?: string
   rationale?: string
 }
 
 export type MarketHotTradesDoc = {
-  updatedAt?: Timestamp
+  updatedAt?: FirestoreTimestamp
   items?: MarketHotTrade[]
   sources?: Record<string, string>
+  meta?: Record<string, unknown>
+}
+
+export type MarketActionBoardDoc = {
+  updatedAt?: FirestoreTimestamp
+  buys?: MarketHotTrade[]
+  sells?: MarketHotTrade[]
+  byAsset?: {
+    buys?: Partial<Record<"crypto" | "stock" | "forex", MarketHotTrade[]>>
+    sells?: Partial<Record<"crypto" | "stock" | "forex", MarketHotTrade[]>>
+  }
   meta?: Record<string, unknown>
 }
 
@@ -132,18 +208,87 @@ export type MarketPopularItem = {
 }
 
 export type MarketPopularDoc = {
-  updatedAt?: Timestamp
+  updatedAt?: FirestoreTimestamp
   items?: MarketPopularItem[]
   meta?: Record<string, unknown>
 }
 
+export type TrendHorizon = "15m" | "1h" | "24h" | "7d"
+
+export type TrendWeights = {
+  momentum?: number
+  volume?: number
+  signals?: number
+  news?: number
+}
+
+export type MarketTrendItem = {
+  assetClass: "crypto" | "stock" | "forex"
+  symbol: string
+  name?: string
+  price?: number
+  horizon: TrendHorizon
+  score?: number
+  components?: {
+    momentum?: number
+    volume?: number
+    signals?: number
+    news?: number
+  }
+  news?: {
+    count?: number
+    sentiment?: number
+    score?: number
+  }
+  momentum?: {
+    change15m?: number
+    change1h?: number
+    change24h?: number
+    change7d?: number
+    window?: TrendHorizon
+  }
+  signals?: {
+    total?: number
+    buy?: number
+    sell?: number
+    strengthAvg?: number
+    bots?: string[]
+  }
+  volumeRank?: number
+  source?: string
+  rationale?: string
+}
+
+export type MarketTrendingDoc = {
+  updatedAt?: FirestoreTimestamp
+  horizons?: TrendHorizon[]
+  byHorizon?: Record<
+    string,
+    Partial<Record<"crypto" | "stock" | "forex", MarketTrendItem[]>>
+  >
+  weights?: TrendWeights
+  meta?: Record<string, unknown>
+}
+
 export type MarketControlsDoc = {
-  updatedAt?: Timestamp
+  updatedAt?: FirestoreTimestamp
   llmIntervalMinutes?: number
   enableLLM?: boolean
+  newsIntervalMinutes?: number
+  enableNews?: boolean
   dipHorizon?: "1h" | "24h" | "7d"
+  trendHorizon?: TrendHorizon
+  trendWeights?: TrendWeights
   riskProfile?: "conservative" | "balanced" | "aggressive"
   assetFocus?: Array<"crypto" | "stock" | "forex">
+  autoTuneEnabled?: boolean
+  autoTuneWithAI?: boolean
+  autoTuneIntervalHours?: number
+  autoTuneLastAt?: FirestoreTimestamp
+  autoTuneNotes?: string
+  autoTuneHorizon?: "1h" | "24h" | "7d"
+  autoTuneHitRate?: number
+  autoTuneSignals?: number
   primaryAssets?: {
     crypto?: string[]
     stocks?: string[]
@@ -152,7 +297,7 @@ export type MarketControlsDoc = {
 }
 
 export type MarketUniverseDoc = {
-  updatedAt?: Timestamp
+  updatedAt?: FirestoreTimestamp
   crypto?: {
     includeTrending?: boolean
     symbols?: string[]
@@ -165,4 +310,44 @@ export type MarketUniverseDoc = {
     includeTrending?: boolean
     pairs?: string[]
   }
+}
+
+export type SignalHorizonStats = {
+  count?: number
+  hits?: number
+  hitRate?: number
+  avgReturn?: number
+}
+
+export type SignalBotPerformance = {
+  botId: string
+  count: number
+  hitRate: number
+  avgReturn: number
+}
+
+export type SignalAssetPerformance = {
+  assetClass: "crypto" | "stock" | "forex" | string
+  count: number
+  hitRate: number
+  avgReturn: number
+}
+
+export type SignalSymbolPerformance = {
+  symbol: string
+  assetClass?: "crypto" | "stock" | "forex" | string | null
+  count: number
+  hitRate: number
+  avgReturn: number
+}
+
+export type SignalPerformanceDoc = {
+  updatedAt?: Timestamp
+  horizons?: Array<"1h" | "24h" | "7d">
+  overall?: Record<string, SignalHorizonStats>
+  topBots?: Record<string, SignalBotPerformance[]>
+  byAsset?: Record<string, SignalAssetPerformance[]>
+  topSymbols?: Record<string, SignalSymbolPerformance[]>
+  bottomSymbols?: Record<string, SignalSymbolPerformance[]>
+  meta?: Record<string, unknown>
 }

@@ -11,6 +11,7 @@ import {
   setDoc,
   serverTimestamp,
 } from "firebase/firestore"
+import type { DocumentData, QuerySnapshot } from "firebase/firestore"
 import { toast } from "sonner"
 import { db, firebaseEnabled } from "@/lib/firebase"
 import type {
@@ -21,6 +22,7 @@ import type {
   BotMode,
   MarketHotTrade,
   MarketHotTradesDoc,
+  SignalPerformanceDoc,
 } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -39,7 +41,7 @@ import {
 } from "@/components/ui/sheet"
 import { Badge } from "@/components/ui/badge"
 import { StatusBadge } from "@/components/StatusBadge"
-import { formatTimestamp } from "@/lib/format"
+import { formatRelativeTimestamp, formatTimestamp } from "@/lib/format"
 import { useAuth } from "@/features/auth/auth-context"
 import { DEFAULT_EXCHANGES, DEFAULT_MODES, DEFAULT_TIMEFRAMES, parsePairs, uniqueList } from "@/lib/universe"
 
@@ -51,7 +53,15 @@ const commandOptions: { type: BotCommandType; label: string }[] = [
   { type: "paper", label: "Paper" },
   { type: "live", label: "Live" },
   { type: "reload_config", label: "Reload Config" },
+  { type: "update_agent", label: "Update Agent" },
 ]
+
+const ENGINE_COMMANDS: Record<string, BotCommandType[]> = {
+  freqtrade: ["start", "stop", "restart", "reload_config", "update_agent"],
+  hummingbot: ["start", "stop", "restart", "reload_config", "backtest", "update_agent"],
+  jesse: ["paper", "live", "stop", "restart", "backtest", "update_agent"],
+  default: ["start", "stop", "restart", "reload_config", "update_agent"],
+}
 
 type JesseRoute = {
   id: string
@@ -90,9 +100,17 @@ const STRATEGY_PRESETS: Record<string, string[]> = {
 
 const FREQTRADE_STAKE_CURRENCIES = ["USDT", "USD", "USDC", "BTC", "ETH", "EUR"]
 const ORDER_TYPE_OPTIONS = ["limit", "market"]
+const PERFORMANCE_HORIZONS = ["1h", "24h", "7d"] as const
+const RECOMMENDED_SYMBOL_LIMIT = 6
 
 function makeId() {
   return Math.random().toString(36).slice(2, 10)
+}
+
+function formatPercent(value?: number | null) {
+  if (value === undefined || value === null || Number.isNaN(value)) return "—"
+  const sign = value >= 0 ? "+" : ""
+  return `${sign}${value.toFixed(2)}%`
 }
 
 function normalizePair(pair: string, separator: "/" | "-") {
@@ -197,6 +215,9 @@ export default function BotDetailPage() {
   const [configDirty, setConfigDirty] = useState(false)
   const [recommendations, setRecommendations] = useState<MarketHotTrade[]>([])
   const [loadingRecommendations, setLoadingRecommendations] = useState(true)
+  const [botPerformance, setBotPerformance] = useState<SignalPerformanceDoc | null>(null)
+  const [loadingPerformance, setLoadingPerformance] = useState(true)
+  const [recommendHorizon, setRecommendHorizon] = useState<(typeof PERFORMANCE_HORIZONS)[number]>("1h")
   const [detailTab, setDetailTab] = useState("overview")
   const configCardRef = useRef<HTMLDivElement | null>(null)
   const commandDisabled = sending || !firebaseEnabled
@@ -650,13 +671,20 @@ export default function BotDetailPage() {
     [wizardConfig]
   )
 
+  const availableCommands = useMemo(() => {
+    const engineKey = bot?.engine || "default"
+    const allowed = ENGINE_COMMANDS[engineKey] || ENGINE_COMMANDS.default
+    return commandOptions.filter((option) => allowed.includes(option.type))
+  }, [bot?.engine])
+
   useEffect(() => {
     if (!botId || !firebaseEnabled || !db) {
       setLoadingBot(false)
       return
     }
 
-    const ref = doc(db, "bots", botId)
+    const activeDb = db
+    const ref = doc(activeDb, "bots", botId)
     return onSnapshot(ref, (snap) => {
       if (!snap.exists()) {
         setBot(null)
@@ -675,21 +703,51 @@ export default function BotDetailPage() {
       return
     }
 
-    const eventsQuery = query(
-      collection(db, "bots", botId, "events"),
-      orderBy("createdAt", "desc"),
-      limit(15)
-    )
+    const activeDb = db
+    let didFallback = false
+    let unsubscribe = () => {}
 
-    return onSnapshot(eventsQuery, (snap) => {
-      setEvents(
-        snap.docs.map((docSnap) => {
-          const data = docSnap.data() as Omit<BotEventDoc, "id" | "botId">
-          return { id: docSnap.id, botId, ...data }
-        })
-      )
+    const handleSnapshot = (snap: QuerySnapshot<DocumentData>) => {
+      const nextEvents = snap.docs.map((docSnap) => {
+        const data = docSnap.data() as Omit<BotEventDoc, "id" | "botId">
+        return { id: docSnap.id, botId, ...data }
+      })
+      nextEvents.sort((a, b) => {
+        const aTime = a.createdAt?.toMillis?.() ?? 0
+        const bTime = b.createdAt?.toMillis?.() ?? 0
+        return bTime - aTime
+      })
+      setEvents(nextEvents.slice(0, 15))
       setLoadingEvents(false)
-    })
+    }
+
+    const subscribe = (ordered: boolean) => {
+      const baseRef = collection(activeDb, "bots", botId, "events")
+      const eventsQuery = ordered
+        ? query(baseRef, orderBy("createdAt", "desc"), limit(15))
+        : query(baseRef, limit(100))
+      unsubscribe = onSnapshot(
+        eventsQuery,
+        handleSnapshot,
+        (error) => {
+          const code =
+            typeof error === "object" && error && "code" in error
+              ? String(error.code)
+              : ""
+          if (ordered && code === "failed-precondition" && !didFallback) {
+            didFallback = true
+            unsubscribe()
+            subscribe(false)
+            return
+          }
+          console.error("Events listener error", error)
+          setLoadingEvents(false)
+        }
+      )
+    }
+
+    subscribe(true)
+    return () => unsubscribe()
   }, [botId])
 
   useEffect(() => {
@@ -698,7 +756,8 @@ export default function BotDetailPage() {
       return
     }
 
-    const ref = doc(db, "market", "hotTrades")
+    const activeDb = db
+    const ref = doc(activeDb, "market", "hotTrades")
     return onSnapshot(ref, (snap) => {
       if (!snap.exists()) {
         setRecommendations([])
@@ -710,6 +769,34 @@ export default function BotDetailPage() {
       setLoadingRecommendations(false)
     })
   }, [])
+
+  useEffect(() => {
+    if (!botId || !firebaseEnabled || !db) {
+      setBotPerformance(null)
+      setLoadingPerformance(false)
+      return
+    }
+
+    setLoadingPerformance(true)
+    const activeDb = db
+    const ref = doc(activeDb, "bots", botId, "analytics", "signalPerformance")
+    return onSnapshot(
+      ref,
+      (snap) => {
+        if (!snap.exists()) {
+          setBotPerformance(null)
+          setLoadingPerformance(false)
+          return
+        }
+        const data = snap.data() as SignalPerformanceDoc
+        setBotPerformance(data)
+        setLoadingPerformance(false)
+      },
+      () => {
+        setLoadingPerformance(false)
+      }
+    )
+  }, [botId])
 
   useEffect(() => {
     if (!bot) return
@@ -1352,6 +1439,7 @@ export default function BotDetailPage() {
       return
     }
 
+    const activeDb = db
     setPayloadError(null)
     setSending(true)
 
@@ -1380,7 +1468,7 @@ export default function BotDetailPage() {
         command.payload = parsedPayload
       }
 
-      await addDoc(collection(db, "bots", botId, "commands"), command)
+      await addDoc(collection(activeDb, "bots", botId, "commands"), command)
       toast.success("Command queued")
     } catch {
       toast.error("Failed to queue command")
@@ -1396,6 +1484,7 @@ export default function BotDetailPage() {
       return
     }
 
+    const activeDb = db
     setConfigSaving(true)
     if (timeframeInvalid) {
       toast.error("Timeframe must look like 1m, 1h, 1d")
@@ -1433,7 +1522,7 @@ export default function BotDetailPage() {
 
     try {
       await setDoc(
-        doc(db, "bots", botId),
+        doc(activeDb, "bots", botId),
         {
           desiredConfig: config,
           desiredConfigUpdatedAt: serverTimestamp(),
@@ -1483,6 +1572,186 @@ export default function BotDetailPage() {
       payload.advanced = advancedConfig
     }
     await queueCommand("configure", payload)
+  }
+
+  function applyRecommendedSymbols(mode: "append" | "replace", limit = RECOMMENDED_SYMBOL_LIMIT) {
+    if (!botPerformance) {
+      toast.error("No bot accuracy data yet.")
+      return
+    }
+    const picks = (botPerformance.topSymbols?.[recommendHorizon] ?? [])
+      .map((item) => item.symbol)
+      .filter(Boolean)
+      .slice(0, limit)
+    if (picks.length === 0) {
+      toast.error("No recommendations yet for this horizon.")
+      return
+    }
+    const existing = parsePairs(pairsInput)
+    const next =
+      mode === "replace" ? picks : uniqueList([...existing, ...picks])
+    setPairsInput(next.join(", "))
+    setConfigDirty(true)
+    toast.success(
+      mode === "replace"
+        ? "Pairs replaced with recommendations"
+        : "Pairs updated with recommendations"
+    )
+  }
+
+  function addRecommendedSymbol(symbol: string) {
+    const trimmed = symbol.trim()
+    if (!trimmed) return
+    const existing = parsePairs(pairsInput)
+    const next = uniqueList([...existing, trimmed])
+    setPairsInput(next.join(", "))
+    setConfigDirty(true)
+    toast.success(`${trimmed} added to pairs`)
+  }
+
+  function renderBotPerformancePanel(horizon: (typeof PERFORMANCE_HORIZONS)[number]) {
+    const stats = botPerformance?.overall?.[horizon]
+    const assetStats = botPerformance?.byAsset?.[horizon] ?? []
+    const topSymbols = botPerformance?.topSymbols?.[horizon] ?? []
+    const bottomSymbols = botPerformance?.bottomSymbols?.[horizon] ?? []
+
+    return (
+      <div className="space-y-3">
+        {!firebaseEnabled ? (
+          <div className="text-sm opacity-70">Connect Firebase to load accuracy data.</div>
+        ) : loadingPerformance ? (
+          <div className="text-sm opacity-70">Loading performance...</div>
+        ) : !botPerformance ? (
+          <div className="text-sm opacity-70">
+            This bot has not produced scored predictions yet. Start it and wait for a full horizon
+            to pass.
+          </div>
+        ) : !stats ? (
+          <div className="text-sm opacity-70">No scored signals yet for this horizon.</div>
+        ) : (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-lg border border-border/60 bg-background/70 p-3">
+                <div className="text-xs text-muted-foreground">Accuracy</div>
+                <div className="mt-1 text-2xl font-semibold">
+                  {stats.hitRate !== undefined ? `${stats.hitRate.toFixed(1)}%` : "—"}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {stats.count ?? 0} signals scored
+                </div>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-background/70 p-3">
+                <div className="text-xs text-muted-foreground">Avg return</div>
+                <div className="mt-1 text-2xl font-semibold">
+                  {formatPercent(stats.avgReturn)}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Horizon {horizon}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                Accuracy by asset
+              </div>
+              {assetStats.length === 0 ? (
+                <div className="text-sm opacity-70">No asset breakdown yet.</div>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {assetStats.map((asset) => {
+                    const label =
+                      asset.assetClass === "crypto"
+                        ? "Crypto"
+                        : asset.assetClass === "stock"
+                          ? "Stocks"
+                          : asset.assetClass === "forex"
+                            ? "FX"
+                            : asset.assetClass
+                    return (
+                      <div
+                        key={asset.assetClass}
+                        className="rounded-lg border border-border/60 bg-background/70 p-3"
+                      >
+                        <div className="text-xs text-muted-foreground">{label}</div>
+                        <div className="mt-1 text-lg font-semibold">
+                          {asset.hitRate.toFixed(1)}%
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {asset.count} signals • {formatPercent(asset.avgReturn)}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div className="space-y-2">
+                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                  Best symbols
+                </div>
+                {topSymbols.length === 0 ? (
+                  <div className="text-sm opacity-70">No symbol ranking yet.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {topSymbols.map((symbol) => (
+                      <div
+                        key={`top-${symbol.symbol}`}
+                        className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-border/60 bg-background/70 px-3 py-2 text-sm"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-mono truncate">{symbol.symbol}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {symbol.assetClass ?? "unknown"}
+                          </div>
+                        </div>
+                        <div className="text-right text-xs text-muted-foreground">
+                          <div>{symbol.hitRate.toFixed(1)}% hit</div>
+                          <div>{formatPercent(symbol.avgReturn)}</div>
+                          <div>{symbol.count} signals</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                  Needs attention
+                </div>
+                {bottomSymbols.length === 0 ? (
+                  <div className="text-sm opacity-70">No symbol ranking yet.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {bottomSymbols.map((symbol) => (
+                      <div
+                        key={`bottom-${symbol.symbol}`}
+                        className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-border/60 bg-background/70 px-3 py-2 text-sm"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-mono truncate">{symbol.symbol}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {symbol.assetClass ?? "unknown"}
+                          </div>
+                        </div>
+                        <div className="text-right text-xs text-muted-foreground">
+                          <div>{symbol.hitRate.toFixed(1)}% hit</div>
+                          <div>{formatPercent(symbol.avgReturn)}</div>
+                          <div>{symbol.count} signals</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    )
   }
 
   return (
@@ -1615,22 +1884,28 @@ export default function BotDetailPage() {
                     <Badge variant="outline">{pairsPreview.length} pairs</Badge>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                      <div className="rounded-lg border border-border/60 bg-background/70 p-3">
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      <div className="rounded-lg border border-border/60 bg-background/70 p-3 min-w-0">
                         <div className="text-xs text-muted-foreground">Exchange</div>
-                        <div className="text-sm font-medium">{exchangeTrimmed || "--"}</div>
+                        <div className="text-sm font-medium truncate">
+                          {exchangeTrimmed || "--"}
+                        </div>
                       </div>
-                      <div className="rounded-lg border border-border/60 bg-background/70 p-3">
+                      <div className="rounded-lg border border-border/60 bg-background/70 p-3 min-w-0">
                         <div className="text-xs text-muted-foreground">Timeframe</div>
-                        <div className="text-sm font-medium">{timeframeTrimmed || "--"}</div>
+                        <div className="text-sm font-medium truncate">
+                          {timeframeTrimmed || "--"}
+                        </div>
                       </div>
-                      <div className="rounded-lg border border-border/60 bg-background/70 p-3">
+                      <div className="rounded-lg border border-border/60 bg-background/70 p-3 min-w-0">
                         <div className="text-xs text-muted-foreground">Mode</div>
-                        <div className="text-sm font-medium">{mode || "--"}</div>
+                        <div className="text-sm font-medium truncate">{mode || "--"}</div>
                       </div>
-                      <div className="rounded-lg border border-border/60 bg-background/70 p-3">
+                      <div className="rounded-lg border border-border/60 bg-background/70 p-3 min-w-0 sm:col-span-2 xl:col-span-1">
                         <div className="text-xs text-muted-foreground">Strategy</div>
-                        <div className="text-sm font-medium">{strategyTrimmed || "--"}</div>
+                        <div className="text-sm font-medium truncate">
+                          {strategyTrimmed || "--"}
+                        </div>
                       </div>
                     </div>
                     <div className="rounded-lg border border-border/60 bg-muted/30 p-3 text-sm">
@@ -1654,6 +1929,38 @@ export default function BotDetailPage() {
                     >
                       Open config
                     </Button>
+                  </CardContent>
+                </Card>
+
+                <Card className="reveal lg:col-span-2" style={{ "--delay": "220ms" } as CSSProperties}>
+                  <CardHeader className="flex-row items-center justify-between space-y-0">
+                    <div>
+                      <CardTitle className="text-base">Bot Prediction Accuracy</CardTitle>
+                      <div className="text-xs text-muted-foreground">
+                        How this bot performed by symbol and asset class.
+                      </div>
+                    </div>
+                    {botPerformance?.updatedAt && (
+                      <Badge variant="outline">
+                        Updated {formatRelativeTimestamp(botPerformance.updatedAt)}
+                      </Badge>
+                    )}
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <Tabs defaultValue="1h" className="space-y-3">
+                      <TabsList className="grid w-full grid-cols-3">
+                        {PERFORMANCE_HORIZONS.map((option) => (
+                          <TabsTrigger key={option} value={option}>
+                            {option}
+                          </TabsTrigger>
+                        ))}
+                      </TabsList>
+                      {PERFORMANCE_HORIZONS.map((option) => (
+                        <TabsContent key={`bot-perf-${option}`} value={option}>
+                          {renderBotPerformancePanel(option)}
+                        </TabsContent>
+                      ))}
+                    </Tabs>
                   </CardContent>
                 </Card>
               </div>
@@ -1731,6 +2038,101 @@ export default function BotDetailPage() {
                       className="min-h-24 font-mono text-xs"
                       placeholder="BTC/USDT, ETH/USDT"
                     />
+                  </div>
+
+                  <div className="rounded-xl border border-border/60 bg-muted/20 p-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                          Recommended universe
+                        </div>
+                        <div className="text-sm font-medium">
+                          Based on this bot's prediction accuracy
+                        </div>
+                      </div>
+                      {botPerformance?.updatedAt && (
+                        <Badge variant="outline">
+                          Updated {formatRelativeTimestamp(botPerformance.updatedAt)}
+                        </Badge>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      {PERFORMANCE_HORIZONS.map((option) => (
+                        <Button
+                          key={`recommend-${option}`}
+                          type="button"
+                          size="sm"
+                          variant={recommendHorizon === option ? "default" : "outline"}
+                          onClick={() => setRecommendHorizon(option)}
+                        >
+                          {option}
+                        </Button>
+                      ))}
+                    </div>
+
+                    {!botPerformance ? (
+                      <div className="text-sm text-muted-foreground">
+                        Start the bot and let it emit signals to generate recommendations.
+                      </div>
+                    ) : (botPerformance.topSymbols?.[recommendHorizon] ?? []).length === 0 ? (
+                      <div className="text-sm text-muted-foreground">
+                        No recommended symbols yet for this horizon.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {(botPerformance.topSymbols?.[recommendHorizon] ?? [])
+                          .slice(0, RECOMMENDED_SYMBOL_LIMIT)
+                          .map((symbol) => (
+                            <div
+                              key={`recommend-${symbol.symbol}`}
+                              className="grid min-w-0 gap-2 rounded-lg border border-border/60 bg-background/70 px-3 py-2 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                            >
+                              <div className="min-w-0">
+                                <div className="font-mono truncate">{symbol.symbol}</div>
+                                <div className="text-xs text-muted-foreground">
+                                  {symbol.assetClass ?? "unknown"}
+                                </div>
+                              </div>
+                              <div className="flex flex-col items-end gap-1 text-xs text-muted-foreground sm:text-right">
+                                <div className="flex flex-wrap items-center justify-end gap-2">
+                                  <span>{symbol.hitRate.toFixed(1)}% hit</span>
+                                  <span>{formatPercent(symbol.avgReturn)}</span>
+                                  <span>{symbol.count} signals</span>
+                                </div>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => addRecommendedSymbol(symbol.symbol)}
+                                >
+                                  Add
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => applyRecommendedSymbols("append")}
+                        disabled={!botPerformance}
+                      >
+                        Append top {RECOMMENDED_SYMBOL_LIMIT}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => applyRecommendedSymbols("replace")}
+                        disabled={!botPerformance}
+                      >
+                        Replace with top {RECOMMENDED_SYMBOL_LIMIT}
+                      </Button>
+                    </div>
                   </div>
 
                   <div className="space-y-2">
@@ -3076,7 +3478,7 @@ export default function BotDetailPage() {
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="grid gap-2">
-                {commandOptions.map((option) => (
+                {availableCommands.map((option) => (
                   <Button
                     key={option.type}
                     variant="outline"

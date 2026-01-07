@@ -8,6 +8,7 @@
     "start": "node src/index.js"
   },
   "dependencies": {
-    "firebase-admin": "^12.7.0"
+    "firebase-admin": "^12.7.0",
+    "yaml": "^2.5.1"
   }
 }

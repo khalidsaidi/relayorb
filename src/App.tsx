@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom"
 import SignInPage from "@/pages/SignInPage"
+import TradeNowPage from "@/pages/TradeNowPage"
 import DashboardPage from "@/pages/DashboardPage"
 import SignalsPage from "@/pages/SignalsPage"
 import BotsPage from "@/pages/BotsPage"
@@ -16,7 +17,8 @@ export default function App() {
 
         <Route element={<RequireAuth />}>
           <Route element={<AppShell />}>
-            <Route path="/" element={<DashboardPage />} />
+            <Route path="/" element={<TradeNowPage />} />
+            <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/signals" element={<SignalsPage />} />
             <Route path="/bots" element={<BotsPage />} />
             <Route path="/bots/:botId" element={<BotDetailPage />} />

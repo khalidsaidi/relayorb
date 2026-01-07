@@ -1,11 +1,12 @@
 # Market Intel Worker (Cloud Run Job)
 
-This worker pulls market data on a schedule, merges it with bot signals, and writes ranked `market/hotTrades` and `market/popular` docs into Firestore.
+This worker pulls market data on a schedule, merges it with bot signals, and writes ranked `market/hotTrades`, `market/trending`, and `market/popular` docs into Firestore.
 
 ## Data sources (free tiers)
 - Crypto: CoinGecko (no key)
 - Stocks: Alpha Vantage (free key)
-- Forex: exchangerate.host (no key)
+- Forex: frankfurter.app (no key)
+- News: Marketaux (free key)
 
 ## Universe controls
 The worker reads `market/universe` to prioritize watchlists and optional trending picks:
@@ -22,6 +23,11 @@ Use `market/controls` to tune cadence without redeploys:
 - `riskProfile` (`conservative`, `balanced`, `aggressive`)
 - `assetFocus` (array of `crypto`, `stock`, `forex`)
 - `primaryAssets` (object with `crypto`, `stocks`, `forex` arrays)
+- `trendHorizon` (`15m`, `1h`, `24h`, `7d`)
+- `trendWeights` (object with `momentum`, `volume`, `signals` weights)
+- `autoTuneEnabled` (bool, auto-adjust trend weights using accuracy)
+- `autoTuneWithAI` (bool, AI nudging for weight adjustments)
+- `autoTuneIntervalHours` (number, default 6)
 
 ## Environment variables
 - `FIREBASE_PROJECT_ID` (optional, defaults to Cloud Run project)
@@ -31,11 +37,34 @@ Use `market/controls` to tune cadence without redeploys:
 - `CRYPTO_EXCHANGE` (default: binance)
 - `FX_PAIRS` (default: `USD/JPY,USD/EUR,USD/GBP,USD/CHF,USD/CAD`)
 - `ALPHAVANTAGE_API_KEY` (required for stocks)
+- `MARKETAUX_API_KEY` (required for news)
+- `MARKETAUX_LIMIT` (default: 40)
+- `MARKETAUX_SYMBOL_LIMIT` (default: 25)
+- `NEWS_INTERVAL_MINUTES` (default: 30)
 - `OPENAI_API_KEY` (optional, for LLM summaries)
 - `OPENAI_MODEL` (default: gpt-4o-mini)
 - `LLM_INTERVAL_MINUTES` (default: 30)
+- `MIN_ACCURACY_SIGNALS` (default: 12)
+- `AUTO_TUNE_ENABLED` (default: true)
+- `AUTO_TUNE_INTERVAL_HOURS` (default: 6)
+- `AUTO_TUNE_MAX_DELTA` (default: 12)
 - `STOCK_WATCHLIST_LIMIT` (default: 5)
+- `SYMBOL_CACHE_DAYS` (default: 7)
+- `SYMBOL_CACHE_MAX` (default: 12000)
 - `POPULAR_PER_CLASS` (default: 12)
+- `TREND_LIMIT` (default: 8)
+- `EMIT_MARKET_SIGNALS` (default: true)
+- `MARKET_SIGNAL_LIMIT` (default: 3 per asset class)
+- `MARKET_SIGNAL_BACKFILL_MINUTES` (default: 70)
+
+## Symbol cache
+The job refreshes a global stock ticker list from Alpha Vantage `LISTING_STATUS` and
+stores it in `market_symbols_stocks`. The UI uses this collection for ticker search.
+
+## Optional market-intel signals
+When enabled, the worker emits a small batch of synthetic signal docs under
+`bots/market-intel/signals` so accuracy panels can cover stocks and FX even before
+native bot adapters support them.
 
 ## Deploy (Cloud Run Job)
 > Run these from repo root with `gcloud` configured.
@@ -62,6 +91,8 @@ gcloud projects add-iam-policy-binding relayorb \
 echo "<OPENAI_API_KEY>" | gcloud secrets create relayorb-openai-key --data-file=-
 
 echo "<ALPHAVANTAGE_API_KEY>" | gcloud secrets create relayorb-alphavantage-key --data-file=-
+
+echo "<MARKETAUX_API_KEY>" | gcloud secrets create relayorb-marketaux-key --data-file=-
 ```
 
 4) Build & deploy:
@@ -74,7 +105,7 @@ gcloud run jobs create relayorb-market-intel \
   --region us-west1 \
   --service-account relayorb-market-intel@relayorb.iam.gserviceaccount.com \
   --set-env-vars HOT_TRADES_LIMIT=12,BOT_SIGNAL_LOOKBACK_MINUTES=360,CRYPTO_EXCHANGE=binance,FX_PAIRS=USD/JPY,USD/EUR,USD/GBP,USD/CHF,USD/CAD \
-  --set-secrets OPENAI_API_KEY=relayorb-openai-key:latest,ALPHAVANTAGE_API_KEY=relayorb-alphavantage-key:latest \
+  --set-secrets OPENAI_API_KEY=relayorb-openai-key:latest,ALPHAVANTAGE_API_KEY=relayorb-alphavantage-key:latest,MARKETAUX_API_KEY=relayorb-marketaux-key:latest \
   --memory 512Mi
 ```
 
@@ -105,6 +136,12 @@ ALPHAVANTAGE_API_KEY=... OPENAI_API_KEY=... npm start
 ## Notes
 - If `ALPHAVANTAGE_API_KEY` is missing, stock data is skipped.
 - LLM summaries are only added when `OPENAI_API_KEY` is set.
+- Auto-tune adjusts trend weights using evaluator accuracy; AI only writes explanations.
 - Firestore output:
   - `market/hotTrades` (ranked trade list + meta)
+  - `market/trending` (trending list by horizon + score components)
   - `market/popular` (intelligence-driven popular assets per class)
+  - `market/prices` (latest spot prices for tracked symbols)
+  - `market_symbols_stocks` (cached global ticker list)
+  - `market/symbolCache` (cache metadata)
+  - `bots/market-intel/signals` (optional synthetic signal stream)

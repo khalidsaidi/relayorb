@@ -53,3 +53,18 @@ firebase deploy --only hosting
 ```
 
 Remember to run `firebase deploy --only firestore:rules` after updating `firestore.rules`.
+
+## Signal Evaluation
+
+The signal evaluator worker scores bot signals against real market outcomes and writes
+accuracy metrics to `analytics/signalPerformance` for the dashboard.
+
+- Source: `deploy/signal-evaluator`
+- Requires `ALPHAVANTAGE_API_KEY` for stock evaluation.
+
+## Manual Refresh
+
+The Dashboard includes a "Refresh now" button to trigger the market-intel and
+signal-evaluator jobs on demand. Deploy the refresh service and set:
+
+- `VITE_REFRESH_URL` → Cloud Run URL from `deploy/refresh-service`.

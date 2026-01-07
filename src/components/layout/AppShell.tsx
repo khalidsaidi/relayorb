@@ -17,7 +17,16 @@ import {
 } from "@/components/ui/sheet"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
-import { LayoutDashboard, Bot, LogOut, Menu, Activity, PanelLeft, PanelRight } from "lucide-react"
+import {
+  LayoutDashboard,
+  Bot,
+  LogOut,
+  Menu,
+  Activity,
+  PanelLeft,
+  PanelRight,
+  TrendingUp,
+} from "lucide-react"
 import { useAuth } from "@/features/auth/auth-context"
 import { auth, firebaseEnabled } from "@/lib/firebase"
 import { signOut } from "firebase/auth"
@@ -29,7 +38,8 @@ type NavItem = {
 }
 
 const navItems: NavItem[] = [
-  { to: "/", label: "Dashboard", icon: <LayoutDashboard className="h-4 w-4" /> },
+  { to: "/", label: "Trade Now", icon: <TrendingUp className="h-4 w-4" /> },
+  { to: "/dashboard", label: "Dashboard", icon: <LayoutDashboard className="h-4 w-4" /> },
   { to: "/signals", label: "Signals", icon: <Activity className="h-4 w-4" /> },
   { to: "/bots", label: "Bots", icon: <Bot className="h-4 w-4" /> },
 ]
@@ -38,9 +48,11 @@ const SIDEBAR_STORAGE_KEY = "relayorb.sidebar.collapsed"
 
 function usePageTitle() {
   const { pathname } = useLocation()
+  if (pathname === "/") return "Trade Now"
   if (pathname.startsWith("/bots/")) return "Bot Detail"
   if (pathname.startsWith("/bots")) return "Bots"
   if (pathname.startsWith("/signals")) return "Signals"
+  if (pathname.startsWith("/dashboard")) return "Dashboard"
   return "Dashboard"
 }
 

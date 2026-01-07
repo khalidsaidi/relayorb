@@ -2,6 +2,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import process from "node:process"
 import admin from "firebase-admin"
+import YAML from "yaml"
 
 const CONFIG_ENV = "RELAYORB_CONFIG_PATH"
 const DEFAULT_CONFIG = "config.json"
@@ -129,7 +130,8 @@ async function writeJsonFile(filePath, data) {
 
 async function writeYamlFromJson(filePath, data) {
   await fs.mkdir(path.dirname(filePath), { recursive: true })
-  await fs.writeFile(filePath, JSON.stringify(data, null, 2) + "\n")
+  const yaml = YAML.stringify(data, { lineWidth: 0 })
+  await fs.writeFile(filePath, yaml)
 }
 
 function normalizePair(pair, separator) {
@@ -138,6 +140,117 @@ function normalizePair(pair, separator) {
   if (separator === "/") return trimmed.replace(/-/g, "/")
   if (separator === "-") return trimmed.replace(/\//g, "-")
   return trimmed
+}
+
+const SIGNAL_QUOTES = ["USDT", "USDC", "USD", "BTC", "ETH", "EUR"]
+const FX_CODES = new Set([
+  "USD",
+  "EUR",
+  "GBP",
+  "JPY",
+  "CHF",
+  "CAD",
+  "AUD",
+  "NZD",
+  "SEK",
+  "NOK",
+  "MXN",
+  "CNH",
+])
+
+function looksLikePair(left, right) {
+  if (!left || !right) return false
+  const base = String(left).toUpperCase()
+  const quote = String(right).toUpperCase()
+  if (SIGNAL_QUOTES.includes(quote)) return true
+  if (FX_CODES.has(base) && FX_CODES.has(quote)) return true
+  return false
+}
+
+function normalizeSignalSymbol(value) {
+  if (!value) return null
+  const upper = String(value).trim().toUpperCase()
+  if (!upper) return null
+  const compact = upper.replace(/\s+/g, "")
+  if (compact.includes("/") || compact.includes("-")) {
+    const separator = compact.includes("/") ? "/" : "-"
+    const parts = compact.split(separator).filter(Boolean)
+    if (parts.length === 2 && looksLikePair(parts[0], parts[1])) {
+      return `${parts[0]}/${parts[1]}`
+    }
+    return compact
+  }
+  if (compact.length === 6) {
+    const base = compact.slice(0, 3)
+    const quote = compact.slice(3)
+    if (FX_CODES.has(base) && FX_CODES.has(quote)) {
+      return `${base}/${quote}`
+    }
+  }
+  for (const quote of SIGNAL_QUOTES) {
+    if (compact.endsWith(quote) && compact.length > quote.length) {
+      return `${compact.slice(0, -quote.length)}/${quote}`
+    }
+  }
+  return compact
+}
+
+function extractSymbolFromText(text) {
+  if (!text) return null
+  const upper = String(text).toUpperCase()
+  const match = upper.match(/[A-Z0-9]{2,10}[/-][A-Z0-9]{2,10}/)
+  if (match) return normalizeSignalSymbol(match[0])
+  const tokens = upper.match(/\b[A-Z0-9]{6,12}\b/g) || []
+  for (const token of tokens) {
+    const normalized = normalizeSignalSymbol(token)
+    if (normalized && normalized.includes("/")) return normalized
+  }
+  return null
+}
+
+function resolveSignalSymbol(signal) {
+  if (!signal || typeof signal !== "object") return null
+  const data = signal.data || {}
+  const candidate =
+    signal.symbol ||
+    signal.pair ||
+    data.pair ||
+    data.symbol ||
+    data.trading_pair ||
+    data.tradingPair ||
+    data.market ||
+    data.instrument
+  const normalized = normalizeSignalSymbol(candidate)
+  if (normalized) return normalized
+  return extractSymbolFromText(signal.message)
+}
+
+function parseSignalTimestamp(signal) {
+  if (!signal || typeof signal !== "object") return null
+  const data = signal.data || {}
+  const candidate =
+    signal.timestamp ??
+    signal.time ??
+    signal.createdAt ??
+    data.timestamp ??
+    data.time ??
+    data.ts ??
+    data.createdAt ??
+    data.created_at
+
+  if (!candidate) return null
+  if (candidate instanceof Date) return candidate
+  if (typeof candidate?.toDate === "function") return candidate.toDate()
+  if (typeof candidate === "number") {
+    const ms = candidate < 1e12 ? candidate * 1000 : candidate
+    const date = new Date(ms)
+    return Number.isFinite(date.getTime()) ? date : null
+  }
+  if (typeof candidate === "string") {
+    const date = new Date(candidate)
+    return Number.isFinite(date.getTime()) ? date : null
+  }
+  return null
 }
 
 function mergeDeep(target, source) {
@@ -1039,13 +1152,18 @@ async function writeSignals(db, botId, signals) {
   const batch = db.batch()
   for (const signal of signals.slice(0, 50)) {
     const docRef = ref.doc()
+    const symbol = resolveSignalSymbol(signal)
+    const signalTime = parseSignalTimestamp(signal)
     batch.set(docRef, {
       botId,
+      symbol: symbol || null,
       side: signal.side || null,
       strength: typeof signal.strength === "number" ? signal.strength : null,
       message: signal.message || "",
       data: signal.data || null,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: signalTime
+        ? admin.firestore.Timestamp.fromDate(signalTime)
+        : admin.firestore.FieldValue.serverTimestamp(),
     })
   }
   await batch.commit()
@@ -1123,6 +1241,8 @@ function startCommandListener(db, bot, adapter) {
   query.onSnapshot((snap) => {
     snap.docChanges().forEach(async (change) => {
       if (change.type !== "added") return
+      const preview = change.doc.data()
+      if (preview?.type === "update_agent") return
       const docRef = change.doc.ref
       const data = await claimCommand(db, docRef)
       if (!data) return
@@ -1131,6 +1251,31 @@ function startCommandListener(db, bot, adapter) {
       const payload = data.payload || {}
 
       try {
+        if (commandType === "scan" || commandType === "analyze") {
+          const update = await adapter.poll()
+          if (Array.isArray(payload.symbols) && payload.symbols.length > 0) {
+            const allowed = new Set(
+              payload.symbols.map(normalizeSignalSymbol).filter(Boolean)
+            )
+            if (allowed.size > 0) {
+              update.signals = (update.signals || []).filter((signal) => {
+                const resolved = resolveSignalSymbol(signal)
+                if (!resolved) return false
+                return allowed.has(normalizeSignalSymbol(resolved))
+              })
+            }
+          }
+          await applyUpdate(db, bot, update)
+          await docRef.update({
+            status: "completed",
+            completedAt: admin.firestore.FieldValue.serverTimestamp(),
+            result: {
+              signals: update?.signals?.length || 0,
+            },
+          })
+          return
+        }
+
         const result = await adapter.executeCommand(commandType, payload)
         await docRef.update({
           status: "completed",

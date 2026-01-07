@@ -1,5 +1,12 @@
 import { useEffect, useState, type CSSProperties } from "react"
-import { collectionGroup, limit, onSnapshot, orderBy, query } from "firebase/firestore"
+import {
+  collectionGroup,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+} from "firebase/firestore"
+import type { DocumentData, QuerySnapshot } from "firebase/firestore"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { db, firebaseEnabled } from "@/lib/firebase"
@@ -28,22 +35,52 @@ export default function SignalsPage() {
       return
     }
 
-    const ref = query(
-      collectionGroup(db, "signals"),
-      orderBy("createdAt", "desc"),
-      limit(30)
-    )
+    const activeDb = db
+    let didFallback = false
+    let unsubscribe = () => {}
 
-    return onSnapshot(ref, (snap) => {
-      setSignals(
-        snap.docs.map((doc) => {
-          const data = doc.data() as Omit<BotSignalDoc, "id" | "botId">
-          const botId = doc.ref.parent.parent?.id ?? "unknown"
-          return { id: doc.id, botId, ...data }
-        })
-      )
+    const handleSnapshot = (snap: QuerySnapshot<DocumentData>) => {
+      const nextSignals = snap.docs.map((doc) => {
+        const data = doc.data() as Omit<BotSignalDoc, "id" | "botId">
+        const botId = doc.ref.parent.parent?.id ?? "unknown"
+        return { id: doc.id, botId, ...data }
+      })
+      nextSignals.sort((a, b) => {
+        const aTime = a.createdAt?.toMillis?.() ?? 0
+        const bTime = b.createdAt?.toMillis?.() ?? 0
+        return bTime - aTime
+      })
+      setSignals(nextSignals.slice(0, 30))
       setLoading(false)
-    })
+    }
+
+    const subscribe = (ordered: boolean) => {
+      const baseRef = collectionGroup(activeDb, "signals")
+      const ref = ordered
+        ? query(baseRef, orderBy("createdAt", "desc"), limit(30))
+        : query(baseRef, limit(50))
+      unsubscribe = onSnapshot(
+        ref,
+        handleSnapshot,
+        (error) => {
+          const code =
+            typeof error === "object" && error && "code" in error
+              ? String(error.code)
+              : ""
+          if (ordered && code === "failed-precondition" && !didFallback) {
+            didFallback = true
+            unsubscribe()
+            subscribe(false)
+            return
+          }
+          console.error("Signals listener error", error)
+          setLoading(false)
+        }
+      )
+    }
+
+    subscribe(true)
+    return () => unsubscribe()
   }, [])
 
   return (

@@ -1,0 +1,14 @@
+{
+  "name": "relayorb-refresh-service",
+  "private": true,
+  "version": "0.1.0",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.6.0",
+    "google-auth-library": "^10.3.0"
+  }
+}
