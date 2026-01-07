@@ -1,5 +1,7 @@
 export const ADMIN_ALLOWLIST = [
   "khalidsaidi66@gmail.com",
+  "zakliusaidi@gmail.com",
+  "liuqingrong666@gmail.com",
   "relayorb-admin-test@relayorb.local",
 ]
 
