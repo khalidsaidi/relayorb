@@ -632,9 +632,9 @@ class BacktraderAdapter {
       const query = this.lastRunId
         ? `?strategy_id=${encodeURIComponent(this.lastRunId)}`
         : ""
-      const signalsData = await this.request(`/signals${query}`)
-      const rawSignals = Array.isArray(signalsData?.signals) ? signalsData.signals : []
-      const filteredSignals = rawSignals.filter((sig) => {
+      let signalsData = await this.request(`/signals${query}`)
+      let rawSignals = Array.isArray(signalsData?.signals) ? signalsData.signals : []
+      let filteredSignals = rawSignals.filter((sig) => {
         if (sig?.strategy_id) {
           return String(sig.strategy_id).startsWith(strategyPrefix)
         }
@@ -644,6 +644,23 @@ class BacktraderAdapter {
         return allowedSymbols.has(String(symbol).trim().toUpperCase())
       })
       
+      let retryCount = 0
+      while (this.lastRunId && filteredSignals.length === 0 && retryCount < 5) {
+        retryCount += 1
+        await new Promise((resolve) => setTimeout(resolve, 5000))
+        signalsData = await this.request(`/signals${query}`)
+        rawSignals = Array.isArray(signalsData?.signals) ? signalsData.signals : []
+        filteredSignals = rawSignals.filter((sig) => {
+          if (sig?.strategy_id) {
+            return String(sig.strategy_id).startsWith(strategyPrefix)
+          }
+          if (allowedSymbols.size === 0) return true
+          const symbol = sig?.symbol || sig?.data?.symbol
+          if (!symbol) return false
+          return allowedSymbols.has(String(symbol).trim().toUpperCase())
+        })
+      }
+
       for (const sig of filteredSignals) {
         // Backtrader signals have: side, strength, message, price, timestamp, symbol
         const symbol = sig.symbol || sig.data?.symbol || "unknown"
