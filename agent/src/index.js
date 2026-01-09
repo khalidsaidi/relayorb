@@ -707,7 +707,8 @@ class BacktraderAdapter {
         method: "POST",
         body: { id: this.lastRunId, config },
       })
-      await new Promise((resolve) => setTimeout(resolve, 8000))
+      const waitMs = Math.min(60000, Math.max(8000, config.symbols.length * 750))
+      await new Promise((resolve) => setTimeout(resolve, waitMs))
       return null
     } catch (err) {
       return {
