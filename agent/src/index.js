@@ -557,6 +557,7 @@ class BacktraderAdapter {
     this.deduper = createDeduper()
     this.lastRunAt = 0
     this.minRunIntervalMs = Math.max(60000, (bot.pollIntervalSeconds || 300) * 1000)
+    this.lastRunId = null
   }
 
   async request(endpoint, { method = "GET", body } = {}) {
@@ -622,7 +623,10 @@ class BacktraderAdapter {
     }
 
     try {
-      const signalsData = await this.request("/signals")
+      const query = this.lastRunId
+        ? `?strategy_id=${encodeURIComponent(this.lastRunId)}`
+        : ""
+      const signalsData = await this.request(`/signals${query}`)
       const rawSignals = Array.isArray(signalsData?.signals) ? signalsData.signals : []
       
       for (const sig of rawSignals) {
@@ -681,11 +685,12 @@ class BacktraderAdapter {
     const now = Date.now()
     if (now - this.lastRunAt < this.minRunIntervalMs) return null
     this.lastRunAt = now
+    this.lastRunId = `${this.bot.id}-${now}`
 
     try {
       await this.request("/run", {
         method: "POST",
-        body: { id: `${this.bot.id}-${now}`, config },
+        body: { id: this.lastRunId, config },
       })
       await new Promise((resolve) => setTimeout(resolve, 8000))
       return null
@@ -703,9 +708,15 @@ class BacktraderAdapter {
       case "start":
       case "run":
         const config = payload || {}
+        if (config.id) {
+          this.lastRunId = String(config.id)
+        } else {
+          this.lastRunId = `${this.bot.id}-${Date.now()}`
+          config.id = this.lastRunId
+        }
         const result = await this.request("/run", {
           method: "POST",
-          body: { id: this.bot.id, config },
+          body: { id: config.id, config },
         })
         return { status: "online", result }
       case "stop":
