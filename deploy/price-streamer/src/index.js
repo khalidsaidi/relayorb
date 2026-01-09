@@ -401,12 +401,18 @@ function startServer() {
 
 async function refreshWatchlist() {
   try {
-    const [universeSnap, hotTradesSnap] = await Promise.all([
+    const [universeSnap, hotTradesSnap, actionBoardSnap] = await Promise.all([
       db.doc("market/universe").get(),
       db.doc("market/hotTrades").get(),
+      db.doc("market/actionBoard").get(),
     ])
     const universe = universeSnap.exists ? universeSnap.data() : {}
     const hotTrades = hotTradesSnap.exists ? hotTradesSnap.data()?.items || [] : []
+    const actionBoard = actionBoardSnap.exists ? actionBoardSnap.data() : {}
+    const actionBoardItems = [
+      ...(actionBoard?.buys || []),
+      ...(actionBoard?.sells || []),
+    ]
 
     const globalMode = resolveUniverseMode(universe.mode)
     const cryptoMode = resolveUniverseMode(universe?.crypto?.mode || globalMode)
@@ -446,25 +452,32 @@ async function refreshWatchlist() {
       if (normalized) universeSets.forex.add(normalized)
     })
 
-    hotTrades.forEach((item) => {
-      const assetClass = item?.assetClass
-      if (!assetClass || !next[assetClass]) return
-      const normalized = normalizeSymbolForKey(item.symbol, assetClass)
-      if (!normalized) return
-      const mode =
-        assetClass === "crypto"
-          ? cryptoMode
-          : assetClass === "forex"
-            ? forexMode
-            : stockMode
-      if (mode === "universe_only" || mode === "movers_filtered_by_universe") {
-        const universeSet = universeSets[assetClass]
-        if (!universeSet || !universeSet.has(normalized)) return
-      }
-      if (next[assetClass].size < config.maxSymbols) {
-        next[assetClass].add(normalized)
-      }
-    })
+    const addItems = (items, { respectUniverse = true } = {}) => {
+      items.forEach((item) => {
+        const assetClass = item?.assetClass
+        if (!assetClass || !next[assetClass]) return
+        const normalized = normalizeSymbolForKey(item.symbol, assetClass)
+        if (!normalized) return
+        if (respectUniverse) {
+          const mode =
+            assetClass === "crypto"
+              ? cryptoMode
+              : assetClass === "forex"
+                ? forexMode
+                : stockMode
+          if (mode === "universe_only" || mode === "movers_filtered_by_universe") {
+            const universeSet = universeSets[assetClass]
+            if (!universeSet || !universeSet.has(normalized)) return
+          }
+        }
+        if (next[assetClass].size < config.maxSymbols) {
+          next[assetClass].add(normalized)
+        }
+      })
+    }
+
+    addItems(actionBoardItems, { respectUniverse: false })
+    addItems(hotTrades, { respectUniverse: true })
 
     if (shouldIncludeUniverse(cryptoMode)) {
       universeSets.crypto.forEach((symbol) => {

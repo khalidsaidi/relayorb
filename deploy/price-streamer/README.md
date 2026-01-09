@@ -18,6 +18,7 @@ It uses Binance WebSocket for crypto (falls back to FMP polling if blocked) and 
 
 ## Watchlist sources
 - `market/hotTrades` (always streamed)
+- `market/actionBoard` (always streamed)
 - `market/universe` (only when mode includes the universe)
 
 ## Firestore output
