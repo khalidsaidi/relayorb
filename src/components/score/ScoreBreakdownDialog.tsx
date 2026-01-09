@@ -18,7 +18,7 @@ type ComponentRow = {
 }
 
 function formatValue(value?: number) {
-  if (!Number.isFinite(value)) return "—"
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—"
   return value.toFixed(1)
 }
 
