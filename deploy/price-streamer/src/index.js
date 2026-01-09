@@ -28,6 +28,7 @@ const UNIVERSE_MODES = new Set([
   "movers_plus_universe",
   "movers_filtered_by_universe",
 ])
+const FX_CODES = new Set(["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"])
 
 if (!admin.apps.length) {
   admin.initializeApp({ projectId: config.projectId })
@@ -122,6 +123,18 @@ function normalizeForexSymbol(raw) {
     return `${compact.slice(0, 3)}/${compact.slice(3, 6)}`
   }
   return normalized
+}
+
+function inferAssetClassFromSymbol(raw) {
+  if (!raw) return null
+  const symbol = String(raw).trim().toUpperCase()
+  if (!symbol) return null
+  if (!symbol.includes("/")) return "stock"
+  const parts = symbol.replace(/-/g, "/").split("/")
+  if (parts.length === 2 && FX_CODES.has(parts[0]) && FX_CODES.has(parts[1])) {
+    return "forex"
+  }
+  return "crypto"
 }
 
 function normalizeSymbolForKey(raw, assetClass) {
@@ -401,10 +414,11 @@ function startServer() {
 
 async function refreshWatchlist() {
   try {
-    const [universeSnap, hotTradesSnap, actionBoardSnap] = await Promise.all([
+    const [universeSnap, hotTradesSnap, actionBoardSnap, positionsSnap] = await Promise.all([
       db.doc("market/universe").get(),
       db.doc("market/hotTrades").get(),
       db.doc("market/actionBoard").get(),
+      db.collectionGroup("positions").get(),
     ])
     const universe = universeSnap.exists ? universeSnap.data() : {}
     const hotTrades = hotTradesSnap.exists ? hotTradesSnap.data()?.items || [] : []
@@ -413,6 +427,24 @@ async function refreshWatchlist() {
       ...(actionBoard?.buys || []),
       ...(actionBoard?.sells || []),
     ]
+    const positionItems = positionsSnap.empty
+      ? []
+      : positionsSnap.docs
+          .map((doc) => doc.data() || {})
+          .map((position) => {
+            const assetClassRaw =
+              typeof position.assetClass === "string"
+                ? position.assetClass.toLowerCase()
+                : inferAssetClassFromSymbol(position.symbol)
+            if (!assetClassRaw || !["crypto", "stock", "forex"].includes(assetClassRaw)) {
+              return null
+            }
+            return {
+              assetClass: assetClassRaw,
+              symbol: position.symbol,
+            }
+          })
+          .filter(Boolean)
 
     const globalMode = resolveUniverseMode(universe.mode)
     const cryptoMode = resolveUniverseMode(universe?.crypto?.mode || globalMode)
@@ -476,6 +508,7 @@ async function refreshWatchlist() {
       })
     }
 
+    addItems(positionItems, { respectUniverse: false })
     addItems(actionBoardItems, { respectUniverse: false })
     addItems(hotTrades, { respectUniverse: true })
 

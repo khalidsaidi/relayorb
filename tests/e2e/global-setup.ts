@@ -1,11 +1,12 @@
 import { Timestamp } from "firebase-admin/firestore"
 import { getAdmin } from "./utils/admin"
 
-function requireEnv(name: string) {
-  const value = process.env[name]
-  if (!value) {
-    throw new Error(`Missing required env var: ${name}`)
-  }
+const DEFAULT_TEST_EMAIL = "relayorb-admin-test@relayorb.local"
+const DEFAULT_TEST_PASSWORD = "relayorb-e2e"
+
+function resolveEnv(name: string, fallback: string) {
+  const value = process.env[name] || fallback
+  process.env[name] = value
   return value
 }
 
@@ -21,8 +22,8 @@ export default async function globalSetup() {
     throw new Error("FIREBASE_AUTH_EMULATOR_HOST is not set. Run tests via Firebase emulators.")
   }
 
-  const testEmail = requireEnv("VITE_E2E_TEST_EMAIL")
-  const testPassword = requireEnv("VITE_E2E_TEST_PASSWORD")
+  const testEmail = resolveEnv("VITE_E2E_TEST_EMAIL", DEFAULT_TEST_EMAIL)
+  const testPassword = resolveEnv("VITE_E2E_TEST_PASSWORD", DEFAULT_TEST_PASSWORD)
 
   const { auth, db } = getAdmin()
 
