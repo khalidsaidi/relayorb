@@ -29,6 +29,7 @@ const UNIVERSE_MODES = new Set([
   "movers_filtered_by_universe",
 ])
 const FX_CODES = new Set(["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"])
+const STREAM_SYMBOL_TTL_MS = 30 * 60 * 1000
 
 if (!admin.apps.length) {
   admin.initializeApp({ projectId: config.projectId })
@@ -414,11 +415,13 @@ function startServer() {
 
 async function refreshWatchlist() {
   try {
-    const [universeSnap, hotTradesSnap, actionBoardSnap, positionsSnap] = await Promise.all([
+    const [universeSnap, hotTradesSnap, actionBoardSnap, positionsSnap, streamSnap] =
+      await Promise.all([
       db.doc("market/universe").get(),
       db.doc("market/hotTrades").get(),
       db.doc("market/actionBoard").get(),
       db.collectionGroup("positions").get(),
+      db.doc("market/streamSymbols").get(),
     ])
     const universe = universeSnap.exists ? universeSnap.data() : {}
     const hotTrades = hotTradesSnap.exists ? hotTradesSnap.data()?.items || [] : []
@@ -508,6 +511,17 @@ async function refreshWatchlist() {
       })
     }
 
+    const addSymbols = (symbols, assetClass) => {
+      if (!Array.isArray(symbols) || !next[assetClass]) return
+      symbols.forEach((symbol) => {
+        const normalized = normalizeSymbolForKey(symbol, assetClass)
+        if (!normalized) return
+        if (next[assetClass].size < config.maxSymbols) {
+          next[assetClass].add(normalized)
+        }
+      })
+    }
+
     addItems(positionItems, { respectUniverse: false })
     addItems(actionBoardItems, { respectUniverse: false })
     addItems(hotTrades, { respectUniverse: true })
@@ -526,6 +540,26 @@ async function refreshWatchlist() {
       universeSets.forex.forEach((symbol) => {
         if (next.forex.size < config.maxSymbols) next.forex.add(symbol)
       })
+    }
+
+    if (streamSnap.exists) {
+      const streamData = streamSnap.data() || {}
+      const sources = streamData.sources || {}
+      const topSymbols = streamData.symbols || {}
+      const now = Date.now()
+      const appendSource = (source) => {
+        if (!source || typeof source !== "object") return
+        const updatedAt = source.updatedAt?.toDate?.()
+        if (updatedAt && now - updatedAt.getTime() > STREAM_SYMBOL_TTL_MS) return
+        const symbols = source.symbols || {}
+        addSymbols(symbols.crypto, "crypto")
+        addSymbols(symbols.stock, "stock")
+        addSymbols(symbols.forex, "forex")
+      }
+      Object.values(sources).forEach((source) => appendSource(source))
+      addSymbols(topSymbols.crypto, "crypto")
+      addSymbols(topSymbols.stock, "stock")
+      addSymbols(topSymbols.forex, "forex")
     }
 
     const nextHash = buildWatchHash(next)

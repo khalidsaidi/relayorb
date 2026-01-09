@@ -46,6 +46,7 @@ import { useAuth } from "@/features/auth/auth-context"
 import { DEFAULT_EXCHANGES, DEFAULT_MODES, DEFAULT_TIMEFRAMES, parsePairs, uniqueList } from "@/lib/universe"
 import { AssetChartModal } from "@/components/charts/AssetChartModal"
 import { ScoreBreakdownDialog } from "@/components/score/ScoreBreakdownDialog"
+import { useStreamSymbols } from "@/features/market/use-stream-symbols"
 import { BarChart3, InfoIcon } from "lucide-react"
 
 const commandOptions: { type: BotCommandType; label: string }[] = [
@@ -205,6 +206,32 @@ export default function BotDetailPage() {
     const presets = STRATEGY_PRESETS[engineKey] ?? STRATEGY_PRESETS.default
     return uniqueList([...presets, ...(strategyTrimmed ? [strategyTrimmed] : [])])
   }, [bot?.engine, strategyTrimmed])
+
+  const performanceItems = useMemo(() => {
+    const items: Array<{ symbol?: string | null; assetClass?: string | null }> = []
+    const add = (list?: { symbol: string; assetClass?: string | null }[]) => {
+      if (!Array.isArray(list)) return
+      list.forEach((entry) => {
+        if (!entry?.symbol) return
+        items.push({ symbol: entry.symbol, assetClass: entry.assetClass ?? null })
+      })
+    }
+    const top = botPerformance?.topSymbols || {}
+    const bottom = botPerformance?.bottomSymbols || {}
+    Object.values(top).forEach((list) => add(list))
+    Object.values(bottom).forEach((list) => add(list))
+    return items
+  }, [botPerformance])
+
+  const streamItems = useMemo(
+    () => [...recommendations, ...performanceItems],
+    [recommendations, performanceItems]
+  )
+
+  useStreamSymbols(`bot-${botId || "unknown"}`, {
+    items: streamItems,
+    enabled: Boolean(botId),
+  })
 
   const engineConfigLabel = useMemo(() => {
     switch (bot?.engine) {

@@ -21,6 +21,7 @@ It uses Binance WebSocket for crypto (falls back to FMP polling if blocked) and 
 - `market/actionBoard` (always streamed)
 - Open paper positions (collection group `positions`)
 - `market/universe` (only when mode includes the universe)
+- `market/streamSymbols` (UI-driven display list)
 
 ## Firestore output
 - `market/prices` with `items` array and `updatedAt`.

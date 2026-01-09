@@ -56,6 +56,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { toast } from "sonner"
 import { useAuth } from "@/features/auth/auth-context"
 import { useMarketPrices } from "@/features/market/use-market-prices"
+import { useStreamSymbols } from "@/features/market/use-stream-symbols"
 import { X, BarChart3, InfoIcon } from "lucide-react"
 import { AssetChartModal } from "@/components/charts/AssetChartModal"
 import { usePaperAutomation } from "@/features/paper/use-paper-monitor"
@@ -1379,6 +1380,84 @@ export default function DashboardPage() {
     () => (popularFx.length > 0 ? popularFx : POPULAR_FX),
     [popularFx]
   )
+
+  const trendingItems = useMemo(() => {
+    const items: MarketTrendItem[] = []
+    const byHorizon = trending?.byHorizon || {}
+    Object.values(byHorizon).forEach((bucket) => {
+      if (!bucket) return
+      ;(["crypto", "stock", "forex"] as const).forEach((assetClass) => {
+        const list = bucket?.[assetClass] ?? []
+        if (Array.isArray(list) && list.length > 0) {
+          items.push(...list)
+        }
+      })
+    })
+    return items
+  }, [trending])
+
+  const performanceItems = useMemo(() => {
+    const items: Array<{ symbol?: string | null; assetClass?: string | null }> = []
+    const add = (list?: { symbol: string; assetClass?: string | null }[]) => {
+      if (!Array.isArray(list)) return
+      list.forEach((entry) => {
+        if (!entry?.symbol) return
+        items.push({ symbol: entry.symbol, assetClass: entry.assetClass ?? null })
+      })
+    }
+    const top = signalPerformance?.topSymbols || {}
+    const bottom = signalPerformance?.bottomSymbols || {}
+    Object.values(top).forEach((list) => add(list))
+    Object.values(bottom).forEach((list) => add(list))
+    return items
+  }, [signalPerformance])
+
+  const streamBuckets = useMemo(
+    () => ({
+      crypto: uniqueList([
+        ...featuredCrypto,
+        ...cryptoSelection,
+        ...primaryCryptoSelection,
+      ]),
+      stock: uniqueList([
+        ...featuredStocks,
+        ...stockSelection,
+        ...primaryStockSelection,
+      ]),
+      forex: uniqueList([
+        ...featuredFx,
+        ...forexSelection,
+        ...primaryForexSelection,
+      ]),
+    }),
+    [
+      featuredCrypto,
+      featuredStocks,
+      featuredFx,
+      cryptoSelection,
+      stockSelection,
+      forexSelection,
+      primaryCryptoSelection,
+      primaryStockSelection,
+      primaryForexSelection,
+    ]
+  )
+
+  const streamItems = useMemo(
+    () => [
+      ...hotTrades,
+      ...(popular?.items ?? []),
+      ...trendingItems,
+      ...performanceItems,
+    ],
+    [hotTrades, popular?.items, trendingItems, performanceItems]
+  )
+
+  useStreamSymbols("dashboard", {
+    items: streamItems,
+    buckets: streamBuckets,
+    enabled: !loadingHotTrades,
+  })
 
   const cryptoSuggestions = useMemo(
     () =>

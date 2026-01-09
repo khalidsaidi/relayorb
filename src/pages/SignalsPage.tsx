@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react"
+import { useEffect, useMemo, useState, type CSSProperties } from "react"
 import {
   collectionGroup,
   limit,
@@ -13,6 +13,7 @@ import { db, firebaseEnabled } from "@/lib/firebase"
 import type { BotSignalDoc } from "@/lib/types"
 import { formatTimestamp } from "@/lib/format"
 import { SignalMarketIndicator } from "@/components/SignalMarketIndicator"
+import { useStreamSymbols } from "@/features/market/use-stream-symbols"
 
 function signalBadgeVariant(side?: string) {
   switch (side) {
@@ -27,9 +28,37 @@ function signalBadgeVariant(side?: string) {
   }
 }
 
+function extractSignalSymbol(signal: BotSignalDoc) {
+  return (
+    signal.symbol ||
+    (signal.data?.pair as string | undefined) ||
+    (signal.data?.symbol as string | undefined) ||
+    signal.evaluation?.symbol ||
+    ""
+  )
+}
+
 export default function SignalsPage() {
   const [signals, setSignals] = useState<BotSignalDoc[]>([])
   const [loading, setLoading] = useState(() => firebaseEnabled && !!db)
+
+  const streamItems = useMemo(
+    () =>
+      signals
+        .map((signal) => ({
+          symbol: extractSignalSymbol(signal),
+          assetClass:
+            signal.evaluation?.assetClass ||
+            (typeof signal.data?.assetClass === "string" ? signal.data.assetClass : undefined),
+        }))
+        .filter((entry) => entry.symbol),
+    [signals]
+  )
+
+  useStreamSymbols("signals", {
+    items: streamItems,
+    enabled: !loading,
+  })
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {

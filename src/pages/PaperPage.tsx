@@ -3,6 +3,7 @@ import { collection, doc, getDoc, onSnapshot, query, orderBy, limit } from "fire
 import { db } from "@/lib/firebase"
 import { useAuth } from "@/features/auth/auth-context"
 import { useMarketPrices } from "@/features/market/use-market-prices"
+import { useStreamSymbols } from "@/features/market/use-stream-symbols"
 import { formatCurrency } from "@/lib/format"
 import {
     Table,
@@ -33,6 +34,11 @@ export default function PaperPage() {
     const [positions, setPositions] = useState<PaperPosition[]>([])
     const [transactions, setTransactions] = useState<PaperTransaction[]>([])
     const [loading, setLoading] = useState(true)
+
+    useStreamSymbols("paper", {
+        items: positions,
+        enabled: Boolean(user),
+    })
 
     useEffect(() => {
         if (!user || !db) return

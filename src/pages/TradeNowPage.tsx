@@ -9,6 +9,7 @@ import { formatRelativeTimestamp } from "@/lib/format"
 import { toast } from "sonner"
 import { useAuth } from "@/features/auth/auth-context"
 import { useMarketPrices } from "@/features/market/use-market-prices"
+import { useStreamSymbols } from "@/features/market/use-stream-symbols"
 import { MarketStatusBadge } from "@/components/MarketStatusBadge"
 import { PaperTradeButton } from "@/components/paper/PaperTradeButton"
 import { executePaperTrade } from "@/features/paper/paper-service"
@@ -388,6 +389,19 @@ export default function TradeNowPage() {
   const [chartOpen, setChartOpen] = useState(false)
   const [breakdownAsset, setBreakdownAsset] = useState<MarketHotTrade | null>(null)
   const [breakdownOpen, setBreakdownOpen] = useState(false)
+
+  const streamItems = useMemo(() => {
+    const items: MarketHotTrade[] = []
+    if (actionBoard?.buys?.length) items.push(...actionBoard.buys)
+    if (actionBoard?.sells?.length) items.push(...actionBoard.sells)
+    if (hotTrades.length) items.push(...hotTrades)
+    return items
+  }, [actionBoard, hotTrades])
+
+  useStreamSymbols("trade-now", {
+    items: streamItems,
+    enabled: !loading,
+  })
 
   // Monitor paper positions for stop loss / take profit
   usePaperAutomation(user?.uid, hotTrades)
