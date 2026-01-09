@@ -1,0 +1,13 @@
+{
+  "name": "relayorb-price-streamer",
+  "private": true,
+  "version": "0.1.0",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.6.0",
+    "ws": "^8.18.3"
+  }
+}

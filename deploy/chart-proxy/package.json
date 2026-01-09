@@ -1,0 +1,12 @@
+{
+  "name": "relayorb-chart-proxy",
+  "version": "1.0.0",
+  "description": "Proxy for Alpha Vantage API to handle CORS and keep API key server-side",
+  "main": "src/index.js",
+  "engines": {
+    "node": "18"
+  },
+  "dependencies": {
+    "firebase-functions": "^5.0.0"
+  }
+}

@@ -25,6 +25,7 @@ import type {
   MarketPopularDoc,
   MarketControlsDoc,
   MarketUniverseDoc,
+  MarketUniverseMode,
   MarketTrendingDoc,
   MarketTrendItem,
   SignalPerformanceDoc,
@@ -35,6 +36,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { formatRelativeTimestamp, formatTimestamp } from "@/lib/format"
 import { StatusBadge } from "@/components/StatusBadge"
+import { MarketStatusBadge } from "@/components/MarketStatusBadge"
+import { PaperTradeButton } from "@/components/paper/PaperTradeButton"
+
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
@@ -50,7 +54,10 @@ import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { toast } from "sonner"
 import { useAuth } from "@/features/auth/auth-context"
-import { X } from "lucide-react"
+import { useMarketPrices } from "@/features/market/use-market-prices"
+import { X, BarChart3 } from "lucide-react"
+import { AssetChartModal } from "@/components/charts/AssetChartModal"
+import { usePaperAutomation } from "@/features/paper/use-paper-monitor"
 
 function signalBadgeVariant(side?: string) {
   switch (side) {
@@ -193,9 +200,31 @@ const ASSET_FOCUS_OPTIONS: { value: AssetClass; label: string }[] = [
   { value: "stock", label: "Stocks" },
   { value: "forex", label: "FX" },
 ]
+const DEFAULT_UNIVERSE_MODE: MarketUniverseMode = "movers_plus_universe"
+const UNIVERSE_MODE_OPTIONS: { value: MarketUniverseMode; label: string }[] = [
+  { value: "movers_plus_universe", label: "Movers + universe" },
+  { value: "movers_only", label: "Movers only" },
+  { value: "universe_only", label: "Universe only" },
+  { value: "movers_filtered_by_universe", label: "Movers filtered by universe" },
+]
+const UNIVERSE_MODE_SET = new Set(UNIVERSE_MODE_OPTIONS.map((option) => option.value))
+const BOT_WEIGHT_MIN = 0
+const BOT_WEIGHT_MAX = 5
+
+function clampBotWeight(value: number) {
+  return Math.min(BOT_WEIGHT_MAX, Math.max(BOT_WEIGHT_MIN, value))
+}
+
+function resolveUniverseMode(value?: string | null): MarketUniverseMode {
+  if (!value) return DEFAULT_UNIVERSE_MODE
+  const normalized = String(value).trim().toLowerCase() as MarketUniverseMode
+  return UNIVERSE_MODE_SET.has(normalized) ? normalized : DEFAULT_UNIVERSE_MODE
+}
 
 export default function DashboardPage() {
   const { user } = useAuth()
+  const { prices, livePrices } = useMarketPrices()
+
   const [bots, setBots] = useState<BotDoc[]>([])
   const [events, setEvents] = useState<BotEventDoc[]>([])
   const [signals, setSignals] = useState<BotSignalDoc[]>([])
@@ -221,9 +250,9 @@ export default function DashboardPage() {
   const [forexSearch, setForexSearch] = useState("")
   const [quickStockMatches, setQuickStockMatches] = useState<string[]>([])
   const [quickStockLoading, setQuickStockLoading] = useState(false)
-  const [includeCryptoTrending, setIncludeCryptoTrending] = useState(true)
-  const [includeStockTrending, setIncludeStockTrending] = useState(true)
-  const [includeForexTrending, setIncludeForexTrending] = useState(true)
+  const [cryptoMode, setCryptoMode] = useState<MarketUniverseMode>(DEFAULT_UNIVERSE_MODE)
+  const [stockMode, setStockMode] = useState<MarketUniverseMode>(DEFAULT_UNIVERSE_MODE)
+  const [forexMode, setForexMode] = useState<MarketUniverseMode>(DEFAULT_UNIVERSE_MODE)
   const [llmIntervalMinutes, setLlmIntervalMinutes] = useState(30)
   const [llmEnabled, setLlmEnabled] = useState(true)
   const [newsIntervalMinutes, setNewsIntervalMinutes] = useState(30)
@@ -242,6 +271,10 @@ export default function DashboardPage() {
   const [trendNewsWeight, setTrendNewsWeight] = useState(
     DEFAULT_TREND_WEIGHTS.news
   )
+  const [botWeightFreqtrade, setBotWeightFreqtrade] = useState(1)
+  const [botWeightBacktrader, setBotWeightBacktrader] = useState(1)
+  const [chartOpen, setChartOpen] = useState(false)
+  const [chartAsset, setChartAsset] = useState<MarketHotTrade | null>(null)
   const [autoTuneEnabled, setAutoTuneEnabled] = useState(true)
   const [autoTuneWithAI, setAutoTuneWithAI] = useState(true)
   const [autoTuneIntervalHours, setAutoTuneIntervalHours] = useState(6)
@@ -308,12 +341,13 @@ export default function DashboardPage() {
         setCryptoSelection([])
         setStockSelection([])
         setForexSelection([])
-        setIncludeCryptoTrending(true)
-        setIncludeStockTrending(true)
-        setIncludeForexTrending(true)
+        setCryptoMode(DEFAULT_UNIVERSE_MODE)
+        setStockMode(DEFAULT_UNIVERSE_MODE)
+        setForexMode(DEFAULT_UNIVERSE_MODE)
         return
       }
       const data = snap.data() as MarketUniverseDoc
+      const globalMode = resolveUniverseMode(data.mode)
       setUniverse(data)
       setCryptoSelection(
         uniqueList((data.crypto?.symbols ?? []).map(normalizeSymbol).filter(Boolean))
@@ -324,9 +358,9 @@ export default function DashboardPage() {
       setForexSelection(
         uniqueList((data.forex?.pairs ?? []).map(normalizeSymbol).filter(Boolean))
       )
-      setIncludeCryptoTrending(data.crypto?.includeTrending ?? true)
-      setIncludeStockTrending(data.stocks?.includeTrending ?? true)
-      setIncludeForexTrending(data.forex?.includeTrending ?? true)
+      setCryptoMode(resolveUniverseMode(data.crypto?.mode ?? globalMode))
+      setStockMode(resolveUniverseMode(data.stocks?.mode ?? globalMode))
+      setForexMode(resolveUniverseMode(data.forex?.mode ?? globalMode))
     })
   }, [])
 
@@ -367,6 +401,8 @@ export default function DashboardPage() {
         setTrendVolumeWeight(DEFAULT_TREND_WEIGHTS.volume)
         setTrendSignalsWeight(DEFAULT_TREND_WEIGHTS.signals)
         setTrendNewsWeight(DEFAULT_TREND_WEIGHTS.news)
+        setBotWeightFreqtrade(1)
+        setBotWeightBacktrader(1)
         setAutoTuneEnabled(true)
         setAutoTuneWithAI(true)
         setAutoTuneIntervalHours(6)
@@ -425,6 +461,21 @@ export default function DashboardPage() {
       setTrendVolumeWeight(weightVolume)
       setTrendSignalsWeight(weightSignals)
       setTrendNewsWeight(weightNews)
+      const botWeights = data.botWeights || {}
+      const freqtradeWeight =
+        typeof botWeights["engine:freqtrade"] === "number"
+          ? botWeights["engine:freqtrade"]
+          : typeof botWeights.freqtrade === "number"
+            ? botWeights.freqtrade
+            : 1
+      const backtraderWeight =
+        typeof botWeights["engine:backtrader"] === "number"
+          ? botWeights["engine:backtrader"]
+          : typeof botWeights.backtrader === "number"
+            ? botWeights.backtrader
+            : 1
+      setBotWeightFreqtrade(clampBotWeight(freqtradeWeight))
+      setBotWeightBacktrader(clampBotWeight(backtraderWeight))
       const parsedAutoTuneInterval = Number(data.autoTuneIntervalHours)
       setAutoTuneEnabled(data.autoTuneEnabled !== false)
       setAutoTuneWithAI(data.autoTuneWithAI !== false)
@@ -444,8 +495,8 @@ export default function DashboardPage() {
       setRiskProfile(nextRisk)
       const focus = Array.isArray(data.assetFocus)
         ? data.assetFocus.filter((item): item is AssetClass =>
-            ASSET_FOCUS_OPTIONS.some((option) => option.value === item)
-          )
+          ASSET_FOCUS_OPTIONS.some((option) => option.value === item)
+        )
         : []
       const nextFocus: AssetClass[] =
         focus.length > 0 ? focus : ["crypto", "stock", "forex"]
@@ -529,7 +580,7 @@ export default function DashboardPage() {
 
     const activeDb = db
     let didFallback = false
-    let unsubscribe = () => {}
+    let unsubscribe = () => { }
 
     const handleSnapshot = (snap: QuerySnapshot<DocumentData>) => {
       const nextEvents = snap.docs.map((doc) => {
@@ -583,7 +634,7 @@ export default function DashboardPage() {
 
     const activeDb = db
     let didFallback = false
-    let unsubscribe = () => {}
+    let unsubscribe = () => { }
 
     const handleSnapshot = (snap: QuerySnapshot<DocumentData>) => {
       const nextSignals = snap.docs.map((doc) => {
@@ -942,7 +993,7 @@ export default function DashboardPage() {
         ) : !stats ? (
           <div className="text-sm opacity-70">
             {signalPerformance?.overall &&
-            Object.keys(signalPerformance.overall).length > 0
+              Object.keys(signalPerformance.overall).length > 0
               ? "Only shorter horizons have results. 24h/7d appear once signals age."
               : "No evaluations yet. Run the signal evaluator worker to populate accuracy data."}
           </div>
@@ -1498,10 +1549,14 @@ export default function DashboardPage() {
     [popularFx, forexSuggestions, primaryForexSelection]
   )
 
-  const focusedHotTrades = useMemo(
+  const focusedHotTrades: MarketHotTrade[] = useMemo(
     () => hotTrades.filter((trade) => assetFocusSet.has(trade.assetClass)),
     [hotTrades, assetFocusSet]
   )
+
+  // Monitor paper positions for stop loss / take profit
+  usePaperAutomation(user?.uid, hotTrades)
+
 
   const trendFocusSet = useMemo(() => new Set(trendAssetFocus), [trendAssetFocus])
   const trendingBuckets = useMemo(() => {
@@ -1624,15 +1679,15 @@ export default function DashboardPage() {
         assetFocus.length > 0 ? assetFocus : ["crypto", "stock", "forex"]
       const payload: MarketUniverseDoc = {
         crypto: {
-          includeTrending: includeCryptoTrending,
+          mode: cryptoMode,
           symbols: uniqueList(cryptoSelection.map(normalizeSymbol).filter(Boolean)),
         },
         stocks: {
-          includeTrending: includeStockTrending,
+          mode: stockMode,
           symbols: uniqueList(stockSelection.map(normalizeTicker).filter(Boolean)),
         },
         forex: {
-          includeTrending: includeForexTrending,
+          mode: forexMode,
           pairs: uniqueList(forexSelection.map(normalizeSymbol).filter(Boolean)),
         },
         updatedAt: serverTimestamp(),
@@ -1650,6 +1705,10 @@ export default function DashboardPage() {
           volume: trendVolumeWeight,
           signals: trendSignalsWeight,
           news: trendNewsWeight,
+        },
+        botWeights: {
+          "engine:freqtrade": clampBotWeight(botWeightFreqtrade),
+          "engine:backtrader": clampBotWeight(botWeightBacktrader),
         },
         autoTuneEnabled,
         autoTuneWithAI,
@@ -1711,15 +1770,15 @@ export default function DashboardPage() {
     const nextForex = Array.from(forexPairs)
     const payload: MarketUniverseDoc = {
       crypto: {
-        includeTrending: includeCryptoTrending,
+        mode: cryptoMode,
         symbols: nextCrypto,
       },
       stocks: {
-        includeTrending: includeStockTrending,
+        mode: stockMode,
         symbols: nextStocks,
       },
       forex: {
-        includeTrending: includeForexTrending,
+        mode: forexMode,
         pairs: nextForex,
       },
       updatedAt: serverTimestamp(),
@@ -1797,15 +1856,15 @@ export default function DashboardPage() {
     const nextPrimaryForex = Array.from(primaryForex)
     const universePayload: MarketUniverseDoc = {
       crypto: {
-        includeTrending: includeCryptoTrending,
+        mode: cryptoMode,
         symbols: nextCrypto,
       },
       stocks: {
-        includeTrending: includeStockTrending,
+        mode: stockMode,
         symbols: nextStocks,
       },
       forex: {
-        includeTrending: includeForexTrending,
+        mode: forexMode,
         pairs: nextForex,
       },
       updatedAt: serverTimestamp(),
@@ -1890,6 +1949,11 @@ export default function DashboardPage() {
           <div className="text-sm text-muted-foreground">
             Spot high-probability dips and momentum shifts across your universe.
           </div>
+          <div className="mt-4 flex flex-wrap items-center gap-4">
+            <MarketStatusBadge assetClass="crypto" />
+            <MarketStatusBadge assetClass="stock" />
+            <MarketStatusBadge assetClass="forex" />
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={() => setUniverseOpen(true)}>
@@ -1919,6 +1983,8 @@ export default function DashboardPage() {
         <Badge variant="outline">Risk {riskProfile}</Badge>
         <Badge variant="outline">Focus {assetFocusLabel}</Badge>
       </div>
+
+
 
       <Dialog open={universeOpen} onOpenChange={setUniverseOpen}>
         <DialogContent className="w-[min(96vw,1100px)] sm:max-w-5xl">
@@ -2224,6 +2290,76 @@ export default function DashboardPage() {
                       </div>
                     </div>
                     <div className="mt-4 space-y-2">
+                      <Label>Bot weights (0-5)</Label>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">Freqtrade</Label>
+                          <Input
+                            type="number"
+                            inputMode="numeric"
+                            min={BOT_WEIGHT_MIN}
+                            max={BOT_WEIGHT_MAX}
+                            step={0.1}
+                            value={botWeightFreqtrade}
+                            onChange={(event) => {
+                              const next = Number(event.target.value)
+                              if (Number.isFinite(next)) {
+                                setBotWeightFreqtrade(clampBotWeight(next))
+                              }
+                            }}
+                          />
+                          <input
+                            type="range"
+                            min={BOT_WEIGHT_MIN}
+                            max={BOT_WEIGHT_MAX}
+                            step={0.1}
+                            value={botWeightFreqtrade}
+                            onChange={(event) => {
+                              const next = Number(event.target.value)
+                              if (Number.isFinite(next)) {
+                                setBotWeightFreqtrade(clampBotWeight(next))
+                              }
+                            }}
+                            className="h-2 w-full cursor-pointer accent-[hsl(var(--primary))]"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">Backtrader</Label>
+                          <Input
+                            type="number"
+                            inputMode="numeric"
+                            min={BOT_WEIGHT_MIN}
+                            max={BOT_WEIGHT_MAX}
+                            step={0.1}
+                            value={botWeightBacktrader}
+                            onChange={(event) => {
+                              const next = Number(event.target.value)
+                              if (Number.isFinite(next)) {
+                                setBotWeightBacktrader(clampBotWeight(next))
+                              }
+                            }}
+                          />
+                          <input
+                            type="range"
+                            min={BOT_WEIGHT_MIN}
+                            max={BOT_WEIGHT_MAX}
+                            step={0.1}
+                            value={botWeightBacktrader}
+                            onChange={(event) => {
+                              const next = Number(event.target.value)
+                              if (Number.isFinite(next)) {
+                                setBotWeightBacktrader(clampBotWeight(next))
+                              }
+                            }}
+                            className="h-2 w-full cursor-pointer accent-[hsl(var(--primary))]"
+                          />
+                        </div>
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        Weights multiply signal influence per engine.
+                      </div>
+                    </div>
+                    <div className="mt-4 space-y-2">
                       <Label>Auto-tune weights</Label>
                       <div className="flex flex-wrap items-center gap-2">
                         <Button
@@ -2302,15 +2438,20 @@ export default function DashboardPage() {
                           Track the pairs you want to scan.
                         </div>
                       </div>
-                      <Button
-                        type="button"
-                        variant={includeCryptoTrending ? "secondary" : "outline"}
-                        size="sm"
-                        onClick={() => setIncludeCryptoTrending((prev) => !prev)}
-                        aria-pressed={includeCryptoTrending}
+                      <Select
+                        value={cryptoMode}
+                        onChange={(event) =>
+                          setCryptoMode(resolveUniverseMode(event.target.value))
+                        }
+                        className="w-[220px]"
+                        aria-label="Crypto universe mode"
                       >
-                        {includeCryptoTrending ? "Trending on" : "Trending off"}
-                      </Button>
+                        {UNIVERSE_MODE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </Select>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {featuredCrypto.map((symbol) => (
@@ -2463,15 +2604,20 @@ export default function DashboardPage() {
                           Focus on the equities you want covered.
                         </div>
                       </div>
-                      <Button
-                        type="button"
-                        variant={includeStockTrending ? "secondary" : "outline"}
-                        size="sm"
-                        onClick={() => setIncludeStockTrending((prev) => !prev)}
-                        aria-pressed={includeStockTrending}
+                      <Select
+                        value={stockMode}
+                        onChange={(event) =>
+                          setStockMode(resolveUniverseMode(event.target.value))
+                        }
+                        className="w-[220px]"
+                        aria-label="Stock universe mode"
                       >
-                        {includeStockTrending ? "Trending on" : "Trending off"}
-                      </Button>
+                        {UNIVERSE_MODE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </Select>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {featuredStocks.map((symbol) => (
@@ -2638,15 +2784,20 @@ export default function DashboardPage() {
                           Select the currency pairs you trade.
                         </div>
                       </div>
-                      <Button
-                        type="button"
-                        variant={includeForexTrending ? "secondary" : "outline"}
-                        size="sm"
-                        onClick={() => setIncludeForexTrending((prev) => !prev)}
-                        aria-pressed={includeForexTrending}
+                      <Select
+                        value={forexMode}
+                        onChange={(event) =>
+                          setForexMode(resolveUniverseMode(event.target.value))
+                        }
+                        className="w-[220px]"
+                        aria-label="FX universe mode"
                       >
-                        {includeForexTrending ? "Trending on" : "Trending off"}
-                      </Button>
+                        {UNIVERSE_MODE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </Select>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {featuredFx.map((symbol) => (
@@ -3075,8 +3226,30 @@ export default function DashboardPage() {
                                   {isPrimaryTrade(trade) && (
                                     <Badge variant="secondary">Primary</Badge>
                                   )}
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6 ml-auto"
+                                    onClick={() => {
+                                      setChartAsset(trade)
+                                      setChartOpen(true)
+                                    }}
+                                    title="View Chart"
+                                  >
+                                    <BarChart3 className="h-4 w-4" />
+                                  </Button>
                                 </div>
-                                <div className="text-xs text-muted-foreground">
+                                <div className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
+                                  <span className="font-bold text-foreground">
+                                    {(() => {
+                                      const current = prices[trade.symbol] || trade.price
+                                      return current ? (current < 1 ? current.toFixed(4) : current.toFixed(2)) : "--"
+                                    })()}
+                                  </span>
+                                  {livePrices[trade.symbol] && (
+                                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
+                                  )}
+                                  <span>·</span>
                                   {trade.name || trade.assetClass} · {dipHorizon} move:{" "}
                                   {horizonChange === null ? "--" : formatChange(horizonChange)}
                                 </div>
@@ -3176,8 +3349,30 @@ export default function DashboardPage() {
                                 {isPrimaryTrade(trade) && (
                                   <Badge variant="secondary">Primary</Badge>
                                 )}
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-6 w-6 ml-auto"
+                                  onClick={() => {
+                                    setChartAsset(trade)
+                                    setChartOpen(true)
+                                  }}
+                                  title="View Chart"
+                                >
+                                  <BarChart3 className="h-4 w-4" />
+                                </Button>
                               </div>
-                              <div className="text-xs text-muted-foreground">
+                              <div className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
+                                <span className="font-bold text-foreground">
+                                  {(() => {
+                                    const current = prices[trade.symbol] || trade.price
+                                    return current ? (current < 1 ? current.toFixed(4) : current.toFixed(2)) : "--"
+                                  })()}
+                                </span>
+                                {livePrices[trade.symbol] && (
+                                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
+                                )}
+                                <span>·</span>
                                 {trade.name || trade.assetClass} · 24h:{" "}
                                 {formatChange(trade.momentum?.change24h)}
                                 {trade.exchange ? ` · ${trade.exchange}` : ""}
@@ -3328,8 +3523,19 @@ export default function DashboardPage() {
                                             <div className="text-sm font-semibold tracking-tight truncate">
                                               {item.symbol}
                                             </div>
-                                            <div className="mt-2 inline-flex items-center rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">
-                                              {momentumLabel} {formatChange(momentum.change ?? undefined)}
+                                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                                              <div className="inline-flex items-center rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">
+                                                {momentumLabel} {formatChange(momentum.change ?? undefined)}
+                                              </div>
+                                              <div className="inline-flex items-center gap-1.5 text-[11px] font-bold">
+                                                {(() => {
+                                                  const current = prices[item.symbol] || item.price
+                                                  return current ? (current < 1 ? current.toFixed(4) : current.toFixed(2)) : "--"
+                                                })()}
+                                                {livePrices[item.symbol] && (
+                                                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
+                                                )}
+                                              </div>
                                             </div>
                                             {item.signals?.total ? (
                                               <div className="mt-2 text-[11px] text-muted-foreground">
@@ -3425,8 +3631,19 @@ export default function DashboardPage() {
                       buyIdeas.map((trade) => (
                         <div key={`buy-${trade.symbol}`} className="flex items-center justify-between">
                           <div>
-                            <div className="text-sm font-medium">{trade.symbol}</div>
-                            <div className="text-xs text-muted-foreground">
+                            <div className="flex items-center gap-2">
+                              <div className="text-sm font-medium">{trade.symbol}</div>
+                              <PaperTradeButton trade={trade} size="icon" className="h-5 w-5 opacity-0 hover:opacity-100 group-hover:opacity-100 transition-opacity" />
+                            </div>
+                            <div className="text-xs text-muted-foreground flex items-center gap-1">
+                              {(() => {
+                                const current = prices[trade.symbol] || trade.price
+                                return current ? (current < 1 ? current.toFixed(4) : current.toFixed(2)) : "--"
+                              })()}
+                              {livePrices[trade.symbol] && (
+                                <span className="h-1 w-1 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
+                              )}
+                              <span>·</span>
                               24h: {formatChange(trade.momentum?.change24h)}
                             </div>
                           </div>
@@ -3458,8 +3675,19 @@ export default function DashboardPage() {
                           className="flex items-center justify-between"
                         >
                           <div>
-                            <div className="text-sm font-medium">{trade.symbol}</div>
-                            <div className="text-xs text-muted-foreground">
+                            <div className="flex items-center gap-2">
+                              <div className="text-sm font-medium">{trade.symbol}</div>
+                              <PaperTradeButton trade={trade} size="icon" className="h-5 w-5 opacity-0 hover:opacity-100 group-hover:opacity-100 transition-opacity" />
+                            </div>
+                            <div className="text-xs text-muted-foreground flex items-center gap-1">
+                              {(() => {
+                                const current = prices[trade.symbol] || trade.price
+                                return current ? (current < 1 ? current.toFixed(4) : current.toFixed(2)) : "--"
+                              })()}
+                              {livePrices[trade.symbol] && (
+                                <span className="h-1 w-1 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
+                              )}
+                              <span>·</span>
                               24h: {formatChange(trade.momentum?.change24h)}
                             </div>
                           </div>
@@ -3533,8 +3761,8 @@ export default function DashboardPage() {
                             quickAssetClass === "stock"
                               ? "Search tickers (e.g. AAPL)"
                               : quickAssetClass === "forex"
-                              ? "Search pairs (e.g. EUR/USD)"
-                              : "Search pairs (e.g. BTC/USDT)"
+                                ? "Search pairs (e.g. EUR/USD)"
+                                : "Search pairs (e.g. BTC/USDT)"
                           }
                           role="combobox"
                           aria-autocomplete="list"
@@ -3574,8 +3802,8 @@ export default function DashboardPage() {
                                     {quickAssetClass === "stock"
                                       ? "Stock"
                                       : quickAssetClass === "forex"
-                                      ? "FX"
-                                      : "Crypto"}
+                                        ? "FX"
+                                        : "Crypto"}
                                   </span>
                                 </button>
                               ))}
@@ -3912,6 +4140,12 @@ export default function DashboardPage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <AssetChartModal
+        open={chartOpen}
+        onOpenChange={setChartOpen}
+        asset={chartAsset}
+      />
     </div>
   )
 }

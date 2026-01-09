@@ -9,10 +9,13 @@ test.describe("RelayOrb authenticated flow", () => {
   test.describe.configure({ mode: "serial" })
 
   test.beforeEach(async ({ page }) => {
-    await page.goto("/signin")
+    await page.goto("/dashboard")
     const testButton = page.getByRole("button", { name: /test sign in/i })
-    if (await testButton.count()) {
+    try {
+      await testButton.waitFor({ state: "visible", timeout: 5000 })
       await testButton.click()
+    } catch {
+      // Already signed in or test sign-in is not available.
     }
     await expect(page.getByRole("tab", { name: "Opportunities" })).toBeVisible()
   })
@@ -34,6 +37,7 @@ test.describe("RelayOrb authenticated flow", () => {
     await expect(page.getByRole("link", { name: "freqtrade-1" })).toBeVisible()
     await page.getByRole("link", { name: "freqtrade-1" }).click()
 
+    await page.getByRole("tab", { name: "Commands" }).click()
     await expect(page.getByText("Command Console")).toBeVisible()
     await page.getByRole("button", { name: /^Start$/ }).click()
     await expect(page.getByText("Command queued")).toBeVisible()

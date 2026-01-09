@@ -2,13 +2,13 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import process from "node:process"
 import admin from "firebase-admin"
-import YAML from "yaml"
+import AlpacaAdapter from "../../adapters/alpaca/adapter.js"
+import AlphaVantageAdapter from "../../adapters/alphavantage/adapter.js"
+import OandaAdapter from "../../adapters/oanda/adapter.js"
 
 const CONFIG_ENV = "RELAYORB_CONFIG_PATH"
 const DEFAULT_CONFIG = "config.json"
 const FREQTRADE_CONFIG_PATH = process.env.RELAYORB_FREQTRADE_CONFIG || ""
-const HUMMINGBOT_BOTS_DIR = process.env.RELAYORB_HUMMINGBOT_DIR || ""
-const JESSE_PROJECT_DIR = process.env.RELAYORB_JESSE_DIR || ""
 
 const log = (message) => {
   const stamp = new Date().toISOString()
@@ -21,15 +21,25 @@ const DEFAULT_CAPABILITIES = {
     timeframes: ["1m", "5m", "15m", "1h", "4h", "1d"],
     modes: ["signal", "paper", "live"],
   },
-  hummingbot: {
-    exchanges: ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
-    timeframes: ["1m", "5m", "15m", "1h", "4h", "1d"],
-    modes: ["signal", "paper", "live"],
+  alpaca: {
+    assetClasses: ["stock"],
+    timeframes: ["1m", "5m", "15m", "1h", "1d"],
+    modes: ["signal"],
   },
-  jesse: {
-    exchanges: ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
+  alphavantage: {
+    assetClasses: ["stock"],
+    timeframes: ["1d"], // Free tier only supports daily
+    modes: ["signal"],
+  },
+  backtrader: {
+    assetClasses: ["stock", "forex"],
+    timeframes: ["15m", "1h", "4h", "1d"],
+    modes: ["signal"],
+  },
+  oanda: {
+    assetClasses: ["forex"],
     timeframes: ["1m", "5m", "15m", "1h", "4h", "1d"],
-    modes: ["signal", "paper", "live"],
+    modes: ["signal"],
   },
 }
 
@@ -102,37 +112,11 @@ async function readJsonFile(filePath) {
   }
 }
 
-async function readFileTail(filePath, maxBytes = 65536) {
-  let handle = null
-  try {
-    handle = await fs.open(filePath, "r")
-    const stat = await handle.stat()
-    const size = stat.size
-    if (size === 0) return ""
-    const start = Math.max(0, size - maxBytes)
-    const length = size - start
-    const buffer = Buffer.alloc(length)
-    await handle.read(buffer, 0, length, start)
-    return buffer.toString("utf8")
-  } catch (err) {
-    return null
-  } finally {
-    if (handle) {
-      await handle.close().catch(() => {})
-    }
-  }
-}
-
 async function writeJsonFile(filePath, data) {
   await fs.mkdir(path.dirname(filePath), { recursive: true })
   await fs.writeFile(filePath, JSON.stringify(data, null, 2) + "\n")
 }
 
-async function writeYamlFromJson(filePath, data) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true })
-  const yaml = YAML.stringify(data, { lineWidth: 0 })
-  await fs.writeFile(filePath, yaml)
-}
 
 function normalizePair(pair, separator) {
   if (!pair) return pair
@@ -278,19 +262,6 @@ function resolveAdvanced(payload, engine) {
   return advanced
 }
 
-function buildRelayorbMeta(payload) {
-  if (!payload || typeof payload !== "object") return {}
-  const meta = {
-    exchange: payload.exchange,
-    pairs: payload.pairs,
-    timeframe: payload.timeframe,
-    mode: payload.mode,
-    strategy: payload.strategy,
-    risk: payload.risk,
-  }
-  return Object.fromEntries(Object.entries(meta).filter(([, value]) => value !== undefined))
-}
-
 async function applyFreqtradeConfig(payload) {
   if (!FREQTRADE_CONFIG_PATH) {
     return { applied: false, note: "Missing RELAYORB_FREQTRADE_CONFIG" }
@@ -319,76 +290,6 @@ async function applyFreqtradeConfig(payload) {
   return { applied: true, path: FREQTRADE_CONFIG_PATH }
 }
 
-async function applyHummingbotConfig(botId, payload) {
-  if (!HUMMINGBOT_BOTS_DIR) {
-    return { applied: false, note: "Missing RELAYORB_HUMMINGBOT_DIR" }
-  }
-
-  const botDir = path.join(HUMMINGBOT_BOTS_DIR, botId)
-  const confDir = path.join(botDir, "conf")
-  const advanced = resolveAdvanced(payload, "hummingbot") || {}
-  const config = { ...advanced }
-
-  const pairs = Array.isArray(payload.pairs) ? payload.pairs : []
-  if (payload.strategy && !config.strategy) config.strategy = payload.strategy
-  if (payload.exchange && !config.exchange) config.exchange = payload.exchange
-  if (pairs.length > 0 && !config.markets) {
-    config.markets = pairs.map((pair) => normalizePair(pair, "-"))
-  }
-  if (payload.timeframe && !config.timeframe) config.timeframe = payload.timeframe
-
-  const relayorbMeta = buildRelayorbMeta(payload)
-  if (Object.keys(relayorbMeta).length > 0) {
-    config.relayorb = { ...(config.relayorb || {}), ...relayorbMeta }
-  }
-
-  await writeYamlFromJson(path.join(confDir, "conf.yml"), config)
-  await writeJsonFile(path.join(botDir, "relayorb.json"), { config, payload })
-  return { applied: true, path: path.join(confDir, "conf.yml") }
-}
-
-async function applyJesseConfig(payload) {
-  if (!JESSE_PROJECT_DIR) {
-    return { applied: false, note: "Missing RELAYORB_JESSE_DIR" }
-  }
-
-  const configDir = path.join(JESSE_PROJECT_DIR, "config")
-  const advanced = resolveAdvanced(payload, "jesse") || {}
-  const exchange = payload.exchange || advanced.exchange || "Binance"
-  const timeframe = payload.timeframe || advanced.timeframe || "1m"
-  const strategy = payload.strategy || advanced.strategy || "DefaultStrategy"
-
-  const pairs = Array.isArray(payload.pairs) ? payload.pairs : []
-  const routes =
-    Array.isArray(advanced.routes) && advanced.routes.length
-      ? advanced.routes
-      : pairs.map((pair) => ({
-          exchange,
-          symbol: normalizePair(pair, "-"),
-          timeframe,
-          strategy,
-        }))
-
-  const dataRoutes =
-    advanced.data_routes || advanced.dataRoutes || []
-
-  await writeJsonFile(path.join(configDir, "routes.json"), {
-    routes,
-    data_routes: dataRoutes,
-  })
-
-  const relayorbMeta = buildRelayorbMeta(payload)
-  const config = { ...(advanced.config || {}) }
-  if (!config.exchange) config.exchange = exchange
-  if (!config.timeframe) config.timeframe = timeframe
-  if (payload.mode && !config.mode) config.mode = payload.mode
-  if (Object.keys(relayorbMeta).length > 0) {
-    config.relayorb = { ...(config.relayorb || {}), ...relayorbMeta }
-  }
-  await writeJsonFile(path.join(configDir, "config.json"), config)
-  await writeJsonFile(path.join(JESSE_PROJECT_DIR, "relayorb.json"), { config, payload })
-  return { applied: true, path: path.join(configDir, "routes.json") }
-}
 
 async function fetchJson(url, options = {}) {
   const res = await fetch(url, {
@@ -648,29 +549,18 @@ class FreqtradeAdapter {
   }
 }
 
-class HummingbotAdapter {
+class BacktraderAdapter {
   constructor(bot) {
     this.bot = bot
-    this.baseUrl = bot.api?.baseUrl
-    this.username = bot.api?.username
-    this.password = bot.api?.password
-    this.remoteId = bot.api?.remoteId || bot.id
+    this.baseUrl = bot.api?.baseUrl || "http://backtrader:8080"
     this.signalDeduper = createDeduper()
-    this.logDeduper = createDeduper()
-  }
-
-  authHeader() {
-    if (!this.username || !this.password) {
-      throw new Error("Hummingbot API username/password missing")
-    }
-    const basic = Buffer.from(`${this.username}:${this.password}`).toString("base64")
-    return `Basic ${basic}`
+    this.deduper = createDeduper()
+    this.lastRunAt = 0
+    this.minRunIntervalMs = Math.max(60000, (bot.pollIntervalSeconds || 300) * 1000)
   }
 
   async request(endpoint, { method = "GET", body } = {}) {
-    const headers = {
-      Authorization: this.authHeader(),
-    }
+    const headers = {}
     if (body) headers["Content-Type"] = "application/json"
     return fetchJson(withBaseUrl(this.baseUrl, endpoint), {
       method,
@@ -684,407 +574,173 @@ class HummingbotAdapter {
     let status = "offline"
     const events = []
     const signals = []
-    let mqttActive = false
 
     try {
-      state.service = await this.request("/bot-orchestration/status")
+      await this.request("/ping")
       status = "online"
     } catch (err) {
-      return { status, state: { error: String(err) } }
+      return { status, state }
+    }
+
+    const runEvent = await this.maybeRunStrategy()
+    if (runEvent) {
+      events.push(runEvent)
     }
 
     try {
-      state.botStatus = await this.request(`/bot-orchestration/${encodeURIComponent(this.remoteId)}/status`)
-      const rawStatus =
-        state.botStatus?.data?.status ||
-        state.botStatus?.status ||
-        state.botStatus?.state ||
-        ""
-      const recentlyActive = state.botStatus?.data?.recently_active === true
-      if (typeof rawStatus === "string") {
-        const normalized = rawStatus.toLowerCase()
-        if (normalized.includes("run")) {
-          status = "online"
-        } else if (recentlyActive) {
-          status = "online"
-        } else if (normalized.includes("not_found") || normalized.includes("stop") || normalized.includes("idle")) {
-          status = "idle"
-        }
-      }
+      state.health = await this.request("/health")
     } catch (err) {
-      state.botStatus = { error: String(err) }
+      state.health = { error: String(err) }
     }
 
     try {
-      state.mqtt = await this.request("/bot-orchestration/mqtt")
-      const activeBots = state.mqtt?.data?.active_bots || state.mqtt?.active_bots || []
-      if (Array.isArray(activeBots) && activeBots.includes(this.remoteId)) {
-        mqttActive = true
-        status = "online"
-      }
+      state.balance = await this.request("/balance")
     } catch (err) {
-      state.mqtt = { error: String(err) }
+      state.balance = { error: String(err) }
     }
 
     try {
-      state.orders = await this.request("/trading/orders/active", { method: "POST", body: {} })
-    } catch (err) {
-      state.orders = { error: String(err) }
-    }
-
-    try {
-      state.trades = await this.request("/trading/trades", { method: "POST", body: {} })
-    } catch (err) {
-      state.trades = { error: String(err) }
-    }
-
-    const orders = Array.isArray(state.orders)
-      ? state.orders
-      : Array.isArray(state.orders?.orders)
-        ? state.orders.orders
-        : []
-
-    for (const order of orders.slice(0, 20)) {
-      const sideRaw = order?.side || order?.trade_type || order?.order_side || ""
-      const side = typeof sideRaw === "string" ? sideRaw.toLowerCase() : ""
-      if (!["buy", "sell"].includes(side)) continue
-      const pair = order?.market || order?.trading_pair || order?.symbol || null
-      const signal = {
-        side,
-        strength: 0.6,
-        message: pair ? `${side.toUpperCase()} order ${pair}` : `${side.toUpperCase()} order`,
-        data: { pair, source: "orders", raw: order },
+      const rawLogs = await this.request("/logs")
+      const logs = Array.isArray(rawLogs) ? rawLogs : []
+      for (const entry of logs.slice(0, 20)) {
+        const key = JSON.stringify(entry)
+        if (this.deduper.has(key)) continue
+        this.deduper.add(key)
+        events.push({
+          type: "log",
+          severity: entry.level || "info",
+          message: entry.message || String(entry),
+          data: entry.data || entry,
+        })
       }
-      const key = JSON.stringify(signal)
-      if (this.signalDeduper.has(key)) continue
-      this.signalDeduper.add(key)
-      signals.push(signal)
-    }
-
-    const trades = Array.isArray(state.trades)
-      ? state.trades
-      : Array.isArray(state.trades?.trades)
-        ? state.trades.trades
-        : []
-
-    for (const trade of trades.slice(0, 20)) {
-      const sideRaw = trade?.side || trade?.trade_type || trade?.order_side || ""
-      const side = typeof sideRaw === "string" ? sideRaw.toLowerCase() : ""
-      if (!["buy", "sell"].includes(side)) continue
-      const pair = trade?.market || trade?.trading_pair || trade?.symbol || null
-      const signal = {
-        side,
-        strength: 0.7,
-        message: pair ? `${side.toUpperCase()} trade ${pair}` : `${side.toUpperCase()} trade`,
-        data: { pair, source: "trades", raw: trade },
-      }
-      const key = JSON.stringify(signal)
-      if (this.signalDeduper.has(key)) continue
-      this.signalDeduper.add(key)
-      signals.push(signal)
-    }
-
-    try {
-      await this.collectLogSignals(events, signals)
     } catch (err) {
       events.push({
         type: "log",
         severity: "warn",
-        message: `Hummingbot log parse failed: ${String(err)}`,
+        message: `Backtrader log poll failed: ${String(err)}`,
+      })
+    }
+
+    try {
+      const signalsData = await this.request("/signals")
+      const rawSignals = Array.isArray(signalsData?.signals) ? signalsData.signals : []
+      
+      for (const sig of rawSignals) {
+        // Backtrader signals have: side, strength, message, price, timestamp, symbol
+        const symbol = sig.symbol || sig.data?.symbol || "unknown"
+        
+        if (!sig.side || sig.side === "hold") continue
+        
+        const signal = {
+          side: sig.side,
+          strength: typeof sig.strength === "number" ? sig.strength : 0.65,
+          message: sig.message || `${sig.side} signal for ${symbol}`,
+          data: {
+            pair: symbol,
+            symbol: symbol,
+            source: "backtrader",
+            price: sig.price,
+            indicators: sig.rsi ? { rsi: sig.rsi, sma: sig.sma } : undefined,
+            raw: sig,
+          },
+        }
+        
+        const key = JSON.stringify({ symbol, side: sig.side, message: sig.message })
+        if (this.signalDeduper.has(key)) continue
+        this.signalDeduper.add(key)
+        signals.push(signal)
+      }
+    } catch (err) {
+      events.push({
+        type: "log",
+        severity: "warn",
+        message: `Backtrader signals poll failed: ${String(err)}`,
       })
     }
 
     return { status, state, events, signals }
   }
 
-  async collectLogSignals(events, signals) {
-    if (!HUMMINGBOT_BOTS_DIR) return
-    const logDir = path.join(HUMMINGBOT_BOTS_DIR, "instances", this.remoteId, "logs")
-    const logFiles = ["logs_simple_pmm.log", "logs_hummingbot.log"]
-    const marker = "EVENT_LOG - "
-
-    for (const file of logFiles) {
-      const raw = await readFileTail(path.join(logDir, file))
-      if (!raw) continue
-      const lines = raw.split("\n")
-      for (const line of lines) {
-        const idx = line.indexOf(marker)
-        if (idx === -1) continue
-        const jsonPart = line.slice(idx + marker.length).trim()
-        if (!jsonPart.startsWith("{")) continue
-        let data
-        try {
-          data = JSON.parse(jsonPart)
-        } catch (err) {
-          continue
-        }
-
-        const eventName = (data?.event_name || data?.event || "").toString()
-        const lowered = eventName.toLowerCase()
-        const side = lowered.includes("buy")
-          ? "buy"
-          : lowered.includes("sell")
-            ? "sell"
-            : null
-        if (!side) continue
-
-        const pair = data?.trading_pair || data?.symbol || data?.market || null
-        const message = pair
-          ? `${side.toUpperCase()} ${pair}`
-          : `${side.toUpperCase()} signal`
-        const signal = {
-          side,
-          strength: lowered.includes("filled") ? 0.8 : 0.6,
-          message,
-          data: { pair, source: "logs", event: eventName, raw: data },
-        }
-        const key = JSON.stringify(signal)
-        if (!this.signalDeduper.has(key)) {
-          this.signalDeduper.add(key)
-          signals.push(signal)
-        }
-
-        const eventKey = JSON.stringify({ eventName, pair, id: data?.order_id || data?.trade_id || data?.timestamp })
-        if (!this.logDeduper.has(eventKey)) {
-          this.logDeduper.add(eventKey)
-          events.push({
-            type: "log",
-            severity: "info",
-            message: `Hummingbot ${eventName}`,
-            data,
-          })
-        }
-      }
+  resolveRunConfig() {
+    const desired = this.bot.desiredConfig || {}
+    const symbols = Array.isArray(desired.symbols) ? desired.symbols : []
+    const pairs = Array.isArray(desired.pairs) ? desired.pairs : []
+    const list = symbols.length > 0 ? symbols : pairs
+    return {
+      symbols: list.map((item) => String(item).trim()).filter(Boolean),
+      assetClass: desired.assetClass || "stock",
+      timeframe: desired.timeframe || "1d",
+      strategy: desired.strategy || "default",
     }
   }
 
-  async executeCommand(type, payload) {
-    switch (type) {
-      case "start":
-        await this.request("/bot-orchestration/start-bot", {
-          method: "POST",
-          body: { bot_name: this.remoteId },
-        })
-        return { status: "online" }
-      case "stop":
-        await this.request("/bot-orchestration/stop-bot", {
-          method: "POST",
-          body: { bot_name: this.remoteId },
-        })
-        return { status: "idle" }
-      case "restart":
-        await this.request("/bot-orchestration/stop-bot", {
-          method: "POST",
-          body: { bot_name: this.remoteId },
-        })
-        await this.request("/bot-orchestration/start-bot", {
-          method: "POST",
-          body: { bot_name: this.remoteId },
-        })
-        return { status: "online" }
-      case "reload_config":
-        if (!payload || Object.keys(payload).length === 0) {
-          throw new Error("reload_config requires a payload")
-        }
-        await this.updateControllerConfig(payload)
-        return { status: "online" }
-      case "configure":
-        if (!payload || Object.keys(payload).length === 0) {
-          throw new Error("configure requires a payload")
-        }
-        const hummingbotResult = await applyHummingbotConfig(this.remoteId, payload)
-        await this.updateControllerConfig(payload)
-        return { status: "online", result: hummingbotResult }
-      case "backtest":
-        if (!payload || Object.keys(payload).length === 0) {
-          throw new Error("backtest requires a payload")
-        }
-        await this.request("/backtesting/run", { method: "POST", body: payload })
-        return { status: "online" }
-      case "paper":
-      case "live":
-        throw new Error(`Hummingbot API does not expose '${type}' as a direct command. Use start/stop or bot-orchestration endpoints.`)
-      default:
-        throw new Error(`Unsupported command: ${type}`)
-    }
-  }
+  async maybeRunStrategy() {
+    const config = this.resolveRunConfig()
+    if (!config.symbols.length) return null
 
-  async updateControllerConfig(payload) {
-    const configPayload = resolveAdvanced(payload, "hummingbot") || payload || {}
-    const controllerName =
-      configPayload.controller ||
-      configPayload.controllerName ||
-      configPayload.controller_id ||
-      configPayload.controllerId
-    const controllerConfig =
-      configPayload.controllerConfig ||
-      configPayload.controller_config ||
-      configPayload.config
+    const now = Date.now()
+    if (now - this.lastRunAt < this.minRunIntervalMs) return null
+    this.lastRunAt = now
 
-    if (!controllerName || !controllerConfig) {
-      return
-    }
-
-    await this.request(
-      `/controllers/bots/${encodeURIComponent(this.remoteId)}/${encodeURIComponent(controllerName)}/config`,
-      {
+    try {
+      await this.request("/run", {
         method: "POST",
-        body: controllerConfig,
-      }
-    )
-  }
-}
-
-class JesseAdapter {
-  constructor(bot) {
-    this.bot = bot
-    this.baseUrl = bot.api?.baseUrl
-    this.password = bot.api?.password
-    this.token = null
-    this.signalDeduper = createDeduper()
-  }
-
-  async login() {
-    if (!this.password) {
-      throw new Error("Jesse password missing")
-    }
-    const data = await fetchJson(withBaseUrl(this.baseUrl, "/auth/login"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ password: this.password }),
-    })
-    this.token = data?.auth_token || null
-    if (!this.token) {
-      throw new Error("Jesse login failed (no auth token)")
-    }
-  }
-
-  async request(endpoint, { method = "POST", body } = {}) {
-    if (!this.token) {
-      await this.login()
-    }
-    const headers = {
-      Authorization: this.token,
-    }
-    if (body) headers["Content-Type"] = "application/json"
-
-    try {
-      return await fetchJson(withBaseUrl(this.baseUrl, endpoint), {
-        method,
-        headers,
-        body: body ? JSON.stringify(body) : undefined,
+        body: { id: `${this.bot.id}-${now}`, config },
       })
+      await new Promise((resolve) => setTimeout(resolve, 8000))
+      return null
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      if (message.includes("401")) {
-        await this.login()
-        headers.Authorization = this.token
-        return fetchJson(withBaseUrl(this.baseUrl, endpoint), {
-          method,
-          headers,
-          body: body ? JSON.stringify(body) : undefined,
-        })
+      return {
+        type: "log",
+        severity: "warn",
+        message: `Backtrader run failed: ${String(err)}`,
       }
-      throw err
     }
-  }
-
-  async poll() {
-    const state = {}
-    let status = "offline"
-    const signals = []
-
-    try {
-      state.general = await this.request("/system/general-info", { method: "POST" })
-      status = "online"
-    } catch (err) {
-      return { status, state: { error: String(err) } }
-    }
-
-    try {
-      state.orders = await this.request("/live/orders", { method: "POST" })
-    } catch (err) {
-      state.orders = { error: String(err) }
-    }
-
-    const orders = Array.isArray(state.orders)
-      ? state.orders
-      : Array.isArray(state.orders?.orders)
-        ? state.orders.orders
-        : []
-
-    for (const order of orders.slice(0, 20)) {
-      const sideRaw = order?.side || order?.type || ""
-      const side = typeof sideRaw === "string" ? sideRaw.toLowerCase() : ""
-      if (!["buy", "sell"].includes(side)) continue
-      const pair = order?.symbol || order?.pair || order?.trading_pair || null
-      const signal = {
-        side,
-        strength: 0.6,
-        message: pair ? `${side.toUpperCase()} order ${pair}` : `${side.toUpperCase()} order`,
-        data: { pair, source: "orders", raw: order },
-      }
-      const key = JSON.stringify(signal)
-      if (this.signalDeduper.has(key)) continue
-      this.signalDeduper.add(key)
-      signals.push(signal)
-    }
-
-    return { status, state, signals }
   }
 
   async executeCommand(type, payload) {
     switch (type) {
-      case "paper":
-      case "live": {
-        if (!payload || Object.keys(payload).length === 0) {
-          throw new Error(`${type} requires a payload`)
-        }
-        const body = {
-          ...payload,
-          paper_mode: type === "paper",
-        }
-        await this.request("/live", { method: "POST", body })
-        return { status: "online" }
-      }
-      case "stop": {
-        if (!payload || !payload.id) {
-          throw new Error("stop requires payload.id")
-        }
-        if (payload.paper_mode === undefined) {
-          throw new Error("stop requires payload.paper_mode")
-        }
-        await this.request("/live/cancel", { method: "POST", body: payload })
-        return { status: "idle" }
-      }
-      case "backtest": {
-        if (!payload || Object.keys(payload).length === 0) {
-          throw new Error("backtest requires a payload")
-        }
-        await this.request("/backtest", { method: "POST", body: payload })
-        return { status: "online" }
-      }
-      case "restart": {
-        if (!payload || !payload.stop || !payload.start) {
-          throw new Error("restart requires payload.stop and payload.start")
-        }
-        await this.request("/live/cancel", { method: "POST", body: payload.stop })
-        await this.request("/live", { method: "POST", body: payload.start })
-        return { status: "online" }
-      }
-      case "configure":
-        const jesseResult = await applyJesseConfig(payload || {})
-        return {
-          result: {
-            ...jesseResult,
-            note: "Config written. Restart Jesse to apply routes.",
-          },
-        }
-      case "reload_config":
       case "start":
-        throw new Error(`Jesse uses live/paper commands. Use 'live' or 'paper' with payload instead of '${type}'.`)
+      case "run":
+        const config = payload || {}
+        const result = await this.request("/run", {
+          method: "POST",
+          body: { id: this.bot.id, config },
+        })
+        return { status: "online", result }
+      case "stop":
+        await this.request(`/stop/${this.bot.id}`, { method: "POST" })
+        return { status: "idle" }
+      case "scan":
+      case "analyze":
+        // Trigger strategy run for symbols in payload
+        const symbols = Array.isArray(payload?.symbols) ? payload.symbols : []
+        if (symbols.length === 0) {
+          throw new Error("scan/analyze requires symbols array in payload")
+        }
+        
+        const scanId = `${this.bot.id}-scan-${Date.now()}`
+        await this.request("/run", {
+          method: "POST",
+          body: {
+            id: scanId,
+            config: {
+              symbols: symbols,
+              assetClass: payload?.assetClass || this.bot.desiredConfig?.assetClass || "stock",
+              timeframe: payload?.timeframe || this.bot.desiredConfig?.timeframe || "1d",
+              strategy: payload?.strategy || this.bot.desiredConfig?.strategy || "default",
+            },
+          },
+        })
+        
+        // Poll for signals after a delay
+        await new Promise(resolve => setTimeout(resolve, 5000))
+        const signalsData = await this.request("/signals")
+        const scanSignals = Array.isArray(signalsData?.signals) 
+          ? signalsData.signals.filter(s => s.strategy_id === scanId)
+          : []
+        
+        return { signals: scanSignals.length }
       default:
         throw new Error(`Unsupported command: ${type}`)
     }
@@ -1095,10 +751,14 @@ function createAdapter(bot) {
   switch (bot.engine) {
     case "freqtrade":
       return new FreqtradeAdapter(bot)
-    case "hummingbot":
-      return new HummingbotAdapter(bot)
-    case "jesse":
-      return new JesseAdapter(bot)
+    case "alpaca":
+      return new AlpacaAdapter(bot)
+    case "alphavantage":
+      return new AlphaVantageAdapter(bot)
+    case "oanda":
+      return new OandaAdapter(bot)
+    case "backtrader":
+      return new BacktraderAdapter(bot)
     default:
       throw new Error(`Unknown engine: ${bot.engine}`)
   }

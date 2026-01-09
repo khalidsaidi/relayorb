@@ -15,9 +15,6 @@ export type BotCommandType =
   | "start"
   | "stop"
   | "restart"
-  | "backtest"
-  | "paper"
-  | "live"
   | "reload_config"
   | "configure"
   | "update_agent"
@@ -94,9 +91,21 @@ export type BotSignalDoc = {
         priceAtSignal?: number
         priceAtHorizon?: number
         source?: string
+        marketOpenAtSignal?: boolean
+        adjustedSignalTime?: Timestamp
+        adjustedHorizonTime?: Timestamp
       }
     >
   }
+}
+
+export type MarketStatus = {
+  assetClass: "crypto" | "stock" | "forex"
+  isOpen: boolean
+  nextChange: Date
+  nextChangeLabel: string
+  countdown: string
+  hoursText: string
 }
 
 export type BotCommandDoc = {
@@ -118,11 +127,25 @@ export type MarketTradeScoreComponents = {
   liquidity?: number
   watchlist?: number
   primary?: number
+  news?: number
 }
 
 export type MarketTradeAnalysis = {
   summary?: string
   details?: string[]
+}
+
+export type MarketUniverseMode =
+  | "movers_only"
+  | "universe_only"
+  | "movers_plus_universe"
+  | "movers_filtered_by_universe"
+
+export type MarketTradeRecommendation = {
+  action?: "buy" | "hold" | "sell"
+  holdMinutes?: number
+  stopLossPct?: number | null
+  takeProfitPct?: number | null
 }
 
 export type MarketTradeTrendSnapshot = {
@@ -157,10 +180,12 @@ export type MarketHotTrade = {
   price?: number
   timeframe?: string
   side?: "buy" | "sell" | "hold"
+  profile?: "dip" | "scalp"
   score?: number
   confidence?: number
   primary?: boolean
   momentum?: {
+    change15m?: number
     change1h?: number
     change24h?: number
     change7d?: number
@@ -176,6 +201,7 @@ export type MarketHotTrade = {
   trend?: MarketTradeTrendSnapshot
   news?: MarketTradeNewsSnapshot
   analysis?: MarketTradeAnalysis
+  recommendation?: MarketTradeRecommendation
   source?: string
   rationale?: string
 }
@@ -294,20 +320,22 @@ export type MarketControlsDoc = {
     stocks?: string[]
     forex?: string[]
   }
+  botWeights?: Record<string, number>
 }
 
 export type MarketUniverseDoc = {
   updatedAt?: FirestoreTimestamp
+  mode?: MarketUniverseMode
   crypto?: {
-    includeTrending?: boolean
+    mode?: MarketUniverseMode
     symbols?: string[]
   }
   stocks?: {
-    includeTrending?: boolean
+    mode?: MarketUniverseMode
     symbols?: string[]
   }
   forex?: {
-    includeTrending?: boolean
+    mode?: MarketUniverseMode
     pairs?: string[]
   }
 }
@@ -350,4 +378,39 @@ export type SignalPerformanceDoc = {
   topSymbols?: Record<string, SignalSymbolPerformance[]>
   bottomSymbols?: Record<string, SignalSymbolPerformance[]>
   meta?: Record<string, unknown>
+}
+
+export type PaperWallet = {
+  userId: string
+  balance: number
+  currency: string // "USD"
+  createdAt: Timestamp
+  updatedAt: Timestamp
+}
+
+export type PaperTransaction = {
+  id: string
+  userId: string
+  botId?: string // if triggered by a bot
+  symbol: string
+  assetClass: "crypto" | "stock" | "forex"
+  side: "buy" | "sell"
+  amount: number // quantity
+  price: number
+  cost: number // total cost
+  timestamp: Timestamp
+  type: "open" | "close"
+  stopLoss?: number
+  takeProfit?: number
+}
+
+export type PaperPosition = {
+  symbol: string
+  assetClass: "crypto" | "stock" | "forex"
+  avgEntryPrice: number
+  quantity: number
+  currentPrice?: number
+  unrealizedPnL?: number
+  stopLoss?: number
+  takeProfit?: number
 }

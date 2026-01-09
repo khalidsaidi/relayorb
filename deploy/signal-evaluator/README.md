@@ -3,10 +3,10 @@
 This worker evaluates bot signals against real market prices and writes accuracy metrics
 to Firestore so the UI can display prediction accuracy and best-performing bots.
 
-## Data sources (free tiers)
+## Data sources
 - Crypto: Binance public klines (no key)
-- Stocks: Alpha Vantage daily + intraday (free key)
-- Forex: Alpha Vantage FX intraday (free key) + frankfurter.app daily
+- Stocks: FMP daily + intraday (primary), Alpha Vantage fallback
+- Forex: FMP daily + intraday (primary), Alpha Vantage intraday + frankfurter.app daily fallback
 
 ## Firestore output
 - `bots/{botId}/signals/{signalId}`: `evaluation` field with horizon results
@@ -16,7 +16,8 @@ to Firestore so the UI can display prediction accuracy and best-performing bots.
 
 ## Environment variables
 - `FIREBASE_PROJECT_ID` (optional, defaults to Cloud Run project)
-- `ALPHAVANTAGE_API_KEY` (required for stocks)
+- `FMP_API_KEY` (required for FMP snapshots)
+- `ALPHAVANTAGE_API_KEY` (optional fallback)
 - `ALPHAVANTAGE_THROTTLE_MS` (default: 12000, protects free-tier rate limits)
 - `EVAL_LOOKBACK_HOURS` (default: 168) signals scanned per run
 - `EVAL_MAX_SIGNALS` (default: 120) max signals evaluated per run
@@ -39,12 +40,12 @@ gcloud run jobs create relayorb-signal-evaluator \
   --image gcr.io/relayorb/signal-evaluator \
   --region us-west1 \
   --service-account relayorb-market-intel@relayorb.iam.gserviceaccount.com \
-  --set-secrets ALPHAVANTAGE_API_KEY=relayorb-alphavantage-key:latest \
+  --set-secrets FMP_API_KEY=relayorb-fmp-key:latest,ALPHAVANTAGE_API_KEY=relayorb-alphavantage-key:latest \
   --set-env-vars EVAL_LOOKBACK_HOURS=168,EVAL_MAX_SIGNALS=120,EVAL_AGG_LOOKBACK_DAYS=30
 ```
 
 ## Local run (optional)
 ```bash
 cd deploy/signal-evaluator
-ALPHAVANTAGE_API_KEY=... npm start
+FMP_API_KEY=... ALPHAVANTAGE_API_KEY=... npm start
 ```

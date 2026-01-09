@@ -1,0 +1,6 @@
+flask==3.0.0
+flask-cors==4.0.0
+backtrader==1.9.78.123
+pandas==2.1.4
+numpy==1.26.2
+requests==2.31.0

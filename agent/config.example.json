@@ -34,63 +34,133 @@
       }
     },
     {
-      "id": "hummingbot-1",
-      "name": "Hummingbot API",
-      "engine": "hummingbot",
-      "pollIntervalSeconds": 15,
+      "id": "alpaca-1",
+      "name": "Alpaca Stocks",
+      "engine": "alpaca",
+      "pollIntervalSeconds": 60,
       "desiredConfig": {
         "mode": "signal",
-        "exchange": "binance",
-        "timeframe": "1m",
-        "pairs": ["BTC-USDT", "ETH-USDT"],
-        "strategy": "market-making-v1",
+        "assetClass": "stock",
+        "symbols": ["AAPL", "MSFT", "NVDA", "TSLA", "META", "GOOGL", "AMZN", "AMD"],
         "risk": {
-          "maxPositionSize": 1,
-          "maxOpenOrders": 6
-        },
-        "advanced": {
-          "notes": "Hummingbot strategy overrides"
+          "maxPositionSize": 10000,
+          "maxDailyLoss": 500
         }
       },
       "capabilities": {
-        "exchanges": ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
-        "timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"],
-        "modes": ["signal", "paper", "live"]
-      },
-      "api": {
-        "baseUrl": "http://hummingbot-api:8000",
-        "username": "admin",
-        "password": "CHANGE_ME",
-        "remoteId": "hummingbot-1"
+        "assetClasses": ["stock"],
+        "timeframes": ["1m", "5m", "15m", "1h", "1d"],
+        "modes": ["signal"]
       }
     },
     {
-      "id": "jesse-1",
-      "name": "Jesse",
-      "engine": "jesse",
-      "pollIntervalSeconds": 15,
+      "id": "alphavantage-1",
+      "name": "Alpha Vantage Stocks (Global/Canada)",
+      "engine": "alphavantage",
+      "pollIntervalSeconds": 300,
       "desiredConfig": {
         "mode": "signal",
-        "exchange": "binance",
-        "timeframe": "1m",
-        "pairs": ["BTC-USDT"],
-        "strategy": "trend-follow-v1",
+        "assetClass": "stock",
+        "symbols": ["AAPL", "MSFT", "NVDA", "TSLA", "META", "GOOGL", "AMZN", "AMD"],
         "risk": {
-          "maxDailyLoss": 150,
-          "maxLeverage": 2
-        },
-        "advanced": {
-          "notes": "Jesse route overrides"
+          "maxPositionSize": 10000,
+          "maxDailyLoss": 500
         }
       },
       "capabilities": {
-        "exchanges": ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
+        "assetClasses": ["stock"],
+        "timeframes": ["1d"],
+        "modes": ["signal"]
+      }
+    },
+    {
+      "id": "oanda-1",
+      "name": "OANDA Forex",
+      "engine": "oanda",
+      "pollIntervalSeconds": 60,
+      "desiredConfig": {
+        "mode": "signal",
+        "assetClass": "forex",
+        "pairs": ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD"],
+        "risk": {
+          "maxPositionSize": 10000,
+          "maxDailyLoss": 500
+        }
+      },
+      "capabilities": {
+        "assetClasses": ["forex"],
         "timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"],
-        "modes": ["signal", "paper", "live"]
+        "modes": ["signal"]
+      }
+    },
+    {
+      "id": "backtrader-stocks",
+      "name": "Backtrader Stocks",
+      "engine": "backtrader",
+      "pollIntervalSeconds": 900,
+      "desiredConfig": {
+        "mode": "signal",
+        "assetClass": "stock",
+        "timeframe": "15m",
+        "symbols": [
+          "AAPL",
+          "MSFT",
+          "NVDA",
+          "AMZN",
+          "GOOGL",
+          "META",
+          "TSLA",
+          "JPM",
+          "AMD",
+          "AVGO",
+          "NFLX",
+          "ORCL",
+          "SHOP.TO",
+          "RY.TO",
+          "TD.TO",
+          "ENB.TO"
+        ],
+        "strategy": "default"
+      },
+      "capabilities": {
+        "assetClasses": ["stock"],
+        "timeframes": ["15m", "1h", "4h", "1d"],
+        "modes": ["signal"]
       },
       "api": {
-        "baseUrl": "http://jesse:3000",
-        "password": "CHANGE_ME"
+        "baseUrl": "http://backtrader:8080"
+      }
+    },
+    {
+      "id": "backtrader-forex",
+      "name": "Backtrader FX",
+      "engine": "backtrader",
+      "pollIntervalSeconds": 900,
+      "desiredConfig": {
+        "mode": "signal",
+        "assetClass": "forex",
+        "timeframe": "15m",
+        "symbols": [
+          "EUR/USD",
+          "GBP/USD",
+          "USD/JPY",
+          "USD/CHF",
+          "AUD/USD",
+          "NZD/USD",
+          "USD/CAD",
+          "EUR/JPY",
+          "GBP/JPY",
+          "EUR/GBP"
+        ],
+        "strategy": "default"
+      },
+      "capabilities": {
+        "assetClasses": ["forex"],
+        "timeframes": ["15m", "1h", "4h", "1d"],
+        "modes": ["signal"]
+      },
+      "api": {
+        "baseUrl": "http://backtrader:8080"
       }
     }
   ]

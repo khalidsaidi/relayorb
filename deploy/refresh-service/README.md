@@ -12,6 +12,8 @@ The UI calls this with the Firebase ID token and the service verifies the admin 
 - `CORS_ORIGIN` (default: `*`)
 - `OPENAI_API_KEY` (required for /advice)
 - `OPENAI_MODEL` (default: gpt-4o-mini)
+- `TAVILY_API_KEY` (optional, for web search - recommended)
+- `SERP_API_KEY` (optional, fallback for web search)
 
 ## Deploy
 ```bash
@@ -35,7 +37,7 @@ gcloud run deploy relayorb-refresh \
   --allow-unauthenticated \
   --service-account relayorb-refresh@relayorb.iam.gserviceaccount.com \
   --set-env-vars FIREBASE_PROJECT_ID=relayorb,REFRESH_REGION=us-west1,ADMIN_ALLOWLIST=khalidsaidi66@gmail.com,REFRESH_JOBS=relayorb-market-intel,relayorb-signal-evaluator \
-  --set-secrets OPENAI_API_KEY=relayorb-openai-key:latest
+  --set-secrets OPENAI_API_KEY=relayorb-openai-key:latest,TAVILY_API_KEY=relayorb-tavily-key:latest,SERP_API_KEY=relayorb-serpapi-key:latest
 ```
 
 Set `VITE_REFRESH_URL` to the Cloud Run service URL in your app environment.

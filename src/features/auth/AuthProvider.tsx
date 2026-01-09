@@ -27,6 +27,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       setBlockedEmail(null)
       setUser(u)
+
+      if (u) {
+        // Init paper wallet lazily
+        import("@/features/paper/paper-service").then(({ ensurePaperWallet }) => {
+          ensurePaperWallet(u.uid).catch((err) =>
+            console.error("Failed to ensure paper wallet", err)
+          )
+        })
+      }
+
       setLoading(false)
     })
   }, [])

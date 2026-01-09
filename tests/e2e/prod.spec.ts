@@ -6,10 +6,13 @@ test.describe("RelayOrb production flow", () => {
   test.skip(e2eTarget !== "prod", "Production-only checks")
 
   test.beforeEach(async ({ page }) => {
-    await page.goto("/signin")
+    await page.goto("/dashboard")
     const testButton = page.getByRole("button", { name: /test sign in/i })
-    if (await testButton.count()) {
+    try {
+      await testButton.waitFor({ state: "visible", timeout: 5000 })
       await testButton.click()
+    } catch {
+      // Already signed in or test sign-in is not available.
     }
     await expect(page.getByRole("tab", { name: "Opportunities" })).toBeVisible()
   })

@@ -11,8 +11,14 @@ service cloud.firestore {
         ];
     }
 
+    function isServiceAccount() {
+      return request.auth != null
+        && request.auth.token.email != null
+        && request.auth.token.email.matches('.*@relayorb.iam.gserviceaccount.com');
+    }
+
     match /{document=**} {
-      allow read, write: if isAdmin();
+      allow read, write: if isAdmin() || isServiceAccount();
     }
   }
 }

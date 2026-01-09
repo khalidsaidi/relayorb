@@ -26,6 +26,8 @@ const config = {
   port: parseInt(process.env.PORT || "8080", 10),
   openaiKey: process.env.OPENAI_API_KEY || "",
   openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
+  tavilyKey: process.env.TAVILY_API_KEY || "",
+  serpApiKey: process.env.SERP_API_KEY || "",
 }
 
 if (!admin.apps.length) {
@@ -204,69 +206,267 @@ function normalizeAction(value) {
   return "hold"
 }
 
+/**
+ * Web search function that the AI can call
+ * Uses Tavily API (AI-focused search) or SerpAPI as fallback
+ */
+async function searchWeb(query) {
+  // Try Tavily first (designed for AI, better results)
+  if (config.tavilyKey) {
+    try {
+      const res = await fetch("https://api.tavily.com/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          api_key: config.tavilyKey,
+          query,
+          search_depth: "basic",
+          max_results: 5,
+        }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        return data.results?.map(result => ({
+          title: result.title,
+          content: result.content,
+          url: result.url,
+        })) || []
+      }
+    } catch (err) {
+      console.error("Tavily search failed:", err.message)
+    }
+  }
+  
+  // Fallback to SerpAPI
+  if (config.serpApiKey) {
+    try {
+      const url = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(query)}&api_key=${config.serpApiKey}&num=5`
+      const res = await fetch(url)
+      if (res.ok) {
+        const data = await res.json()
+        const results = data.organic_results || []
+        return results.map(item => ({
+          title: item.title,
+          content: item.snippet || "",
+          url: item.link,
+        }))
+      }
+    } catch (err) {
+      console.error("SerpAPI search failed:", err.message)
+    }
+  }
+  
+  return []
+}
+
 async function requestAiAdvice(trade) {
   if (!config.openaiKey) {
     throw new Error("OPENAI_API_KEY not configured.")
   }
 
+  // Extract momentum data for better context
+  const momentum1h = trade.momentum?.change1h
+  const momentum24h = trade.momentum?.change24h
+  const momentum7d = trade.momentum?.change7d
+  
+  // Calculate volatility estimate from momentum ranges
+  const volatility = momentum1h !== undefined && momentum24h !== undefined
+    ? Math.abs(momentum24h - (momentum1h || 0))
+    : null
+
+  // Build search query for the asset
+  const searchQuery = trade.assetClass === "stock"
+    ? `${trade.symbol} stock news today price analysis`
+    : trade.assetClass === "crypto"
+    ? `${trade.symbol} cryptocurrency news today price analysis`
+    : `${trade.symbol} forex news today analysis`
+
+  // Define web search function for the AI
+  const webSearchFunction = {
+    type: "function",
+    function: {
+      name: "search_web",
+      description: "Search the web for recent news, analysis, and information about a trading symbol. Use this to find breaking news, earnings reports, technical analysis, or market sentiment that could affect the trade.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Search query about the asset (e.g., 'AAPL stock news today', 'BTC cryptocurrency analysis')",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  }
+
   const payload = {
     model: config.openaiModel,
     temperature: 0.2,
-    max_tokens: 220,
+    max_tokens: 600, // Increased to allow more detailed reasoning with web search results
+    tools: [webSearchFunction],
+    tool_choice: "auto", // Let AI decide, but instructions strongly encourage search
     messages: [
       {
         role: "system",
         content:
-          "You are a trading dashboard assistant. Return JSON only, no markdown.",
+          "You are a trading dashboard assistant. Analyze all provided data AND search the web for recent news and information about the asset to make accurate recommendations. Use the search_web function to find breaking news, earnings, technical analysis, or market events that could affect the trade. Return JSON only, no markdown.",
       },
       {
         role: "user",
         content: [
-          "Given the trade context, return JSON:",
-          '{"action":"buy|hold|sell","holdMinutes":15-240,"stopLossPct":0.5-8,"takeProfitPct":1-15,"summary":"simple sentence","reasoning":"short reason"}',
+          "Given the trade context, FIRST search the web for recent information about this asset, THEN analyze ALL data and return JSON:",
+          '{"action":"buy|hold|sell","holdMinutes":number,"stopLossPct":0.5-8,"takeProfitPct":1-15,"summary":"simple sentence","reasoning":"short reason"}',
+          "",
+          "IMPORTANT: You MUST use the search_web function to find recent news, earnings reports, technical analysis, or market events about this asset before making your recommendation. The search is required.",
+          "",
+          "After searching, in your reasoning field, explicitly mention:",
+          "- What news or information you found in the web search",
+          "- How it affects the trade recommendation",
+          "- Any breaking news, earnings, or events that impact the decision",
+          "",
+          "Calculate holdMinutes (15-1440 minutes) based on:",
+          `- Trend horizon: ${trade.trendHorizon || 'n/a'} (15m=15min, 1h=60min, 24h=1440min, 7d=10080min)`,
+          "- Momentum speed: Fast moves (high 1h change) = shorter holds, slow trends = longer holds",
+          "- Asset class: Crypto moves faster (15-120min), Stocks slower (60-480min), Forex varies",
+          "- Signal strength: Strong signals = shorter holds (capture move quickly), weak = longer",
+          "- Volatility: High volatility = shorter holds, low = longer",
+          "- Recent news/events: Breaking news or events may require immediate action or longer holds",
+          "",
           "Rules:",
           "- Use 'hold' if signals are mixed or weak.",
           "- stopLossPct and takeProfitPct are percentages; use null if action is hold.",
+          "- holdMinutes should reflect when the trade thesis expires or target should be reached",
+          "- For crypto scalps: 15-60min, for swing trades: 240-1440min",
+          "- Consider recent news: breaking news may require shorter holds, earnings may require longer",
+          "- In your reasoning, explicitly mention what you found in the web search and how it affects your recommendation",
           "- Keep the summary short and plain English.",
+          "- Make the reasoning detailed (up to 300 characters) - include web search findings.",
           "",
           `Symbol: ${trade.symbol}`,
           `Asset class: ${trade.assetClass}`,
           `Side hint: ${trade.side || "n/a"}`,
           `Score: ${trade.score ?? "n/a"} / 100`,
           `Current price: ${trade.price ?? "n/a"}`,
-          `Trend: ${trade.trendScore ?? "n/a"} (${trade.trendHorizon ?? "n/a"})`,
+          `Trend score: ${trade.trendScore ?? "n/a"} (higher = stronger trend)`,
+          `Trend horizon: ${trade.trendHorizon || "n/a"} (timeframe of the trend signal)`,
+          `Momentum 1h: ${momentum1h !== undefined ? momentum1h.toFixed(2) + '%' : 'n/a'}`,
+          `Momentum 24h: ${momentum24h !== undefined ? momentum24h.toFixed(2) + '%' : 'n/a'}`,
+          `Momentum 7d: ${momentum7d !== undefined ? momentum7d.toFixed(2) + '%' : 'n/a'}`,
+          `Volatility estimate: ${volatility !== null ? volatility.toFixed(2) + '%' : 'n/a'}`,
           `Bots: ${trade.botsSummary}`,
-          `Momentum: ${trade.momentumSummary}`,
           `Sentiment: ${trade.sentimentSummary}`,
           `AI summary: ${trade.aiSummary}`,
+          "",
+          "Now search the web for recent information about this asset, then provide your recommendation.",
         ].join("\n"),
       },
     ],
   }
 
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.openaiKey}`,
-    },
-    body: JSON.stringify(payload),
-  })
+  // Handle function calling loop for web search
+  let messages = payload.messages
+  let maxIterations = 3
+  let iteration = 0
+  let parsed = null
+  
+  while (iteration < maxIterations) {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.openaiKey}`,
+      },
+      body: JSON.stringify({ ...payload, messages }),
+    })
 
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`OpenAI error: ${body.slice(0, 160)}`)
-  }
+    if (!res.ok) {
+      const body = await res.text()
+      throw new Error(`OpenAI error: ${body.slice(0, 160)}`)
+    }
 
-  const data = await res.json()
-  const content = data?.choices?.[0]?.message?.content || ""
-  const match = content.match(/\{[\s\S]*\}/)
-  if (!match) {
-    throw new Error("AI response not parsable.")
+    const data = await res.json()
+    const message = data?.choices?.[0]?.message
+    
+    if (!message) {
+      throw new Error("No message in OpenAI response")
+    }
+    
+    // Add AI's response to conversation
+    messages.push(message)
+    
+    // Check if AI wants to call a function
+    if (message.tool_calls && message.tool_calls.length > 0) {
+      // Execute function calls
+      const toolResults = []
+      for (const toolCall of message.tool_calls) {
+        if (toolCall.function.name === "search_web") {
+          try {
+            const args = JSON.parse(toolCall.function.arguments || "{}")
+            const searchResults = await searchWeb(args.query || searchQuery)
+            
+            toolResults.push({
+              tool_call_id: toolCall.id,
+              role: "tool",
+              name: "search_web",
+              content: JSON.stringify({
+                query: args.query || searchQuery,
+                results: searchResults.map(r => ({
+                  title: r.title,
+                  content: r.content,
+                  url: r.url,
+                })),
+              }),
+            })
+          } catch (searchErr) {
+            console.error("Web search error:", searchErr)
+            // Return empty results if search fails
+            toolResults.push({
+              tool_call_id: toolCall.id,
+              role: "tool",
+              name: "search_web",
+              content: JSON.stringify({
+                query: toolCall.function.arguments || searchQuery,
+                results: [],
+                error: "Web search temporarily unavailable",
+              }),
+            })
+          }
+        }
+      }
+      
+      // Add function results to conversation
+      messages.push(...toolResults)
+      iteration++
+      continue
+    }
+    
+    // AI returned final response
+    const content = message.content || ""
+    const match = content.match(/\{[\s\S]*\}/)
+    if (!match) {
+      throw new Error("AI response not parsable.")
+    }
+    parsed = JSON.parse(match[0])
+    break
   }
-  const parsed = JSON.parse(match[0])
+  
+  if (!parsed) {
+    throw new Error("AI did not return a valid response after function calls.")
+  }
   const action = normalizeAction(parsed.action)
-  const holdMinutes = clamp(parseNumber(parsed.holdMinutes) ?? 60, 15, 240)
+  
+  // Validate and clamp holdMinutes from AI
+  const aiHoldMinutes = parseNumber(parsed.holdMinutes)
+  const holdMinutes = aiHoldMinutes 
+    ? clamp(aiHoldMinutes, 15, 1440) // 15 minutes to 24 hours max
+    : (trade.trendHorizon 
+        ? (trade.trendHorizon === "15m" ? 15 : 
+           trade.trendHorizon === "1h" ? 60 : 
+           trade.trendHorizon === "24h" ? 1440 : 
+           trade.trendHorizon === "7d" ? 1440 : 60) // Use trend horizon as fallback
+        : 60) // Default fallback
+  
   const stopLossPct = parseNumber(parsed.stopLossPct)
   const takeProfitPct = parseNumber(parsed.takeProfitPct)
   const normalizedStop =
@@ -278,6 +478,7 @@ async function requestAiAdvice(trade) {
       ? null
       : clamp(takeProfitPct ?? 4, 1, 15)
   const priceLevels = computePriceLevels(action, trade.price, normalizedStop, normalizedTake)
+  
   return {
     action,
     holdMinutes,
@@ -286,7 +487,7 @@ async function requestAiAdvice(trade) {
     stopLossPrice: priceLevels.stopLossPrice,
     takeProfitPrice: priceLevels.takeProfitPrice,
     summary: truncate(parsed.summary, 140),
-    reasoning: truncate(parsed.reasoning, 200),
+    reasoning: truncate(parsed.reasoning, 400), // Increased to show web search results
   }
 }
 
@@ -370,7 +571,8 @@ const server = http.createServer(async (req, res) => {
       await handleAdvice(req, res)
     } catch (err) {
       console.error("Advice failed", err)
-      sendJson(res, 500, { ok: false, error: "Advice failed." })
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      sendJson(res, 500, { ok: false, error: `Advice failed: ${errorMessage}` })
     }
     return
   }

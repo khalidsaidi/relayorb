@@ -30,16 +30,13 @@ chmod +x ~/bootstrap.sh
 cd /opt/relayorb/deploy/bot-host
 cp agent-config/config.example.json agent-config/config.json
 cp freqtrade/config.example.json freqtrade/config.json
-cp hummingbot/.env.example hummingbot/.env
-cp jesse/.env.example jesse/.env
 
 # Copy the Firebase service account JSON into:
 #   /opt/relayorb/deploy/bot-host/secrets/service-account.json
-```
 
-Initialize Jesse:
-```bash
-docker run --rm -it -v "$PWD/jesse:/workspace" salehmir/jesse jesse make-project .
+# Provide market data keys for Backtrader (via /opt/relayorb/deploy/bot-host/.env or shell):
+#   FMP_API_KEY=...
+#   ALPHAVANTAGE_API_KEY=... (optional fallback)
 ```
 
 Start the stack:
@@ -57,4 +54,3 @@ See `deploy/market-intel/README.md` for deployment steps and scheduling.
 
 ## Notes
 - For higher availability, pin images to specific tags and enable VM monitoring.
-- Consider moving Postgres to Cloud SQL once you scale Hummingbot API usage.

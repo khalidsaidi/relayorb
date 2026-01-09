@@ -34,63 +34,73 @@
       }
     },
     {
-      "id": "hummingbot-1",
-      "name": "Hummingbot API",
-      "engine": "hummingbot",
-      "pollIntervalSeconds": 15,
+      "id": "backtrader-stocks",
+      "name": "Backtrader Stocks",
+      "engine": "backtrader",
+      "pollIntervalSeconds": 900,
       "desiredConfig": {
         "mode": "signal",
-        "exchange": "binance",
-        "timeframe": "1m",
-        "pairs": ["BTC-USDT", "ETH-USDT"],
-        "strategy": "market-making-v1",
-        "risk": {
-          "maxPositionSize": 1,
-          "maxOpenOrders": 6
-        },
-        "advanced": {
-          "notes": "Hummingbot strategy overrides"
-        }
+        "assetClass": "stock",
+        "timeframe": "15m",
+        "symbols": [
+          "AAPL",
+          "MSFT",
+          "NVDA",
+          "AMZN",
+          "GOOGL",
+          "META",
+          "TSLA",
+          "JPM",
+          "AMD",
+          "AVGO",
+          "NFLX",
+          "ORCL",
+          "SHOP.TO",
+          "RY.TO",
+          "TD.TO",
+          "ENB.TO"
+        ],
+        "strategy": "default"
       },
       "capabilities": {
-        "exchanges": ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
-        "timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"],
-        "modes": ["signal", "paper", "live"]
+        "assetClasses": ["stock"],
+        "timeframes": ["15m", "1h", "4h", "1d"],
+        "modes": ["signal"]
       },
       "api": {
-        "baseUrl": "http://hummingbot-api:8000",
-        "username": "admin",
-        "password": "CHANGE_ME",
-        "remoteId": "hummingbot-1"
+        "baseUrl": "http://backtrader:8080"
       }
     },
     {
-      "id": "jesse-1",
-      "name": "Jesse",
-      "engine": "jesse",
-      "pollIntervalSeconds": 15,
+      "id": "backtrader-forex",
+      "name": "Backtrader FX",
+      "engine": "backtrader",
+      "pollIntervalSeconds": 900,
       "desiredConfig": {
         "mode": "signal",
-        "exchange": "binance",
-        "timeframe": "1m",
-        "pairs": ["BTC-USDT"],
-        "strategy": "trend-follow-v1",
-        "risk": {
-          "maxDailyLoss": 150,
-          "maxLeverage": 2
-        },
-        "advanced": {
-          "notes": "Jesse route overrides"
-        }
+        "assetClass": "forex",
+        "timeframe": "15m",
+        "symbols": [
+          "EUR/USD",
+          "GBP/USD",
+          "USD/JPY",
+          "USD/CHF",
+          "AUD/USD",
+          "NZD/USD",
+          "USD/CAD",
+          "EUR/JPY",
+          "GBP/JPY",
+          "EUR/GBP"
+        ],
+        "strategy": "default"
       },
       "capabilities": {
-        "exchanges": ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
-        "timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"],
-        "modes": ["signal", "paper", "live"]
+        "assetClasses": ["forex"],
+        "timeframes": ["15m", "1h", "4h", "1d"],
+        "modes": ["signal"]
       },
       "api": {
-        "baseUrl": "http://jesse:3000",
-        "password": "CHANGE_ME"
+        "baseUrl": "http://backtrader:8080"
       }
     }
   ]

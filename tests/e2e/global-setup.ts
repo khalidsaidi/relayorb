@@ -54,20 +54,20 @@ export default async function globalSetup() {
       state: { mode: "dry_run" },
     },
     {
-      id: "hummingbot-1",
-      name: "Hummingbot API",
-      engine: "hummingbot",
+      id: "backtrader-stocks",
+      name: "Backtrader Stocks",
+      engine: "backtrader",
+      status: "online",
+      lastHeartbeat: now,
+      summary: { positions: 0, orders: 0, pnl: 1.1 },
+    },
+    {
+      id: "backtrader-forex",
+      name: "Backtrader FX",
+      engine: "backtrader",
       status: "idle",
       lastHeartbeat: now,
       summary: { positions: 0, orders: 0, pnl: 0 },
-    },
-    {
-      id: "jesse-1",
-      name: "Jesse Live",
-      engine: "jesse",
-      status: "error",
-      lastHeartbeat: now,
-      summary: { positions: 0, orders: 0, pnl: -2.5 },
     },
   ]
 
@@ -98,11 +98,4 @@ export default async function globalSetup() {
     data: { source: "seed" },
   })
 
-  await botsRef.doc("jesse-1").collection("events").doc("seed-1").set({
-    type: "system",
-    severity: "error",
-    message: "Jesse reported a configuration error",
-    createdAt: now,
-    data: { source: "seed" },
-  })
 }

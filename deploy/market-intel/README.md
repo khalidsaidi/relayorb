@@ -2,18 +2,21 @@
 
 This worker pulls market data on a schedule, merges it with bot signals, and writes ranked `market/hotTrades`, `market/trending`, and `market/popular` docs into Firestore.
 
-## Data sources (free tiers)
-- Crypto: CoinGecko (no key)
-- Stocks: Alpha Vantage (free key)
-- Forex: frankfurter.app (no key)
-- News: Marketaux (free key)
+## Data sources
+- Crypto: CoinGecko + Binance intraday deltas (no key)
+- Stocks/TSX/FX: Live price snapshots from `market/prices` (price-streamer using FMP stable quotes)
+- News/Sentiment: Marketaux (stocks + crypto, optional)
 
 ## Universe controls
 The worker reads `market/universe` to prioritize watchlists and optional trending picks:
+- `mode` (global, or per-asset `crypto.mode` / `stocks.mode` / `forex.mode`)
+  - `movers_only`
+  - `universe_only`
+  - `movers_plus_universe`
+  - `movers_filtered_by_universe`
 - `crypto.symbols` (BTC/USDT, ETH/USDT)
 - `stocks.symbols` (AAPL, MSFT, NVDA)
 - `forex.pairs` (EUR/USD, USD/JPY)
-- `includeTrending` flags per asset class
 
 ## Intel controls
 Use `market/controls` to tune cadence without redeploys:
@@ -24,10 +27,20 @@ Use `market/controls` to tune cadence without redeploys:
 - `assetFocus` (array of `crypto`, `stock`, `forex`)
 - `primaryAssets` (object with `crypto`, `stocks`, `forex` arrays)
 - `trendHorizon` (`15m`, `1h`, `24h`, `7d`)
-- `trendWeights` (object with `momentum`, `volume`, `signals` weights)
+- `trendWeights` (object with `momentum`, `volume`, `signals`, `news` weights)
+- `botWeights` (object keyed by bot ID or `engine:<name>` to scale signal influence)
 - `autoTuneEnabled` (bool, auto-adjust trend weights using accuracy)
 - `autoTuneWithAI` (bool, AI nudging for weight adjustments)
 - `autoTuneIntervalHours` (number, default 6)
+
+Example `botWeights`:
+```json
+{
+  "engine:freqtrade": 1.2,
+  "engine:backtrader": 0.8,
+  "backtrader-forex": 0.7
+}
+```
 
 ## Environment variables
 - `FIREBASE_PROJECT_ID` (optional, defaults to Cloud Run project)
@@ -36,7 +49,8 @@ Use `market/controls` to tune cadence without redeploys:
 - `CRYPTO_LIMIT` (default: 40)
 - `CRYPTO_EXCHANGE` (default: binance)
 - `FX_PAIRS` (default: `USD/JPY,USD/EUR,USD/GBP,USD/CHF,USD/CAD`)
-- `ALPHAVANTAGE_API_KEY` (required for stocks)
+- `ALPHAVANTAGE_API_KEY` (optional fallback + symbol cache)
+- `FMP_API_KEY` (required for FMP candles/quotes; price-streamer uses it for stocks/FX)
 - `MARKETAUX_API_KEY` (required for news)
 - `MARKETAUX_LIMIT` (default: 40)
 - `MARKETAUX_SYMBOL_LIMIT` (default: 25)
@@ -56,10 +70,26 @@ Use `market/controls` to tune cadence without redeploys:
 - `EMIT_MARKET_SIGNALS` (default: true)
 - `MARKET_SIGNAL_LIMIT` (default: 3 per asset class)
 - `MARKET_SIGNAL_BACKFILL_MINUTES` (default: 70)
+- `MOVER_WINDOW_MINUTES` (default: 15)
+- `SNAPSHOT_CHUNK_SIZE` (default: 250)
+- `SNAPSHOT_KEEP` (default: 6)
+- `MOVER_TOP_LIMIT` (default: 200)
+- `MOVER_ENRICH_LIMIT` (default: 50)
+- `MOVER_MIN_PRICE` (default: 1)
+- `MOVER_MIN_VOLUME` (default: 50000)
+- `STOCK_CHANGE_SCALE` (default: 5)
+- `FX_CHANGE_SCALE` (default: 0.3)
+- `CRYPTO_CHANGE_SCALE` (default: 2)
+- `RECOMMENDATION_LIMIT` (default: 50)
 
 ## Symbol cache
 The job refreshes a global stock ticker list from Alpha Vantage `LISTING_STATUS` and
 stores it in `market_symbols_stocks`. The UI uses this collection for ticker search.
+If you omit `ALPHAVANTAGE_API_KEY`, the cache step is skipped.
+
+## Snapshot storage
+Live price snapshots are stored in chunked collections (`market_snapshots_us`, `market_snapshots_tsx`,
+`market_snapshots_fx`) and automatically pruned to `SNAPSHOT_KEEP`.
 
 ## Optional market-intel signals
 When enabled, the worker emits a small batch of synthetic signal docs under
@@ -92,6 +122,8 @@ echo "<OPENAI_API_KEY>" | gcloud secrets create relayorb-openai-key --data-file=
 
 echo "<ALPHAVANTAGE_API_KEY>" | gcloud secrets create relayorb-alphavantage-key --data-file=-
 
+echo "<FMP_API_KEY>" | gcloud secrets create relayorb-fmp-key --data-file=-
+
 echo "<MARKETAUX_API_KEY>" | gcloud secrets create relayorb-marketaux-key --data-file=-
 ```
 
@@ -105,7 +137,7 @@ gcloud run jobs create relayorb-market-intel \
   --region us-west1 \
   --service-account relayorb-market-intel@relayorb.iam.gserviceaccount.com \
   --set-env-vars HOT_TRADES_LIMIT=12,BOT_SIGNAL_LOOKBACK_MINUTES=360,CRYPTO_EXCHANGE=binance,FX_PAIRS=USD/JPY,USD/EUR,USD/GBP,USD/CHF,USD/CAD \
-  --set-secrets OPENAI_API_KEY=relayorb-openai-key:latest,ALPHAVANTAGE_API_KEY=relayorb-alphavantage-key:latest,MARKETAUX_API_KEY=relayorb-marketaux-key:latest \
+  --set-secrets OPENAI_API_KEY=relayorb-openai-key:latest,ALPHAVANTAGE_API_KEY=relayorb-alphavantage-key:latest,FMP_API_KEY=relayorb-fmp-key:latest,MARKETAUX_API_KEY=relayorb-marketaux-key:latest \
   --memory 512Mi
 ```
 
@@ -134,14 +166,16 @@ ALPHAVANTAGE_API_KEY=... OPENAI_API_KEY=... npm start
 ```
 
 ## Notes
-- If `ALPHAVANTAGE_API_KEY` is missing, stock data is skipped.
+- Stock/TSX/FX movers require `market/prices` updates (price-streamer should be running).
+- `ALPHAVANTAGE_API_KEY` is only used for the optional stock symbol cache fallback.
 - LLM summaries are only added when `OPENAI_API_KEY` is set.
 - Auto-tune adjusts trend weights using evaluator accuracy; AI only writes explanations.
 - Firestore output:
   - `market/hotTrades` (ranked trade list + meta)
   - `market/trending` (trending list by horizon + score components)
   - `market/popular` (intelligence-driven popular assets per class)
-  - `market/prices` (latest spot prices for tracked symbols)
+  - `market/prices_snapshot` (latest spot price snapshot for tracked symbols)
+  - `market/movers` (15m movers by market from live price snapshots)
   - `market_symbols_stocks` (cached global ticker list)
   - `market/symbolCache` (cache metadata)
   - `bots/market-intel/signals` (optional synthetic signal stream)

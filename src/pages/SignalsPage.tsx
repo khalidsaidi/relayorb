@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { db, firebaseEnabled } from "@/lib/firebase"
 import type { BotSignalDoc } from "@/lib/types"
 import { formatTimestamp } from "@/lib/format"
+import { SignalMarketIndicator } from "@/components/SignalMarketIndicator"
 
 function signalBadgeVariant(side?: string) {
   switch (side) {
@@ -120,6 +121,7 @@ export default function SignalsPage() {
                   {typeof signal.strength === "number" && (
                     <Badge variant="secondary">Strength {signal.strength.toFixed(2)}</Badge>
                   )}
+                  <SignalMarketIndicator signal={signal} />
                   <div className="text-sm font-medium">
                     {signal.message || "Signal detected"}
                   </div>

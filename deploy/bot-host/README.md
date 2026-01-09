@@ -5,8 +5,6 @@ This stack runs the real bots plus the RelayOrb agent on a single host. The UI s
 ## Layout
 - `agent-config/` RelayOrb agent config (bots + API creds)
 - `freqtrade/` Freqtrade config and data
-- `hummingbot/` Hummingbot API env + bot data
-- `jesse/` Jesse project directory + .env
 - `secrets/` Firebase service account JSON (never commit)
 
 ## One-time setup
@@ -15,8 +13,6 @@ This stack runs the real bots plus the RelayOrb agent on a single host. The UI s
 cp agent-config/config.example.json agent-config/config.json
 mkdir -p freqtrade/user_data
 cp freqtrade/user_data/config.example.json freqtrade/user_data/config.json
-cp hummingbot/.env.example hummingbot/.env
-cp jesse/.env.example jesse/.env
 ```
 
 2) Place your Firebase service account JSON here:
@@ -24,9 +20,10 @@ cp jesse/.env.example jesse/.env
 secrets/service-account.json
 ```
 
-3) Initialize a Jesse project (required for `jesse run`):
+3) Provide market data keys for Backtrader (via shell or a local `.env` file):
 ```bash
-docker run --rm -it -v "$PWD/jesse:/workspace" salehmir/jesse jesse make-project .
+export FMP_API_KEY=...
+export ALPHAVANTAGE_API_KEY=... # optional fallback
 ```
 
 4) Update `agent-config/config.json` with real credentials and ensure each bot `baseUrl` matches the Docker service name.
@@ -44,9 +41,6 @@ agent container only). The `relayorb-updater` service watches for these commands
 
 ## Notes
 - Freqtrade runs in dry-run mode by default. Add exchange keys only when ready.
-- Hummingbot API uses the Docker socket to orchestrate bots; that’s why `/var/run/docker.sock` is mounted.
-- Jesse requires a valid `.env` with a non-empty `PASSWORD`.
-- Jesse runs with its own Postgres container; keep the `POSTGRES_*` values in `jesse/.env` consistent.
 - The UI stores the trading universe in Firestore. Use the "Apply Config" action to trigger adapters; some bots still require manual config updates.
-- The agent can write config files directly when mounted: Freqtrade `user_data/config.json`, Hummingbot `bots/<id>/conf/conf.yml`, Jesse `config/routes.json`.
+- The agent can write config files directly when mounted: Freqtrade `user_data/config.json`.
 - No ports are exposed publicly by default. Use SSH port-forwarding if you need to reach APIs.

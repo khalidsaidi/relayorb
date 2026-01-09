@@ -8,18 +8,13 @@ services:
       - RELAYORB_CONFIG_PATH=/config/config.json
       - NODE_ENV=production
       - RELAYORB_FREQTRADE_CONFIG=/relayorb/freqtrade/user_data/config.json
-      - RELAYORB_HUMMINGBOT_DIR=/relayorb/hummingbot/bots
-      - RELAYORB_JESSE_DIR=/relayorb/jesse
     volumes:
       - ./agent-config/config.json:/config/config.json:ro
       - ./secrets/service-account.json:/secrets/service-account.json:ro
       - ./freqtrade/user_data:/relayorb/freqtrade/user_data
-      - ./hummingbot/bots:/relayorb/hummingbot/bots
-      - ./jesse:/relayorb/jesse
     depends_on:
       - freqtrade
-      - hummingbot-api
-      - jesse
+      - backtrader
 
   relayorb-updater:
     image: gcr.io/relayorb/relayorb-agent-updater:latest
@@ -51,98 +46,15 @@ services:
       --config /freqtrade/user_data/config.json
       --strategy SampleStrategy
 
-  hummingbot-api:
-    image: hummingbot/hummingbot-api:latest
-    restart: unless-stopped
-    env_file:
-      - ./hummingbot/.env
-    environment:
-      - BROKER_HOST=emqx
-      - BOTS_PATH=/hummingbot-api/bots
-      - DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@postgres:5432/hummingbot_api
-      - GATEWAY_URL=http://host.docker.internal:15888
-    volumes:
-      - ./hummingbot/bots:/hummingbot-api/bots
-      - /var/run/docker.sock:/var/run/docker.sock
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      - postgres
-      - emqx
-
-  emqx:
-    image: emqx:5
+  backtrader:
+    build: ./backtrader
     restart: unless-stopped
     environment:
-      - EMQX_NAME=emqx
-      - EMQX_HOST=node1.emqx.local
-      - EMQX_CLUSTER__DISCOVERY_STRATEGY=static
-      - EMQX_CLUSTER__STATIC__SEEDS=[emqx@node1.emqx.local]
-      - EMQX_LOADED_PLUGINS=emqx_recon,emqx_retainer,emqx_management,emqx_dashboard
+      - PORT=8080
+      - FMP_API_KEY=${FMP_API_KEY:-}
+      - ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY:-}
+      - POLYGON_API_KEY=${POLYGON_API_KEY:-}
     volumes:
-      - emqx-data:/opt/emqx/data
-      - emqx-log:/opt/emqx/log
-      - emqx-etc:/opt/emqx/etc
-    networks:
-      default:
-        aliases:
-          - node1.emqx.local
-    healthcheck:
-      test: ["CMD", "/opt/emqx/bin/emqx_ctl", "status"]
-      interval: 5s
-      timeout: 25s
-      retries: 5
+      - ./backtrader/data:/app/data
 
-  postgres:
-    image: postgres:16
-    restart: unless-stopped
-    environment:
-      - POSTGRES_DB=hummingbot_api
-      - POSTGRES_USER=hbot
-      - POSTGRES_PASSWORD=hummingbot-api
-      - POSTGRES_INITDB_ARGS=--encoding=UTF8
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./hummingbot/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hbot -d hummingbot_api"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  jesse:
-    image: salehmir/jesse:latest
-    restart: unless-stopped
-    working_dir: /workspace
-    command: ["jesse", "run"]
-    env_file:
-      - ./jesse/.env
-    volumes:
-      - ./jesse:/workspace
-    depends_on:
-      - redis
-      - jesse-postgres
-
-  jesse-postgres:
-    image: postgres:16
-    restart: unless-stopped
-    env_file:
-      - ./jesse/.env
-    volumes:
-      - jesse-postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7
-    restart: unless-stopped
-
-volumes:
-  emqx-data: {}
-  emqx-log: {}
-  emqx-etc: {}
-  postgres-data: {}
-  jesse-postgres-data: {}
+volumes: {}

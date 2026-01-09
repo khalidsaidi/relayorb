@@ -26,10 +26,13 @@ import {
   PanelLeft,
   PanelRight,
   TrendingUp,
+  BarChart3,
 } from "lucide-react"
 import { useAuth } from "@/features/auth/auth-context"
 import { auth, firebaseEnabled } from "@/lib/firebase"
 import { signOut } from "firebase/auth"
+import { SidebarPaperProfile } from "./SidebarPaperProfile"
+import { usePresence } from "@/features/presence/use-presence"
 
 type NavItem = {
   to: string
@@ -42,6 +45,7 @@ const navItems: NavItem[] = [
   { to: "/dashboard", label: "Dashboard", icon: <LayoutDashboard className="h-4 w-4" /> },
   { to: "/signals", label: "Signals", icon: <Activity className="h-4 w-4" /> },
   { to: "/bots", label: "Bots", icon: <Bot className="h-4 w-4" /> },
+  { to: "/portfolio", label: "Portfolio", icon: <BarChart3 className="h-4 w-4" /> },
 ]
 
 const SIDEBAR_STORAGE_KEY = "relayorb.sidebar.collapsed"
@@ -52,6 +56,7 @@ function usePageTitle() {
   if (pathname.startsWith("/bots/")) return "Bot Detail"
   if (pathname.startsWith("/bots")) return "Bots"
   if (pathname.startsWith("/signals")) return "Signals"
+  if (pathname.startsWith("/portfolio")) return "Portfolio"
   if (pathname.startsWith("/dashboard")) return "Dashboard"
   return "Dashboard"
 }
@@ -86,6 +91,10 @@ export function AppShell() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const pageTitle = usePageTitle()
+  
+  // Track user presence for activity-based refresh
+  usePresence()
+  
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false
     return localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1"
@@ -144,6 +153,10 @@ export function AppShell() {
             ))}
           </nav>
 
+          {user && (
+            <SidebarPaperProfile userId={user.uid} collapsed={sidebarCollapsed} />
+          )}
+
           <div className="mt-auto px-4 pb-4">
             <Separator className="my-4" />
             <Button
@@ -175,6 +188,12 @@ export function AppShell() {
                       <NavItemLink key={item.to} {...item} collapsed={false} />
                     ))}
                   </nav>
+
+                  {user && (
+                    <div className="mt-4 border-t border-border/40 pt-4">
+                      <SidebarPaperProfile userId={user.uid} collapsed={false} />
+                    </div>
+                  )}
                 </SheetContent>
               </Sheet>
 

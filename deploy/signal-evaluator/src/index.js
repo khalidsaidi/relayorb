@@ -1,4 +1,5 @@
 const admin = require("firebase-admin")
+const { adjustEvaluationTime, isMarketOpen } = require("./marketHours")
 
 const HORIZONS = {
   "1h": 60,
@@ -35,12 +36,15 @@ const PAIR_QUOTES = new Set([
   "NZD",
 ])
 
+const FMP_STABLE_BASE_URL = "https://financialmodelingprep.com/stable"
+
 const config = {
   projectId:
     process.env.FIREBASE_PROJECT_ID ||
     process.env.GCLOUD_PROJECT ||
     process.env.GOOGLE_CLOUD_PROJECT ||
     "relayorb",
+  fmpKey: process.env.FMP_API_KEY || "",
   alphaVantageKey: process.env.ALPHAVANTAGE_API_KEY || "",
   alphaThrottleMs: parseInt(process.env.ALPHAVANTAGE_THROTTLE_MS || "12000", 10),
   evalLookbackHours: parseInt(process.env.EVAL_LOOKBACK_HOURS || "168", 10),
@@ -60,6 +64,10 @@ const caches = {
   stocksIntraday: new Map(),
   forex: new Map(),
   forexIntraday: new Map(),
+  fmpStocksDaily: new Map(),
+  fmpStocksIntraday: new Map(),
+  fmpForexDaily: new Map(),
+  fmpForexIntraday: new Map(),
 }
 
 let alphaLastRequestAt = 0
@@ -207,6 +215,69 @@ async function fetchAlphaJson(url) {
   return data
 }
 
+function normalizeFmpSymbol(symbol, assetClass) {
+  if (!symbol) return null
+  const cleaned = String(symbol).trim().toUpperCase()
+  if (!cleaned) return null
+  if (assetClass === "forex") {
+    return cleaned.replace(/[\\/-]/g, "")
+  }
+  return cleaned.replace(/\s+/g, "")
+}
+
+function parseFmpSeries(data) {
+  if (!Array.isArray(data)) return null
+  const entries = data
+    .map((entry) => {
+      const time = entry.date || entry.time || entry.timestamp
+      const parsed = time ? new Date(time).getTime() : null
+      const close = parseNumber(entry.close)
+      if (!parsed || close === null) return null
+      return { time: parsed, close }
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.time - b.time)
+  return entries.length > 0 ? entries : null
+}
+
+function getFmpCache(assetClass, interval) {
+  if (assetClass === "forex") {
+    return interval === "15min" ? caches.fmpForexIntraday : caches.fmpForexDaily
+  }
+  return interval === "15min" ? caches.fmpStocksIntraday : caches.fmpStocksDaily
+}
+
+async function fetchFmpSeries(symbol, assetClass, interval) {
+  if (!config.fmpKey) return null
+  const normalized = normalizeFmpSymbol(symbol, assetClass)
+  if (!normalized) return null
+  const cache = getFmpCache(assetClass, interval)
+  const key = `${normalized}|${interval}`
+  if (cache.has(key)) return cache.get(key)
+
+  const url = new URL(`${FMP_STABLE_BASE_URL}/historical-chart/${interval}`)
+  url.searchParams.set("symbol", normalized)
+  url.searchParams.set("apikey", config.fmpKey)
+
+  try {
+    const data = await fetchJson(url.toString())
+    const series = parseFmpSeries(data)
+    cache.set(key, series)
+    return series
+  } catch (err) {
+    cache.set(key, null)
+    return null
+  }
+}
+
+async function getFmpPrice(symbol, assetClass, interval, timestampMs) {
+  const series = await fetchFmpSeries(symbol, assetClass, interval)
+  if (!series) return null
+  const close = findIntradayClose(series, timestampMs)
+  if (!close) return null
+  return { price: close, source: "fmp" }
+}
+
 function toDateKey(date) {
   return date.toISOString().slice(0, 10)
 }
@@ -347,6 +418,9 @@ function findIntradayClose(entries, targetTime) {
 }
 
 async function getStockPrice(symbol, timestampMs) {
+  const fmpResult = await getFmpPrice(symbol, "stock", "1day", timestampMs)
+  if (fmpResult) return fmpResult
+
   const series = await fetchAlphaDailySeries(symbol)
   if (!series) return null
   const dateKey = toDateKey(new Date(timestampMs))
@@ -356,6 +430,9 @@ async function getStockPrice(symbol, timestampMs) {
 }
 
 async function getStockIntradayPrice(symbol, timestampMs) {
+  const fmpResult = await getFmpPrice(symbol, "stock", "15min", timestampMs)
+  if (fmpResult) return fmpResult
+
   const series = await fetchAlphaIntradaySeries(symbol, "60min")
   if (!series) return null
   const close = findIntradayClose(series, timestampMs)
@@ -420,6 +497,9 @@ async function fetchFxIntradaySeries(base, quote, interval = "60min") {
 }
 
 async function getFxIntradayPrice(pair, timestampMs) {
+  const fmpResult = await getFmpPrice(pair, "forex", "15min", timestampMs)
+  if (fmpResult) return fmpResult
+
   const [base, quote] = pair.split("/")
   if (!base || !quote) return null
   const series = await fetchFxIntradaySeries(base, quote, "60min")
@@ -460,31 +540,37 @@ function getSnapshotKey(assetClass, symbol) {
   return pair ? `crypto:${pair}` : null
 }
 
+async function loadPriceDocument(db, docPath) {
+  const snap = await db.doc(docPath).get()
+  if (!snap.exists) return null
+  const data = snap.data() || {}
+  const items = Array.isArray(data.items) ? data.items : []
+  const map = new Map()
+  const updatedAt = parseTimestamp(data.updatedAt) || null
+
+  items.forEach((item) => {
+    const key = getSnapshotKey(item.assetClass, item.symbol)
+    const price = parseNumber(item.price)
+    if (!key || price === null) return
+    map.set(key, { price, source: item.source || data.source || null })
+  })
+
+  return { map, updatedAt }
+}
+
 async function getMarketPriceSnapshot(db) {
   if (marketPriceCache && Date.now() - marketPriceCacheAt < MARKET_PRICE_CACHE_MS) {
     return marketPriceCache
   }
 
   try {
-    const snap = await db.doc("market/prices").get()
-    if (!snap.exists) {
-      marketPriceCache = null
-      marketPriceCacheAt = Date.now()
-      return null
-    }
-    const data = snap.data() || {}
-    const items = Array.isArray(data.items) ? data.items : []
-    const map = new Map()
-    const updatedAt = parseTimestamp(data.updatedAt) || null
+    const live = await loadPriceDocument(db, "market/prices")
+    const snapshot =
+      live && live.map && live.map.size > 0
+        ? live
+        : await loadPriceDocument(db, "market/prices_snapshot")
 
-    items.forEach((item) => {
-      const key = getSnapshotKey(item.assetClass, item.symbol)
-      const price = parseNumber(item.price)
-      if (!key || price === null) return
-      map.set(key, { price, source: item.source || data.source || null })
-    })
-
-    marketPriceCache = { map, updatedAt }
+    marketPriceCache = snapshot || null
     marketPriceCacheAt = Date.now()
     return marketPriceCache
   } catch (err) {
@@ -567,8 +653,20 @@ async function evaluateSignals(db) {
 
       const horizonMs = minutes * 60 * 1000
       const startMs = createdAt.getTime()
-      const horizonTime = startMs + horizonMs
-      if (nowMs < horizonTime) continue
+
+      // Adjust evaluation times for market hours
+      const adjustment = adjustEvaluationTime(
+        classification.assetClass,
+        startMs,
+        minutes
+      )
+      const adjustedStartMs = adjustment.adjustedSignalTime.getTime()
+      const adjustedHorizonMs = adjustment.adjustedHorizonTime.getTime()
+      const marketWasOpen = isMarketOpen(classification.assetClass, startMs)
+
+      // Check if enough time has passed for the adjusted horizon
+      if (nowMs < adjustedHorizonMs) continue
+
       let priceAtSignal = null
       let priceAtHorizon = null
       let source = null
@@ -576,10 +674,10 @@ async function evaluateSignals(db) {
       let usedSnapshotPrice = false
 
       if (classification.assetClass === "crypto") {
-        const first = await getCryptoPrice(classification.symbol, startMs, horizonKey)
+        const first = await getCryptoPrice(classification.symbol, adjustedStartMs, horizonKey)
         const second = await getCryptoPrice(
           classification.symbol,
-          startMs + horizonMs,
+          adjustedHorizonMs,
           horizonKey
         )
         priceAtSignal = first?.price ?? null
@@ -588,43 +686,61 @@ async function evaluateSignals(db) {
       } else if (classification.assetClass === "stock") {
         const useIntraday = horizonKey === "1h"
         const first = useIntraday
-          ? await getStockIntradayPrice(classification.symbol, startMs)
-          : await getStockPrice(classification.symbol, startMs)
+          ? await getStockIntradayPrice(classification.symbol, adjustedStartMs)
+          : await getStockPrice(classification.symbol, adjustedStartMs)
         const second = useIntraday
-          ? await getStockIntradayPrice(classification.symbol, startMs + horizonMs)
-          : await getStockPrice(classification.symbol, startMs + horizonMs)
+          ? await getStockIntradayPrice(classification.symbol, adjustedHorizonMs)
+          : await getStockPrice(classification.symbol, adjustedHorizonMs)
         priceAtSignal = first?.price ?? null
         priceAtHorizon = second?.price ?? null
         source = first?.source || second?.source || null
-      } else if (classification.assetClass === "forex") {
+  } else if (classification.assetClass === "forex") {
         if (horizonKey === "1h") {
-          const first = await getFxIntradayPrice(classification.symbol, startMs)
+          const first = await getFxIntradayPrice(classification.symbol, adjustedStartMs)
           const second = await getFxIntradayPrice(
             classification.symbol,
-            startMs + horizonMs
+            adjustedHorizonMs
           )
           priceAtSignal = first?.price ?? null
           priceAtHorizon = second?.price ?? null
           source = first?.source || second?.source || null
         } else {
-          const startDateKey = toDateKey(new Date(startMs))
-          const endDateKey = toDateKey(new Date(startMs + horizonMs))
-          const forexData = await getForexRates(
+          const fmpStart = await getFmpPrice(
             classification.symbol,
-            startDateKey,
-            endDateKey
+            "forex",
+            "1day",
+            adjustedStartMs
           )
-          priceAtSignal = findForexClose(
-            forexData?.rates,
-            startDateKey,
-            forexData?.quote
+          const fmpEnd = await getFmpPrice(
+            classification.symbol,
+            "forex",
+            "1day",
+            adjustedHorizonMs
           )
-          priceAtHorizon = findForexClose(
-            forexData?.rates,
-            endDateKey,
-            forexData?.quote
-          )
-          source = forexData ? "frankfurter" : null
+          if (fmpStart && fmpEnd) {
+            priceAtSignal = fmpStart.price ?? null
+            priceAtHorizon = fmpEnd.price ?? null
+            source = fmpStart.source || fmpEnd.source || null
+          } else {
+            const startDateKey = toDateKey(new Date(adjustedStartMs))
+            const endDateKey = toDateKey(new Date(adjustedHorizonMs))
+            const forexData = await getForexRates(
+              classification.symbol,
+              startDateKey,
+              endDateKey
+            )
+            priceAtSignal = findForexClose(
+              forexData?.rates,
+              startDateKey,
+              forexData?.quote
+            )
+            priceAtHorizon = findForexClose(
+              forexData?.rates,
+              endDateKey,
+              forexData?.quote
+            )
+            source = forexData ? "frankfurter" : null
+          }
         }
       }
 
@@ -653,7 +769,7 @@ async function evaluateSignals(db) {
         if (
           snapshot?.price !== undefined &&
           snapshotUpdatedAtMs &&
-          snapshotUpdatedAtMs >= horizonTime
+          snapshotUpdatedAtMs >= adjustedHorizonMs
         ) {
           priceAtHorizon = snapshot.price
           usedSnapshotPrice = true
@@ -670,13 +786,28 @@ async function evaluateSignals(db) {
       const returnPct = side === "buy"
         ? (delta / priceAtSignal) * 100
         : (-delta / priceAtSignal) * 100
-      newHorizons[horizonKey] = {
+
+      // Build horizon evaluation result
+      const horizonResult = {
         returnPct: Number(returnPct.toFixed(4)),
         hit: returnPct > 0,
         priceAtSignal,
         priceAtHorizon,
         source,
+        marketOpenAtSignal: marketWasOpen,
       }
+
+      // Add adjusted times if market hours adjustment was needed
+      if (adjustment.wasAdjusted) {
+        horizonResult.adjustedSignalTime = admin.firestore.Timestamp.fromDate(
+          adjustment.adjustedSignalTime
+        )
+        horizonResult.adjustedHorizonTime = admin.firestore.Timestamp.fromDate(
+          adjustment.adjustedHorizonTime
+        )
+      }
+
+      newHorizons[horizonKey] = horizonResult
     }
 
     const resolvedSymbol = classification.symbol

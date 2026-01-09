@@ -8,7 +8,8 @@
     "start": "node src/index.js"
   },
   "dependencies": {
-    "firebase-admin": "^12.7.0",
-    "yaml": "^2.5.1"
+    "@alpacahq/alpaca-trade-api": "^3.0.4",
+    "axios": "^1.6.0",
+    "firebase-admin": "^12.7.0"
   }
 }

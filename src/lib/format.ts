@@ -25,3 +25,13 @@ export function formatRelativeTimestamp(ts?: FirestoreTimestamp) {
   if (days < 7) return `${days}d ago`
   return new Date(timestamp.toMillis()).toLocaleDateString()
 }
+
+export function formatCurrency(value: number) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+  }).format(value)
+}
+
+// Re-export market-related formatting functions for convenience
+export { formatCountdown, getMarketHoursText } from "./marketHours"

@@ -8,6 +8,13 @@ import { Button } from "@/components/ui/button"
 import { formatRelativeTimestamp } from "@/lib/format"
 import { toast } from "sonner"
 import { useAuth } from "@/features/auth/auth-context"
+import { useMarketPrices } from "@/features/market/use-market-prices"
+import { MarketStatusBadge } from "@/components/MarketStatusBadge"
+import { PaperTradeButton } from "@/components/paper/PaperTradeButton"
+import { executePaperTrade } from "@/features/paper/paper-service"
+import { AssetChartModal } from "@/components/charts/AssetChartModal"
+import { BarChart3 } from "lucide-react"
+import { usePaperAutomation } from "@/features/paper/use-paper-monitor"
 
 function scoreTone(score?: number) {
   if (score === undefined || score === null) return "bg-muted text-muted-foreground"
@@ -66,25 +73,83 @@ function computePriceLevels(
   return { stopLossPrice: stop, takeProfitPrice: target }
 }
 
+/**
+ * Format hold time in a human-readable way
+ */
+function formatHoldTime(minutes: number): string {
+  if (minutes >= 1440) {
+    const days = Math.round(minutes / 1440)
+    return `${days} day${days > 1 ? 's' : ''}`
+  } else if (minutes >= 60) {
+    const hours = Math.round(minutes / 60)
+    return `${hours}h`
+  } else {
+    return `${minutes}m`
+  }
+}
+
 function buildAiPrompt(item: MarketHotTrade) {
   const momentum = item.momentum || {}
   const signals = item.signals || {}
   const trend = item.trend || {}
   const news = item.news || {}
+  
+  // Calculate volatility estimate
+  const volatility = momentum.change1h !== undefined && momentum.change24h !== undefined
+    ? Math.abs(momentum.change24h - (momentum.change1h || 0))
+    : null
+
+  // Build search query suggestion
+  const searchQuery = item.assetClass === "stock"
+    ? `${item.symbol} stock news today price analysis`
+    : item.assetClass === "crypto"
+    ? `${item.symbol} cryptocurrency news today price analysis`
+    : `${item.symbol} forex news today analysis`
 
   return [
-    "You are my trading assistant. Use the data below to answer:",
-    "Give a simple action (buy/hold/sell), suggested hold time (minutes), stop-loss price, and take-profit price.",
+    "You are a trading dashboard assistant. Analyze all provided data AND search the web for recent news and information about the asset to make accurate recommendations.",
     "",
+    "IMPORTANT: Before making your recommendation, search the web for recent news, earnings reports, technical analysis, or market events about this asset. Use a web search tool or API to find breaking news, price analysis, and market sentiment.",
+    "",
+    "Given the trade context, FIRST search the web for recent information about this asset, THEN analyze ALL data and return JSON:",
+    '{"action":"buy|hold|sell","holdMinutes":number,"stopLossPct":0.5-8,"takeProfitPct":1-15,"summary":"simple sentence","reasoning":"short reason"}',
+    "",
+    "Suggested web search query:",
+    `"${searchQuery}"`,
+    "",
+    "Calculate holdMinutes (15-1440 minutes) based on:",
+    `- Trend horizon: ${trend.horizon || 'n/a'} (15m=15min, 1h=60min, 24h=1440min, 7d=10080min)`,
+    "- Momentum speed: Fast moves (high 1h change) = shorter holds, slow trends = longer holds",
+    "- Asset class: Crypto moves faster (15-120min), Stocks slower (60-480min), Forex varies",
+    "- Signal strength: Strong signals = shorter holds (capture move quickly), weak = longer",
+    "- Volatility: High volatility = shorter holds, low = longer",
+    "- Recent news/events: Breaking news or events may require immediate action or longer holds",
+    "",
+    "Rules:",
+    "- Use 'hold' if signals are mixed or weak.",
+    "- stopLossPct and takeProfitPct are percentages; use null if action is hold.",
+    "- holdMinutes should reflect when the trade thesis expires or target should be reached",
+    "- For crypto scalps: 15-60min, for swing trades: 240-1440min",
+    "- Consider recent news: breaking news may require shorter holds, earnings may require longer",
+    "- Keep the summary short and plain English.",
+    "",
+    "Trade Data:",
     `Symbol: ${item.symbol}`,
     `Asset class: ${item.assetClass}`,
-    `Current price: ${item.price ?? "n/a"}`,
+    `Side hint: ${item.side || "n/a"}`,
     `Score: ${item.score ?? "n/a"} / 100`,
-    `Trend score: ${trend.score ?? "n/a"} (${trend.horizon ?? "n/a"})`,
-    `Momentum: 1h ${momentum.change1h ?? "n/a"}%, 24h ${momentum.change24h ?? "n/a"}%, 7d ${momentum.change7d ?? "n/a"}%`,
-    `Bot signals: ${signals.buy ?? 0} buy / ${signals.sell ?? 0} sell (${signals.total ?? 0} total)`,
-    `Sentiment: ${news.sentiment ?? "n/a"} (${news.count ?? 0} headlines)`,
+    `Current price: ${item.price ?? "n/a"}`,
+    `Trend score: ${trend.score ?? "n/a"} (higher = stronger trend)`,
+    `Trend horizon: ${trend.horizon || "n/a"} (timeframe of the trend signal)`,
+    `Momentum 1h: ${momentum.change1h !== undefined ? momentum.change1h.toFixed(2) + '%' : 'n/a'}`,
+    `Momentum 24h: ${momentum.change24h !== undefined ? momentum.change24h.toFixed(2) + '%' : 'n/a'}`,
+    `Momentum 7d: ${momentum.change7d !== undefined ? momentum.change7d.toFixed(2) + '%' : 'n/a'}`,
+    `Volatility estimate: ${volatility !== null ? volatility.toFixed(2) + '%' : 'n/a'}`,
+    `Bots: ${signals.buy ?? 0} buy / ${signals.sell ?? 0} sell (${signals.total ?? 0} total)`,
+    `Sentiment: ${news.sentiment !== undefined ? news.sentiment.toFixed(2) + ' (' + (news.count ?? 0) + ' headlines)' : 'n/a'}`,
     `AI summary: ${item.analysis?.summary || item.rationale || "n/a"}`,
+    "",
+    "Now search the web for recent information about this asset, then provide your recommendation based on both the trade data and web search results.",
   ].join("\n")
 }
 
@@ -97,6 +162,10 @@ function TradeList({
   adviceEnabled,
   onAskAi,
   onCopyPrompt,
+  onShowChart,
+  onApplyAiSuggestion,
+  prices,
+  livePrices,
 }: {
   items: MarketHotTrade[]
   title: string
@@ -106,6 +175,10 @@ function TradeList({
   adviceEnabled: boolean
   onAskAi: (item: MarketHotTrade) => void
   onCopyPrompt: (item: MarketHotTrade) => void
+  onShowChart: (item: MarketHotTrade) => void
+  onApplyAiSuggestion: (item: MarketHotTrade, advice: AiAdvice) => void
+  prices: Record<string, number>
+  livePrices: Record<string, number>
 }) {
   return (
     <Card className="border-border/60 bg-background/70">
@@ -127,7 +200,7 @@ function TradeList({
                 className="rounded-xl border border-border/60 bg-background/80 p-3 text-sm shadow-sm"
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <div className="text-sm font-semibold tracking-tight truncate">
                         {item.symbol}
@@ -135,8 +208,27 @@ function TradeList({
                       <Badge variant="outline" className="uppercase text-[10px]">
                         {item.assetClass}
                       </Badge>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 ml-auto"
+                        onClick={() => onShowChart(item)}
+                        title="View Chart"
+                      >
+                        <BarChart3 className="h-4 w-4" />
+                      </Button>
                     </div>
-                    <div className="mt-2 text-[11px] text-muted-foreground">
+                    <div className="mt-2 text-[11px] text-muted-foreground flex items-center gap-2">
+                      <span className="font-bold text-foreground">
+                        {(() => {
+                          const current = prices[item.symbol] || item.price
+                          return current ? formatPrice(current, item.assetClass) : "—"
+                        })()}
+                      </span>
+                      {livePrices[item.symbol] && (
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
+                      )}
+                      <span>·</span>
                       24h {formatChange(item.momentum?.change24h)} · 1h{" "}
                       {formatChange(item.momentum?.change1h)}
                     </div>
@@ -172,7 +264,18 @@ function TradeList({
                     </div>
                   </details>
                 ) : null}
+
+
+
                 <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <PaperTradeButton
+                    trade={item}
+                    size="sm"
+                    variant="default"
+                    className="gap-2"
+                  >
+                    <span>Trade</span>
+                  </PaperTradeButton>
                   <Button
                     type="button"
                     size="sm"
@@ -199,12 +302,12 @@ function TradeList({
                     <div className="font-medium">
                       AI:{" "}
                       {advice.summary ||
-                        `${advice.action} · hold ${advice.holdMinutes}m`}
+                        `${advice.action.charAt(0).toUpperCase() + advice.action.slice(1)} signal for ${item.symbol}.`}
                     </div>
                     <div className="mt-1 text-muted-foreground">
                       {(() => {
                         if (advice.action === "hold") {
-                          return <>Recheck in {advice.holdMinutes}m.</>
+                          return <>Recheck in {formatHoldTime(advice.holdMinutes)}.</>
                         }
                         const computed = computePriceLevels(
                           advice.action,
@@ -216,9 +319,10 @@ function TradeList({
                           advice.stopLossPrice ?? computed.stopLossPrice
                         const target =
                           advice.takeProfitPrice ?? computed.takeProfitPrice
+                        const holdTimeText = formatHoldTime(advice.holdMinutes)
                         return (
                           <>
-                            Hold {advice.holdMinutes}m · Stop{" "}
+                            Hold {holdTimeText} · Stop{" "}
                             {stop ? formatPrice(stop, item.assetClass) : "—"} ·
                             Target {target ? formatPrice(target, item.assetClass) : "—"}
                           </>
@@ -226,8 +330,21 @@ function TradeList({
                       })()}
                     </div>
                     {advice.reasoning ? (
-                      <div className="mt-1 text-muted-foreground">{advice.reasoning}</div>
+                      <div className="mt-1 text-muted-foreground whitespace-pre-wrap break-words">
+                        {advice.reasoning}
+                      </div>
                     ) : null}
+                    {advice.action !== "hold" && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="default"
+                        className="mt-2 w-full"
+                        onClick={() => onApplyAiSuggestion(item, advice)}
+                      >
+                        Apply AI Suggestion
+                      </Button>
+                    )}
                   </div>
                 ) : null}
               </div>
@@ -241,6 +358,7 @@ function TradeList({
 
 export default function TradeNowPage() {
   const { user } = useAuth()
+  const { prices, livePrices } = useMarketPrices()
   const [actionBoard, setActionBoard] = useState<MarketActionBoardDoc | null>(null)
   const [hotTrades, setHotTrades] = useState<MarketHotTrade[]>([])
   const [hotTradesUpdatedAt, setHotTradesUpdatedAt] = useState<MarketHotTradesDoc["updatedAt"]>()
@@ -252,6 +370,11 @@ export default function TradeNowPage() {
   const [refreshingJobs, setRefreshingJobs] = useState(false)
   const [aiAdvice, setAiAdvice] = useState<Record<string, AiAdvice>>({})
   const [aiLoading, setAiLoading] = useState<Record<string, boolean>>({})
+  const [chartAsset, setChartAsset] = useState<MarketHotTrade | null>(null)
+  const [chartOpen, setChartOpen] = useState(false)
+
+  // Monitor paper positions for stop loss / take profit
+  usePaperAutomation(user?.uid, hotTrades)
 
   const refreshEndpoint = useMemo(() => {
     const base = (import.meta.env.VITE_REFRESH_URL || "").trim()
@@ -338,7 +461,7 @@ export default function TradeNowPage() {
         ? "Stocks"
         : assetFilter === "forex"
           ? "FX"
-      : "Crypto"
+          : "Crypto"
   const fetchStatus = useMemo(() => {
     const meta = hasActionBoard ? actionBoard?.meta : hotTradesMeta
     const status = meta && typeof meta === "object" ? (meta as Record<string, unknown>).fetchStatus : null
@@ -451,7 +574,9 @@ export default function TradeNowPage() {
       })
       const data = await res.json()
       if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || "AI advice failed.")
+        const errorMsg = data?.error || "AI advice failed."
+        console.error("Advice API error:", errorMsg, data)
+        throw new Error(errorMsg)
       }
       setAiAdvice((prev) => ({ ...prev, [key]: data.advice }))
     } catch (err) {
@@ -469,6 +594,49 @@ export default function TradeNowPage() {
       toast.success("AI prompt copied")
     } catch {
       toast.error("Failed to copy prompt")
+    }
+  }
+
+  async function applyAiSuggestion(item: MarketHotTrade, advice: AiAdvice) {
+    if (!user || !firebaseEnabled) {
+      toast.error("Sign in to apply AI suggestions")
+      return
+    }
+
+    if (advice.action === "hold") {
+      toast.info("AI suggests holding - no trade executed")
+      return
+    }
+
+    if (!item.price || !Number.isFinite(item.price)) {
+      toast.error("Invalid price for trade")
+      return
+    }
+
+    // Use current live price if available, otherwise use item price
+    const currentPrice = prices[item.symbol] || item.price
+    
+    // Default to $1000 trade value
+    const tradeValue = 1000
+    const quantity = tradeValue / currentPrice
+
+    try {
+      await executePaperTrade(user.uid, {
+        symbol: item.symbol,
+        assetClass: item.assetClass,
+        side: advice.action,
+        price: currentPrice,
+        quantity: quantity,
+        stopLoss: advice.stopLossPrice || undefined,
+        takeProfit: advice.takeProfitPrice || undefined,
+      })
+      toast.success(
+        `Applied AI ${advice.action.toUpperCase()} for ${item.symbol} - $${tradeValue.toFixed(2)} @ $${currentPrice.toFixed(4)}`
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to apply AI suggestion"
+      toast.error(message)
+      console.error("Apply AI suggestion error:", err)
     }
   }
 
@@ -519,6 +687,18 @@ export default function TradeNowPage() {
         </div>
       </div>
 
+      <div className="flex flex-wrap gap-4">
+        {(assetFilter === "all" || assetFilter === "stock") && (
+          <MarketStatusBadge assetClass="stock" />
+        )}
+        {(assetFilter === "all" || assetFilter === "forex") && (
+          <MarketStatusBadge assetClass="forex" />
+        )}
+        {(assetFilter === "all" || assetFilter === "crypto") && (
+          <MarketStatusBadge assetClass="crypto" />
+        )}
+      </div>
+
       {!firebaseEnabled ? (
         <div className="text-sm text-muted-foreground">Connect Firebase to load signals.</div>
       ) : loading ? (
@@ -534,6 +714,13 @@ export default function TradeNowPage() {
             adviceEnabled={adviceEnabled}
             onAskAi={requestAdvice}
             onCopyPrompt={copyPrompt}
+            onShowChart={(item) => {
+              setChartAsset(item)
+              setChartOpen(true)
+            }}
+            onApplyAiSuggestion={applyAiSuggestion}
+            prices={prices}
+            livePrices={livePrices}
           />
           <TradeList
             items={sells}
@@ -544,9 +731,22 @@ export default function TradeNowPage() {
             adviceEnabled={adviceEnabled}
             onAskAi={requestAdvice}
             onCopyPrompt={copyPrompt}
+            onShowChart={(item) => {
+              setChartAsset(item)
+              setChartOpen(true)
+            }}
+            onApplyAiSuggestion={applyAiSuggestion}
+            prices={prices}
+            livePrices={livePrices}
           />
         </div>
       )}
+
+      <AssetChartModal
+        open={chartOpen}
+        onOpenChange={setChartOpen}
+        asset={chartAsset}
+      />
     </div>
   )
 }

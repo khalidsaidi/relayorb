@@ -1,4 +1,5 @@
 const admin = require("firebase-admin")
+const ccxt = require("ccxt")
 
 const config = {
   projectId:
@@ -18,6 +19,18 @@ const config = {
   newsSymbolLimit: parseInt(process.env.MARKETAUX_SYMBOL_LIMIT || "25", 10),
   newsIntervalMinutes: parseInt(process.env.NEWS_INTERVAL_MINUTES || "30", 10),
   alphaVantageKey: process.env.ALPHAVANTAGE_API_KEY || "",
+  fmpKey: process.env.FMP_API_KEY || "",
+  moverWindowMinutes: parseInt(process.env.MOVER_WINDOW_MINUTES || "15", 10),
+  snapshotChunkSize: parseInt(process.env.SNAPSHOT_CHUNK_SIZE || "250", 10),
+  snapshotKeep: parseInt(process.env.SNAPSHOT_KEEP || "6", 10),
+  moverTopLimit: parseInt(process.env.MOVER_TOP_LIMIT || "200", 10),
+  moverEnrichLimit: parseInt(process.env.MOVER_ENRICH_LIMIT || "50", 10),
+  moverMinPrice: parseFloat(process.env.MOVER_MIN_PRICE || "1"),
+  moverMinVolume: parseFloat(process.env.MOVER_MIN_VOLUME || "50000"),
+  stockChangeScale: parseFloat(process.env.STOCK_CHANGE_SCALE || "5"),
+  forexChangeScale: parseFloat(process.env.FX_CHANGE_SCALE || "0.3"),
+  cryptoChangeScale: parseFloat(process.env.CRYPTO_CHANGE_SCALE || "2"),
+  recommendationLimit: parseInt(process.env.RECOMMENDATION_LIMIT || "50", 10),
   minAccuracySignals: parseInt(process.env.MIN_ACCURACY_SIGNALS || "12", 10),
   autoTuneEnabled: process.env.AUTO_TUNE_ENABLED !== "false",
   autoTuneIntervalHours: parseInt(process.env.AUTO_TUNE_INTERVAL_HOURS || "6", 10),
@@ -49,8 +62,16 @@ const TREND_HORIZONS = ["15m", "1h", "24h", "7d"]
 const VALID_TREND_HORIZONS = new Set(TREND_HORIZONS)
 const VALID_RISK = new Set(["conservative", "balanced", "aggressive"])
 const VALID_ASSET_FOCUS = new Set(["crypto", "stock", "forex"])
+const UNIVERSE_MODES = new Set([
+  "movers_only",
+  "universe_only",
+  "movers_plus_universe",
+  "movers_filtered_by_universe",
+])
+const DEFAULT_UNIVERSE_MODE = "movers_plus_universe"
 const MARKET_SIGNAL_BOT_ID = "market-intel"
 const MARKETAUX_BASE_URL = "https://api.marketaux.com/v1/news/all"
+const FMP_STABLE_BASE_URL = "https://financialmodelingprep.com/stable"
 const TREND_MOMENTUM_SCALES = {
   "15m": 12,
   "1h": 6,
@@ -71,6 +92,7 @@ const PAIR_QUOTES = new Set([
   "CAD",
   "NZD",
 ])
+const TSX_SUFFIXES = [".TO", ".TSX", ".TSXV", ".V"]
 const DEFAULT_TREND_WEIGHTS = {
   momentum: 40,
   volume: 25,
@@ -94,6 +116,238 @@ function parseNumber(value) {
   if (value === undefined || value === null) return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function parsePercent(value) {
+  if (value === undefined || value === null) return undefined
+  const cleaned = String(value)
+    .replace(/[()%]/g, "")
+    .replace(/^\+/, "")
+    .trim()
+  if (!cleaned) return undefined
+  return parseNumber(cleaned)
+}
+
+function resolveUniverseMode(value) {
+  if (!value) return DEFAULT_UNIVERSE_MODE
+  const normalized = String(value).trim().toLowerCase()
+  return UNIVERSE_MODES.has(normalized) ? normalized : DEFAULT_UNIVERSE_MODE
+}
+
+function resolveUniverseModeForAsset(assetConfig, fallback) {
+  if (assetConfig?.mode) return resolveUniverseMode(assetConfig.mode)
+  if (fallback) return resolveUniverseMode(fallback)
+  return DEFAULT_UNIVERSE_MODE
+}
+
+function parseBotWeights(raw) {
+  if (!raw || typeof raw !== "object") return {}
+  const parsed = {}
+  Object.entries(raw).forEach(([key, value]) => {
+    if (!key) return
+    const weight = parseNumber(value)
+    if (typeof weight !== "number") return
+    parsed[String(key)] = clamp(weight, 0, 5)
+  })
+  return parsed
+}
+
+function chunkItems(items, size) {
+  if (!Array.isArray(items) || items.length === 0) return []
+  const chunkSize = Number.isFinite(size) && size > 0 ? size : 250
+  const chunks = []
+  for (let i = 0; i < items.length; i += chunkSize) {
+    chunks.push(items.slice(i, i + chunkSize))
+  }
+  return chunks
+}
+
+function normalizeSnapshotStock(item, exchangeHint = null) {
+  if (!item || typeof item !== "object") return null
+  const symbol = normalizeTicker(item.symbol || item.ticker || item.code || "")
+  if (!symbol) return null
+  const price =
+    parseNumber(item.price) ??
+    parseNumber(item.lastSale) ??
+    parseNumber(item.lastSalePrice) ??
+    parseNumber(item.last) ??
+    parseNumber(item.close)
+  if (typeof price !== "number") return null
+  const volume =
+    parseNumber(item.volume) ??
+    parseNumber(item.avgVolume) ??
+    parseNumber(item.volumeAvg)
+  const change24h = parsePercent(
+    item.changesPercentage ?? item.changePercentage ?? item.changePercent ?? item.change
+  )
+  return compactObject({
+    symbol,
+    name: item.name || item.companyName || symbol,
+    exchange: exchangeHint || item.exchange || item.exchangeShortName || undefined,
+    price,
+    volume,
+    change24h,
+  })
+}
+
+function normalizeSnapshotForex(item) {
+  if (!item || typeof item !== "object") return null
+  const rawSymbol = item.symbol || item.ticker || item.pair || item.code || ""
+  const cleanedRaw = String(rawSymbol).trim().toUpperCase().replace(/_/g, "/").replace(/-/g, "/")
+  let symbol = normalizeSymbol(cleanedRaw)
+  if (!symbol || !symbol.includes("/")) {
+    const stripped = cleanedRaw.replace(/[^A-Z]/g, "")
+    if (stripped.length === 6) {
+      symbol = `${stripped.slice(0, 3)}/${stripped.slice(3)}`
+    }
+  }
+  if (!symbol) return null
+  const bid = parseNumber(item.bid)
+  const ask = parseNumber(item.ask)
+  const price =
+    parseNumber(item.price) ??
+    (bid !== undefined && ask !== undefined ? (bid + ask) / 2 : bid ?? ask) ??
+    parseNumber(item.rate)
+  if (typeof price !== "number") return null
+  const volume = parseNumber(item.volume)
+  const change24h = parsePercent(
+    item.changesPercentage ?? item.changePercentage ?? item.changePercent ?? item.change
+  )
+  return compactObject({
+    symbol,
+    name: symbol,
+    price,
+    volume,
+    change24h,
+  })
+}
+
+async function writeSnapshot(db, collectionName, items, createdAt, meta = {}) {
+  const snapshotId = String(createdAt.getTime())
+  const chunks = chunkItems(items, config.snapshotChunkSize)
+  const createdAtValue = admin.firestore.Timestamp.fromDate(createdAt)
+  const { source, ...metaFields } = meta || {}
+  const snapshotSource = source || "stream"
+
+  const writer = db.bulkWriter()
+  const snapshotRef = db.collection(collectionName).doc(snapshotId)
+  writer.set(
+    snapshotRef,
+    compactObject({
+      createdAt: createdAtValue,
+      count: items.length,
+      chunkCount: chunks.length,
+      source: snapshotSource,
+      ...metaFields,
+    }),
+    { merge: true }
+  )
+
+  chunks.forEach((chunk, index) => {
+    const chunkRef = snapshotRef.collection("chunks").doc(String(index))
+    writer.set(
+      chunkRef,
+      compactObject({
+        index,
+        count: chunk.length,
+        items: chunk,
+      })
+    )
+  })
+
+  await writer.close()
+  return { id: snapshotId, createdAt: createdAtValue, count: items.length }
+}
+
+async function readSnapshotItems(snapshotRef) {
+  const chunkSnap = await snapshotRef.collection("chunks").get()
+  if (chunkSnap.empty) return []
+  const items = []
+  chunkSnap.docs.forEach((doc) => {
+    const data = doc.data() || {}
+    if (Array.isArray(data.items)) {
+      items.push(...data.items)
+    }
+  })
+  return items
+}
+
+async function findSnapshotBefore(db, collectionName, cutoff) {
+  const snap = await db
+    .collection(collectionName)
+    .where("createdAt", "<=", admin.firestore.Timestamp.fromDate(cutoff))
+    .orderBy("createdAt", "desc")
+    .limit(1)
+    .get()
+  if (snap.empty) return null
+  const doc = snap.docs[0]
+  const data = doc.data() || {}
+  const items = await readSnapshotItems(doc.ref)
+  return {
+    id: doc.id,
+    createdAt: data.createdAt?.toDate?.() || cutoff,
+    items,
+  }
+}
+
+async function pruneSnapshots(db, collectionName, keep) {
+  const limit = Number.isFinite(keep) && keep > 0 ? keep : 6
+  const snap = await db
+    .collection(collectionName)
+    .orderBy("createdAt", "desc")
+    .offset(limit)
+    .limit(50)
+    .get()
+  if (snap.empty) return
+  const writer = db.bulkWriter()
+  for (const doc of snap.docs) {
+    const chunkSnap = await doc.ref.collection("chunks").get()
+    chunkSnap.docs.forEach((chunk) => writer.delete(chunk.ref))
+    writer.delete(doc.ref)
+  }
+  await writer.close()
+}
+
+function computeSnapshotMovers(currentItems, previousItems, options = {}) {
+  const prevMap = new Map()
+  previousItems.forEach((item) => {
+    if (!item?.symbol || typeof item.price !== "number") return
+    prevMap.set(item.symbol, item)
+  })
+
+  const minPrice =
+    typeof options.minPrice === "number" && options.minPrice >= 0
+      ? options.minPrice
+      : 0
+  const minVolume =
+    typeof options.minVolume === "number" && options.minVolume >= 0
+      ? options.minVolume
+      : 0
+  const enableVolumeFilter = minVolume > 0
+
+  const candidates = []
+  currentItems.forEach((item) => {
+    if (!item?.symbol || typeof item.price !== "number") return
+    const prev = prevMap.get(item.symbol)
+    if (!prev || typeof prev.price !== "number" || prev.price === 0) return
+    const change15m = ((item.price - prev.price) / prev.price) * 100
+    if (item.price < minPrice) return
+    if (enableVolumeFilter && typeof item.volume === "number" && item.volume < minVolume) {
+      return
+    }
+    candidates.push({
+      ...item,
+      change15m,
+    })
+  })
+
+  const gainers = [...candidates].sort((a, b) => (b.change15m || 0) - (a.change15m || 0))
+  const losers = [...candidates].sort((a, b) => (a.change15m || 0) - (b.change15m || 0))
+  const actives = [...currentItems]
+    .filter((item) => typeof item?.volume === "number")
+    .sort((a, b) => (b.volume || 0) - (a.volume || 0))
+
+  return { candidates, gainers, losers, actives }
 }
 
 function extractAlphaError(data) {
@@ -141,12 +395,109 @@ function normalizeSymbol(raw) {
   return compact
 }
 
+/**
+ * Normalizes crypto symbol using CCXT
+ * CCXT provides robust symbol normalization across exchanges
+ * @param {string} symbol - The crypto symbol to normalize
+ * @returns {string} - Normalized symbol in BASE/USD format for Twelve Data
+ */
+function normalizeCryptoSymbolWithCCXT(symbol) {
+  try {
+    // Create a dummy exchange instance to use CCXT's normalization utilities
+    const exchange = new ccxt.binance()
+    
+    let normalized = symbol.trim().toUpperCase()
+    
+    // If it already has a separator, normalize it
+    if (normalized.includes('/') || normalized.includes('-')) {
+      const marketId = normalized.replace('-', '/')
+      const parts = marketId.split('/')
+      if (parts.length === 2) {
+        // Convert USDT to USD for Twelve Data
+        const quote = parts[1] === 'USDT' ? 'USD' : parts[1]
+        return `${parts[0]}/${quote}`
+      }
+    }
+    
+    // If no separator, try to infer from common patterns
+    const commonQuotes = ['USDT', 'USDC', 'USD', 'BTC', 'ETH', 'EUR']
+    for (const quote of commonQuotes) {
+      if (normalized.endsWith(quote) && normalized.length > quote.length) {
+        const base = normalized.slice(0, -quote.length)
+        const normalizedQuote = quote === 'USDT' ? 'USD' : quote
+        return `${base}/${normalizedQuote}`
+      }
+    }
+    
+    // Default: assume base currency, add USD
+    return `${normalized}/USD`
+  } catch (err) {
+    console.warn('[MarketIntel] CCXT normalization failed, using fallback:', err.message)
+    // Fallback to simple normalization
+    const trimmed = symbol.trim().toUpperCase()
+    if (trimmed.includes('/')) {
+      const parts = trimmed.split('/')
+      const quote = parts[1] === 'USDT' ? 'USD' : parts[1] || 'USD'
+      return `${parts[0]}/${quote}`
+    }
+    return `${trimmed}/USD`
+  }
+}
+
+/**
+ * Normalizes symbol for Twelve Data API charting
+ * Ensures symbols are in the format expected by the charting service
+ * Uses CCXT for crypto symbols for better normalization
+ * @param {string} symbol - The symbol to normalize
+ * @param {string} assetClass - The asset class: 'crypto', 'stock', or 'forex'
+ * @returns {string} - Normalized symbol for charting
+ */
+function normalizeSymbolForCharting(symbol, assetClass) {
+  if (!symbol || typeof symbol !== 'string') {
+    return symbol
+  }
+  
+  const trimmed = symbol.trim().toUpperCase()
+  if (!trimmed) {
+    return symbol
+  }
+  
+  if (assetClass === 'crypto') {
+    // Use CCXT for robust crypto symbol normalization
+    return normalizeCryptoSymbolWithCCXT(symbol)
+  } else if (assetClass === 'forex') {
+    // For forex, keep slash format (EUR/USD, USD/JPY)
+    if (!trimmed.includes('/')) {
+      // If no slash, try to infer (e.g., EURUSD -> EUR/USD)
+      if (trimmed.length >= 6) {
+        const base = trimmed.slice(0, 3)
+        const quote = trimmed.slice(3)
+        return `${base}/${quote}`
+      }
+      return symbol
+    }
+    // Already has slash, keep as is
+    return trimmed
+  } else if (assetClass === 'stock') {
+    // For stocks, remove any slashes and keep uppercase
+    return trimmed.replace(/\//g, '').replace(/-/g, '')
+  }
+  
+  return symbol
+}
+
 function normalizeTicker(raw) {
   if (!raw) return null
   const cleaned = String(raw).toUpperCase().trim().replace(/[^A-Z0-9.-]/g, "")
   if (!cleaned) return null
   if (!/[A-Z]/.test(cleaned)) return null
   return cleaned
+}
+
+function isTsxSymbol(symbol) {
+  if (!symbol) return false
+  const upper = String(symbol).toUpperCase()
+  return TSX_SUFFIXES.some((suffix) => upper.endsWith(suffix))
 }
 
 function normalizeSignalKey(raw) {
@@ -379,10 +730,14 @@ async function readUniverse(db) {
   const crypto = data?.crypto || {}
   const stocks = data?.stocks || {}
   const forex = data?.forex || {}
+  const globalMode = resolveUniverseMode(data?.mode)
+  const cryptoMode = resolveUniverseModeForAsset(crypto, globalMode)
+  const stockMode = resolveUniverseModeForAsset(stocks, globalMode)
+  const forexMode = resolveUniverseModeForAsset(forex, globalMode)
 
   return {
     crypto: {
-      includeTrending: crypto.includeTrending !== false,
+      mode: cryptoMode,
       symbols: uniqueList(
         Array.isArray(crypto.symbols)
           ? crypto.symbols.map(normalizeSymbol).filter(Boolean)
@@ -390,7 +745,7 @@ async function readUniverse(db) {
       ),
     },
     stocks: {
-      includeTrending: stocks.includeTrending !== false,
+      mode: stockMode,
       symbols: uniqueList(
         Array.isArray(stocks.symbols)
           ? stocks.symbols.map(normalizeTicker).filter(Boolean)
@@ -398,7 +753,7 @@ async function readUniverse(db) {
       ),
     },
     forex: {
-      includeTrending: forex.includeTrending !== false,
+      mode: forexMode,
       pairs: uniqueList(
         Array.isArray(forex.pairs)
           ? forex.pairs.map(normalizeSymbol).filter(Boolean)
@@ -476,6 +831,7 @@ async function readControls(db) {
     ),
     news: clamp(parseNumber(rawWeights.news) ?? DEFAULT_TREND_WEIGHTS.news, 0, 100),
   }
+  const botWeights = parseBotWeights(data?.botWeights)
 
   return {
     enableLLM: data?.enableLLM !== false,
@@ -488,6 +844,7 @@ async function readControls(db) {
     riskProfile,
     assetFocus: normalizedFocus,
     primaryAssets,
+    botWeights,
     autoTuneEnabled:
       data?.autoTuneEnabled === undefined ? config.autoTuneEnabled : Boolean(data.autoTuneEnabled),
     autoTuneWithAI: data?.autoTuneWithAI !== false,
@@ -566,11 +923,17 @@ async function refreshStockSymbolCache(db) {
 }
 
 async function fetchCrypto(preferences = {}) {
-  const includeTrending = preferences.includeTrending !== false
+  const mode = resolveUniverseMode(preferences.mode)
+  const includeTrending = mode !== "universe_only"
+  const includeWatchlist = mode !== "movers_only"
+  const filterToWatchlist = mode === "movers_filtered_by_universe"
   const watchlist = Array.isArray(preferences.symbols) ? preferences.symbols : []
   const watchlistSet = new Set(watchlist.map(normalizeSymbol).filter(Boolean))
 
   if (!includeTrending && watchlistSet.size === 0) {
+    return []
+  }
+  if (filterToWatchlist && watchlistSet.size === 0) {
     return []
   }
 
@@ -605,7 +968,10 @@ async function fetchCrypto(preferences = {}) {
         source: "coingecko",
       }
     })
-    .filter((item) => includeTrending || item.watchlisted)
+    .filter((item) => {
+      if (filterToWatchlist) return item.watchlisted
+      return includeTrending || item.watchlisted
+    })
 
   const itemsMap = new Map()
   baseItems.forEach((item) => {
@@ -614,16 +980,18 @@ async function fetchCrypto(preferences = {}) {
     itemsMap.set(key, item)
   })
 
-  const missingWatchlist = Array.from(watchlistSet).filter(
-    (symbol) => !itemsMap.has(normalizeSymbol(symbol))
-  )
-  if (missingWatchlist.length > 0) {
-    const extra = await fetchCryptoWatchlist(missingWatchlist)
-    extra.forEach((item) => {
-      const key = normalizeSymbol(item.symbol)
-      if (!key) return
-      itemsMap.set(key, item)
-    })
+  if (includeWatchlist && !filterToWatchlist) {
+    const missingWatchlist = Array.from(watchlistSet).filter(
+      (symbol) => !itemsMap.has(normalizeSymbol(symbol))
+    )
+    if (missingWatchlist.length > 0) {
+      const extra = await fetchCryptoWatchlist(missingWatchlist)
+      extra.forEach((item) => {
+        const key = normalizeSymbol(item.symbol)
+        if (!key) return
+        itemsMap.set(key, item)
+      })
+    }
   }
 
   const items = Array.from(itemsMap.values())
@@ -650,29 +1018,255 @@ async function fetchCrypto(preferences = {}) {
   })
 }
 
-async function fetchStockQuote(symbol) {
-  if (!config.alphaVantageKey) return null
-  const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(
-    symbol
-  )}&apikey=${config.alphaVantageKey}`
-  const data = await fetchJson(url)
-  const alphaError = extractAlphaError(data)
-  if (alphaError) return null
-  const quote = data?.["Global Quote"]
-  if (!quote) return null
-  const price = parseNumber(quote["05. price"])
-  const changePercent = parseNumber(
-    String(quote["10. change percent"] || "").replace(/%/g, "")
-  )
+async function readLivePrices(db) {
+  if (!db) return { items: [], updatedAt: null }
+  const snap = await db.doc("market/prices").get()
+  if (!snap.exists) return { items: [], updatedAt: null }
+  const data = snap.data() || {}
+  const items = Array.isArray(data.items) ? data.items : []
+  const updatedAt =
+    typeof data.updatedAt?.toDate === "function" ? data.updatedAt.toDate() : null
+  return { items, updatedAt }
+}
+
+async function fetchLiveSnapshotMovers(db, options) {
+  if (!db) {
+    return { items: [], movers: null, snapshot: null }
+  }
+
+  const {
+    collectionName,
+    assetClass,
+    normalizeItem,
+    watchlistSet,
+    mode,
+    exchangeHint,
+    market,
+    filterItem,
+    livePrices,
+    source,
+  } = options
+  const resolvedMode = resolveUniverseMode(mode)
+  const allowTrending = resolvedMode !== "universe_only"
+  const allowWatchlist = resolvedMode !== "movers_only"
+  const filterToWatchlist = resolvedMode === "movers_filtered_by_universe"
+  const watchlist = watchlistSet || new Set()
+  const snapshotSource = source || "stream"
+
+  const priceSnapshot =
+    livePrices && Array.isArray(livePrices.items) ? livePrices : await readLivePrices(db)
+  const rawItems = Array.isArray(priceSnapshot?.items) ? priceSnapshot.items : []
+  const currentItems = rawItems
+    .filter((item) => item?.assetClass === assetClass)
+    .filter((item) => (typeof filterItem === "function" ? filterItem(item) : true))
+    .map((item) => normalizeItem(item, exchangeHint))
+    .filter(Boolean)
+
+  if (currentItems.length === 0) {
+    return { items: [], movers: null, snapshot: null }
+  }
+
+  const createdAt = priceSnapshot?.updatedAt || new Date()
+  const snapshot = await writeSnapshot(db, collectionName, currentItems, createdAt, {
+    market,
+    assetClass,
+    source: snapshotSource,
+  })
+  await pruneSnapshots(db, collectionName, config.snapshotKeep)
+
+  const cutoff = new Date(createdAt.getTime() - config.moverWindowMinutes * 60 * 1000)
+  const previous = await findSnapshotBefore(db, collectionName, cutoff)
+
+  let candidates = []
+  let gainers = []
+  let losers = []
+  let actives = []
+  if (previous) {
+    const snapshotMoves = computeSnapshotMovers(currentItems, previous.items, {
+      minPrice: assetClass === "stock" ? config.moverMinPrice : 0,
+      minVolume: assetClass === "stock" ? config.moverMinVolume : 0,
+    })
+    candidates = snapshotMoves.candidates
+    gainers = snapshotMoves.gainers
+    losers = snapshotMoves.losers
+    actives = snapshotMoves.actives
+  }
+
+  const volumeRankMap = new Map()
+  const volumeList = [...currentItems]
+    .filter((item) => typeof item.volume === "number")
+    .sort((a, b) => (b.volume || 0) - (a.volume || 0))
+  volumeList.forEach((item, index) => {
+    volumeRankMap.set(item.symbol, index + 1)
+  })
+  if (!previous && actives.length === 0 && volumeList.length > 0) {
+    actives = volumeList
+  }
+
+  const changeMap = new Map()
+  candidates.forEach((item) => {
+    if (item.symbol) changeMap.set(item.symbol, item.change15m)
+  })
+
+  const candidateMap = new Map()
+  const addCandidate = (item, sideHint = null) => {
+    if (!item?.symbol || typeof item.price !== "number") return
+    if (filterToWatchlist && !watchlist.has(item.symbol)) return
+    if (candidateMap.has(item.symbol)) return
+    const change15m = changeMap.has(item.symbol) ? changeMap.get(item.symbol) : item.change15m
+    const volumeRank = volumeRankMap.get(item.symbol)
+    const volumeScore =
+      volumeRank && volumeList.length > 1
+        ? clamp(1 - (volumeRank - 1) / (volumeList.length - 1), 0, 1)
+        : undefined
+    candidateMap.set(
+      item.symbol,
+      compactObject({
+        assetClass,
+        symbol: item.symbol,
+        name: item.name || item.symbol,
+        exchange: item.exchange || exchangeHint || undefined,
+        price: item.price,
+        volume: item.volume,
+        change15m,
+        change24h: item.change24h,
+        liquidityRank: volumeRank,
+        volumeScore,
+        sideHint: sideHint || undefined,
+        watchlisted: watchlist.has(item.symbol),
+        source: snapshotSource,
+      })
+    )
+  }
+
+  if (allowTrending) {
+    gainers.slice(0, config.moverEnrichLimit).forEach((item) => addCandidate(item, "buy"))
+    losers.slice(0, config.moverEnrichLimit).forEach((item) => addCandidate(item, "sell"))
+    if (actives.length > 0) {
+      actives.slice(0, config.moverEnrichLimit).forEach((item) => addCandidate(item))
+    } else if (candidates.length > 0) {
+      candidates
+        .slice(0, config.moverEnrichLimit)
+        .forEach((item) => addCandidate(item))
+    }
+  }
+
+  if (allowWatchlist && !filterToWatchlist && watchlist.size > 0) {
+    const currentMap = new Map(currentItems.map((item) => [item.symbol, item]))
+    const prevMap = previous
+      ? new Map(previous.items.map((item) => [item.symbol, item]))
+      : new Map()
+    watchlist.forEach((symbol) => {
+      const current = currentMap.get(symbol)
+      if (!current) return
+      let change15m = changeMap.get(symbol)
+      if (change15m === undefined) {
+        const prev = prevMap.get(symbol)
+        if (prev?.price) {
+          change15m = ((current.price - prev.price) / prev.price) * 100
+        }
+      }
+      addCandidate({ ...current, change15m })
+    })
+  }
+
+  const trimList = (list) =>
+    list.slice(0, config.moverTopLimit).map((item) =>
+      compactObject({
+        symbol: item.symbol,
+        name: item.name || item.symbol,
+        price: item.price,
+        change15m: changeMap.get(item.symbol),
+        volume: item.volume,
+      })
+    )
+
+  const movers = allowTrending
+    ? compactObject({
+      market,
+      assetClass,
+      windowMinutes: config.moverWindowMinutes,
+      asOf: admin.firestore.Timestamp.fromDate(createdAt),
+      gainers: trimList(gainers),
+      losers: trimList(losers),
+      actives: trimList(actives.length > 0 ? actives : candidates),
+      source: snapshotSource,
+    })
+    : null
+
   return {
-    assetClass: "stock",
-    symbol,
-    name: symbol,
-    price,
-    change24h: changePercent,
-    volume: parseNumber(quote["06. volume"]),
-    watchlisted: true,
-    source: "alphavantage",
+    items: Array.from(candidateMap.values()),
+    movers,
+    snapshot,
+  }
+}
+
+async function fetchFmpQuote(symbol) {
+  if (!config.fmpKey) return null
+  try {
+    const url = new URL(`${FMP_STABLE_BASE_URL}/quote`)
+    url.searchParams.set("symbol", symbol)
+    url.searchParams.set("apikey", config.fmpKey)
+    const data = await fetchJson(url.toString())
+    const entry = Array.isArray(data) ? data[0] : data
+    if (!entry) return null
+    const changePercent = parsePercent(
+      entry.changesPercentage ?? entry.changePercentage ?? entry.changePercent ?? entry.change
+    )
+    return {
+      assetClass: "stock",
+      symbol,
+      name: entry.name || entry.companyName || symbol,
+      price: parseNumber(entry.price),
+      change24h: changePercent,
+      volume: parseNumber(entry.volume),
+      watchlisted: true,
+      source: "fmp",
+    }
+  } catch (error) {
+    console.error(`Failed to fetch FMP quote for ${symbol}:`, error.message)
+    return null
+  }
+}
+
+async function fetchStockQuote(symbol) {
+  if (config.fmpKey) {
+    return fetchFmpQuote(symbol)
+  }
+  if (!config.alphaVantageKey) return null
+  try {
+    const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(
+      symbol
+    )}&apikey=${config.alphaVantageKey}`
+    const data = await fetchJson(url)
+    const alphaError = extractAlphaError(data)
+    if (alphaError) {
+      // Skip rate limit errors gracefully
+      if (alphaError.includes("rate limit") || alphaError.includes("API call frequency")) {
+        console.log(`Alpha Vantage rate limit hit for ${symbol}, skipping`)
+        return null
+      }
+      return null
+    }
+    const quote = data?.["Global Quote"]
+    if (!quote) return null
+    const price = parseNumber(quote["05. price"])
+    const changePercent = parseNumber(
+      String(quote["10. change percent"] || "").replace(/%/g, "")
+    )
+    return {
+      assetClass: "stock",
+      symbol,
+      name: symbol,
+      price,
+      change24h: changePercent,
+      volume: parseNumber(quote["06. volume"]),
+      watchlisted: true,
+      source: "alphavantage",
+    }
+  } catch (error) {
+    console.error(`Failed to fetch quote for ${symbol}:`, error.message)
+    return null
   }
 }
 
@@ -685,74 +1279,178 @@ function getAlphaVantageList(data, keys) {
   return []
 }
 
-async function fetchStocks(preferences = {}) {
-  if (!config.alphaVantageKey) {
-    return []
-  }
+async function fetchStocks(db, preferences = {}) {
+  if (!db) return { items: [] }
 
-  const includeTrending = preferences.includeTrending !== false
+  const mode = resolveUniverseMode(preferences.mode)
+  const includeTrending = mode !== "universe_only"
+  const includeWatchlist = mode !== "movers_only"
+  const filterToWatchlist = mode === "movers_filtered_by_universe"
   const watchlist = Array.isArray(preferences.symbols) ? preferences.symbols : []
   const watchlistSet = new Set(watchlist.map(normalizeTicker).filter(Boolean))
+  if (!includeTrending && watchlistSet.size === 0) {
+    return { items: [] }
+  }
+  if (filterToWatchlist && watchlistSet.size === 0) {
+    return { items: [] }
+  }
+
+  let livePrices = null
+  try {
+    livePrices = await readLivePrices(db)
+  } catch (error) {
+    console.error("Live price snapshot read failed:", error.message)
+  }
+
+  const [usResult, tsxResult] = await Promise.all([
+    fetchLiveSnapshotMovers(db, {
+      collectionName: "market_snapshots_us",
+      assetClass: "stock",
+      normalizeItem: normalizeSnapshotStock,
+      watchlistSet,
+      mode,
+      exchangeHint: null,
+      market: "us",
+      livePrices,
+      filterItem: (item) => !isTsxSymbol(item?.symbol),
+      source: "stream",
+    }),
+    fetchLiveSnapshotMovers(db, {
+      collectionName: "market_snapshots_tsx",
+      assetClass: "stock",
+      normalizeItem: normalizeSnapshotStock,
+      watchlistSet,
+      mode,
+      exchangeHint: "TSX",
+      market: "tsx",
+      livePrices,
+      filterItem: (item) => isTsxSymbol(item?.symbol),
+      source: "stream",
+    }),
+  ])
+
+  const items = [...usResult.items, ...tsxResult.items]
+  const movers = compactObject({
+    us: usResult.movers || undefined,
+    tsx: tsxResult.movers || undefined,
+  })
+
+  if (items.length > 0 || movers.us || movers.tsx) {
+    return { items, movers, source: "stream" }
+  }
+
   const results = new Map()
+  let source = null
 
   if (includeTrending) {
-    const url = `https://www.alphavantage.co/query?function=TOP_GAINERS_LOSERS&apikey=${config.alphaVantageKey}`
-    const data = await fetchJson(url)
-    const alphaError = extractAlphaError(data)
-    if (alphaError) {
-      throw new Error(alphaError)
-    }
-    const gainers = getAlphaVantageList(data, ["top_gainers", "mostGainerStock"])
-    const losers = getAlphaVantageList(data, ["top_losers", "mostLoserStock"])
-    const actives = getAlphaVantageList(data, ["most_actively_traded", "mostActiveStock"])
+    if (!config.alphaVantageKey) {
+      console.log("Alpha Vantage key missing, skipping stock movers fallback")
+    } else {
+      try {
+        const url = `https://www.alphavantage.co/query?function=TOP_GAINERS_LOSERS&apikey=${config.alphaVantageKey}`
+        const data = await fetchJson(url)
+        const alphaError = extractAlphaError(data)
+        if (alphaError) {
+          if (
+            alphaError.includes("rate limit") ||
+            alphaError.includes("API call frequency") ||
+            alphaError.includes("Thank you for using Alpha Vantage")
+          ) {
+            console.log("Alpha Vantage rate limit hit, skipping trending stocks")
+          } else {
+            console.error("Alpha Vantage error:", alphaError)
+          }
+        } else {
+          const gainers = getAlphaVantageList(data, ["top_gainers", "mostGainerStock"])
+          const losers = getAlphaVantageList(data, ["top_losers", "mostLoserStock"])
+          const actives = getAlphaVantageList(data, ["most_actively_traded", "mostActiveStock"])
 
-    const addStock = (stock, index, sideHint) => {
-      const symbol = normalizeTicker(stock.ticker || stock.symbol || "")
-      if (!symbol) return
-      results.set(symbol, {
-        assetClass: "stock",
-        symbol,
-        name: stock.ticker || stock.symbol || symbol,
-        price: parseNumber(stock.price),
-        change24h: parseNumber(String(stock.change_percentage || "").replace(/%/g, "")),
-        volume: parseNumber(stock.volume),
-        sideHint,
-        liquidityRank: index + 1,
-        watchlisted: watchlistSet.has(symbol),
-        source: "alphavantage",
-      })
-    }
+          const addStock = (stock, index, sideHint) => {
+            const symbol = normalizeTicker(stock.ticker || stock.symbol || "")
+            if (!symbol) return
+            if (filterToWatchlist && !watchlistSet.has(symbol)) return
+            results.set(symbol, {
+              assetClass: "stock",
+              symbol,
+              name: stock.ticker || stock.symbol || symbol,
+              price: parseNumber(stock.price),
+              change24h: parseNumber(String(stock.change_percentage || "").replace(/%/g, "")),
+              volume: parseNumber(stock.volume),
+              sideHint,
+              liquidityRank: index + 1,
+              watchlisted: watchlistSet.has(symbol),
+              source: "alphavantage",
+            })
+            source = "alphavantage"
+          }
 
-    gainers.slice(0, 10).forEach((stock, index) => addStock(stock, index, "buy"))
-    losers.slice(0, 6).forEach((stock, index) => addStock(stock, index, "sell"))
-    actives.slice(0, 6).forEach((stock, index) => addStock(stock, index))
+          gainers.slice(0, 10).forEach((stock, index) => addStock(stock, index, "buy"))
+          losers.slice(0, 6).forEach((stock, index) => addStock(stock, index, "sell"))
+          actives.slice(0, 6).forEach((stock, index) => addStock(stock, index))
+        }
+      } catch (error) {
+        console.error("Failed to fetch trending stocks:", error.message)
+      }
+    }
   }
 
-  const limited = Array.from(watchlistSet).slice(0, config.stockWatchlistLimit)
-  for (const symbol of limited) {
-    const quote = await fetchStockQuote(symbol)
-    if (quote) {
-      results.set(symbol, quote)
+  const hasTrendingData = includeTrending && results.size > 0
+  if (!hasTrendingData && includeWatchlist && !filterToWatchlist) {
+    const limited = Array.from(watchlistSet).slice(0, Math.min(3, config.stockWatchlistLimit))
+    for (let i = 0; i < limited.length; i++) {
+      const symbol = limited[i]
+      if (results.has(symbol)) continue
+      if (i > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 12000))
+      }
+      const quote = await fetchStockQuote(symbol)
+      if (quote) {
+        results.set(symbol, quote)
+        source = source || quote.source || "fmp"
+      }
     }
   }
 
-  if (!includeTrending && watchlistSet.size === 0) {
-    return []
-  }
-
-  return Array.from(results.values())
+  return { items: Array.from(results.values()), source }
 }
 
-async function fetchForex(preferences = {}) {
-  const includeTrending = preferences.includeTrending !== false
+async function fetchForex(db, preferences = {}) {
+  const mode = resolveUniverseMode(preferences.mode)
+  const includeTrending = mode !== "universe_only"
+  const includeWatchlist = mode !== "movers_only"
+  const filterToWatchlist = mode === "movers_filtered_by_universe"
   const pairsInput = Array.isArray(preferences.pairs) ? preferences.pairs : []
   const pairs =
     pairsInput.length > 0
       ? uniqueList(pairsInput.map(normalizeSymbol).filter(Boolean))
       : uniqueList(config.fxPairs.map(normalizeSymbol).filter(Boolean))
 
-  if (!includeTrending && pairsInput.length === 0) return []
-  if (pairs.length === 0) return []
+  if (!includeTrending && pairsInput.length === 0) return { items: [] }
+  if (filterToWatchlist && pairsInput.length === 0) return { items: [] }
+  if (pairs.length === 0) return { items: [] }
+
+  if (db) {
+    let livePrices = null
+    try {
+      livePrices = await readLivePrices(db)
+    } catch (error) {
+      console.error("Live price snapshot read failed:", error.message)
+    }
+    const result = await fetchLiveSnapshotMovers(db, {
+      collectionName: "market_snapshots_fx",
+      assetClass: "forex",
+      normalizeItem: normalizeSnapshotForex,
+      watchlistSet: new Set(pairs),
+      mode,
+      exchangeHint: null,
+      market: "forex",
+      livePrices,
+      source: "stream",
+    })
+    if (result.items.length > 0 || result.movers) {
+      return { items: result.items, movers: result.movers, source: "stream" }
+    }
+  }
 
   const grouped = new Map()
   pairs.forEach((pair) => {
@@ -804,7 +1502,7 @@ async function fetchForex(preferences = {}) {
     })
   }
 
-  return results
+  return { items: results, source: results.length > 0 ? "frankfurter" : null }
 }
 
 function getAssetKey(assetClass, symbol) {
@@ -928,18 +1626,44 @@ async function loadSignalPerformanceSummary(db, horizon) {
   }
 }
 
-async function loadBotAccuracyWeights(db, horizon) {
+function normalizeEngine(value) {
+  if (!value) return null
+  const cleaned = String(value).trim().toLowerCase()
+  return cleaned || null
+}
+
+async function loadBotRegistry(db) {
+  const registry = new Map()
+  try {
+    const snap = await db.collection("bots").get()
+    if (snap.empty) return { registry, docs: [] }
+    snap.docs.forEach((doc) => {
+      const data = doc.data() || {}
+      const engine = normalizeEngine(data.engine)
+      registry.set(doc.id, { engine })
+    })
+    return { registry, docs: snap.docs }
+  } catch (err) {
+    console.error("Bot registry fetch failed", err.message)
+    return { registry, docs: [] }
+  }
+}
+
+async function loadBotAccuracyWeights(db, horizon, botDocs = null) {
   const weights = new Map()
   try {
-    const botsSnap = await db.collection("bots").get()
-    if (botsSnap.empty) return weights
-    const refs = botsSnap.docs.map((doc) =>
+    const docs =
+      Array.isArray(botDocs) && botDocs.length > 0
+        ? botDocs
+        : (await db.collection("bots").get()).docs
+    if (!docs || docs.length === 0) return weights
+    const refs = docs.map((doc) =>
       doc.ref.collection("analytics").doc("signalPerformance")
     )
     const snaps = await db.getAll(...refs)
     snaps.forEach((snap, index) => {
       if (!snap.exists) return
-      const botId = botsSnap.docs[index]?.id
+      const botId = docs[index]?.id
       if (!botId) return
       const summary = snap.data()?.overall?.[horizon]
       const weight = computeBotWeight(summary)
@@ -951,6 +1675,67 @@ async function loadBotAccuracyWeights(db, horizon) {
     console.error("Bot accuracy weights fetch failed", err.message)
   }
   return weights
+}
+
+function buildEngineWeightMap(configured = {}, botRegistry = new Map()) {
+  const engineWeights = new Map()
+  const engineSet = new Set()
+  if (botRegistry && botRegistry.size > 0) {
+    botRegistry.forEach((meta) => {
+      if (meta?.engine) engineSet.add(meta.engine)
+    })
+  }
+
+  Object.entries(configured || {}).forEach(([key, value]) => {
+    const weight = parseNumber(value)
+    if (typeof weight !== "number") return
+    if (String(key).startsWith("engine:")) {
+      const engine = normalizeEngine(String(key).slice("engine:".length))
+      if (engine) engineWeights.set(engine, clamp(weight, 0, 5))
+    } else {
+      const engine = normalizeEngine(key)
+      if (engine && engineSet.has(engine)) {
+        engineWeights.set(engine, clamp(weight, 0, 5))
+      }
+    }
+  })
+
+  return engineWeights
+}
+
+function isEngineKey(key, engineWeights) {
+  if (!key) return false
+  if (String(key).startsWith("engine:")) return true
+  const engine = normalizeEngine(key)
+  return engine ? engineWeights.has(engine) : false
+}
+
+function mergeBotWeights(configured = {}, accuracyWeights = new Map(), botRegistry = new Map()) {
+  const merged = new Map()
+  const engineWeights = buildEngineWeightMap(configured, botRegistry)
+  const configuredEntries = Object.entries(configured || {})
+  const idSet = new Set([
+    ...configuredEntries
+      .map(([id]) => id)
+      .filter((id) => !isEngineKey(id, engineWeights)),
+    ...accuracyWeights.keys(),
+    ...(botRegistry ? botRegistry.keys() : []),
+  ])
+
+  idSet.forEach((botId) => {
+    const engine = normalizeEngine(botRegistry?.get?.(botId)?.engine)
+    const baseWeight =
+      parseNumber(configured?.[botId]) ??
+      (engine ? engineWeights.get(engine) : undefined) ??
+      1
+    const accuracyWeight = accuracyWeights.get(botId) ?? 1
+    const combined = clamp(baseWeight * accuracyWeight, 0, 5)
+    if (combined !== 1) {
+      merged.set(botId, Number(combined.toFixed(2)))
+    }
+  })
+
+  return merged
 }
 
 function resolveTimestamp(value) {
@@ -1090,9 +1875,8 @@ function maybeAutoTuneTrendWeights(controls, accuracySummary, accuracyHorizon) {
   const direction = applied.delta > 0 ? "increased" : "reduced"
   const note = `Auto-tune ${direction} bot signal weight by ${Math.round(
     Math.abs(applied.delta)
-  )} using ${accuracyHorizon} accuracy (${formatNumber(hitRate, 1)}% hit rate from ${
-    accuracySummary.count
-  } signals).`
+  )} using ${accuracyHorizon} accuracy (${formatNumber(hitRate, 1)}% hit rate from ${accuracySummary.count
+    } signals).`
 
   return {
     tuned: true,
@@ -1156,14 +1940,14 @@ function buildTrending(candidates, signalMap, weights, newsScoreMap) {
 
       const signals = signalData
         ? compactObject({
-            total: signalData.total,
-            buy: signalData.buy,
-            sell: signalData.sell,
-            strengthAvg: signalData.total
-              ? Number((signalData.strengthSum / signalData.total).toFixed(2))
-              : undefined,
-            bots: Array.from(signalData.bots),
-          })
+          total: signalData.total,
+          buy: signalData.buy,
+          sell: signalData.sell,
+          strengthAvg: signalData.total
+            ? Number((signalData.strengthSum / signalData.total).toFixed(2))
+            : undefined,
+          bots: Array.from(signalData.bots),
+        })
         : undefined
 
       const momentum = compactObject({
@@ -1184,10 +1968,10 @@ function buildTrending(candidates, signalMap, weights, newsScoreMap) {
         components,
         news: newsData
           ? {
-              count: newsData.count,
-              sentiment: newsData.sentiment,
-              score: newsData.score,
-            }
+            count: newsData.count,
+            sentiment: newsData.sentiment,
+            score: newsData.score,
+          }
           : undefined,
         momentum,
         signals,
@@ -1437,7 +2221,12 @@ function mapNewsItems(items) {
 }
 
 async function loadNewsData(db, candidates, controls, universe, runId) {
-  if (!controls.enableNews || !config.marketauxKey) {
+  if (!controls.enableNews) {
+    console.log("News disabled in controls")
+    return { scoreMap: new Map(), updatedAt: null }
+  }
+  if (!config.marketauxKey) {
+    console.log("News sentiment skipped (no provider configured)")
     return { scoreMap: new Map(), updatedAt: null }
   }
 
@@ -1449,6 +2238,7 @@ async function loadNewsData(db, candidates, controls, universe, runId) {
   const shouldFetch = !lastUpdated || Date.now() - lastUpdated.getTime() >= intervalMs
 
   if (!shouldFetch && cached?.items) {
+    console.log(`Using cached news data (${cached.items?.length || 0} items, updated ${Math.round((Date.now() - lastUpdated.getTime()) / 60000)} minutes ago)`)
     return { scoreMap: mapNewsItems(cached.items), updatedAt: cached.updatedAt }
   }
 
@@ -1456,16 +2246,46 @@ async function loadNewsData(db, candidates, controls, universe, runId) {
     candidates,
     universe
   )
-  const [stockNews, cryptoNews] = await Promise.all([
-    fetchMarketauxNews(stockSymbols, "equity"),
-    fetchMarketauxNews(cryptoSymbols, "cryptocurrency"),
-  ])
 
-  const { items, scoreMap } = buildNewsSummary(
-    [...stockNews, ...cryptoNews],
-    stockSymbols,
-    cryptoBaseMap
-  )
+  const items = []
+  const sources = []
+
+  if (config.marketauxKey && cryptoSymbols.length > 0) {
+    console.log(`Fetching Marketaux news for ${cryptoSymbols.length} crypto symbols`)
+    let cryptoNews = []
+    try {
+      cryptoNews = await fetchMarketauxNews(cryptoSymbols, "cryptocurrency")
+    } catch (err) {
+      console.error("Crypto news fetch failed:", err.message)
+    }
+    const { items: cryptoItems } = buildNewsSummary(
+      cryptoNews,
+      [],
+      cryptoBaseMap
+    )
+    items.push(...cryptoItems)
+    sources.push("marketaux")
+  }
+
+  if (config.marketauxKey && stockSymbols.length > 0) {
+    console.log(`Fetching Marketaux news for ${stockSymbols.length} stocks`)
+    let stockNews = []
+    try {
+      stockNews = await fetchMarketauxNews(stockSymbols, "equity")
+    } catch (err) {
+      console.error("Stock news fetch failed:", err.message)
+    }
+    const { items: stockItems } = buildNewsSummary(
+      stockNews,
+      stockSymbols,
+      cryptoBaseMap
+    )
+    items.push(...stockItems)
+    sources.push("marketaux")
+  }
+
+  const scoreMap = mapNewsItems(items)
+  console.log(`Fetched sentiment for ${items.length} assets (sources: ${sources.join("+") || "none"})`)
 
   await ref.set(
     {
@@ -1475,7 +2295,7 @@ async function loadNewsData(db, candidates, controls, universe, runId) {
         runId,
         symbols: items.length,
         intervalMinutes: controls.newsIntervalMinutes || config.newsIntervalMinutes,
-        source: "marketaux",
+        source: sources.join("+") || "none",
       },
     },
     { merge: true }
@@ -1557,13 +2377,13 @@ async function emitMarketSignals(db, trendingByHorizon, controls) {
   const buckets = trendingByHorizon?.[horizon] || {}
   const picks = []
 
-  ;["crypto", "stock", "forex"].forEach((assetClass) => {
-    const list = Array.isArray(buckets[assetClass]) ? buckets[assetClass] : []
-    list.slice(0, signalLimit).forEach((item) => {
-      if (!item?.symbol) return
-      picks.push({ assetClass, item })
+    ;["crypto", "stock", "forex"].forEach((assetClass) => {
+      const list = Array.isArray(buckets[assetClass]) ? buckets[assetClass] : []
+      list.slice(0, signalLimit).forEach((item) => {
+        if (!item?.symbol) return
+        picks.push({ assetClass, item })
+      })
     })
-  })
 
   if (picks.length === 0) return
 
@@ -1688,25 +2508,34 @@ function resolveTradeSide(candidate, signalData) {
   }
   if (candidate.sideHint) return candidate.sideHint
   const change =
-    parseNumber(candidate.change24h) ??
+    parseNumber(candidate.change15m) ??
     parseNumber(candidate.change1h) ??
+    parseNumber(candidate.change24h) ??
     parseNumber(candidate.change7d)
   if (change === undefined || change === null) return "buy"
   return change >= 0 ? "buy" : "sell"
 }
 
-function scoreTrade(candidate, signalData, side, weights = {}) {
-  const rawChange24h = parseNumber(candidate.change24h) || 0
-  const rawChange1h = parseNumber(candidate.change1h) || 0
-  const direction = side === "sell" ? -1 : 1
-  const change24h = rawChange24h * direction
-  const change1h = rawChange1h * direction
-  const momentumScore = clamp(Math.max(0, change24h) * 1.5, 0, 40)
-  const shortMomentumScore = clamp(Math.max(0, change1h) * 2, 0, 10)
+function scoreTrade(candidate, signalData, side, weights = {}, newsScore = null) {
+  const rawChange15m = parseNumber(candidate.change15m)
+  const rawChange1h = parseNumber(candidate.change1h)
+  const rawChange24h = parseNumber(candidate.change24h)
+  const changeBase = rawChange15m ?? rawChange1h ?? rawChange24h ?? 0
+  const changeScale =
+    candidate.assetClass === "forex"
+      ? config.forexChangeScale
+      : candidate.assetClass === "crypto"
+        ? config.cryptoChangeScale
+        : config.stockChangeScale
+  const momentumRatio = changeScale > 0
+    ? clamp(Math.abs(changeBase) / changeScale, 0, 1)
+    : 0
+  const oversoldRatio =
+    changeScale > 0 && changeBase < 0
+      ? clamp(Math.abs(changeBase) / changeScale, 0, 1)
+      : 0
 
-  let consensusScore = 0
-  let strengthScore = 0
-  let recencyScore = 0
+  let consensusRatio = 0
   let confidence = 0
   const signalWeight = typeof weights.signalWeight === "number" ? weights.signalWeight : 1
 
@@ -1715,63 +2544,263 @@ function scoreTrade(candidate, signalData, side, weights = {}) {
     const buyWeight = signalData.weightedBuy ?? signalData.buy ?? 0
     const sellWeight = signalData.weightedSell ?? signalData.sell ?? 0
     const bias = totalWeight ? (buyWeight - sellWeight) / totalWeight : 0
-    const consensusCap = 30 * signalWeight
-    consensusScore = clamp(bias * 30 * signalWeight, -consensusCap, consensusCap)
-
-    const strengthSum =
-      signalData.weightedStrengthSum ?? signalData.strengthSum ?? 0
-    const avgStrength = totalWeight ? strengthSum / totalWeight : 0
-    const strengthCap = 20 * signalWeight
-    strengthScore = clamp(avgStrength * 20 * signalWeight, 0, strengthCap)
-
-    if (signalData.latestAt) {
-      const ageMinutes = (Date.now() - signalData.latestAt.getTime()) / 60000
-      const recencyCap = 10 * signalWeight
-      recencyScore = clamp(
-        ((config.signalLookbackMinutes - ageMinutes) / config.signalLookbackMinutes) *
-          10 *
-          signalWeight,
-        0,
-        recencyCap
-      )
-    }
-
+    consensusRatio = clamp(Math.abs(bias) * signalWeight, 0, 1)
     confidence = clamp(totalWeight / 5, 0, 1)
   }
+  let volumeRatio = 0
+  if (typeof candidate.volumeScore === "number") {
+    volumeRatio = clamp(candidate.volumeScore, 0, 1)
+  } else if (candidate.liquidityRank) {
+    const denom = Math.max(config.moverTopLimit - 1, 1)
+    volumeRatio = clamp(1 - (candidate.liquidityRank - 1) / denom, 0, 1)
+  }
+  const sentimentRatio =
+    typeof newsScore === "number" ? clamp((newsScore + 1) / 2, 0, 1) : 0.5
 
-  const liquidityScore = candidate.liquidityRank
-    ? clamp(10 - candidate.liquidityRank / 5, 0, 10)
-    : 0
-  const watchlistScore = candidate.watchlisted ? 8 : 0
-  const primaryScore = candidate.primary ? 12 : 0
+  const profile = side === "buy" && changeBase < 0 ? "dip" : "scalp"
+  let momentumScore = 0
+  let consensusScore = 0
+  let liquidityScore = 0
+  let newsSentimentScore = 0
+  let score = 0
 
-  const base = 20
-  const score = clamp(
-    base +
-      momentumScore +
-      shortMomentumScore +
-      consensusScore +
-      strengthScore +
-      recencyScore +
-      liquidityScore +
-      watchlistScore +
-      primaryScore,
-    0,
-    100
-  )
+  if (profile === "dip") {
+    momentumScore = oversoldRatio * 40
+    consensusScore = consensusRatio * 30
+    liquidityScore = volumeRatio * 20
+    newsSentimentScore = sentimentRatio * 10
+    score = momentumScore + consensusScore + liquidityScore + newsSentimentScore
+    if (sentimentRatio < 0.35) score -= 5
+  } else {
+    momentumScore = momentumRatio * 45
+    consensusScore = consensusRatio * 25
+    liquidityScore = volumeRatio * 20
+    newsSentimentScore = sentimentRatio * 10
+    score = momentumScore + consensusScore + liquidityScore + newsSentimentScore
+  }
+
+  if (
+    candidate.assetClass === "stock" &&
+    typeof candidate.price === "number" &&
+    candidate.price < config.moverMinPrice
+  ) {
+    score -= 10
+  }
+  if (
+    candidate.assetClass === "stock" &&
+    typeof candidate.volume === "number" &&
+    config.moverMinVolume > 0 &&
+    candidate.volume < config.moverMinVolume
+  ) {
+    score -= 10
+  }
+
+  score = clamp(score, 0, 100)
 
   return {
+    profile,
     score,
     confidence,
     momentumScore,
-    shortMomentumScore,
+    shortMomentumScore: 0,
     consensusScore,
-    strengthScore,
-    recencyScore,
+    strengthScore: 0,
+    recencyScore: 0,
     liquidityScore,
-    watchlistScore,
-    primaryScore,
+    watchlistScore: 0,
+    primaryScore: 0,
+    newsSentimentScore,
   }
+}
+
+function normalizeFmpCandleSymbol(symbol, assetClass) {
+  if (!symbol) return symbol
+  const upper = String(symbol).trim().toUpperCase()
+  if (assetClass === "forex" || assetClass === "crypto") {
+    return upper.replace(/[\/-]/g, "")
+  }
+  return upper.replace(/\s+/g, "")
+}
+
+async function fetchFmpCandles(symbol, assetClass, interval = "15min", limit = 120) {
+  if (!config.fmpKey) return []
+  if (!symbol) return []
+  if (assetClass !== "stock" && assetClass !== "forex") return []
+  const fmpSymbol = normalizeFmpCandleSymbol(symbol, assetClass)
+  if (!fmpSymbol) return []
+  const url = new URL(`${FMP_STABLE_BASE_URL}/historical-chart/${interval}`)
+  url.searchParams.set("symbol", fmpSymbol)
+  url.searchParams.set("apikey", config.fmpKey)
+
+  try {
+    const data = await fetchJson(url.toString())
+    if (!Array.isArray(data)) return []
+    const candles = data
+      .map((entry) => {
+        const time = entry.date || entry.time || entry.timestamp
+        const parsedTime = time ? new Date(time).getTime() : null
+        const open = parseNumber(entry.open)
+        const high = parseNumber(entry.high)
+        const low = parseNumber(entry.low)
+        const close = parseNumber(entry.close)
+        if (!parsedTime || open === undefined || high === undefined || low === undefined || close === undefined) {
+          return null
+        }
+        return {
+          time: parsedTime,
+          open,
+          high,
+          low,
+          close,
+          volume: parseNumber(entry.volume),
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.time - b.time)
+    if (candles.length === 0) return []
+    return candles.slice(-limit)
+  } catch (error) {
+    console.error(`Failed to fetch FMP candles for ${symbol}:`, error.message)
+    return []
+  }
+}
+
+function computeAtrPercent(candles, period = 14) {
+  if (!Array.isArray(candles) || candles.length < period + 1) return null
+  const recent = candles.slice(-(period + 1))
+  const ranges = []
+  for (let i = 1; i < recent.length; i += 1) {
+    const prev = recent[i - 1]
+    const curr = recent[i]
+    if (!prev || !curr) continue
+    const highLow = curr.high - curr.low
+    const highClose = Math.abs(curr.high - prev.close)
+    const lowClose = Math.abs(curr.low - prev.close)
+    const tr = Math.max(highLow, highClose, lowClose)
+    if (Number.isFinite(tr)) ranges.push(tr)
+  }
+  if (ranges.length === 0) return null
+  const atr = ranges.reduce((sum, value) => sum + value, 0) / ranges.length
+  const lastClose = recent[recent.length - 1]?.close
+  if (!lastClose) return null
+  return (atr / lastClose) * 100
+}
+
+function computeHoldMinutes(assetClass, absChange, netSignals, profile, atrPct) {
+  const isDip = profile === "dip"
+  let hold = 120
+  if (assetClass === "forex") {
+    hold = isDip ? 90 : 45
+  } else if (assetClass === "crypto") {
+    hold = isDip ? 150 : 90
+  } else {
+    hold = isDip ? 150 : 90
+  }
+
+  if (assetClass === "stock" && absChange >= 5) hold *= 0.6
+  if (assetClass === "forex" && absChange >= 0.3) hold *= 0.6
+  if (assetClass === "crypto" && absChange >= 2) hold *= 0.65
+
+  if (typeof atrPct === "number") {
+    if (assetClass === "forex" && atrPct >= 0.4) hold *= 0.75
+    if (assetClass === "stock" && atrPct >= 2) hold *= 0.75
+    if (assetClass === "crypto" && atrPct >= 4) hold *= 0.75
+  }
+
+  if (Math.abs(netSignals) >= 2 && absChange < 0.8) hold *= 1.1
+
+  if (assetClass === "forex") return clamp(Math.round(hold), isDip ? 30 : 15, isDip ? 180 : 90)
+  if (assetClass === "crypto") return clamp(Math.round(hold), isDip ? 60 : 30, isDip ? 360 : 180)
+  return clamp(Math.round(hold), isDip ? 60 : 30, isDip ? 240 : 150)
+}
+
+function computeRecommendation(trade, atrPct) {
+  const buySignals = trade.signals?.buy ?? 0
+  const sellSignals = trade.signals?.sell ?? 0
+  const netSignals = buySignals - sellSignals
+  const score = typeof trade.score === "number" ? trade.score : 0
+  const profile = trade.profile || "scalp"
+
+  let action = "hold"
+  if (score >= 75 && netSignals > 0) action = "buy"
+  if (score <= 25 && netSignals < 0) action = "sell"
+
+  const change =
+    typeof trade.momentum?.change15m === "number"
+      ? trade.momentum.change15m
+      : typeof trade.momentum?.change1h === "number"
+        ? trade.momentum.change1h
+        : typeof trade.momentum?.change24h === "number"
+          ? trade.momentum.change24h
+          : 0
+  const absChange = Math.abs(change)
+  const holdMinutes = computeHoldMinutes(
+    trade.assetClass,
+    absChange,
+    netSignals,
+    profile,
+    atrPct
+  )
+
+  if (action === "hold") {
+    return {
+      action,
+      holdMinutes,
+      stopLossPct: null,
+      takeProfitPct: null,
+    }
+  }
+
+  let stopLossPct = null
+  let takeProfitPct = null
+  if (typeof atrPct === "number") {
+    stopLossPct = clamp(atrPct * 1.2, 0.5, 8)
+    takeProfitPct = clamp(stopLossPct * 1.8, 1, 15)
+  } else {
+    const fallbackStop =
+      trade.assetClass === "forex" ? 0.5 : trade.assetClass === "crypto" ? 3 : 2
+    stopLossPct = clamp(fallbackStop, 0.5, 8)
+    takeProfitPct = clamp(stopLossPct * 1.8, 1, 15)
+  }
+
+  return {
+    action,
+    holdMinutes,
+    stopLossPct: Number(stopLossPct.toFixed(2)),
+    takeProfitPct: Number(takeProfitPct.toFixed(2)),
+  }
+}
+
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length)
+  let index = 0
+  const workers = new Array(Math.min(limit, items.length)).fill(null).map(async () => {
+    while (index < items.length) {
+      const current = index
+      index += 1
+      results[current] = await mapper(items[current], current)
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
+async function buildRecommendations(trades, limit = 50) {
+  if (!Array.isArray(trades) || trades.length === 0) return new Map()
+  const capped = trades.slice(0, Math.max(0, limit))
+  const recommendations = new Map()
+
+  await mapWithConcurrency(capped, 5, async (trade) => {
+    const candles = await fetchFmpCandles(trade.symbol, trade.assetClass, "15min")
+    const atrPct = computeAtrPercent(candles)
+    const recommendation = computeRecommendation(trade, atrPct)
+    const key = getAssetKey(trade.assetClass, trade.symbol)
+    if (key) {
+      recommendations.set(key, recommendation)
+    }
+  })
+
+  return recommendations
 }
 
 function buildRationale(candidate, signalData, scoreDetail) {
@@ -1781,9 +2810,23 @@ function buildRationale(candidate, signalData, scoreDetail) {
     parts.push(`${signalData.buy}/${signalData.total} bots signal buy`)
   }
 
-  if (typeof candidate.change24h === "number") {
-    const direction = candidate.change24h >= 0 ? "+" : ""
-    parts.push(`24h move ${direction}${candidate.change24h.toFixed(2)}%`)
+  const change =
+    typeof candidate.change15m === "number"
+      ? { value: candidate.change15m, window: "15m" }
+      : typeof candidate.change1h === "number"
+        ? { value: candidate.change1h, window: "1h" }
+        : typeof candidate.change24h === "number"
+          ? { value: candidate.change24h, window: "24h" }
+          : null
+  if (change) {
+    const direction = change.value >= 0 ? "+" : ""
+    parts.push(`${change.window} move ${direction}${change.value.toFixed(2)}%`)
+  }
+
+  if (scoreDetail.profile === "dip") {
+    parts.push("dip setup")
+  } else if (scoreDetail.profile === "scalp") {
+    parts.push("scalp momentum")
   }
 
   if (candidate.volume) {
@@ -1870,6 +2913,100 @@ function compactObject(obj) {
   return Object.fromEntries(Object.entries(obj).filter(([, value]) => value !== undefined))
 }
 
+async function monitorPaperTrading(db, prices) {
+  const priceMap = new Map()
+  prices.forEach((p) => {
+    if (p.symbol && p.price) {
+      priceMap.set(p.symbol.toUpperCase(), p.price)
+    }
+  })
+
+  // Scan all positions across all users
+  try {
+    const snapshot = await db.collectionGroup("positions").get()
+    const trades = []
+
+    snapshot.docs.forEach((doc) => {
+      const position = doc.data()
+      if (!position.symbol) return
+
+      const currentPrice = priceMap.get(position.symbol.toUpperCase())
+      if (!currentPrice) return
+
+      let trigger = null
+      if (position.stopLoss && currentPrice <= position.stopLoss) {
+        trigger = "Stop Loss"
+      } else if (position.takeProfit && currentPrice >= position.takeProfit) {
+        trigger = "Take Profit"
+      }
+
+      if (trigger) {
+        const parts = doc.ref.path.split("/")
+        const userId = parts[1]
+        trades.push({
+          userId,
+          symbol: position.symbol,
+          assetClass: position.assetClass,
+          quantity: position.quantity,
+          price: currentPrice,
+          reason: trigger,
+          positionRef: doc.ref,
+        })
+      }
+    })
+
+    if (trades.length > 0) {
+      console.log(`Paper monitor: Found ${trades.length} automation triggers`)
+      for (const trade of trades) {
+        try {
+          await executePaperTradeBackend(db, trade)
+          console.log(`Paper execution: ${trade.reason} triggered for ${trade.symbol} (User: ${trade.userId})`)
+        } catch (err) {
+          console.error(`Paper execution failed for ${trade.userId}:`, err.message)
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Paper collectionGroup scan failed:", err.message)
+  }
+}
+
+async function executePaperTradeBackend(db, trade) {
+  const { userId, symbol, quantity, price, assetClass, positionRef, reason } = trade
+  const walletRef = db.doc(`users/${userId}/paper/wallet`)
+  const cost = quantity * price
+
+  await db.runTransaction(async (tx) => {
+    const walletSnap = await tx.get(walletRef)
+    if (!walletSnap.exists) return
+
+    const walletData = walletSnap.data()
+    const newBalance = (walletData.balance || 0) + cost
+
+    tx.update(walletRef, {
+      balance: newBalance,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    })
+
+    const txRef = walletRef.collection("transactions").doc()
+    tx.set(txRef, {
+      userId,
+      symbol,
+      side: "sell",
+      amount: quantity,
+      price,
+      cost,
+      assetClass,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      type: "close",
+      automated: true,
+      reason,
+    })
+
+    tx.delete(positionRef)
+  })
+}
+
 function markPrimary(candidates, primarySets) {
   return candidates.map((candidate) => {
     let primary = false
@@ -1888,14 +3025,17 @@ function markPrimary(candidates, primarySets) {
   })
 }
 
-function buildHotTrades(candidates, signalMap, scoreWeights) {
+function buildHotTrades(candidates, signalMap, scoreWeights, newsScoreMap = null) {
   const scored = candidates.map((candidate) => {
     const symbolKey = getCandidateKey(candidate)
     const signalData = symbolKey ? signalMap.get(symbolKey) : null
     const side = resolveTradeSide(candidate, signalData)
-    const scoreDetail = scoreTrade(candidate, signalData, side, scoreWeights)
+    const assetKey = getAssetKey(candidate.assetClass, candidate.symbol)
+    const newsData = newsScoreMap && assetKey ? newsScoreMap.get(assetKey) : null
+    const newsSentiment = newsData?.sentiment ?? null // -1 to 1 range
+    const scoreDetail = scoreTrade(candidate, signalData, side, scoreWeights, newsSentiment)
     const scoreComponents = {
-      base: 20,
+      base: 0,
       momentum: Number(scoreDetail.momentumScore.toFixed(2)),
       shortMomentum: Number(scoreDetail.shortMomentumScore.toFixed(2)),
       consensus: Number(scoreDetail.consensusScore.toFixed(2)),
@@ -1904,34 +3044,40 @@ function buildHotTrades(candidates, signalMap, scoreWeights) {
       liquidity: Number(scoreDetail.liquidityScore.toFixed(2)),
       watchlist: Number(scoreDetail.watchlistScore.toFixed(2)),
       primary: Number(scoreDetail.primaryScore.toFixed(2)),
+      news: Number((scoreDetail.newsSentimentScore || 0).toFixed(2)),
     }
 
     const signals = signalData
       ? compactObject({
-          total: signalData.total,
-          buy: signalData.buy,
-          sell: signalData.sell,
-          strengthAvg: signalData.total
-            ? Number((signalData.strengthSum / signalData.total).toFixed(2))
-            : undefined,
-          bots: Array.from(signalData.bots),
-        })
+        total: signalData.total,
+        buy: signalData.buy,
+        sell: signalData.sell,
+        strengthAvg: signalData.total
+          ? Number((signalData.strengthSum / signalData.total).toFixed(2))
+          : undefined,
+        bots: Array.from(signalData.bots),
+      })
       : undefined
 
     const momentum = compactObject({
+      change15m: candidate.change15m,
       change1h: candidate.change1h,
       change24h: candidate.change24h,
       change7d: candidate.change7d,
     })
 
+    // Normalize symbol for charting compatibility (Twelve Data API format)
+    const chartSymbol = normalizeSymbolForCharting(candidate.symbol, candidate.assetClass)
+    
     return compactObject({
       assetClass: candidate.assetClass,
-      symbol: candidate.symbol,
+      symbol: chartSymbol, // Use normalized symbol for charting
       name: candidate.name || candidate.symbol,
       exchange: candidate.exchange,
       price: typeof candidate.price === "number" ? Number(candidate.price) : undefined,
-      timeframe: candidate.assetClass === "crypto" ? "1h" : "1d",
+      timeframe: candidate.assetClass === "crypto" ? "1h" : "15m",
       side,
+      profile: scoreDetail.profile,
       score: Number(scoreDetail.score.toFixed(2)),
       confidence: Number(scoreDetail.confidence.toFixed(2)),
       scoreComponents,
@@ -2057,6 +3203,7 @@ function buildScoreDriversLine(components) {
     { key: "liquidity", label: "liquidity", value: components.liquidity },
     { key: "watchlist", label: "watchlist boost", value: components.watchlist },
     { key: "primary", label: "primary focus", value: components.primary },
+    { key: "news", label: "news sentiment", value: components.news },
   ]
   const drivers = entries
     .filter((entry) => typeof entry.value === "number" && entry.value > 0)
@@ -2117,7 +3264,9 @@ function buildTradeAnalysis(trade, trendItem, newsItem, options) {
   const summaryBits = []
   const sideLabel = trade.side ? trade.side.toUpperCase() : "TRADE"
 
-  if (typeof trade.momentum?.change24h === "number") {
+  if (typeof trade.momentum?.change15m === "number") {
+    summaryBits.push(`15m move ${formatSignedPercent(trade.momentum.change15m)}`)
+  } else if (typeof trade.momentum?.change24h === "number") {
     summaryBits.push(`24h move ${formatSignedPercent(trade.momentum.change24h)}`)
   }
   if (trade.signals?.total) {
@@ -2158,6 +3307,9 @@ function buildTradeAnalysis(trade, trendItem, newsItem, options) {
   if (driversLine) details.push(driversLine)
 
   const momentumParts = []
+  if (typeof trade.momentum?.change15m === "number") {
+    momentumParts.push(`15m ${formatSignedPercent(trade.momentum.change15m)}`)
+  }
   if (typeof trade.momentum?.change24h === "number") {
     momentumParts.push(`24h ${formatSignedPercent(trade.momentum.change24h)}`)
   }
@@ -2231,6 +3383,18 @@ function buildTradeAnalysis(trade, trendItem, newsItem, options) {
     details.push("News sentiment: no recent headlines, so no sentiment boost.")
   }
 
+  if (trade.recommendation) {
+    const rec = trade.recommendation
+    const hold = typeof rec.holdMinutes === "number" ? `${rec.holdMinutes}m` : "n/a"
+    const stop =
+      typeof rec.stopLossPct === "number" ? `${rec.stopLossPct}%` : "n/a"
+    const take =
+      typeof rec.takeProfitPct === "number" ? `${rec.takeProfitPct}%` : "n/a"
+    details.push(
+      `Recommendation: ${String(rec.action || "hold").toUpperCase()} · hold ${hold} · SL ${stop} · TP ${take}.`
+    )
+  }
+
   if (options.aiSummary) {
     details.push(`AI note: ${formatAiSnippet(options.aiSummary, 140)}`)
   }
@@ -2258,18 +3422,18 @@ function attachTradeAnalysis(trade, context) {
   })
   const trend = trendItem
     ? {
-        horizon: trendItem.horizon || context.trendHorizon,
-        score: trendItem.score,
-        components: trendItem.components,
-        momentum: trendItem.momentum,
-      }
+      horizon: trendItem.horizon || context.trendHorizon,
+      score: trendItem.score,
+      components: trendItem.components,
+      momentum: trendItem.momentum,
+    }
     : undefined
   const news = newsItem
     ? {
-        count: newsItem.count,
-        sentiment: newsItem.sentiment,
-        score: newsItem.score,
-      }
+      count: newsItem.count,
+      sentiment: newsItem.sentiment,
+      score: newsItem.score,
+    }
     : undefined
   const enriched = { ...trade, analysis }
   if (trend) enriched.trend = compactObject(trend)
@@ -2329,11 +3493,13 @@ function buildPriceSnapshot(candidates) {
   const map = new Map()
   candidates.forEach((candidate) => {
     if (!candidate?.symbol || typeof candidate.price !== "number") return
-    const key = `${candidate.assetClass}:${candidate.symbol}`
+    const symbol = normalizeSymbolForCharting(candidate.symbol, candidate.assetClass)
+    if (!symbol) return
+    const key = `${candidate.assetClass}:${symbol}`
     if (map.has(key)) return
     map.set(key, {
       assetClass: candidate.assetClass,
-      symbol: candidate.symbol,
+      symbol,
       price: Number(candidate.price),
       source: candidate.source,
     })
@@ -2393,8 +3559,14 @@ async function dispatchSignalRequests(db, picks, controls) {
 
 async function safeFetch(fetcher) {
   try {
-    const items = await fetcher()
-    return { items, error: null }
+    const result = await fetcher()
+    if (Array.isArray(result)) {
+      return { items: result, error: null }
+    }
+    if (result && Array.isArray(result.items)) {
+      return { ...result, items: result.items, error: null }
+    }
+    return { items: [], error: null }
   } catch (err) {
     return {
       items: [],
@@ -2411,7 +3583,10 @@ function formatFetchError(error) {
 }
 
 function buildFetchStatus({ items, error, preferences, listKey, source }) {
-  const includeTrending = preferences?.includeTrending !== false
+  const mode = resolveUniverseMode(preferences?.mode)
+  const includeTrending = mode !== "universe_only"
+  const includeWatchlist = mode !== "movers_only"
+  const filterToWatchlist = mode === "movers_filtered_by_universe"
   const list = Array.isArray(preferences?.[listKey]) ? preferences[listKey] : []
   const count = Array.isArray(items) ? items.length : 0
   if (error) {
@@ -2422,7 +3597,15 @@ function buildFetchStatus({ items, error, preferences, listKey, source }) {
       source,
     }
   }
-  if (!includeTrending && list.length === 0) {
+  if (filterToWatchlist && list.length === 0) {
+    return {
+      status: "disabled",
+      count,
+      source,
+      error: null,
+    }
+  }
+  if (!includeTrending && (!includeWatchlist || list.length === 0)) {
     return {
       status: "disabled",
       count,
@@ -2461,9 +3644,9 @@ async function run() {
     readUniverse(db).catch((err) => {
       console.error("Universe fetch failed", err.message)
       return {
-        crypto: { includeTrending: true, symbols: [] },
-        stocks: { includeTrending: true, symbols: [] },
-        forex: { includeTrending: true, pairs: [] },
+        crypto: { mode: DEFAULT_UNIVERSE_MODE, symbols: [] },
+        stocks: { mode: DEFAULT_UNIVERSE_MODE, symbols: [] },
+        forex: { mode: DEFAULT_UNIVERSE_MODE, pairs: [] },
       }
     }),
     readControls(db).catch((err) => {
@@ -2500,19 +3683,31 @@ async function run() {
     ? controls.dipHorizon
     : "24h"
   const shouldWeightSignals = controls.autoTuneEnabled !== false
-  const [cryptoResult, stockResult, forexResult, accuracySummary, botWeights] = await Promise.all(
-    [
+  const shouldLoadBotRegistry =
+    shouldWeightSignals ||
+    (controls.botWeights && Object.keys(controls.botWeights).length > 0)
+  const [cryptoResult, stockResult, forexResult, accuracySummary, botRegistryResult] =
+    await Promise.all([
       safeFetch(() => fetchCrypto(universe.crypto)),
-      safeFetch(() => fetchStocks(universe.stocks)),
-      safeFetch(() => fetchForex(universe.forex)),
+      safeFetch(() => fetchStocks(db, universe.stocks)),
+      safeFetch(() => fetchForex(db, universe.forex)),
       shouldWeightSignals ? loadSignalPerformanceSummary(db, accuracyHorizon) : null,
-      shouldWeightSignals ? loadBotAccuracyWeights(db, accuracyHorizon) : new Map(),
-    ]
+      shouldLoadBotRegistry
+        ? loadBotRegistry(db)
+        : Promise.resolve({ registry: new Map(), docs: [] }),
+    ])
+  const accuracyWeights = shouldWeightSignals
+    ? await loadBotAccuracyWeights(db, accuracyHorizon, botRegistryResult?.docs)
+    : new Map()
+  const resolvedBotWeights = mergeBotWeights(
+    controls.botWeights,
+    accuracyWeights,
+    botRegistryResult?.registry
   )
   const signalWeight = shouldWeightSignals
     ? computeSignalWeightMultiplier(accuracySummary)
     : 1
-  const botSignals = await fetchBotSignals(db, botWeights).catch((err) => {
+  const botSignals = await fetchBotSignals(db, resolvedBotWeights).catch((err) => {
     console.error("Bot signals fetch failed", err.message)
     return new Map()
   })
@@ -2566,23 +3761,37 @@ async function run() {
   if (forexResult.error) console.error("Forex fetch failed", forexResult.error)
 
   const candidates = markPrimary([...crypto, ...stocks, ...forex], primarySets)
-  const hotTrades = buildHotTrades(candidates, botSignals, { signalWeight })
   const newsData = await loadNewsData(db, candidates, controls, universe, runId)
+  const hotTrades = buildHotTrades(candidates, botSignals, { signalWeight }, newsData.scoreMap)
+  const recommendationMap = await buildRecommendations(hotTrades, config.recommendationLimit)
+  const hotTradesWithRecommendations = hotTrades.map((trade) => {
+    const key = getAssetKey(trade.assetClass, trade.symbol)
+    const recommendation = key ? recommendationMap.get(key) : null
+    return recommendation ? { ...trade, recommendation } : trade
+  })
   const trendingByHorizon = buildTrending(
     candidates,
     botSignals,
     controls.trendWeights,
     newsData.scoreMap
   )
-  const actionBoard = buildActionBoard(hotTrades, newsData.scoreMap, config.actionBoardLimit)
+  const actionBoard = buildActionBoard(
+    hotTradesWithRecommendations,
+    newsData.scoreMap,
+    config.actionBoardLimit
+  )
   const trendLookup = buildTrendLookup(trendingByHorizon, controls.trendHorizon)
   const effectiveTrendWeights =
     newsData.scoreMap && newsData.scoreMap.size > 0
       ? controls.trendWeights
       : { ...controls.trendWeights, news: 0 }
-  const popularItems = buildPopularList(hotTrades, config.popularPerClass)
+  const popularItems = buildPopularList(hotTradesWithRecommendations, config.popularPerClass)
   const priceSnapshot = buildPriceSnapshot(candidates)
-  const trimmed = hotTrades.slice(0, config.hotTradesLimit)
+  await monitorPaperTrading(db, priceSnapshot).catch((err) => {
+    console.error("Paper trading automation failed", err.message)
+  })
+
+  const trimmed = hotTradesWithRecommendations.slice(0, config.hotTradesLimit)
   const fetchStatus = {
     crypto: buildFetchStatus({
       items: crypto,
@@ -2596,14 +3805,20 @@ async function run() {
       error: stockResult.error,
       preferences: universe.stocks,
       listKey: "symbols",
-      source: config.alphaVantageKey ? "alphavantage" : "disabled",
+      source:
+        stockResult.source ||
+        (config.fmpKey
+          ? "fmp"
+          : config.alphaVantageKey
+            ? "alphavantage"
+            : "disabled"),
     }),
     forex: buildFetchStatus({
       items: forex,
       error: forexResult.error,
       preferences: universe.forex,
       listKey: "pairs",
-      source: "frankfurter",
+      source: forexResult.source || (config.fmpKey ? "fmp" : "frankfurter"),
     }),
   }
   const candidateCounts = {
@@ -2611,6 +3826,31 @@ async function run() {
     stock: stocks.length,
     forex: forex.length,
   }
+  const moversMarkets = {}
+  if (stockResult.movers?.us) moversMarkets.us = stockResult.movers.us
+  if (stockResult.movers?.tsx) moversMarkets.tsx = stockResult.movers.tsx
+  if (forexResult.movers) moversMarkets.forex = forexResult.movers
+  const moversDoc =
+    moversMarkets && Object.keys(moversMarkets).length > 0
+      ? {
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        windowMinutes: config.moverWindowMinutes,
+        markets: moversMarkets,
+        meta: {
+          runId,
+          sources: {
+            stocks:
+              stockResult.source ||
+              (config.fmpKey
+                ? "fmp"
+                : config.alphaVantageKey
+                  ? "alphavantage"
+                  : "disabled"),
+            forex: forexResult.source || (config.fmpKey ? "fmp" : "frankfurter"),
+          },
+        },
+      }
+      : null
 
   const existing = await db.doc("market/hotTrades").get()
   const previousItems = existing.exists ? existing.data()?.items : []
@@ -2632,11 +3872,21 @@ async function run() {
 
     if (shouldRun) {
       try {
-        llmMap = await enrichWithOpenAI(trimmed.slice(0, 4))
-        llmUpdatedAt = admin.firestore.FieldValue.serverTimestamp()
+        // Generate AI explanations for top 10 hot trades
+        llmMap = await enrichWithOpenAI(trimmed.slice(0, 10))
+        // Only update timestamp if we got results from OpenAI
+        if (llmMap && llmMap.size > 0) {
+          llmUpdatedAt = admin.firestore.FieldValue.serverTimestamp()
+          console.log(`OpenAI generated ${llmMap.size} rationales`)
+        } else {
+          console.log("OpenAI returned no rationales, keeping previous")
+        }
       } catch (err) {
         console.error("OpenAI summary failed", err.message)
+        // Don't update timestamp on failure - will retry next time
       }
+    } else {
+      console.log(`Skipping OpenAI (last update: ${lastLlmAt ? Math.round((Date.now() - lastLlmAt.getTime()) / 60000) : 'never'} minutes ago)`)
     }
   }
 
@@ -2676,19 +3926,19 @@ async function run() {
 
   const autoTuneWrite = autoTuneTriggered
     ? db.doc("market/controls").set(
-        {
-          trendWeights: tunedWeights,
-          autoTuneEnabled: controls.autoTuneEnabled,
-          autoTuneWithAI: controls.autoTuneWithAI,
-          autoTuneIntervalHours: controls.autoTuneIntervalHours,
-          autoTuneLastAt: admin.firestore.FieldValue.serverTimestamp(),
-          autoTuneNotes: autoTuneNotes,
-          autoTuneHorizon: accuracyHorizon,
-          autoTuneHitRate: accuracySummary?.hitRate ?? null,
-          autoTuneSignals: accuracySummary?.count ?? null,
-        },
-        { merge: true }
-      )
+      {
+        trendWeights: tunedWeights,
+        autoTuneEnabled: controls.autoTuneEnabled,
+        autoTuneWithAI: controls.autoTuneWithAI,
+        autoTuneIntervalHours: controls.autoTuneIntervalHours,
+        autoTuneLastAt: admin.firestore.FieldValue.serverTimestamp(),
+        autoTuneNotes: autoTuneNotes,
+        autoTuneHorizon: accuracyHorizon,
+        autoTuneHitRate: accuracySummary?.hitRate ?? null,
+        autoTuneSignals: accuracySummary?.count ?? null,
+      },
+      { merge: true }
+    )
     : Promise.resolve()
 
   await Promise.all([
@@ -2698,24 +3948,28 @@ async function run() {
         items: analyzedItems,
         sources: {
           crypto: "coingecko",
-          stocks: config.alphaVantageKey ? "alphavantage" : "disabled",
-          forex: "frankfurter",
+          stocks: config.fmpKey
+            ? "fmp"
+            : config.alphaVantageKey
+              ? "alphavantage"
+              : "disabled",
+          forex: config.fmpKey ? "fmp" : "frankfurter",
         },
-        meta: {
+        meta: compactObject({
           runId,
           signalLookbackMinutes: config.signalLookbackMinutes,
           runDurationMs: Date.now() - startedAt.getTime(),
           llmIntervalMinutes,
           llmEnabled,
-          llmUpdatedAt,
+          llmUpdatedAt: llmUpdatedAt || undefined, // Only include if set, don't overwrite with null
           accuracyHorizon,
           accuracyHitRate: accuracySummary?.hitRate ?? null,
           accuracySignals: accuracySummary?.count ?? null,
           signalWeight,
-          botWeightCount: botWeights.size,
+          botWeightCount: resolvedBotWeights.size,
           fetchStatus,
           candidateCounts,
-        },
+        }),
       },
       { merge: true }
     ),
@@ -2764,20 +4018,26 @@ async function run() {
           accuracyHitRate: accuracySummary?.hitRate ?? null,
           accuracySignals: accuracySummary?.count ?? null,
           signalWeight,
-          botWeightCount: botWeights.size,
+          botWeightCount: resolvedBotWeights.size,
           horizon: controls.trendHorizon || "15m",
           fetchStatus,
           candidateCounts,
           sources: {
             crypto: "coingecko",
-            stocks: config.alphaVantageKey ? "alphavantage" : "disabled",
-            forex: "frankfurter",
+            stocks:
+              stockResult.source ||
+              (config.fmpKey
+                ? "fmp"
+                : config.alphaVantageKey
+                  ? "alphavantage"
+                  : "disabled"),
+            forex: forexResult.source || (config.fmpKey ? "fmp" : "frankfurter"),
           },
         },
       },
       { merge: true }
     ),
-    db.doc("market/prices").set(
+    db.doc("market/prices_snapshot").set(
       {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         items: priceSnapshot,
@@ -2788,6 +4048,9 @@ async function run() {
       },
       { merge: true }
     ),
+    moversDoc
+      ? db.doc("market/movers").set(moversDoc, { merge: true })
+      : Promise.resolve(),
     autoTuneWrite,
   ])
 
