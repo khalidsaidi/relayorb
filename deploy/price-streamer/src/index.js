@@ -664,14 +664,17 @@ async function flushPrices() {
       typeof item.bid === "number" && typeof item.ask === "number" && item.price
         ? ((item.ask - item.bid) / item.price) * 100
         : undefined
-    return {
+    const enriched = {
       ...item,
-      change1m: change1m === null ? undefined : change1m,
-      change5m: change5m === null ? undefined : change5m,
-      volatility1m: volatility1m === null ? undefined : volatility1m,
-      volatility5m: volatility5m === null ? undefined : volatility5m,
-      spreadPct: spreadPct === undefined ? undefined : spreadPct,
+      change1m: Number.isFinite(change1m) ? change1m : undefined,
+      change5m: Number.isFinite(change5m) ? change5m : undefined,
+      volatility1m: Number.isFinite(volatility1m) ? volatility1m : undefined,
+      volatility5m: Number.isFinite(volatility5m) ? volatility5m : undefined,
+      spreadPct: Number.isFinite(spreadPct) ? spreadPct : undefined,
     }
+    return Object.fromEntries(
+      Object.entries(enriched).filter(([, value]) => value !== undefined)
+    )
   })
   try {
     await db.doc("market/prices").set(
