@@ -13,7 +13,8 @@ import { MarketStatusBadge } from "@/components/MarketStatusBadge"
 import { PaperTradeButton } from "@/components/paper/PaperTradeButton"
 import { executePaperTrade } from "@/features/paper/paper-service"
 import { AssetChartModal } from "@/components/charts/AssetChartModal"
-import { BarChart3 } from "lucide-react"
+import { ScoreBreakdownDialog } from "@/components/score/ScoreBreakdownDialog"
+import { BarChart3, InfoIcon } from "lucide-react"
 import { usePaperAutomation } from "@/features/paper/use-paper-monitor"
 
 function scoreTone(score?: number) {
@@ -163,6 +164,7 @@ function TradeList({
   onAskAi,
   onCopyPrompt,
   onShowChart,
+  onShowBreakdown,
   onApplyAiSuggestion,
   prices,
   livePrices,
@@ -176,6 +178,7 @@ function TradeList({
   onAskAi: (item: MarketHotTrade) => void
   onCopyPrompt: (item: MarketHotTrade) => void
   onShowChart: (item: MarketHotTrade) => void
+  onShowBreakdown: (item: MarketHotTrade) => void
   onApplyAiSuggestion: (item: MarketHotTrade, advice: AiAdvice) => void
   prices: Record<string, number>
   livePrices: Record<string, number>
@@ -208,15 +211,26 @@ function TradeList({
                       <Badge variant="outline" className="uppercase text-[10px]">
                         {item.assetClass}
                       </Badge>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 ml-auto"
-                        onClick={() => onShowChart(item)}
-                        title="View Chart"
-                      >
-                        <BarChart3 className="h-4 w-4" />
-                      </Button>
+                      <div className="ml-auto flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          onClick={() => onShowBreakdown(item)}
+                          title="Score breakdown"
+                        >
+                          <InfoIcon className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          onClick={() => onShowChart(item)}
+                          title="View Chart"
+                        >
+                          <BarChart3 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                     <div className="mt-2 text-[11px] text-muted-foreground flex items-center gap-2">
                       <span className="font-bold text-foreground">
@@ -257,11 +271,11 @@ function TradeList({
                     <summary className="cursor-pointer text-[11px]">
                       Why this pick
                     </summary>
-                    <div className="mt-1 space-y-1 break-words">
+                    <ul className="mt-1 space-y-1 break-words list-disc pl-4">
                       {item.analysis.details.map((line, index) => (
-                        <div key={`${item.symbol}-detail-${index}`}>{line}</div>
+                        <li key={`${item.symbol}-detail-${index}`}>{line}</li>
                       ))}
-                    </div>
+                    </ul>
                   </details>
                 ) : null}
 
@@ -372,6 +386,8 @@ export default function TradeNowPage() {
   const [aiLoading, setAiLoading] = useState<Record<string, boolean>>({})
   const [chartAsset, setChartAsset] = useState<MarketHotTrade | null>(null)
   const [chartOpen, setChartOpen] = useState(false)
+  const [breakdownAsset, setBreakdownAsset] = useState<MarketHotTrade | null>(null)
+  const [breakdownOpen, setBreakdownOpen] = useState(false)
 
   // Monitor paper positions for stop loss / take profit
   usePaperAutomation(user?.uid, hotTrades)
@@ -718,6 +734,10 @@ export default function TradeNowPage() {
               setChartAsset(item)
               setChartOpen(true)
             }}
+            onShowBreakdown={(item) => {
+              setBreakdownAsset(item)
+              setBreakdownOpen(true)
+            }}
             onApplyAiSuggestion={applyAiSuggestion}
             prices={prices}
             livePrices={livePrices}
@@ -735,6 +755,10 @@ export default function TradeNowPage() {
               setChartAsset(item)
               setChartOpen(true)
             }}
+            onShowBreakdown={(item) => {
+              setBreakdownAsset(item)
+              setBreakdownOpen(true)
+            }}
             onApplyAiSuggestion={applyAiSuggestion}
             prices={prices}
             livePrices={livePrices}
@@ -746,6 +770,11 @@ export default function TradeNowPage() {
         open={chartOpen}
         onOpenChange={setChartOpen}
         asset={chartAsset}
+      />
+      <ScoreBreakdownDialog
+        open={breakdownOpen}
+        onOpenChange={setBreakdownOpen}
+        asset={breakdownAsset}
       />
     </div>
   )

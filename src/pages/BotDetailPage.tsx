@@ -44,6 +44,9 @@ import { StatusBadge } from "@/components/StatusBadge"
 import { formatRelativeTimestamp, formatTimestamp } from "@/lib/format"
 import { useAuth } from "@/features/auth/auth-context"
 import { DEFAULT_EXCHANGES, DEFAULT_MODES, DEFAULT_TIMEFRAMES, parsePairs, uniqueList } from "@/lib/universe"
+import { AssetChartModal } from "@/components/charts/AssetChartModal"
+import { ScoreBreakdownDialog } from "@/components/score/ScoreBreakdownDialog"
+import { BarChart3, InfoIcon } from "lucide-react"
 
 const commandOptions: { type: BotCommandType; label: string }[] = [
   { type: "start", label: "Start" },
@@ -149,6 +152,10 @@ export default function BotDetailPage() {
   const [configSaving, setConfigSaving] = useState(false)
   const [configDirty, setConfigDirty] = useState(false)
   const [recommendations, setRecommendations] = useState<MarketHotTrade[]>([])
+  const [chartOpen, setChartOpen] = useState(false)
+  const [chartAsset, setChartAsset] = useState<MarketHotTrade | null>(null)
+  const [breakdownOpen, setBreakdownOpen] = useState(false)
+  const [breakdownAsset, setBreakdownAsset] = useState<MarketHotTrade | null>(null)
   const [loadingRecommendations, setLoadingRecommendations] = useState(true)
   const [botPerformance, setBotPerformance] = useState<SignalPerformanceDoc | null>(null)
   const [loadingPerformance, setLoadingPerformance] = useState(true)
@@ -1219,7 +1226,33 @@ export default function BotDetailPage() {
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div>
-                              <div className="text-sm font-semibold">{trade.symbol}</div>
+                              <div className="flex items-center gap-2">
+                                <div className="text-sm font-semibold">{trade.symbol}</div>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-6 w-6"
+                                  onClick={() => {
+                                    setBreakdownAsset(trade)
+                                    setBreakdownOpen(true)
+                                  }}
+                                  title="Score breakdown"
+                                >
+                                  <InfoIcon className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-6 w-6"
+                                  onClick={() => {
+                                    setChartAsset(trade)
+                                    setChartOpen(true)
+                                  }}
+                                  title="View Chart"
+                                >
+                                  <BarChart3 className="h-4 w-4" />
+                                </Button>
+                              </div>
                               <div className="text-xs text-muted-foreground">
                                 {trade.assetClass}
                               </div>
@@ -2159,6 +2192,16 @@ export default function BotDetailPage() {
           </Card>
         </TabsContent>
       </Tabs>
+      <AssetChartModal
+        open={chartOpen}
+        onOpenChange={setChartOpen}
+        asset={chartAsset}
+      />
+      <ScoreBreakdownDialog
+        open={breakdownOpen}
+        onOpenChange={setBreakdownOpen}
+        asset={breakdownAsset}
+      />
     </div>
     </div>
     </div>

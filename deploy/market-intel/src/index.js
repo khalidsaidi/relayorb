@@ -9,6 +9,9 @@ const config = {
     "relayorb",
   hotTradesLimit: parseInt(process.env.HOT_TRADES_LIMIT || "12", 10),
   signalLookbackMinutes: parseInt(process.env.BOT_SIGNAL_LOOKBACK_MINUTES || "360", 10),
+  signalDecayHalfLifeMinutes: parseInt(process.env.SIGNAL_DECAY_HALF_LIFE_MINUTES || "60", 10),
+  signalRecentMinutes: parseInt(process.env.SIGNAL_RECENT_MINUTES || "30", 10),
+  signalMinRecent: parseInt(process.env.SIGNAL_MIN_RECENT || "2", 10),
   cryptoLimit: parseInt(process.env.CRYPTO_LIMIT || "40", 10),
   cryptoExchange: process.env.CRYPTO_EXCHANGE || "binance",
   openaiKey: process.env.OPENAI_API_KEY || "",
@@ -77,6 +80,25 @@ const TREND_MOMENTUM_SCALES = {
   "1h": 6,
   "24h": 1.5,
   "7d": 0.5,
+}
+const SCORE_WEIGHTS_BY_ASSET = {
+  stock: {
+    dip: { momentum: 35, shortMomentum: 10, consensus: 25, liquidity: 20, news: 10 },
+    scalp: { momentum: 40, shortMomentum: 15, consensus: 20, liquidity: 15, news: 10 },
+  },
+  crypto: {
+    dip: { momentum: 30, shortMomentum: 25, consensus: 25, liquidity: 15, news: 5 },
+    scalp: { momentum: 35, shortMomentum: 30, consensus: 20, liquidity: 10, news: 5 },
+  },
+  forex: {
+    dip: { momentum: 35, shortMomentum: 20, consensus: 20, liquidity: 20, news: 5 },
+    scalp: { momentum: 40, shortMomentum: 25, consensus: 20, liquidity: 10, news: 5 },
+  },
+}
+const SPREAD_PCT_LIMITS = {
+  stock: 0.5,
+  forex: 0.08,
+  crypto: 0.3,
 }
 const PAIR_QUOTES = new Set([
   "USDT",
@@ -166,12 +188,15 @@ function normalizeSnapshotStock(item, exchangeHint = null) {
   if (!item || typeof item !== "object") return null
   const symbol = normalizeTicker(item.symbol || item.ticker || item.code || "")
   if (!symbol) return null
+  const bid = parseNumber(item.bid)
+  const ask = parseNumber(item.ask)
   const price =
     parseNumber(item.price) ??
     parseNumber(item.lastSale) ??
     parseNumber(item.lastSalePrice) ??
     parseNumber(item.last) ??
-    parseNumber(item.close)
+    parseNumber(item.close) ??
+    (bid !== undefined && ask !== undefined ? (bid + ask) / 2 : bid ?? ask)
   if (typeof price !== "number") return null
   const volume =
     parseNumber(item.volume) ??
@@ -180,6 +205,15 @@ function normalizeSnapshotStock(item, exchangeHint = null) {
   const change24h = parsePercent(
     item.changesPercentage ?? item.changePercentage ?? item.changePercent ?? item.change
   )
+  const change1m = parseNumber(item.change1m)
+  const change5m = parseNumber(item.change5m)
+  const volatility1m = parseNumber(item.volatility1m)
+  const volatility5m = parseNumber(item.volatility5m)
+  const spreadPct =
+    parseNumber(item.spreadPct) ??
+    (bid !== undefined && ask !== undefined && price
+      ? ((ask - bid) / price) * 100
+      : undefined)
   return compactObject({
     symbol,
     name: item.name || item.companyName || symbol,
@@ -187,6 +221,13 @@ function normalizeSnapshotStock(item, exchangeHint = null) {
     price,
     volume,
     change24h,
+    change1m,
+    change5m,
+    volatility1m,
+    volatility5m,
+    bid,
+    ask,
+    spreadPct,
   })
 }
 
@@ -213,12 +254,28 @@ function normalizeSnapshotForex(item) {
   const change24h = parsePercent(
     item.changesPercentage ?? item.changePercentage ?? item.changePercent ?? item.change
   )
+  const change1m = parseNumber(item.change1m)
+  const change5m = parseNumber(item.change5m)
+  const volatility1m = parseNumber(item.volatility1m)
+  const volatility5m = parseNumber(item.volatility5m)
+  const spreadPct =
+    parseNumber(item.spreadPct) ??
+    (bid !== undefined && ask !== undefined && price
+      ? ((ask - bid) / price) * 100
+      : undefined)
   return compactObject({
     symbol,
     name: symbol,
     price,
     volume,
     change24h,
+    change1m,
+    change5m,
+    volatility1m,
+    volatility5m,
+    bid,
+    ask,
+    spreadPct,
   })
 }
 
@@ -922,7 +979,7 @@ async function refreshStockSymbolCache(db) {
   console.log("Stock symbol cache refreshed", { count: limited.length })
 }
 
-async function fetchCrypto(preferences = {}) {
+async function fetchCrypto(db, preferences = {}) {
   const mode = resolveUniverseMode(preferences.mode)
   const includeTrending = mode !== "universe_only"
   const includeWatchlist = mode !== "movers_only"
@@ -936,6 +993,21 @@ async function fetchCrypto(preferences = {}) {
   if (filterToWatchlist && watchlistSet.size === 0) {
     return []
   }
+
+  let livePrices = null
+  try {
+    livePrices = await readLivePrices(db)
+  } catch (error) {
+    console.error("Live price snapshot read failed:", error.message)
+  }
+  const liveMap = new Map()
+  const liveItems = Array.isArray(livePrices?.items) ? livePrices.items : []
+  liveItems
+    .filter((item) => item?.assetClass === "crypto")
+    .forEach((item) => {
+      const key = normalizeSymbol(item.symbol)
+      if (key) liveMap.set(key, item)
+    })
 
   const url = new URL("https://api.coingecko.com/api/v3/coins/markets")
   url.search = new URLSearchParams({
@@ -953,15 +1025,21 @@ async function fetchCrypto(preferences = {}) {
       const symbol = `${String(item.symbol || "").toUpperCase()}/USDT`
       const normalized = normalizeSymbol(symbol)
       const watchlisted = normalized ? watchlistSet.has(normalized) : false
+      const live = normalized ? liveMap.get(normalized) : null
       return {
         assetClass: "crypto",
         symbol,
         name: item.name || symbol,
         exchange: config.cryptoExchange,
-        price: parseNumber(item.current_price),
+        price: typeof live?.price === "number" ? live.price : parseNumber(item.current_price),
         change1h: parseNumber(item.price_change_percentage_1h_in_currency),
         change24h: parseNumber(item.price_change_percentage_24h_in_currency),
         change7d: parseNumber(item.price_change_percentage_7d_in_currency),
+        change1m: parseNumber(live?.change1m),
+        change5m: parseNumber(live?.change5m),
+        volatility1m: parseNumber(live?.volatility1m),
+        volatility5m: parseNumber(live?.volatility5m),
+        spreadPct: parseNumber(live?.spreadPct),
         volume: parseNumber(item.total_volume),
         liquidityRank: index + 1,
         watchlisted,
@@ -996,6 +1074,21 @@ async function fetchCrypto(preferences = {}) {
 
   const items = Array.from(itemsMap.values())
   if (items.length === 0) return []
+
+  if (liveMap.size > 0) {
+    items.forEach((item) => {
+      const key = normalizeSymbol(item.symbol)
+      if (!key) return
+      const live = liveMap.get(key)
+      if (!live) return
+      if (typeof live.price === "number") item.price = live.price
+      if (typeof live.change1m === "number") item.change1m = live.change1m
+      if (typeof live.change5m === "number") item.change5m = live.change5m
+      if (typeof live.volatility1m === "number") item.volatility1m = live.volatility1m
+      if (typeof live.volatility5m === "number") item.volatility5m = live.volatility5m
+      if (typeof live.spreadPct === "number") item.spreadPct = live.spreadPct
+    })
+  }
 
   const change15mMap = await fetchCryptoIntradayChanges(
     items.map((item) => item.symbol),
@@ -1128,8 +1221,15 @@ async function fetchLiveSnapshotMovers(db, options) {
         exchange: item.exchange || exchangeHint || undefined,
         price: item.price,
         volume: item.volume,
+        change1m: item.change1m,
+        change5m: item.change5m,
         change15m,
         change24h: item.change24h,
+        volatility1m: item.volatility1m,
+        volatility5m: item.volatility5m,
+        bid: item.bid,
+        ask: item.ask,
+        spreadPct: item.spreadPct,
         liquidityRank: volumeRank,
         volumeScore,
         sideHint: sideHint || undefined,
@@ -2444,6 +2544,9 @@ async function emitMarketSignals(db, trendingByHorizon, controls) {
 async function fetchBotSignals(db, botWeights = new Map()) {
   const lookbackMs = config.signalLookbackMinutes * 60 * 1000
   const cutoff = admin.firestore.Timestamp.fromDate(new Date(Date.now() - lookbackMs))
+  const now = Date.now()
+  const halfLifeMs = Math.max(config.signalDecayHalfLifeMinutes, 1) * 60 * 1000
+  const recentMs = Math.max(config.signalRecentMinutes, 1) * 60 * 1000
 
   const snap = await db
     .collectionGroup("signals")
@@ -2470,11 +2573,22 @@ async function fetchBotSignals(db, botWeights = new Map()) {
       weightedBuy: 0,
       weightedSell: 0,
       weightedStrengthSum: 0,
+      recentCount: 0,
+      recentWeight: 0,
       latestAt: null,
       bots: new Set(),
     }
 
-    const weight = botWeights.get(botId) ?? 1
+    let ageMs = lookbackMs
+    if (data.createdAt) {
+      const createdAt = data.createdAt.toDate ? data.createdAt.toDate() : null
+      if (createdAt) {
+        ageMs = Math.max(now - createdAt.getTime(), 0)
+      }
+    }
+    const decay = halfLifeMs > 0 ? Math.exp((-Math.log(2) * ageMs) / halfLifeMs) : 1
+    const decayWeight = clamp(decay, 0.15, 1)
+    const weight = (botWeights.get(botId) ?? 1) * decayWeight
     entry.total += 1
     if (data.side === "buy") entry.buy += 1
     if (data.side === "sell") entry.sell += 1
@@ -2490,6 +2604,10 @@ async function fetchBotSignals(db, botWeights = new Map()) {
       const createdAt = data.createdAt.toDate ? data.createdAt.toDate() : null
       if (createdAt && (!entry.latestAt || createdAt > entry.latestAt)) {
         entry.latestAt = createdAt
+      }
+      if (createdAt && now - createdAt.getTime() <= recentMs) {
+        entry.recentCount += 1
+        entry.recentWeight += weight
       }
     }
     entry.bots.add(botId)
@@ -2508,6 +2626,8 @@ function resolveTradeSide(candidate, signalData) {
   }
   if (candidate.sideHint) return candidate.sideHint
   const change =
+    parseNumber(candidate.change5m) ??
+    parseNumber(candidate.change1m) ??
     parseNumber(candidate.change15m) ??
     parseNumber(candidate.change1h) ??
     parseNumber(candidate.change24h) ??
@@ -2516,26 +2636,76 @@ function resolveTradeSide(candidate, signalData) {
   return change >= 0 ? "buy" : "sell"
 }
 
+function resolveScoreWeights(assetClass, profile) {
+  const bucket = SCORE_WEIGHTS_BY_ASSET[assetClass] || SCORE_WEIGHTS_BY_ASSET.stock
+  const weights = bucket[profile] || bucket.scalp
+  const total = Object.values(weights).reduce((sum, value) => sum + value, 0)
+  if (!total || Math.abs(total - 100) < 0.01) return weights
+  const normalized = {}
+  Object.entries(weights).forEach(([key, value]) => {
+    normalized[key] = (value / total) * 100
+  })
+  return normalized
+}
+
+function blendWeighted(values) {
+  const entries = values.filter((entry) => typeof entry.value === "number")
+  if (entries.length === 0) return null
+  const totalWeight = entries.reduce((sum, entry) => sum + entry.weight, 0)
+  if (!totalWeight) return null
+  return entries.reduce((sum, entry) => sum + entry.value * (entry.weight / totalWeight), 0)
+}
+
 function scoreTrade(candidate, signalData, side, weights = {}, newsScore = null) {
+  const rawChange1m = parseNumber(candidate.change1m)
+  const rawChange5m = parseNumber(candidate.change5m)
   const rawChange15m = parseNumber(candidate.change15m)
   const rawChange1h = parseNumber(candidate.change1h)
   const rawChange24h = parseNumber(candidate.change24h)
-  const changeBase = rawChange15m ?? rawChange1h ?? rawChange24h ?? 0
-  const changeScale =
+  const longChangeRaw = rawChange15m ?? rawChange1h ?? rawChange24h
+  const longChange = typeof longChangeRaw === "number" ? longChangeRaw : null
+  const shortBlend = blendWeighted([
+    { value: rawChange5m, weight: 0.6 },
+    { value: rawChange1m, weight: 0.4 },
+  ])
+  const changeBase =
+    shortBlend !== null
+      ? (longChange !== null ? longChange * 0.6 + shortBlend * 0.4 : shortBlend)
+      : longChange ?? 0
+  const baseScale =
     candidate.assetClass === "forex"
       ? config.forexChangeScale
       : candidate.assetClass === "crypto"
         ? config.cryptoChangeScale
         : config.stockChangeScale
-  const momentumRatio = changeScale > 0
-    ? clamp(Math.abs(changeBase) / changeScale, 0, 1)
-    : 0
+  const volatilityScale =
+    typeof candidate.volatility5m === "number" && candidate.volatility5m > 0
+      ? candidate.volatility5m * 3
+      : null
+  const changeScale = volatilityScale
+    ? clamp(volatilityScale, baseScale * 0.3, baseScale * 3)
+    : baseScale
+  const shortScaleRaw =
+    typeof candidate.volatility1m === "number" && candidate.volatility1m > 0
+      ? candidate.volatility1m
+      : typeof candidate.volatility5m === "number" && candidate.volatility5m > 0
+        ? candidate.volatility5m
+        : changeScale / 3
+  const shortScale = clamp(shortScaleRaw, baseScale * 0.1, baseScale)
+  const momentumRatio =
+    changeScale > 0 ? clamp(Math.abs(changeBase) / changeScale, 0, 1) : 0
   const oversoldRatio =
     changeScale > 0 && changeBase < 0
       ? clamp(Math.abs(changeBase) / changeScale, 0, 1)
       : 0
+  const shortMomentumRatio =
+    typeof shortBlend === "number" && shortScale > 0
+      ? clamp(Math.abs(shortBlend) / shortScale, 0, 1)
+      : 0
 
   let consensusRatio = 0
+  let consensusRatioRaw = 0
+  let recencyScore = 0
   let confidence = 0
   const signalWeight = typeof weights.signalWeight === "number" ? weights.signalWeight : 1
 
@@ -2544,8 +2714,16 @@ function scoreTrade(candidate, signalData, side, weights = {}, newsScore = null)
     const buyWeight = signalData.weightedBuy ?? signalData.buy ?? 0
     const sellWeight = signalData.weightedSell ?? signalData.sell ?? 0
     const bias = totalWeight ? (buyWeight - sellWeight) / totalWeight : 0
-    consensusRatio = clamp(Math.abs(bias) * signalWeight, 0, 1)
-    confidence = clamp(totalWeight / 5, 0, 1)
+    consensusRatioRaw = clamp(Math.abs(bias) * signalWeight, 0, 1)
+    const recentCount = signalData.recentCount ?? 0
+    const recencyFactor =
+      config.signalMinRecent > 0
+        ? clamp(recentCount / config.signalMinRecent, 0, 1)
+        : 1
+    consensusRatio = consensusRatioRaw * recencyFactor
+    recencyScore = recencyFactor * 10
+    const confidenceBase = signalData.recentWeight ?? totalWeight
+    confidence = clamp(confidenceBase / 5, 0, 1)
   }
   let volumeRatio = 0
   if (typeof candidate.volumeScore === "number") {
@@ -2558,26 +2736,34 @@ function scoreTrade(candidate, signalData, side, weights = {}, newsScore = null)
     typeof newsScore === "number" ? clamp((newsScore + 1) / 2, 0, 1) : 0.5
 
   const profile = side === "buy" && changeBase < 0 ? "dip" : "scalp"
-  let momentumScore = 0
-  let consensusScore = 0
-  let liquidityScore = 0
-  let newsSentimentScore = 0
-  let score = 0
-
-  if (profile === "dip") {
-    momentumScore = oversoldRatio * 40
-    consensusScore = consensusRatio * 30
-    liquidityScore = volumeRatio * 20
-    newsSentimentScore = sentimentRatio * 10
-    score = momentumScore + consensusScore + liquidityScore + newsSentimentScore
-    if (sentimentRatio < 0.35) score -= 5
-  } else {
-    momentumScore = momentumRatio * 45
-    consensusScore = consensusRatio * 25
-    liquidityScore = volumeRatio * 20
-    newsSentimentScore = sentimentRatio * 10
-    score = momentumScore + consensusScore + liquidityScore + newsSentimentScore
+  const weightSet = resolveScoreWeights(candidate.assetClass, profile)
+  let momentumScore = oversoldRatio * (weightSet.momentum ?? 0)
+  if (profile !== "dip") {
+    momentumScore = momentumRatio * (weightSet.momentum ?? 0)
   }
+  const shortMomentumScore = shortMomentumRatio * (weightSet.shortMomentum ?? 0)
+  const consensusScore = consensusRatio * (weightSet.consensus ?? 0)
+  const liquidityScore = volumeRatio * (weightSet.liquidity ?? 0)
+  const newsSentimentScore = sentimentRatio * (weightSet.news ?? 0)
+  let score =
+    momentumScore +
+    shortMomentumScore +
+    consensusScore +
+    liquidityScore +
+    newsSentimentScore
+  if (profile === "dip" && sentimentRatio < 0.35) score -= 5
+
+  let liquidityPenalty = 0
+  if (volumeRatio > 0 && volumeRatio < 0.1) liquidityPenalty += 6
+  if (volumeRatio > 0 && volumeRatio < 0.05) liquidityPenalty += 8
+  let spreadPenalty = 0
+  if (typeof candidate.spreadPct === "number") {
+    const limit = SPREAD_PCT_LIMITS[candidate.assetClass] ?? SPREAD_PCT_LIMITS.stock
+    if (candidate.spreadPct > limit) {
+      spreadPenalty = clamp((candidate.spreadPct - limit) * 20, 0, 15)
+    }
+  }
+  score -= liquidityPenalty + spreadPenalty
 
   if (
     candidate.assetClass === "stock" &&
@@ -2602,10 +2788,12 @@ function scoreTrade(candidate, signalData, side, weights = {}, newsScore = null)
     score,
     confidence,
     momentumScore,
-    shortMomentumScore: 0,
+    shortMomentumScore,
     consensusScore,
-    strengthScore: 0,
-    recencyScore: 0,
+    strengthScore: signalData?.total
+      ? clamp((signalData.strengthSum || 0) / signalData.total, 0, 1) * 10
+      : 0,
+    recencyScore,
     liquidityScore,
     watchlistScore: 0,
     primaryScore: 0,
@@ -2810,17 +2998,22 @@ function buildRationale(candidate, signalData, scoreDetail) {
     parts.push(`${signalData.buy}/${signalData.total} bots signal buy`)
   }
 
-  const change =
-    typeof candidate.change15m === "number"
-      ? { value: candidate.change15m, window: "15m" }
-      : typeof candidate.change1h === "number"
-        ? { value: candidate.change1h, window: "1h" }
-        : typeof candidate.change24h === "number"
-          ? { value: candidate.change24h, window: "24h" }
-          : null
-  if (change) {
-    const direction = change.value >= 0 ? "+" : ""
-    parts.push(`${change.window} move ${direction}${change.value.toFixed(2)}%`)
+  const shortMoves = []
+  if (typeof candidate.change1m === "number") {
+    shortMoves.push(`1m ${candidate.change1m.toFixed(2)}%`)
+  }
+  if (typeof candidate.change5m === "number") {
+    shortMoves.push(`5m ${candidate.change5m.toFixed(2)}%`)
+  }
+  if (typeof candidate.change15m === "number") {
+    shortMoves.push(`15m ${candidate.change15m.toFixed(2)}%`)
+  }
+  if (shortMoves.length > 0) {
+    parts.push(`momentum ${shortMoves.join("/")}`)
+  } else if (typeof candidate.change1h === "number") {
+    parts.push(`1h move ${candidate.change1h.toFixed(2)}%`)
+  } else if (typeof candidate.change24h === "number") {
+    parts.push(`24h move ${candidate.change24h.toFixed(2)}%`)
   }
 
   if (scoreDetail.profile === "dip") {
@@ -3055,11 +3248,14 @@ function buildHotTrades(candidates, signalMap, scoreWeights, newsScoreMap = null
         strengthAvg: signalData.total
           ? Number((signalData.strengthSum / signalData.total).toFixed(2))
           : undefined,
+        recent: signalData.recentCount,
         bots: Array.from(signalData.bots),
       })
       : undefined
 
     const momentum = compactObject({
+      change1m: candidate.change1m,
+      change5m: candidate.change5m,
       change15m: candidate.change15m,
       change1h: candidate.change1h,
       change24h: candidate.change24h,
@@ -3235,7 +3431,7 @@ function buildScoreBreakdown(components, totalScore) {
     parts.push(`momentum ${formatNumber(components.momentum, 1)}`)
   }
   if (typeof components.shortMomentum === "number") {
-    parts.push(`1h momentum ${formatNumber(components.shortMomentum, 1)}`)
+    parts.push(`short momentum ${formatNumber(components.shortMomentum, 1)}`)
   }
   if (typeof components.consensus === "number") {
     parts.push(`consensus ${formatNumber(components.consensus, 1)}`)
@@ -3255,6 +3451,9 @@ function buildScoreBreakdown(components, totalScore) {
   if (typeof components.primary === "number") {
     parts.push(`primary ${formatNumber(components.primary, 1)}`)
   }
+  if (typeof components.news === "number") {
+    parts.push(`news ${formatNumber(components.news, 1)}`)
+  }
   if (!parts.length) return null
   return `Score model: ${parts.join(" + ")} = ${formatNumber(totalScore, 1)}.`
 }
@@ -3263,22 +3462,30 @@ function buildTradeAnalysis(trade, trendItem, newsItem, options) {
   const details = []
   const summaryBits = []
   const sideLabel = trade.side ? trade.side.toUpperCase() : "TRADE"
+  const momentum = trade.momentum || {}
 
-  if (typeof trade.momentum?.change15m === "number") {
-    summaryBits.push(`15m move ${formatSignedPercent(trade.momentum.change15m)}`)
-  } else if (typeof trade.momentum?.change24h === "number") {
-    summaryBits.push(`24h move ${formatSignedPercent(trade.momentum.change24h)}`)
+  const summaryMoves = []
+  if (typeof momentum.change1m === "number") {
+    summaryMoves.push(`1m ${formatSignedPercent(momentum.change1m)}`)
+  }
+  if (typeof momentum.change5m === "number") {
+    summaryMoves.push(`5m ${formatSignedPercent(momentum.change5m)}`)
+  }
+  if (typeof momentum.change15m === "number") {
+    summaryMoves.push(`15m ${formatSignedPercent(momentum.change15m)}`)
+  }
+  if (summaryMoves.length > 0) {
+    summaryBits.push(summaryMoves.join(" · "))
+  } else if (typeof momentum.change24h === "number") {
+    summaryBits.push(`24h ${formatSignedPercent(momentum.change24h)}`)
   }
   if (trade.signals?.total) {
     const buy = trade.signals.buy ?? 0
     const sell = trade.signals.sell ?? 0
-    summaryBits.push(`bots ${buy} buy / ${sell} sell`)
+    summaryBits.push(`bots ${buy}/${sell}`)
   }
-  if (typeof trendItem?.score === "number") {
-    summaryBits.push(`trend ${formatNumber(trendItem.score, 0)}/100`)
-  }
-  if (typeof newsItem?.sentiment === "number") {
-    summaryBits.push(`news sentiment ${formatNumber(newsItem.sentiment, 2)}`)
+  if (typeof trade.score === "number") {
+    summaryBits.push(`score ${formatNumber(trade.score, 0)}`)
   }
 
   const summary =
@@ -3287,42 +3494,33 @@ function buildTradeAnalysis(trade, trendItem, newsItem, options) {
       : `${sideLabel} signal.`
 
   if (typeof trade.score === "number") {
-    details.push(`Overall score: ${formatNumber(trade.score, 1)}/100.`)
-    const trendSummary = trendItem
-      ? `${formatNumber(trendItem.score, 0)}/100 (${options.trendHorizon})`
-      : "n/a"
-    const botsSummary = trade.signals?.total
-      ? `${trade.signals.buy ?? 0} buy / ${trade.signals.sell ?? 0} sell`
-      : "no recent signals"
-    const sentimentSummary =
-      typeof newsItem?.sentiment === "number"
-        ? formatNumber(newsItem.sentiment, 2)
-        : "n/a"
-    const aiSummary = formatAiSnippet(options.aiSummary)
-    details.push(
-      `Score summary: trend ${trendSummary}, bots ${botsSummary}, sentiment ${sentimentSummary}, AI ${aiSummary}.`
-    )
+    const profileLabel = trade.profile ? ` (${trade.profile})` : ""
+    details.push(`Score: ${formatNumber(trade.score, 1)}/100${profileLabel}.`)
   }
-  const driversLine = buildScoreDriversLine(trade.scoreComponents)
-  if (driversLine) details.push(driversLine)
 
   const momentumParts = []
-  if (typeof trade.momentum?.change15m === "number") {
-    momentumParts.push(`15m ${formatSignedPercent(trade.momentum.change15m)}`)
+  if (typeof momentum.change1m === "number") {
+    momentumParts.push(`1m ${formatSignedPercent(momentum.change1m)}`)
   }
-  if (typeof trade.momentum?.change24h === "number") {
-    momentumParts.push(`24h ${formatSignedPercent(trade.momentum.change24h)}`)
+  if (typeof momentum.change5m === "number") {
+    momentumParts.push(`5m ${formatSignedPercent(momentum.change5m)}`)
   }
-  if (typeof trade.momentum?.change1h === "number") {
-    momentumParts.push(`1h ${formatSignedPercent(trade.momentum.change1h)}`)
+  if (typeof momentum.change15m === "number") {
+    momentumParts.push(`15m ${formatSignedPercent(momentum.change15m)}`)
   }
-  if (typeof trade.momentum?.change7d === "number") {
-    momentumParts.push(`7d ${formatSignedPercent(trade.momentum.change7d)}`)
+  if (typeof momentum.change1h === "number") {
+    momentumParts.push(`1h ${formatSignedPercent(momentum.change1h)}`)
+  }
+  if (typeof momentum.change24h === "number") {
+    momentumParts.push(`24h ${formatSignedPercent(momentum.change24h)}`)
+  }
+  if (typeof momentum.change7d === "number") {
+    momentumParts.push(`7d ${formatSignedPercent(momentum.change7d)}`)
   }
   if (momentumParts.length) {
-    details.push(`Market move: ${momentumParts.join(", ")}.`)
+    details.push(`Momentum: ${momentumParts.join(", ")}.`)
   } else {
-    details.push("Market move: not available.")
+    details.push("Momentum: not available.")
   }
 
   if (trade.signals?.total) {
@@ -3335,12 +3533,21 @@ function buildTradeAnalysis(trade, trendItem, newsItem, options) {
       typeof trade.signals.strengthAvg === "number"
         ? ` Avg strength ${formatNumber(trade.signals.strengthAvg, 2)}.`
         : ""
+    const recent =
+      typeof trade.signals.recent === "number" &&
+      Number.isFinite(options.signalRecentMinutes) &&
+      Number.isFinite(options.signalMinRecent)
+        ? ` Recent ${trade.signals.recent} in ${options.signalRecentMinutes}m (min ${options.signalMinRecent}).`
+        : ""
     details.push(
-      `Bots: ${totalSignals} recent signals (${buy} buy, ${sell} sell), ${bias}.${strength}`
+      `Bots: ${totalSignals} signals (${buy} buy, ${sell} sell), ${bias}.${strength}${recent}`
     )
   } else {
     details.push(`Bots: no signals in the last ${options.signalLookbackMinutes} minutes.`)
   }
+
+  const driversLine = buildScoreDriversLine(trade.scoreComponents)
+  if (driversLine) details.push(driversLine)
 
   if (
     options.accuracySummary?.hitRate !== undefined &&
@@ -3383,6 +3590,9 @@ function buildTradeAnalysis(trade, trendItem, newsItem, options) {
     details.push("News sentiment: no recent headlines, so no sentiment boost.")
   }
 
+  const scoreBreakdown = buildScoreBreakdown(trade.scoreComponents, trade.score)
+  if (scoreBreakdown) details.push(scoreBreakdown)
+
   if (trade.recommendation) {
     const rec = trade.recommendation
     const hold = typeof rec.holdMinutes === "number" ? `${rec.holdMinutes}m` : "n/a"
@@ -3418,6 +3628,8 @@ function attachTradeAnalysis(trade, context) {
     trendWeights: context.trendWeights,
     newsWeight: context.newsWeight,
     signalLookbackMinutes: context.signalLookbackMinutes,
+    signalRecentMinutes: context.signalRecentMinutes,
+    signalMinRecent: context.signalMinRecent,
     aiSummary,
   })
   const trend = trendItem
@@ -3688,7 +3900,7 @@ async function run() {
     (controls.botWeights && Object.keys(controls.botWeights).length > 0)
   const [cryptoResult, stockResult, forexResult, accuracySummary, botRegistryResult] =
     await Promise.all([
-      safeFetch(() => fetchCrypto(universe.crypto)),
+      safeFetch(() => fetchCrypto(db, universe.crypto)),
       safeFetch(() => fetchStocks(db, universe.stocks)),
       safeFetch(() => fetchForex(db, universe.forex)),
       shouldWeightSignals ? loadSignalPerformanceSummary(db, accuracyHorizon) : null,
@@ -3906,6 +4118,8 @@ async function run() {
     newsScoreMap: newsData.scoreMap,
     newsWeight: actionBoard.newsWeight,
     signalLookbackMinutes: config.signalLookbackMinutes,
+    signalRecentMinutes: config.signalRecentMinutes,
+    signalMinRecent: config.signalMinRecent,
     accuracyHorizon,
     accuracySummary,
     minAccuracySignals: config.minAccuracySignals,

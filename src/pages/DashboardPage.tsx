@@ -38,6 +38,7 @@ import { formatRelativeTimestamp, formatTimestamp } from "@/lib/format"
 import { StatusBadge } from "@/components/StatusBadge"
 import { MarketStatusBadge } from "@/components/MarketStatusBadge"
 import { PaperTradeButton } from "@/components/paper/PaperTradeButton"
+import { ScoreBreakdownDialog } from "@/components/score/ScoreBreakdownDialog"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -55,7 +56,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { toast } from "sonner"
 import { useAuth } from "@/features/auth/auth-context"
 import { useMarketPrices } from "@/features/market/use-market-prices"
-import { X, BarChart3 } from "lucide-react"
+import { X, BarChart3, InfoIcon } from "lucide-react"
 import { AssetChartModal } from "@/components/charts/AssetChartModal"
 import { usePaperAutomation } from "@/features/paper/use-paper-monitor"
 
@@ -275,6 +276,8 @@ export default function DashboardPage() {
   const [botWeightBacktrader, setBotWeightBacktrader] = useState(1)
   const [chartOpen, setChartOpen] = useState(false)
   const [chartAsset, setChartAsset] = useState<MarketHotTrade | null>(null)
+  const [breakdownOpen, setBreakdownOpen] = useState(false)
+  const [breakdownAsset, setBreakdownAsset] = useState<MarketHotTrade | MarketTrendItem | null>(null)
   const [autoTuneEnabled, setAutoTuneEnabled] = useState(true)
   const [autoTuneWithAI, setAutoTuneWithAI] = useState(true)
   const [autoTuneIntervalHours, setAutoTuneIntervalHours] = useState(6)
@@ -3226,18 +3229,32 @@ export default function DashboardPage() {
                                   {isPrimaryTrade(trade) && (
                                     <Badge variant="secondary">Primary</Badge>
                                   )}
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-6 w-6 ml-auto"
-                                    onClick={() => {
-                                      setChartAsset(trade)
-                                      setChartOpen(true)
-                                    }}
-                                    title="View Chart"
-                                  >
-                                    <BarChart3 className="h-4 w-4" />
-                                  </Button>
+                                  <div className="ml-auto flex items-center gap-1">
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-6 w-6"
+                                      onClick={() => {
+                                        setBreakdownAsset(trade)
+                                        setBreakdownOpen(true)
+                                      }}
+                                      title="Score breakdown"
+                                    >
+                                      <InfoIcon className="h-4 w-4" />
+                                    </Button>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-6 w-6"
+                                      onClick={() => {
+                                        setChartAsset(trade)
+                                        setChartOpen(true)
+                                      }}
+                                      title="View Chart"
+                                    >
+                                      <BarChart3 className="h-4 w-4" />
+                                    </Button>
+                                  </div>
                                 </div>
                                 <div className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
                                   <span className="font-bold text-foreground">
@@ -3349,18 +3366,32 @@ export default function DashboardPage() {
                                 {isPrimaryTrade(trade) && (
                                   <Badge variant="secondary">Primary</Badge>
                                 )}
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-6 w-6 ml-auto"
-                                  onClick={() => {
-                                    setChartAsset(trade)
-                                    setChartOpen(true)
-                                  }}
-                                  title="View Chart"
-                                >
-                                  <BarChart3 className="h-4 w-4" />
-                                </Button>
+                                <div className="ml-auto flex items-center gap-1">
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6"
+                                    onClick={() => {
+                                      setBreakdownAsset(trade)
+                                      setBreakdownOpen(true)
+                                    }}
+                                    title="Score breakdown"
+                                  >
+                                    <InfoIcon className="h-4 w-4" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6"
+                                    onClick={() => {
+                                      setChartAsset(trade)
+                                      setChartOpen(true)
+                                    }}
+                                    title="View Chart"
+                                  >
+                                    <BarChart3 className="h-4 w-4" />
+                                  </Button>
+                                </div>
                               </div>
                               <div className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
                                 <span className="font-bold text-foreground">
@@ -3520,8 +3551,39 @@ export default function DashboardPage() {
                                       >
                                         <div className="flex items-start justify-between gap-4">
                                           <div className="min-w-0">
-                                            <div className="text-sm font-semibold tracking-tight truncate">
-                                              {item.symbol}
+                                            <div className="flex items-center gap-2">
+                                              <div className="text-sm font-semibold tracking-tight truncate">
+                                                {item.symbol}
+                                              </div>
+                                              <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-6 w-6"
+                                                onClick={() => {
+                                                  setBreakdownAsset(item)
+                                                  setBreakdownOpen(true)
+                                                }}
+                                                title="Score breakdown"
+                                              >
+                                                <InfoIcon className="h-4 w-4" />
+                                              </Button>
+                                              <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-6 w-6"
+                                                onClick={() => {
+                                                  setChartAsset({
+                                                    assetClass,
+                                                    symbol: item.symbol,
+                                                    name: item.name,
+                                                    price: item.price,
+                                                  })
+                                                  setChartOpen(true)
+                                                }}
+                                                title="View Chart"
+                                              >
+                                                <BarChart3 className="h-4 w-4" />
+                                              </Button>
                                             </div>
                                             <div className="mt-2 flex flex-wrap items-center gap-2">
                                               <div className="inline-flex items-center rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">
@@ -3629,10 +3691,34 @@ export default function DashboardPage() {
                       <div className="text-sm opacity-70">No buy ideas yet.</div>
                     ) : (
                       buyIdeas.map((trade) => (
-                        <div key={`buy-${trade.symbol}`} className="flex items-center justify-between">
+                        <div key={`buy-${trade.symbol}`} className="group flex items-center justify-between">
                           <div>
                             <div className="flex items-center gap-2">
                               <div className="text-sm font-medium">{trade.symbol}</div>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-5 w-5"
+                                onClick={() => {
+                                  setBreakdownAsset(trade)
+                                  setBreakdownOpen(true)
+                                }}
+                                title="Score breakdown"
+                              >
+                                <InfoIcon className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-5 w-5"
+                                onClick={() => {
+                                  setChartAsset(trade)
+                                  setChartOpen(true)
+                                }}
+                                title="View Chart"
+                              >
+                                <BarChart3 className="h-3.5 w-3.5" />
+                              </Button>
                               <PaperTradeButton trade={trade} size="icon" className="h-5 w-5 opacity-0 hover:opacity-100 group-hover:opacity-100 transition-opacity" />
                             </div>
                             <div className="text-xs text-muted-foreground flex items-center gap-1">
@@ -3672,11 +3758,35 @@ export default function DashboardPage() {
                       sellIdeas.map((trade) => (
                         <div
                           key={`sell-${trade.symbol}`}
-                          className="flex items-center justify-between"
+                          className="group flex items-center justify-between"
                         >
                           <div>
                             <div className="flex items-center gap-2">
                               <div className="text-sm font-medium">{trade.symbol}</div>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-5 w-5"
+                                onClick={() => {
+                                  setBreakdownAsset(trade)
+                                  setBreakdownOpen(true)
+                                }}
+                                title="Score breakdown"
+                              >
+                                <InfoIcon className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-5 w-5"
+                                onClick={() => {
+                                  setChartAsset(trade)
+                                  setChartOpen(true)
+                                }}
+                                title="View Chart"
+                              >
+                                <BarChart3 className="h-3.5 w-3.5" />
+                              </Button>
                               <PaperTradeButton trade={trade} size="icon" className="h-5 w-5 opacity-0 hover:opacity-100 group-hover:opacity-100 transition-opacity" />
                             </div>
                             <div className="text-xs text-muted-foreground flex items-center gap-1">
@@ -4145,6 +4255,11 @@ export default function DashboardPage() {
         open={chartOpen}
         onOpenChange={setChartOpen}
         asset={chartAsset}
+      />
+      <ScoreBreakdownDialog
+        open={breakdownOpen}
+        onOpenChange={setBreakdownOpen}
+        asset={breakdownAsset}
       />
     </div>
   )

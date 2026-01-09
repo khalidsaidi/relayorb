@@ -12,6 +12,7 @@ It uses Binance WebSocket for crypto (falls back to FMP polling if blocked) and 
 - `STOCK_POLL_MS` (default: 15000)
 - `FOREX_POLL_MS` (default: 15000)
 - `PRICE_WRITE_MS` (default: 2000)
+- `PRICE_HISTORY_MINUTES` (default: 10; used for 1m/5m deltas + volatility)
 - `PRICE_STREAM_MAX_SYMBOLS` (default: 120 per asset class)
 - `PORT` (default: 8080, health endpoint listener)
 
@@ -21,6 +22,7 @@ It uses Binance WebSocket for crypto (falls back to FMP polling if blocked) and 
 
 ## Firestore output
 - `market/prices` with `items` array and `updatedAt`.
+- Each item includes `change1m`, `change5m`, `volatility1m`, `volatility5m`, and `spreadPct` when available.
 
 ## Health check
 `GET /healthz` returns a small JSON payload with watchlist counts and last write time.

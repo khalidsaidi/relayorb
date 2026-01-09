@@ -16,6 +16,7 @@ const config = {
   forexPollMs: parseInt(process.env.FOREX_POLL_MS || "15000", 10),
   writeMs: parseInt(process.env.PRICE_WRITE_MS || "2000", 10),
   maxSymbols: parseInt(process.env.PRICE_STREAM_MAX_SYMBOLS || "120", 10),
+  historyMinutes: parseInt(process.env.PRICE_HISTORY_MINUTES || "10", 10),
   port: parseInt(process.env.PORT || "8080", 10),
 }
 
@@ -42,6 +43,7 @@ const state = {
     forex: new Set(),
   },
   priceCache: new Map(),
+  priceHistory: new Map(),
   dirty: false,
   lastWatchHash: "",
   binanceSocket: null,
@@ -210,16 +212,17 @@ async function fetchFmpQuote(symbol, assetClass = "stock") {
     const data = await fetchJson(url.toString())
     const entry = Array.isArray(data) ? data[0] : data
     if (!entry) return null
+    const bid = parseNumber(entry.bid)
+    const ask = parseNumber(entry.ask)
+    const volume = parseNumber(entry.volume) ?? parseNumber(entry.avgVolume) ?? parseNumber(entry.volumeAvg)
     const price =
       parseNumber(entry.price) ??
       parseNumber(entry.lastSale) ??
       parseNumber(entry.last) ??
       parseNumber(entry.close) ??
-      (parseNumber(entry.bid) && parseNumber(entry.ask)
-        ? (parseNumber(entry.bid) + parseNumber(entry.ask)) / 2
-        : parseNumber(entry.bid) ?? parseNumber(entry.ask))
+      (bid !== undefined && ask !== undefined ? (bid + ask) / 2 : bid ?? ask)
     if (typeof price !== "number") return null
-    return { symbol, price }
+    return { symbol, price, bid, ask, volume }
   } catch (err) {
     const message = err?.message ? String(err.message) : "Unknown error"
     if (message.includes("429") || message.includes("Limit Reach")) {
@@ -261,18 +264,88 @@ function buildWatchHash(sets) {
   return JSON.stringify(payload)
 }
 
-function updatePrice(assetClass, symbol, price, source) {
+function recordPriceHistory(key, price) {
+  const history = state.priceHistory.get(key) || []
+  const now = Date.now()
+  const last = history[history.length - 1]
+  const shouldAppend = !last || last.price !== price || now - last.t > 15000
+  if (shouldAppend) {
+    history.push({ t: now, price })
+  }
+  const cutoff = now - config.historyMinutes * 60 * 1000
+  let dropIndex = 0
+  while (dropIndex < history.length && history[dropIndex].t < cutoff) {
+    dropIndex += 1
+  }
+  if (dropIndex > 0) history.splice(0, dropIndex)
+  state.priceHistory.set(key, history)
+  return shouldAppend
+}
+
+function findPriceBefore(history, targetTime) {
+  if (!Array.isArray(history) || history.length === 0) return null
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    if (history[i].t <= targetTime) return history[i].price
+  }
+  return null
+}
+
+function computeChangePct(history, windowMs, now, priceNow) {
+  if (!Array.isArray(history) || history.length === 0 || typeof priceNow !== "number") {
+    return null
+  }
+  const target = now - windowMs
+  const prevPrice = findPriceBefore(history, target)
+  if (!prevPrice || prevPrice === 0) return null
+  return ((priceNow - prevPrice) / prevPrice) * 100
+}
+
+function computeRangePct(history, windowMs, now, priceNow) {
+  if (!Array.isArray(history) || history.length === 0 || typeof priceNow !== "number") {
+    return null
+  }
+  const cutoff = now - windowMs
+  let min = Infinity
+  let max = -Infinity
+  let hasSample = false
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const entry = history[i]
+    if (entry.t < cutoff) break
+    if (entry.price < min) min = entry.price
+    if (entry.price > max) max = entry.price
+    hasSample = true
+  }
+  if (!hasSample || !Number.isFinite(min) || !Number.isFinite(max) || priceNow === 0) {
+    return null
+  }
+  return ((max - min) / priceNow) * 100
+}
+
+function updatePrice(assetClass, symbol, price, source, extra = {}) {
   if (!assetClass || !symbol || typeof price !== "number") return
   const key = `${assetClass}:${symbol}`
-  const existing = state.priceCache.get(key)
-  if (!existing || existing.price !== price) {
-    state.priceCache.set(key, {
-      assetClass,
-      symbol,
-      price: Number(price),
-      source,
-      updatedAt: Date.now(),
-    })
+  const existing = state.priceCache.get(key) || {}
+  const next = {
+    ...existing,
+    assetClass,
+    symbol,
+    price: Number(price),
+    source,
+    updatedAt: Date.now(),
+  }
+  if (typeof extra.bid === "number") next.bid = extra.bid
+  if (typeof extra.ask === "number") next.ask = extra.ask
+  if (typeof extra.volume === "number") next.volume = extra.volume
+
+  const historyUpdated = recordPriceHistory(key, next.price)
+  const changed =
+    !existing ||
+    existing.price !== next.price ||
+    existing.bid !== next.bid ||
+    existing.ask !== next.ask ||
+    existing.volume !== next.volume
+  if (changed || historyUpdated) {
+    state.priceCache.set(key, next)
     state.dirty = true
   }
 }
@@ -281,6 +354,7 @@ function prunePriceCache(allowedKeys) {
   state.priceCache.forEach((_, key) => {
     if (!allowedKeys.has(key)) {
       state.priceCache.delete(key)
+      state.priceHistory.delete(key)
       state.dirty = true
     }
   })
@@ -530,7 +604,11 @@ async function pollCryptoPrices() {
     if (!entry) return
     const symbol = normalizeSymbolForKey(entry.symbol, "crypto")
     if (!symbol || typeof entry.price !== "number") return
-    updatePrice("crypto", symbol, entry.price, "fmp")
+    updatePrice("crypto", symbol, entry.price, "fmp", {
+      bid: entry.bid,
+      ask: entry.ask,
+      volume: entry.volume,
+    })
   })
 }
 
@@ -544,7 +622,11 @@ async function pollStockPrices() {
     if (!entry) return
     const symbol = normalizeSymbolForKey(entry.symbol, "stock")
     if (!symbol || typeof entry.price !== "number") return
-    updatePrice("stock", symbol, entry.price, "fmp")
+    updatePrice("stock", symbol, entry.price, "fmp", {
+      bid: entry.bid,
+      ask: entry.ask,
+      volume: entry.volume,
+    })
   })
 }
 
@@ -558,7 +640,11 @@ async function pollForexPrices() {
     if (!entry) return
     const symbol = normalizeSymbolForKey(entry.symbol, "forex")
     if (!symbol || typeof entry.price !== "number") return
-    updatePrice("forex", symbol, entry.price, "fmp")
+    updatePrice("forex", symbol, entry.price, "fmp", {
+      bid: entry.bid,
+      ask: entry.ask,
+      volume: entry.volume,
+    })
   })
 }
 
@@ -566,7 +652,27 @@ async function flushPrices() {
   if (!state.dirty) return
   state.dirty = false
 
-  const items = Array.from(state.priceCache.values())
+  const now = Date.now()
+  const items = Array.from(state.priceCache.values()).map((item) => {
+    const key = `${item.assetClass}:${item.symbol}`
+    const history = state.priceHistory.get(key) || []
+    const change1m = computeChangePct(history, 60 * 1000, now, item.price)
+    const change5m = computeChangePct(history, 5 * 60 * 1000, now, item.price)
+    const volatility1m = computeRangePct(history, 60 * 1000, now, item.price)
+    const volatility5m = computeRangePct(history, 5 * 60 * 1000, now, item.price)
+    const spreadPct =
+      typeof item.bid === "number" && typeof item.ask === "number" && item.price
+        ? ((item.ask - item.bid) / item.price) * 100
+        : undefined
+    return {
+      ...item,
+      change1m: change1m === null ? undefined : change1m,
+      change5m: change5m === null ? undefined : change5m,
+      volatility1m: volatility1m === null ? undefined : volatility1m,
+      volatility5m: volatility5m === null ? undefined : volatility5m,
+      spreadPct: spreadPct === undefined ? undefined : spreadPct,
+    }
+  })
   try {
     await db.doc("market/prices").set(
       {

@@ -158,6 +158,8 @@ export type MarketTradeTrendSnapshot = {
     news?: number
   }
   momentum?: {
+    change1m?: number
+    change5m?: number
     change15m?: number
     change1h?: number
     change24h?: number
@@ -185,6 +187,8 @@ export type MarketHotTrade = {
   confidence?: number
   primary?: boolean
   momentum?: {
+    change1m?: number
+    change5m?: number
     change15m?: number
     change1h?: number
     change24h?: number
@@ -195,6 +199,7 @@ export type MarketHotTrade = {
     buy?: number
     sell?: number
     strengthAvg?: number
+    recent?: number
     bots?: string[]
   }
   scoreComponents?: MarketTradeScoreComponents
@@ -267,6 +272,8 @@ export type MarketTrendItem = {
     score?: number
   }
   momentum?: {
+    change1m?: number
+    change5m?: number
     change15m?: number
     change1h?: number
     change24h?: number
