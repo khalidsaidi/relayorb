@@ -583,6 +583,12 @@ class BacktraderAdapter {
       return { status, state }
     }
 
+    const runConfig = this.resolveRunConfig()
+    const allowedSymbols = new Set(
+      (runConfig.symbols || []).map((item) => String(item).trim().toUpperCase())
+    )
+    const strategyPrefix = `${this.bot.id}-`
+
     const runEvent = await this.maybeRunStrategy()
     if (runEvent) {
       events.push(runEvent)
@@ -628,8 +634,17 @@ class BacktraderAdapter {
         : ""
       const signalsData = await this.request(`/signals${query}`)
       const rawSignals = Array.isArray(signalsData?.signals) ? signalsData.signals : []
+      const filteredSignals = rawSignals.filter((sig) => {
+        if (sig?.strategy_id) {
+          return String(sig.strategy_id).startsWith(strategyPrefix)
+        }
+        if (allowedSymbols.size === 0) return true
+        const symbol = sig?.symbol || sig?.data?.symbol
+        if (!symbol) return false
+        return allowedSymbols.has(String(symbol).trim().toUpperCase())
+      })
       
-      for (const sig of rawSignals) {
+      for (const sig of filteredSignals) {
         // Backtrader signals have: side, strength, message, price, timestamp, symbol
         const symbol = sig.symbol || sig.data?.symbol || "unknown"
         
@@ -649,7 +664,7 @@ class BacktraderAdapter {
           },
         }
         
-        const key = JSON.stringify({ symbol, side: sig.side, message: sig.message })
+        const key = JSON.stringify({ symbol, side: sig.side, message: sig.message, strategy_id: sig.strategy_id })
         if (this.signalDeduper.has(key)) continue
         this.signalDeduper.add(key)
         signals.push(signal)
