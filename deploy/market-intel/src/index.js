@@ -3730,19 +3730,58 @@ async function dispatchSignalRequests(db, picks, controls) {
     if (elapsed < intervalMs) return
   }
 
-  const symbols = uniqueList(
-    picks
-      .map((item) => normalizeSymbol(item.symbol))
-      .filter(Boolean)
-  )
+  const symbolBuckets = {
+    crypto: new Set(),
+    stock: new Set(),
+    forex: new Set(),
+  }
+
+  picks.forEach((item) => {
+    const assetClass = item?.assetClass
+    if (!assetClass || !symbolBuckets[assetClass]) return
+    const normalized =
+      assetClass === "stock" ? normalizeTicker(item.symbol) : normalizeSymbol(item.symbol)
+    if (!normalized) return
+    symbolBuckets[assetClass].add(normalized)
+  })
+
+  const symbols = uniqueList([
+    ...symbolBuckets.crypto,
+    ...symbolBuckets.stock,
+    ...symbolBuckets.forex,
+  ])
   if (symbols.length === 0) return
 
   const botsSnap = await db.collection("bots").get()
   const batch = db.batch()
 
+  const resolveBotAssetClasses = (botData = {}) => {
+    const preferred = typeof botData?.desiredConfig?.assetClass === "string"
+      ? [botData.desiredConfig.assetClass]
+      : []
+    const capabilities = Array.isArray(botData?.capabilities?.assetClasses)
+      ? botData.capabilities.assetClasses
+      : []
+    const engine = String(botData?.engine || "").toLowerCase()
+    const defaults =
+      engine === "freqtrade" ? ["crypto"] : engine === "backtrader" ? ["stock"] : []
+    const combined = preferred.length > 0 ? preferred : capabilities.length > 0 ? capabilities : defaults
+    return uniqueList(
+      combined
+        .map((asset) => String(asset || "").toLowerCase())
+        .filter((asset) => asset && symbolBuckets[asset])
+    )
+  }
+
   botsSnap.docs.forEach((doc) => {
     const botId = doc.id
     if (botId === MARKET_SIGNAL_BOT_ID) return
+    const botData = doc.data() || {}
+    const assetClasses = resolveBotAssetClasses(botData)
+    const payloadSymbols = uniqueList(
+      assetClasses.flatMap((assetClass) => Array.from(symbolBuckets[assetClass] || []))
+    )
+    if (payloadSymbols.length === 0) return
     const commandRef = db.collection("bots").doc(botId).collection("commands").doc()
     batch.set(commandRef, {
       type: "scan",
@@ -3750,8 +3789,9 @@ async function dispatchSignalRequests(db, picks, controls) {
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       requestedBy: "market-intel",
       payload: {
-        symbols,
+        symbols: payloadSymbols,
         horizon: controls?.trendHorizon || "15m",
+        assetClass: assetClasses.length === 1 ? assetClasses[0] : undefined,
       },
     })
   })

@@ -560,6 +560,33 @@ class BacktraderAdapter {
     this.lastRunId = null
   }
 
+  normalizeSide(raw) {
+    const side = String(raw || "").toLowerCase()
+    if (side === "buy" || side === "sell" || side === "hold") return side
+    return null
+  }
+
+  buildSignal(sig, fallbackAssetClass) {
+    const side = this.normalizeSide(sig?.side)
+    if (!side || side === "hold") return null
+    const symbol = sig?.symbol || sig?.data?.symbol || "unknown"
+    return {
+      symbol,
+      side,
+      strength: typeof sig.strength === "number" ? sig.strength : 0.65,
+      message: sig.message || `${side} signal for ${symbol}`,
+      data: {
+        pair: symbol,
+        symbol: symbol,
+        source: "backtrader",
+        price: sig.price,
+        indicators: sig.rsi ? { rsi: sig.rsi, sma: sig.sma } : undefined,
+        assetClass: sig.assetClass || fallbackAssetClass,
+        raw: sig,
+      },
+    }
+  }
+
   async request(endpoint, { method = "GET", body } = {}) {
     const headers = {}
     if (body) headers["Content-Type"] = "application/json"
@@ -662,26 +689,15 @@ class BacktraderAdapter {
       }
 
       for (const sig of filteredSignals) {
-        // Backtrader signals have: side, strength, message, price, timestamp, symbol
-        const symbol = sig.symbol || sig.data?.symbol || "unknown"
-        
-        if (!sig.side || sig.side === "hold") continue
-        
-        const signal = {
-          side: sig.side,
-          strength: typeof sig.strength === "number" ? sig.strength : 0.65,
-          message: sig.message || `${sig.side} signal for ${symbol}`,
-          data: {
-            pair: symbol,
-            symbol: symbol,
-            source: "backtrader",
-            price: sig.price,
-            indicators: sig.rsi ? { rsi: sig.rsi, sma: sig.sma } : undefined,
-            raw: sig,
-          },
-        }
-        
-        const key = JSON.stringify({ symbol, side: sig.side, message: sig.message, strategy_id: sig.strategy_id })
+        const signal = this.buildSignal(sig, runConfig.assetClass)
+        if (!signal) continue
+        const symbol = signal.symbol || sig.symbol || sig.data?.symbol || "unknown"
+        const key = JSON.stringify({
+          symbol,
+          side: signal.side,
+          message: sig.message,
+          strategy_id: sig.strategy_id,
+        })
         if (this.signalDeduper.has(key)) continue
         this.signalDeduper.add(key)
         signals.push(signal)
@@ -764,6 +780,7 @@ class BacktraderAdapter {
         }
         
         const scanId = `${this.bot.id}-scan-${Date.now()}`
+        this.lastRunId = scanId
         await this.request("/run", {
           method: "POST",
           body: {
@@ -777,14 +794,32 @@ class BacktraderAdapter {
           },
         })
         
-        // Poll for signals after a delay
-        await new Promise(resolve => setTimeout(resolve, 5000))
-        const signalsData = await this.request("/signals")
-        const scanSignals = Array.isArray(signalsData?.signals) 
-          ? signalsData.signals.filter(s => s.strategy_id === scanId)
-          : []
+        const waitMs = Math.min(60000, Math.max(8000, symbols.length * 750))
+        await new Promise((resolve) => setTimeout(resolve, waitMs))
+        const signalsData = await this.request(
+          `/signals?strategy_id=${encodeURIComponent(scanId)}`
+        )
+        const rawSignals = Array.isArray(signalsData?.signals) ? signalsData.signals : []
+        const scannedSignals = []
+        for (const sig of rawSignals) {
+          const signal = this.buildSignal(
+            sig,
+            payload?.assetClass || this.bot.desiredConfig?.assetClass || "stock"
+          )
+          if (!signal) continue
+          const symbol = signal.symbol || sig.symbol || sig.data?.symbol || "unknown"
+          const key = JSON.stringify({
+            symbol,
+            side: signal.side,
+            message: sig.message,
+            strategy_id: sig.strategy_id,
+          })
+          if (this.signalDeduper.has(key)) continue
+          this.signalDeduper.add(key)
+          scannedSignals.push(signal)
+        }
         
-        return { signals: scanSignals.length }
+        return { status: "online", signals: scannedSignals }
       default:
         throw new Error(`Unsupported command: ${type}`)
     }
@@ -956,7 +991,15 @@ function startCommandListener(db, bot, adapter) {
 
       try {
         if (commandType === "scan" || commandType === "analyze") {
-          const update = await adapter.poll()
+          let update = null
+          try {
+            update = await adapter.executeCommand(commandType, payload)
+          } catch (err) {
+            update = await adapter.poll()
+          }
+          if (!update || typeof update !== "object") {
+            update = {}
+          }
           if (Array.isArray(payload.symbols) && payload.symbols.length > 0) {
             const allowed = new Set(
               payload.symbols.map(normalizeSignalSymbol).filter(Boolean)
