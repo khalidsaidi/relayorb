@@ -1412,53 +1412,6 @@ export default function DashboardPage() {
     return items
   }, [signalPerformance])
 
-  const streamBuckets = useMemo(
-    () => ({
-      crypto: uniqueList([
-        ...featuredCrypto,
-        ...cryptoSelection,
-        ...primaryCryptoSelection,
-      ]),
-      stock: uniqueList([
-        ...featuredStocks,
-        ...stockSelection,
-        ...primaryStockSelection,
-      ]),
-      forex: uniqueList([
-        ...featuredFx,
-        ...forexSelection,
-        ...primaryForexSelection,
-      ]),
-    }),
-    [
-      featuredCrypto,
-      featuredStocks,
-      featuredFx,
-      cryptoSelection,
-      stockSelection,
-      forexSelection,
-      primaryCryptoSelection,
-      primaryStockSelection,
-      primaryForexSelection,
-    ]
-  )
-
-  const streamItems = useMemo(
-    () => [
-      ...hotTrades,
-      ...(popular?.items ?? []),
-      ...trendingItems,
-      ...performanceItems,
-    ],
-    [hotTrades, popular?.items, trendingItems, performanceItems]
-  )
-
-  useStreamSymbols("dashboard", {
-    items: streamItems,
-    buckets: streamBuckets,
-    enabled: !loadingHotTrades,
-  })
-
   const cryptoSuggestions = useMemo(
     () =>
       uniqueList(
@@ -1580,6 +1533,61 @@ export default function DashboardPage() {
       ),
     [forexSuggestions, forexSearch, forexSelection]
   )
+
+  const streamBuckets = useMemo(
+    () => ({
+      crypto: uniqueList([
+        ...featuredCrypto,
+        ...cryptoSuggestions,
+        ...cryptoSelection,
+        ...primaryCryptoSelection,
+      ]),
+      stock: uniqueList([
+        ...featuredStocks,
+        ...stockSearchSuggestions,
+        ...quickStockMatches,
+        ...stockSelection,
+        ...primaryStockSelection,
+      ]),
+      forex: uniqueList([
+        ...featuredFx,
+        ...forexSuggestions,
+        ...forexSelection,
+        ...primaryForexSelection,
+      ]),
+    }),
+    [
+      featuredCrypto,
+      featuredStocks,
+      featuredFx,
+      cryptoSuggestions,
+      stockSearchSuggestions,
+      quickStockMatches,
+      forexSuggestions,
+      cryptoSelection,
+      stockSelection,
+      forexSelection,
+      primaryCryptoSelection,
+      primaryStockSelection,
+      primaryForexSelection,
+    ]
+  )
+
+  const streamItems = useMemo(
+    () => [
+      ...hotTrades,
+      ...(popular?.items ?? []),
+      ...trendingItems,
+      ...performanceItems,
+    ],
+    [hotTrades, popular?.items, trendingItems, performanceItems]
+  )
+
+  useStreamSymbols("dashboard", {
+    items: streamItems,
+    buckets: streamBuckets,
+    enabled: !loadingHotTrades,
+  })
 
   const normalizedCryptoSearch = normalizeSymbol(cryptoSearch)
   const normalizedStockSearch = normalizeTicker(stockSearch)
