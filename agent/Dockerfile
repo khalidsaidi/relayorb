@@ -2,9 +2,10 @@ FROM node:20-slim
 
 WORKDIR /app
 
-COPY package.json ./
+COPY agent/package.json ./
 RUN npm install --omit=dev
 
-COPY src ./src
+COPY agent/src ./src
+COPY adapters ./adapters
 
 CMD ["node", "src/index.js"]
