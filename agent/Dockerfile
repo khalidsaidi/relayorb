@@ -6,6 +6,6 @@ COPY agent/package.json ./
 RUN npm install --omit=dev
 
 COPY agent/src ./src
-COPY adapters ./adapters
+COPY adapters /adapters
 
 CMD ["node", "src/index.js"]
