@@ -23,19 +23,20 @@ function formatValue(value?: number) {
 }
 
 function buildHotTradeComponents(components: MarketTradeScoreComponents): ComponentRow[] {
+  const penalties = components.penalties || {}
   const rows: ComponentRow[] = [
     { key: "momentum", label: "Momentum", value: components.momentum ?? 0 },
     { key: "consensus", label: "Bot consensus", value: components.consensus ?? 0 },
     { key: "liquidity", label: "Liquidity", value: components.liquidity ?? 0 },
     { key: "news", label: "News sentiment", value: components.news ?? 0 },
-    { key: "shortMomentum", label: "Short momentum (1m/5m)", value: components.shortMomentum ?? 0 },
-    { key: "strength", label: "Signal strength", value: components.strength ?? 0 },
-    { key: "recency", label: "Signal recency", value: components.recency ?? 0 },
-    { key: "watchlist", label: "Watchlist boost", value: components.watchlist ?? 0 },
-    { key: "primary", label: "Primary boost", value: components.primary ?? 0 },
-    { key: "base", label: "Base", value: components.base ?? 0 },
+    { key: "universe", label: "Universe boost", value: components.universe ?? 0 },
+    { key: "penalty-spread", label: "Spread penalty", value: penalties.spread ?? 0 },
+    { key: "penalty-liquidity", label: "Liquidity penalty", value: penalties.liquidity ?? 0 },
+    { key: "penalty-price", label: "Price penalty", value: penalties.price ?? 0 },
+    { key: "penalty-volume", label: "Volume penalty", value: penalties.volume ?? 0 },
+    { key: "penalty-sentiment", label: "Sentiment penalty", value: penalties.sentiment ?? 0 },
   ]
-  return rows.filter((row) => Number.isFinite(row.value))
+  return rows.filter((row) => typeof row.value === "number" && row.value !== 0)
 }
 
 function buildTrendComponents(components: {
@@ -63,7 +64,20 @@ export function ScoreBreakdownDialog({ open, onOpenChange, asset }: ScoreBreakdo
 
   const componentRows = useMemo(() => {
     if (scoreComponents) return buildHotTradeComponents(scoreComponents)
-    if (trendComponents) return buildTrendComponents(trendComponents)
+    if (trendComponents) {
+      const hasNewShape =
+        "consensus" in trendComponents ||
+        "liquidity" in trendComponents ||
+        "penalties" in trendComponents
+      return hasNewShape
+        ? buildHotTradeComponents(trendComponents as MarketTradeScoreComponents)
+        : buildTrendComponents(trendComponents as {
+            momentum?: number
+            volume?: number
+            signals?: number
+            news?: number
+          })
+    }
     return []
   }, [scoreComponents, trendComponents])
 

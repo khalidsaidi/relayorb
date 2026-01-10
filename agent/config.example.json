@@ -54,26 +54,6 @@
       }
     },
     {
-      "id": "alphavantage-1",
-      "name": "Alpha Vantage Stocks (Global/Canada)",
-      "engine": "alphavantage",
-      "pollIntervalSeconds": 300,
-      "desiredConfig": {
-        "mode": "signal",
-        "assetClass": "stock",
-        "symbols": ["AAPL", "MSFT", "NVDA", "TSLA", "META", "GOOGL", "AMZN", "AMD"],
-        "risk": {
-          "maxPositionSize": 10000,
-          "maxDailyLoss": 500
-        }
-      },
-      "capabilities": {
-        "assetClasses": ["stock"],
-        "timeframes": ["1d"],
-        "modes": ["signal"]
-      }
-    },
-    {
       "id": "oanda-1",
       "name": "OANDA Forex",
       "engine": "oanda",
@@ -122,6 +102,8 @@
         ],
         "strategy": "default"
       },
+      "eventTrigger": true,
+      "eventCommand": "scan",
       "capabilities": {
         "assetClasses": ["stock"],
         "timeframes": ["15m", "1h", "4h", "1d"],
@@ -154,6 +136,8 @@
         ],
         "strategy": "default"
       },
+      "eventTrigger": true,
+      "eventCommand": "scan",
       "capabilities": {
         "assetClasses": ["forex"],
         "timeframes": ["15m", "1h", "4h", "1d"],

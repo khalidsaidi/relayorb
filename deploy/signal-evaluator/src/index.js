@@ -1,5 +1,6 @@
 const admin = require("firebase-admin")
 const { adjustEvaluationTime, isMarketOpen } = require("./marketHours")
+const { createClient } = require("redis")
 
 const HORIZONS = {
   "1h": 60,
@@ -36,17 +37,16 @@ const PAIR_QUOTES = new Set([
   "NZD",
 ])
 
-const FMP_STABLE_BASE_URL = "https://financialmodelingprep.com/stable"
-
 const config = {
   projectId:
     process.env.FIREBASE_PROJECT_ID ||
     process.env.GCLOUD_PROJECT ||
     process.env.GOOGLE_CLOUD_PROJECT ||
     "relayorb",
-  fmpKey: process.env.FMP_API_KEY || "",
-  alphaVantageKey: process.env.ALPHAVANTAGE_API_KEY || "",
-  alphaThrottleMs: parseInt(process.env.ALPHAVANTAGE_THROTTLE_MS || "12000", 10),
+  marketDataGatewayUrl: process.env.MARKET_DATA_GATEWAY_URL || "",
+  redisUrl: process.env.REDIS_URL || "",
+  redisPrefix: process.env.REDIS_PREFIX || "relayorb",
+  redisLatestMaxAgeMs: parseInt(process.env.REDIS_LATEST_MAX_AGE_MS || "120000", 10),
   evalLookbackHours: parseInt(process.env.EVAL_LOOKBACK_HOURS || "168", 10),
   evalMaxSignals: parseInt(process.env.EVAL_MAX_SIGNALS || "120", 10),
   aggLookbackDays: parseInt(process.env.EVAL_AGG_LOOKBACK_DAYS || "30", 10),
@@ -56,25 +56,25 @@ const config = {
   maxSymbolResults: parseInt(process.env.EVAL_SYMBOL_RESULT_LIMIT || "8", 10),
   maxStockSymbols: parseInt(process.env.EVAL_MAX_STOCK_SYMBOLS || "8", 10),
   maxFxPairs: parseInt(process.env.EVAL_MAX_FX_PAIRS || "8", 10),
+  runId: process.env.RUN_ID || "",
+  firestoreRunField: process.env.FIRESTORE_RUN_FIELD || "runId",
 }
 
 const caches = {
   binance: new Map(),
-  stocks: new Map(),
-  stocksIntraday: new Map(),
-  forex: new Map(),
-  forexIntraday: new Map(),
   fmpStocksDaily: new Map(),
   fmpStocksIntraday: new Map(),
   fmpForexDaily: new Map(),
   fmpForexIntraday: new Map(),
 }
 
-let alphaLastRequestAt = 0
 let marketPriceCache = null
 let marketPriceCacheAt = 0
 const MARKET_PRICE_CACHE_MS = 60 * 1000
 const REFERENCE_TOLERANCE_MS = 5 * 60 * 1000
+
+let redis = null
+let redisReady = false
 
 function parseNumber(value) {
   const parsed = Number(value)
@@ -89,8 +89,57 @@ function parseTimestamp(value) {
   return Number.isFinite(parsed.getTime()) ? parsed : null
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+function resolveRedisKey(suffix) {
+  const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
+  return `${prefix}${suffix}`
+}
+
+async function initRedis() {
+  if (!config.redisUrl) return null
+  const client = createClient({ url: config.redisUrl })
+  client.on("error", (err) => {
+    const message = err?.message ? String(err.message) : "Unknown error"
+    console.error("Redis error:", message)
+  })
+  try {
+    await client.connect()
+    redisReady = true
+    console.log("Redis connected")
+    return client
+  } catch (err) {
+    console.error("Redis connection failed:", err.message)
+    redisReady = false
+    return null
+  }
+}
+
+async function readRedisJson(key) {
+  if (!redis || !redisReady) return null
+  try {
+    const raw = await redis.get(key)
+    if (!raw) return null
+    return JSON.parse(raw)
+  } catch (err) {
+    console.error("Redis read failed:", err.message)
+    return null
+  }
+}
+
+async function loadRedisPriceSnapshot() {
+  const payload = await readRedisJson(resolveRedisKey("prices:latest"))
+  if (!payload || !Array.isArray(payload.items)) return null
+  const updatedAt = parseTimestamp(payload.updatedAt)
+  if (updatedAt && Date.now() - updatedAt.getTime() > config.redisLatestMaxAgeMs) {
+    return null
+  }
+  const map = new Map()
+  payload.items.forEach((item) => {
+    const key = getSnapshotKey(item.assetClass, item.symbol)
+    const price = parseNumber(item.price)
+    if (!key || price === null) return
+    map.set(key, { price, source: item.source || payload?.meta?.source || "redis" })
+  })
+  return { map, updatedAt: updatedAt || null }
 }
 
 function looksLikePair(left, right) {
@@ -192,27 +241,28 @@ async function fetchJson(url) {
   return res.json()
 }
 
-async function fetchAlphaJson(url) {
-  if (!config.alphaVantageKey) return null
-  const throttleMs = Math.max(config.alphaThrottleMs, 0)
-  if (throttleMs > 0) {
-    const waitMs = alphaLastRequestAt + throttleMs - Date.now()
-    if (waitMs > 0) {
-      await sleep(waitMs)
-    }
+function resolveGatewayBase() {
+  if (!config.marketDataGatewayUrl) {
+    throw new Error("MARKET_DATA_GATEWAY_URL is not configured")
   }
-  alphaLastRequestAt = Date.now()
-  const data = await fetchJson(url)
-  if (
-    data &&
-    typeof data === "object" &&
-    (data.Note || data["Error Message"] || data.Information)
-  ) {
-    throw new Error(
-      `Alpha Vantage throttled: ${data.Note || data["Error Message"] || data.Information}`
-    )
+  return config.marketDataGatewayUrl.endsWith("/")
+    ? config.marketDataGatewayUrl
+    : `${config.marketDataGatewayUrl}/`
+}
+
+function buildGatewayUrl(path, params) {
+  const base = resolveGatewayBase()
+  const normalizedPath = String(path || "").replace(/^\/+/, "")
+  const url = new URL(normalizedPath, base)
+  if (params) {
+    url.search = new URLSearchParams(params).toString()
   }
-  return data
+  return url.toString()
+}
+
+async function fetchGatewayJson(path, params) {
+  const url = buildGatewayUrl(path, params)
+  return fetchJson(url)
 }
 
 function normalizeFmpSymbol(symbol, assetClass) {
@@ -248,20 +298,21 @@ function getFmpCache(assetClass, interval) {
 }
 
 async function fetchFmpSeries(symbol, assetClass, interval) {
-  if (!config.fmpKey) return null
+  if (!config.marketDataGatewayUrl) return null
   const normalized = normalizeFmpSymbol(symbol, assetClass)
   if (!normalized) return null
   const cache = getFmpCache(assetClass, interval)
   const key = `${normalized}|${interval}`
   if (cache.has(key)) return cache.get(key)
 
-  const url = new URL(`${FMP_STABLE_BASE_URL}/historical-chart/${interval}`)
-  url.searchParams.set("symbol", normalized)
-  url.searchParams.set("apikey", config.fmpKey)
-
   try {
-    const data = await fetchJson(url.toString())
-    const series = parseFmpSeries(data)
+    const data = await fetchGatewayJson("/v1/fmp/candles", {
+      symbol,
+      assetClass,
+      interval,
+      limit: "500",
+    })
+    const series = parseFmpSeries(data?.candles)
     cache.set(key, series)
     return series
   } catch (err) {
@@ -278,26 +329,25 @@ async function getFmpPrice(symbol, assetClass, interval, timestampMs) {
   return { price: close, source: "fmp" }
 }
 
-function toDateKey(date) {
-  return date.toISOString().slice(0, 10)
-}
-
 async function fetchBinanceClose(symbol, interval, bucketStart) {
   const key = `${symbol}|${interval}|${bucketStart}`
   if (caches.binance.has(key)) return caches.binance.get(key)
+  if (!config.marketDataGatewayUrl) {
+    caches.binance.set(key, null)
+    return null
+  }
 
   const intervalMs = interval === "1h" ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000
-  const url = new URL("https://api.binance.com/api/v3/klines")
-  url.search = new URLSearchParams({
-    symbol,
-    interval,
-    startTime: String(bucketStart),
-    endTime: String(bucketStart + intervalMs),
-    limit: "1",
-  }).toString()
 
   try {
-    const data = await fetchJson(url.toString())
+    const payload = await fetchGatewayJson("/v1/binance/klines", {
+      symbol,
+      interval,
+      startTime: String(bucketStart),
+      endTime: String(bucketStart + intervalMs),
+      limit: "1",
+    })
+    const data = Array.isArray(payload?.data) ? payload.data : []
     if (!Array.isArray(data) || data.length === 0) {
       caches.binance.set(key, null)
       return null
@@ -334,74 +384,6 @@ async function getCryptoPrice(pair, timestampMs, horizonKey) {
   return null
 }
 
-async function fetchAlphaDailySeries(symbol) {
-  if (caches.stocks.has(symbol)) return caches.stocks.get(symbol)
-  if (!config.alphaVantageKey) return null
-
-  const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${encodeURIComponent(
-    symbol
-  )}&apikey=${config.alphaVantageKey}`
-  try {
-    const data = await fetchAlphaJson(url)
-    const series = data?.["Time Series (Daily)"]
-    if (!series || typeof series !== "object") {
-      caches.stocks.set(symbol, null)
-      return null
-    }
-    const entries = Object.entries(series).map(([date, values]) => ({
-      date,
-      close: parseNumber(values["4. close"]),
-    }))
-    caches.stocks.set(symbol, entries)
-    return entries
-  } catch (err) {
-    caches.stocks.set(symbol, null)
-    return null
-  }
-}
-
-async function fetchAlphaIntradaySeries(symbol, interval = "60min") {
-  const key = `${symbol}|${interval}`
-  if (caches.stocksIntraday.has(key)) return caches.stocksIntraday.get(key)
-  if (!config.alphaVantageKey) return null
-
-  const url = `https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY&symbol=${encodeURIComponent(
-    symbol
-  )}&interval=${interval}&apikey=${config.alphaVantageKey}`
-  try {
-    const data = await fetchAlphaJson(url)
-    const series = data?.[`Time Series (${interval})`]
-    if (!series || typeof series !== "object") {
-      caches.stocksIntraday.set(key, null)
-      return null
-    }
-    const entries = Object.entries(series).map(([time, values]) => ({
-      time: new Date(time).getTime(),
-      close: parseNumber(values["4. close"]),
-    }))
-    caches.stocksIntraday.set(key, entries)
-    return entries
-  } catch (err) {
-    caches.stocksIntraday.set(key, null)
-    return null
-  }
-}
-
-function findDailyClose(entries, targetDate) {
-  if (!Array.isArray(entries) || entries.length === 0) return null
-  const target = new Date(targetDate).getTime()
-  let best = null
-  let bestTime = -Infinity
-  for (const entry of entries) {
-    const time = new Date(entry.date).getTime()
-    if (time <= target && time > bestTime && entry.close) {
-      bestTime = time
-      best = entry.close
-    }
-  }
-  return best
-}
-
 function findIntradayClose(entries, targetTime) {
   if (!Array.isArray(entries) || entries.length === 0) return null
   const target = typeof targetTime === "number" ? targetTime : new Date(targetTime).getTime()
@@ -418,112 +400,15 @@ function findIntradayClose(entries, targetTime) {
 }
 
 async function getStockPrice(symbol, timestampMs) {
-  const fmpResult = await getFmpPrice(symbol, "stock", "1day", timestampMs)
-  if (fmpResult) return fmpResult
-
-  const series = await fetchAlphaDailySeries(symbol)
-  if (!series) return null
-  const dateKey = toDateKey(new Date(timestampMs))
-  const close = findDailyClose(series, dateKey)
-  if (!close) return null
-  return { price: close, source: "alphavantage" }
+  return getFmpPrice(symbol, "stock", "1day", timestampMs)
 }
 
 async function getStockIntradayPrice(symbol, timestampMs) {
-  const fmpResult = await getFmpPrice(symbol, "stock", "15min", timestampMs)
-  if (fmpResult) return fmpResult
-
-  const series = await fetchAlphaIntradaySeries(symbol, "60min")
-  if (!series) return null
-  const close = findIntradayClose(series, timestampMs)
-  if (!close) return null
-  return { price: close, source: "alphavantage" }
-}
-
-async function fetchForexSeries(base, quote, startDate, endDate) {
-  const key = `${base}/${quote}|${startDate}|${endDate}`
-  if (caches.forex.has(key)) return caches.forex.get(key)
-
-  const url = new URL(`${startDate}..${endDate}`, "https://api.frankfurter.app")
-  url.search = new URLSearchParams({
-    from: base,
-    to: quote,
-  }).toString()
-
-  try {
-    const data = await fetchJson(url.toString())
-    const rates = data?.rates || {}
-    caches.forex.set(key, rates)
-    return rates
-  } catch (err) {
-    caches.forex.set(key, null)
-    return null
-  }
-}
-
-async function getForexRates(pair, startDateKey, endDateKey) {
-  const [base, quote] = pair.split("/")
-  if (!base || !quote) return null
-  const rates = await fetchForexSeries(base, quote, startDateKey, endDateKey)
-  if (!rates) return null
-  return { rates, quote }
-}
-
-async function fetchFxIntradaySeries(base, quote, interval = "60min") {
-  const key = `${base}/${quote}|${interval}`
-  if (caches.forexIntraday.has(key)) return caches.forexIntraday.get(key)
-  if (!config.alphaVantageKey) return null
-
-  const url = `https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=${encodeURIComponent(
-    base
-  )}&to_symbol=${encodeURIComponent(quote)}&interval=${interval}&apikey=${config.alphaVantageKey}`
-  try {
-    const data = await fetchAlphaJson(url)
-    const series = data?.[`Time Series FX (${interval})`]
-    if (!series || typeof series !== "object") {
-      caches.forexIntraday.set(key, null)
-      return null
-    }
-    const entries = Object.entries(series).map(([time, values]) => ({
-      time: new Date(time).getTime(),
-      close: parseNumber(values["4. close"]),
-    }))
-    caches.forexIntraday.set(key, entries)
-    return entries
-  } catch (err) {
-    caches.forexIntraday.set(key, null)
-    return null
-  }
+  return getFmpPrice(symbol, "stock", "15min", timestampMs)
 }
 
 async function getFxIntradayPrice(pair, timestampMs) {
-  const fmpResult = await getFmpPrice(pair, "forex", "15min", timestampMs)
-  if (fmpResult) return fmpResult
-
-  const [base, quote] = pair.split("/")
-  if (!base || !quote) return null
-  const series = await fetchFxIntradaySeries(base, quote, "60min")
-  if (!series) return null
-  const close = findIntradayClose(series, timestampMs)
-  if (!close) return null
-  return { price: close, source: "alphavantage" }
-}
-
-function findForexClose(rates, targetDateKey, quote) {
-  if (!rates || !quote) return null
-  const target = new Date(targetDateKey).getTime()
-  const dates = Object.keys(rates)
-    .map((date) => ({ date, time: new Date(date).getTime() }))
-    .filter((entry) => Number.isFinite(entry.time))
-    .sort((a, b) => a.time - b.time)
-  let best = null
-  for (const entry of dates) {
-    if (entry.time <= target) {
-      const rate = rates[entry.date]?.[quote]
-      if (rate) best = Number(rate)
-    }
-  }
-  return best
+  return getFmpPrice(pair, "forex", "15min", timestampMs)
 }
 
 function getSnapshotKey(assetClass, symbol) {
@@ -564,7 +449,8 @@ async function getMarketPriceSnapshot(db) {
   }
 
   try {
-    const live = await loadPriceDocument(db, "market/prices")
+    const redisSnapshot = await loadRedisPriceSnapshot()
+    const live = redisSnapshot || (await loadPriceDocument(db, "market/prices"))
     const snapshot =
       live && live.map && live.map.size > 0
         ? live
@@ -721,25 +607,6 @@ async function evaluateSignals(db) {
             priceAtSignal = fmpStart.price ?? null
             priceAtHorizon = fmpEnd.price ?? null
             source = fmpStart.source || fmpEnd.source || null
-          } else {
-            const startDateKey = toDateKey(new Date(adjustedStartMs))
-            const endDateKey = toDateKey(new Date(adjustedHorizonMs))
-            const forexData = await getForexRates(
-              classification.symbol,
-              startDateKey,
-              endDateKey
-            )
-            priceAtSignal = findForexClose(
-              forexData?.rates,
-              startDateKey,
-              forexData?.quote
-            )
-            priceAtHorizon = findForexClose(
-              forexData?.rates,
-              endDateKey,
-              forexData?.quote
-            )
-            source = forexData ? "frankfurter" : null
           }
         }
       }
@@ -1086,6 +953,7 @@ async function buildPerformanceReport(db) {
         meta: {
           lookbackDays: config.aggLookbackDays,
           minSymbolSignals: config.minSymbolSignals,
+          runId: config.runId || null,
         },
       },
     }
@@ -1105,6 +973,7 @@ async function buildPerformanceReport(db) {
         signalsScanned: snap.size,
         minBotSignals: config.minBotSignals,
         minSymbolSignals: config.minSymbolSignals,
+        runId: config.runId || null,
       },
     },
     { merge: true }
@@ -1122,13 +991,18 @@ async function buildPerformanceReport(db) {
 
 async function run() {
   const db = initAdmin()
-  console.log("Signal evaluator run started")
+  redis = await initRedis()
+  console.log("se_run_start", { runId: config.runId || null })
 
   const evaluation = await evaluateSignals(db)
-  console.log("Signal evaluator updated", evaluation)
+  console.log("se_eval_updated", { runId: config.runId || null, ...evaluation })
 
   await buildPerformanceReport(db)
-  console.log("Signal performance report updated")
+  console.log("se_performance_updated", { runId: config.runId || null })
+
+  if (redis) {
+    await redis.quit().catch(() => {})
+  }
 }
 
 run().catch((err) => {

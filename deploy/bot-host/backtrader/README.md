@@ -6,15 +6,15 @@ REST API wrapper for Backtrader trading framework. Runs on the VM alongside Freq
 
 - **Multi-asset**: Stocks and Forex
 - **Technical Analysis**: RSI + SMA indicators
-- **Data Sources**: FMP (primary) with Alpha Vantage fallback
+- **Data Sources**: FMP (primary)
 - **Signal Generation**: Automatic buy/sell signals based on technical indicators
 
 ## Setup
 
 1. **Environment Variables** (add to docker-compose.yml or .env):
 ```bash
+MARKET_DATA_GATEWAY_URL=... # recommended
 FMP_API_KEY=your_key_here
-ALPHAVANTAGE_API_KEY=optional_fallback_key
 ```
 
 2. **Build and Start**:

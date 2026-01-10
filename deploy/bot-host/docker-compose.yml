@@ -8,6 +8,12 @@ services:
       - RELAYORB_CONFIG_PATH=/config/config.json
       - NODE_ENV=production
       - RELAYORB_FREQTRADE_CONFIG=/relayorb/freqtrade/user_data/config.json
+      - REDIS_URL=${REDIS_URL:-}
+      - REDIS_PREFIX=${REDIS_PREFIX:-relayorb}
+      - RELAYORB_EVENT_CHANNEL=${RELAYORB_EVENT_CHANNEL:-}
+      - RELAYORB_EVENT_AUTO_SCAN=${RELAYORB_EVENT_AUTO_SCAN:-true}
+      - RELAYORB_EVENT_BATCH_LIMIT=${RELAYORB_EVENT_BATCH_LIMIT:-25}
+      - RELAYORB_EVENT_DEBOUNCE_MS=${RELAYORB_EVENT_DEBOUNCE_MS:-60000}
     volumes:
       - ./agent-config/config.json:/config/config.json:ro
       - ./secrets/service-account.json:/secrets/service-account.json:ro
@@ -51,8 +57,8 @@ services:
     restart: unless-stopped
     environment:
       - PORT=8080
+      - MARKET_DATA_GATEWAY_URL=${MARKET_DATA_GATEWAY_URL:-}
       - FMP_API_KEY=${FMP_API_KEY:-}
-      - ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY:-}
       - POLYGON_API_KEY=${POLYGON_API_KEY:-}
     volumes:
       - ./backtrader/data:/app/data

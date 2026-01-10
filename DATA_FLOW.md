@@ -1,16 +1,17 @@
 # RelayOrb Data Flow & Scoring System
 
-> ✅ **VERIFIED**: All formulas and data flow have been tested against actual code execution and real Firebase data.
+> ✅ **VERIFIED**: Data flow is aligned with current code execution and live Firebase data.
 
 ## Important Notes
 
-- **Hot trades scoring** ✅ Now includes news sentiment (-10 to +10 points)
-- **News sentiment** is used for:
-  - Hot trades scoring (direct component)
-  - Trend calculation (buildTrending)
-  - Action board boost (buildActionBoard)
-- **Signal weight** is dynamic (0.5x - 1.5x based on prediction accuracy)
-- **Current signalWeight**: 0.8 (accuracy: 38.2%)
+- **Single ScoreEngine** drives hot trades, trending, and action board (no extra boosts).
+- **Momentum normalization** uses rolling volatility (1m/5m range scaled by horizon) for cross-asset comparability.
+- **Momentum input** is a blend of 1m/5m “now” + horizon context (15m/1h/24h/7d).
+- **Signal weight** is dynamic (0.5x - 1.5x based on prediction accuracy) and decays by recency.
+- **Penalties** (spread/liquidity/price/volume/sentiment) are explicit in the score breakdown.
+- **Redis** holds hot price windows + snapshots; Firestore holds latest state/configs for the UI.
+- **Event trigger:** market-intel publishes `new_batch` to Redis so the agent + evaluator can react immediately.
+- **Durable fallback:** market-intel writes `batches/{batchId}` so services can catch up if pub/sub events are missed.
 
 ## Complete Data Flow
 
@@ -19,9 +20,9 @@
 │                    1. DATA COLLECTION                           │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  Crypto (CoinGecko) → Top 47 trending cryptos                  │
-│  Stocks (Alpha Vantage) → Top gainers/losers + watchlist       │
-│  Forex (Frankfurter) → EUR, GBP, JPY, AUD, CAD rates           │
+│  Crypto (CoinGecko via gateway) → Top trending list            │
+│  Price Streamer → Redis hot store (latest + snapshot window)   │
+│  Price Streamer → Firestore market/prices (UI live tags)       │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
@@ -44,7 +45,7 @@
 │                    3. NEWS SENTIMENT ANALYSIS                   │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  Marketaux API → Fetch news for top symbols                    │
+│  Marketaux (via gateway) → Fetch news for top symbols          │
 │  Analyze sentiment: -1.0 (bearish) to +1.0 (bullish)          │
 │  Score: sentiment * article_count                               │
 │  Cached: Updates every 30 minutes                               │
@@ -54,62 +55,38 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                    4. TREND CALCULATION                         │
 ├─────────────────────────────────────────────────────────────────┤
-│  ⚠️  Uses BOTH signals AND news sentiment                      │
+│  ✅ Uses the same ScoreEngine as hot trades                     │
 │                                                                  │
-│  For each asset across timeframes (1h, 4h, 24h, 7d):          │
+│  For each asset across horizons (15m, 1h, 24h, 7d):             │
 │                                                                  │
-│    Momentum Score = |change%| * scale (clamped 0-100)          │
-│    Volume Score = Percentile rank (0-100)                      │
-│    Signal Score = Bot consensus strength (0-100)                │
-│    News Score = Sentiment score (0-100)                         │
+│    Momentum input = blend(1m/5m, horizon change)                │
+│    Momentum strength = |momentum| / volatilityScale             │
+│    Consensus = signal bias * recency factor                     │
+│    Liquidity = volume rank or score (0–1)                       │
+│    News = normalized sentiment (if present)                     │
 │                                                                  │
-│    Trend Score = weighted average:                              │
-│      (momentum * w₁ + volume * w₂ + signals * w₃ + news * w₄) │
-│      / (w₁ + w₂ + w₃ + w₄)                                     │
+│    Score = momentum + consensus + liquidity + news + universe – penalties │
 │                                                                  │
-│    Default weights:                                             │
-│      momentum: 40%, volume: 20%, signals: 30%, news: 10%       │
+│    Default weights (normalized):                                │
+│      momentum: 50%, liquidity: 20%, consensus: 20%, news: 10%   │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │                    5. HOT TRADES SCORING                        │
 ├─────────────────────────────────────────────────────────────────┤
-│  ✅ Now includes news sentiment (updated 2026-01-08)          │
+│  ✅ Same ScoreEngine as trending (single scale across assets)   │
 │                                                                  │
-│  For each candidate asset:                                      │
+│  Score components:                                              │
+│    + Momentum (normalized by rolling volatility)                │
+│    + Bot consensus (bias * recency)                             │
+│    + Liquidity (volume/flow rank)                               │
+│    + News sentiment (if present)                                │
+│    + Universe boost (when mode = weighted_union)                │
+│    – Penalties: spread, low liquidity, low price/volume,        │
+│      and negative sentiment on dip profiles                     │
 │                                                                  │
-│    BASE SCORE = 20                                              │
-│                                                                  │
-│    + Momentum Score (0-40):                                     │
-│        max(0, change24h * direction) * 1.5                      │
-│                                                                  │
-│    + Short Momentum (0-10):                                     │
-│        max(0, change1h * direction) * 2                         │
-│                                                                  │
-│    + Consensus Score (-30 to +30):                              │
-│        ((buyWeight - sellWeight) / totalWeight) * 30 * signalWeight │
-│                                                                  │
-│    + Strength Score (0-20):                                     │
-│        avgSignalStrength * 20 * signalWeight                    │
-│                                                                  │
-│    + Recency Score (0-10):                                      │
-│        ((lookbackMinutes - ageMinutes) / lookbackMinutes) * 10 * signalWeight │
-│                                                                  │
-│    + Liquidity Score (0-10):                                    │
-│        10 - (liquidityRank / 5)                                 │
-│                                                                  │
-│    + Watchlist Bonus (0 or 8):                                  │
-│        8 if in watchlist, 0 otherwise                           │
-│                                                                  │
-│    + Primary Asset Bonus (0 or 12):                             │
-│        12 if primary asset, 0 otherwise                         │
-│                                                                  │
-│    + News Sentiment Score (-10 to +10):                          │
-│        sentiment * direction * 10                               │
-│        (positive sentiment boosts buy, negative boosts sell)   │
-│                                                                  │
-│    FINAL SCORE = clamp(sum, 0, 100)                             │
+│  FINAL SCORE = clamp(sum, 0, 100)                               │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
@@ -137,55 +114,22 @@
 
 ## Score Calculation Details
 
-### Hot Trades Score Components
+### ScoreEngine (hot trades + trending)
 
-**Base Score: 20 points** (always included)
+- **Momentum**: blend(1m/5m, horizon change) normalized by rolling volatility.
+- **Consensus**: bot bias * recency factor, scaled by `signalWeight`.
+- **Liquidity**: volume rank/score (0–1).
+- **News**: normalized sentiment when present.
+- **Universe**: watchlist boost when `weighted_union` is enabled.
+- **Penalties**: spread, low liquidity, low price/volume, and negative sentiment on dip profiles.
 
-#### 1. Momentum Score (0-40 points)
-- Calculates 24h price change in the trade direction (buy = positive, sell = negative)
-- Formula: `clamp(max(0, change24h * direction) * 1.5, 0, 40)`
-- Example: +10% change for buy signal = 15 points
-
-#### 2. Short Momentum (0-10 points)
-- Calculates 1h price change in trade direction
-- Formula: `clamp(max(0, change1h * direction) * 2, 0, 10)`
-- Example: +5% change = 10 points (capped)
-
-#### 3. Consensus Score (-30 to +30 points)
-- Measures bot signal agreement
-- Formula: `((buyWeight - sellWeight) / totalWeight) * 30 * signalWeight`
-- Weighted by bot accuracy (higher accuracy = more weight)
-- Positive = buy consensus, Negative = sell consensus
-- Example: 80% buy signals = +24 points (with signalWeight=1)
-
-#### 4. Strength Score (0-20 points)
-- Average signal strength from all bots (0.0 - 1.0)
-- Formula: `avgStrength * 20 * signalWeight`
-- Example: 0.8 avg strength = 16 points (with signalWeight=1)
-
-#### 5. Recency Score (0-10 points)
-- Newer signals are worth more
-- Formula: `((360 - ageMinutes) / 360) * 10 * signalWeight`
-- Example: 60 minutes old = 8.3 points
-
-#### 6. Liquidity Score (0-10 points)
-- Based on volume ranking (lower rank = higher liquidity)
-- Formula: `10 - (liquidityRank / 5)`
-- Example: Rank 10 = 8 points, Rank 50 = 0 points
-
-#### 7. Watchlist Bonus (0 or 8 points)
-- User-specified watchlist assets get bonus
-
-#### 8. Primary Asset Bonus (0 or 12 points)
-- Priority assets (BTC, ETH, major stocks) get bonus
+Score = sum(components) + sum(penalties) → clamp 0–100.
 
 ### Signal Weight Multiplier
 
-The `signalWeight` multiplies consensus, strength, and recency scores:
+The `signalWeight` multiplies the consensus component only:
 - Base: 1.0
 - Increases with prediction accuracy (up to ~1.5)
-- Formula: `1 + (hitRate - 0.5) * 0.5`
-- Example: 70% accuracy = 1.1x multiplier
 
 ### Bot Signal Aggregation
 
@@ -208,18 +152,7 @@ Signals from all bots are aggregated by symbol:
 
 ### Trend Score Calculation
 
-For each time horizon (1h, 4h, 24h, 7d):
-
-```
-Components:
-  - Momentum: |change%| * scale → 0-100
-  - Volume: Percentile rank → 0-100
-  - Signals: Bot consensus strength → 0-100
-  - News: Sentiment score → 0-100
-
-Trend Score = weighted average:
-  (momentum*0.4 + volume*0.2 + signals*0.3 + news*0.1)
-```
+Trend scoring reuses the same ScoreEngine across horizons (15m, 1h, 24h, 7d).
 
 Weights auto-tune based on prediction accuracy every 24 hours.
 

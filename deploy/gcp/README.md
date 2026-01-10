@@ -35,8 +35,8 @@ cp freqtrade/config.example.json freqtrade/config.json
 #   /opt/relayorb/deploy/bot-host/secrets/service-account.json
 
 # Provide market data keys for Backtrader (via /opt/relayorb/deploy/bot-host/.env or shell):
+#   MARKET_DATA_GATEWAY_URL=...
 #   FMP_API_KEY=...
-#   ALPHAVANTAGE_API_KEY=... (optional fallback)
 ```
 
 Start the stack:

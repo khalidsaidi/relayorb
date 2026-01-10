@@ -28,6 +28,11 @@ Private control deck for monitoring and commanding multiple trading-bot framewor
 - `bots/{botId}/signals/{signalId}`: trading signal feed
 - `bots/{botId}/commands/{commandId}`: command queue from UI
 
+## Hot Data Store
+
+For live prices and 15-minute movers, Redis is used as the hot store when `REDIS_URL` is configured.
+Firestore remains the latest-state store for UI subscriptions and configs.
+
 ## Commands
 
 The UI queues commands with:
@@ -60,7 +65,7 @@ The signal evaluator worker scores bot signals against real market outcomes and 
 accuracy metrics to `analytics/signalPerformance` for the dashboard.
 
 - Source: `deploy/signal-evaluator`
-- Requires `ALPHAVANTAGE_API_KEY` for stock evaluation.
+- Requires `MARKET_DATA_GATEWAY_URL` for centralized market data.
 
 ## Manual Refresh
 

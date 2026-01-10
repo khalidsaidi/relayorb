@@ -22,8 +22,14 @@ secrets/service-account.json
 
 3) Provide market data keys for Backtrader (via shell or a local `.env` file):
 ```bash
+export MARKET_DATA_GATEWAY_URL=...
 export FMP_API_KEY=...
-export ALPHAVANTAGE_API_KEY=... # optional fallback
+```
+
+Optional: enable event-triggered scans (market-intel new_batch):
+```bash
+export REDIS_URL=redis://10.19.89.107:6379
+export REDIS_PREFIX=relayorb
 ```
 
 4) Update `agent-config/config.json` with real credentials and ensure each bot `baseUrl` matches the Docker service name.

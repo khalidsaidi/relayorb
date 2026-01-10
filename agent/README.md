@@ -17,7 +17,7 @@ cp config.example.json config.json
 
 Key fields:
 - `bots[].id`: Firestore bot document ID.
-- `bots[].engine`: `freqtrade | backtrader | alpaca | alphavantage | oanda`.
+- `bots[].engine`: `freqtrade | backtrader | alpaca | oanda`.
 - `bots[].api.baseUrl`: Bot API base URL.
 - `bots[].api.username/password`: Auth credentials where required.
 - `bots[].desiredConfig`: Seed trading universe config (mode, exchange, pairs, timeframe).
@@ -33,6 +33,22 @@ The agent uses Firebase Admin credentials. Provide one of:
 
 Optional config sync env vars:
 - `RELAYORB_FREQTRADE_CONFIG` path to `config.json`
+
+Event-triggered scans (optional):
+- `REDIS_URL` to subscribe to market-intel batch events.
+- `REDIS_PREFIX` (default: relayorb).
+- `RELAYORB_EVENT_CHANNEL` (default: `<prefix>:events`).
+- `RELAYORB_EVENT_AUTO_SCAN` (default: true; set false to disable).
+- `RELAYORB_EVENT_BATCH_LIMIT` (default: 25 symbols per asset class).
+- `RELAYORB_EVENT_DEBOUNCE_MS` (default: 60000).
+- Per-bot overrides: `eventTrigger` (bool) and `eventCommand` (`scan` or `analyze`).
+- Optional run tagging: `RELAYORB_RUN_ID` or `RUN_ID`.
+- Batch fallback (durable) polling:
+  - `RELAYORB_BATCH_COLLECTION` (default: `batches`).
+  - `RELAYORB_BATCH_CONSUMER_ID` (default: `agent`).
+  - `RELAYORB_BATCH_POLL_ENABLED` (default: true).
+  - `RELAYORB_BATCH_POLL_INTERVAL_MS` (default: 60000).
+  - `RELAYORB_BATCH_POLL_LIMIT` (default: 3).
 
 ## Run locally
 ```bash

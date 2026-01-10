@@ -1,7 +1,7 @@
 {
   "name": "relayorb-chart-proxy",
   "version": "1.0.0",
-  "description": "Proxy for Alpha Vantage API to handle CORS and keep API key server-side",
+  "description": "Proxy for market data gateway chart candles",
   "main": "src/index.js",
   "engines": {
     "node": "18"

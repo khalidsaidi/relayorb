@@ -118,16 +118,18 @@ export type BotCommandDoc = {
 }
 
 export type MarketTradeScoreComponents = {
-  base?: number
   momentum?: number
-  shortMomentum?: number
   consensus?: number
-  strength?: number
-  recency?: number
   liquidity?: number
-  watchlist?: number
-  primary?: number
   news?: number
+  universe?: number
+  penalties?: {
+    spread?: number
+    liquidity?: number
+    price?: number
+    volume?: number
+    sentiment?: number
+  }
 }
 
 export type MarketTradeAnalysis = {
@@ -140,6 +142,7 @@ export type MarketUniverseMode =
   | "universe_only"
   | "movers_plus_universe"
   | "movers_filtered_by_universe"
+  | "weighted_union"
 
 export type MarketTradeRecommendation = {
   action?: "buy" | "hold" | "sell"
@@ -151,12 +154,7 @@ export type MarketTradeRecommendation = {
 export type MarketTradeTrendSnapshot = {
   horizon?: TrendHorizon
   score?: number
-  components?: {
-    momentum?: number
-    volume?: number
-    signals?: number
-    news?: number
-  }
+  components?: MarketTradeScoreComponents
   momentum?: {
     change1m?: number
     change5m?: number
@@ -250,6 +248,8 @@ export type TrendWeights = {
   momentum?: number
   volume?: number
   signals?: number
+  liquidity?: number
+  consensus?: number
   news?: number
 }
 
@@ -260,12 +260,9 @@ export type MarketTrendItem = {
   price?: number
   horizon: TrendHorizon
   score?: number
-  components?: {
-    momentum?: number
-    volume?: number
-    signals?: number
-    news?: number
-  }
+  confidence?: number
+  components?: MarketTradeScoreComponents
+  scoreComponents?: MarketTradeScoreComponents
   news?: {
     count?: number
     sentiment?: number

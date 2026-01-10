@@ -19,16 +19,17 @@ async function verifyDashboard() {
   if (htItems.length > 0) {
     const firstItem = htItems[0];
     const components = firstItem.scoreComponents || {};
-    const calculatedScore = (components.base || 0) + 
-      (components.momentum || 0) + 
-      (components.shortMomentum || 0) + 
+    const penalties = components.penalties || {};
+    const calculatedScore = (components.momentum || 0) + 
       (components.consensus || 0) + 
-      (components.strength || 0) + 
-      (components.recency || 0) + 
       (components.liquidity || 0) + 
-      (components.watchlist || 0) + 
-      (components.primary || 0) + 
-      (components.news || 0);
+      (components.news || 0) +
+      (components.universe || 0) +
+      (penalties.spread || 0) +
+      (penalties.liquidity || 0) +
+      (penalties.price || 0) +
+      (penalties.volume || 0) +
+      (penalties.sentiment || 0);
     const clampedScore = Math.min(Math.max(calculatedScore, 0), 100);
     
     console.log('   ✅ First item score check:');
@@ -36,7 +37,10 @@ async function verifyDashboard() {
     console.log('      - Calculated:', calculatedScore.toFixed(2));
     console.log('      - Clamped:', clampedScore.toFixed(2));
     console.log('      - Match:', Math.abs((firstItem.score || 0) - clampedScore) < 0.01 ? '✅ YES' : '❌ NO');
-    console.log('      - Components sum:', Object.values(components).reduce((a, b) => (a || 0) + (b || 0), 0).toFixed(2));
+    const componentsSum = Object.values(components)
+      .filter(value => typeof value === 'number')
+      .reduce((a, b) => (a || 0) + (b || 0), 0);
+    console.log('      - Components sum:', componentsSum.toFixed(2));
     
     // Check score components
     console.log('   ✅ Score components:', JSON.stringify(components, null, 2));
@@ -59,17 +63,21 @@ async function verifyDashboard() {
       // Verify first trending item score
       if (hData.crypto?.[0]) {
         const item = hData.crypto[0];
-        const components = item.components || {};
-        const calculatedScore = (components.momentum || 0) * (trData.weights?.momentum || 0) / 100 +
-          (components.volume || 0) * (trData.weights?.volume || 0) / 100 +
-          (components.signals || 0) * (trData.weights?.signals || 0) / 100 +
-          (components.news || 0) * (trData.weights?.news || 0) / 100;
-        const totalWeight = (trData.weights?.momentum || 0) + (trData.weights?.volume || 0) + 
-          (trData.weights?.signals || 0) + (trData.weights?.news || 0);
-        const weightedScore = totalWeight > 0 ? calculatedScore : 0;
+        const components = item.scoreComponents || item.components || {};
+        const penalties = components.penalties || {};
+        const calculatedScore = (components.momentum || 0) +
+          (components.consensus || 0) +
+          (components.liquidity || 0) +
+          (components.news || 0) +
+          (components.universe || 0) +
+          (penalties.spread || 0) +
+          (penalties.liquidity || 0) +
+          (penalties.price || 0) +
+          (penalties.volume || 0) +
+          (penalties.sentiment || 0);
         
-        if (Math.abs((item.score || 0) - weightedScore) > 1) {
-          console.log('   ⚠️  Score mismatch for', h + ':', item.symbol, '- Displayed:', item.score, 'Expected:', weightedScore.toFixed(2));
+        if (Math.abs((item.score || 0) - calculatedScore) > 1) {
+          console.log('   ⚠️  Score mismatch for', h + ':', item.symbol, '- Displayed:', item.score, 'Expected:', calculatedScore.toFixed(2));
         }
       }
     });
@@ -109,8 +117,10 @@ async function verifyDashboard() {
   console.log('   ✅ Exists:', controls.exists);
   if (ctrlData) {
     const trendWeights = ctrlData.trendWeights || {};
-    const weightSum = (trendWeights.momentum || 0) + (trendWeights.volume || 0) + 
-      (trendWeights.signals || 0) + (trendWeights.news || 0);
+    const weightSum = (trendWeights.momentum || 0) +
+      (trendWeights.liquidity || trendWeights.volume || 0) +
+      (trendWeights.consensus || trendWeights.signals || 0) +
+      (trendWeights.news || 0);
     console.log('   ✅ Trend Weights:', JSON.stringify(trendWeights));
     console.log('   ✅ Weight Sum:', weightSum + '%');
     console.log('   ✅ Valid:', weightSum === 100 ? '✅ YES' : '❌ NO (should sum to 100)');

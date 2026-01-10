@@ -1,6 +1,6 @@
 # Chart Proxy (Firebase Cloud Function)
 
-Proxy for Financial Modeling Prep (FMP) to handle CORS and keep the API key server-side.
+Proxy for the market data gateway to handle CORS for chart candles.
 
 ## Deployment
 
@@ -16,22 +16,15 @@ firebase deploy --only functions:chartProxy
 
 ### Option 2: Manual Deployment
 
-1. Ensure you have the FMP API key in Google Cloud Secret Manager:
-   ```bash
-   # If not already created:
-   echo "<FMP_API_KEY>" | gcloud secrets create relayorb-fmp-key --data-file=-
-   ```
-
-2. Deploy the function:
-   ```bash
-   cd deploy/chart-proxy
-   firebase deploy --only functions:chartProxy
-   ```
+```bash
+cd deploy/chart-proxy
+firebase deploy --only functions:chartProxy
+```
 
 ## Configuration
 
-The function reads the FMP API key from:
-- Environment variable: `FMP_API_KEY`
+The function reads the market data gateway URL from:
+- Environment variable: `MARKET_DATA_GATEWAY_URL`
 
 ## Frontend Configuration
 
@@ -73,14 +66,8 @@ Response:
 }
 ```
 
-## Supported Asset Classes
-
-- **Stocks**: FMP intraday support
-- **Forex**: FMP intraday support
-- **Crypto**: FMP intraday support (if enabled on your plan)
-
 ## Error Handling
 
-The proxy handles FMP errors and missing key errors.
+The proxy forwards gateway errors and missing configuration errors.
 
 All errors are returned as JSON with an `error` field.

@@ -3,9 +3,9 @@
 This worker pulls market data on a schedule, merges it with bot signals, and writes ranked `market/hotTrades`, `market/trending`, and `market/popular` docs into Firestore.
 
 ## Data sources
-- Crypto: CoinGecko + Binance intraday deltas (no key)
-- Stocks/TSX/FX: Live price snapshots from `market/prices` (price-streamer using FMP stable quotes)
-- News/Sentiment: Marketaux (stocks + crypto, optional)
+- Crypto: CoinGecko + Binance intraday deltas (via market-data-gateway)
+- Stocks/TSX/FX: Live price snapshots from Redis (price-streamer), with Firestore fallback
+- News/Sentiment: Marketaux (via market-data-gateway, optional)
 
 ## Universe controls
 The worker reads `market/universe` to prioritize watchlists and optional trending picks:
@@ -14,6 +14,7 @@ The worker reads `market/universe` to prioritize watchlists and optional trendin
   - `universe_only`
   - `movers_plus_universe`
   - `movers_filtered_by_universe`
+  - `weighted_union` (union + score boost for watchlisted symbols)
 - `crypto.symbols` (BTC/USDT, ETH/USDT)
 - `stocks.symbols` (AAPL, MSFT, NVDA)
 - `forex.pairs` (EUR/USD, USD/JPY)
@@ -44,6 +45,15 @@ Example `botWeights`:
 
 ## Environment variables
 - `FIREBASE_PROJECT_ID` (optional, defaults to Cloud Run project)
+- `MARKET_DATA_GATEWAY_URL` (required, centralized market data service)
+- `REDIS_URL` (recommended, hot price store for movers)
+- `REDIS_PREFIX` (default: `relayorb`)
+- `REDIS_LATEST_MAX_AGE_MS` (default: 120000)
+- `REDIS_EVENT_CHANNEL` (optional; defaults to `<prefix>:events`)
+- `BATCH_COLLECTION` (default: `batches`)
+- `CANDIDATE_PUBLISH_LIMIT` (default: 150)
+- `RUN_ID` (optional; tag for logs/metadata and batch ID override)
+- `FIRESTORE_RUN_FIELD` (default: `runId`)
 - `HOT_TRADES_LIMIT` (default: 12)
 - `BOT_SIGNAL_LOOKBACK_MINUTES` (default: 360)
 - `SIGNAL_DECAY_HALF_LIFE_MINUTES` (default: 60)
@@ -52,9 +62,6 @@ Example `botWeights`:
 - `CRYPTO_LIMIT` (default: 40)
 - `CRYPTO_EXCHANGE` (default: binance)
 - `FX_PAIRS` (default: `USD/JPY,USD/EUR,USD/GBP,USD/CHF,USD/CAD`)
-- `ALPHAVANTAGE_API_KEY` (optional fallback + symbol cache)
-- `FMP_API_KEY` (required for FMP candles/quotes; price-streamer uses it for stocks/FX)
-- `MARKETAUX_API_KEY` (required for news)
 - `MARKETAUX_LIMIT` (default: 40)
 - `MARKETAUX_SYMBOL_LIMIT` (default: 25)
 - `NEWS_INTERVAL_MINUTES` (default: 30)
@@ -80,19 +87,20 @@ Example `botWeights`:
 - `MOVER_ENRICH_LIMIT` (default: 50)
 - `MOVER_MIN_PRICE` (default: 1)
 - `MOVER_MIN_VOLUME` (default: 50000)
+- `WATCHLIST_SCORE_BOOST` (default: 4)
 - `STOCK_CHANGE_SCALE` (default: 5)
 - `FX_CHANGE_SCALE` (default: 0.3)
 - `CRYPTO_CHANGE_SCALE` (default: 2)
 - `RECOMMENDATION_LIMIT` (default: 50)
 
 ## Symbol cache
-The job refreshes a global stock ticker list from Alpha Vantage `LISTING_STATUS` and
+The job refreshes a global stock ticker list via the market-data-gateway (FMP stock list) and
 stores it in `market_symbols_stocks`. The UI uses this collection for ticker search.
-If you omit `ALPHAVANTAGE_API_KEY`, the cache step is skipped.
 
 ## Snapshot storage
-Live price snapshots are stored in chunked collections (`market_snapshots_us`, `market_snapshots_tsx`,
-`market_snapshots_fx`) and automatically pruned to `SNAPSHOT_KEEP`.
+When Redis is configured, 15-minute mover snapshots are read from the Redis snapshot ring buffer.
+If Redis is not configured, snapshots fall back to Firestore chunked collections (`market_snapshots_us`,
+`market_snapshots_tsx`, `market_snapshots_fx`) and are pruned to `SNAPSHOT_KEEP`.
 
 ## Optional market-intel signals
 When enabled, the worker emits a small batch of synthetic signal docs under
@@ -122,12 +130,6 @@ gcloud projects add-iam-policy-binding relayorb \
 3) Create secrets (run locally; replace placeholders):
 ```bash
 echo "<OPENAI_API_KEY>" | gcloud secrets create relayorb-openai-key --data-file=-
-
-echo "<ALPHAVANTAGE_API_KEY>" | gcloud secrets create relayorb-alphavantage-key --data-file=-
-
-echo "<FMP_API_KEY>" | gcloud secrets create relayorb-fmp-key --data-file=-
-
-echo "<MARKETAUX_API_KEY>" | gcloud secrets create relayorb-marketaux-key --data-file=-
 ```
 
 4) Build & deploy:
@@ -139,8 +141,8 @@ gcloud run jobs create relayorb-market-intel \
   --image gcr.io/relayorb/market-intel \
   --region us-west1 \
   --service-account relayorb-market-intel@relayorb.iam.gserviceaccount.com \
-  --set-env-vars HOT_TRADES_LIMIT=12,BOT_SIGNAL_LOOKBACK_MINUTES=360,CRYPTO_EXCHANGE=binance,FX_PAIRS=USD/JPY,USD/EUR,USD/GBP,USD/CHF,USD/CAD \
-  --set-secrets OPENAI_API_KEY=relayorb-openai-key:latest,ALPHAVANTAGE_API_KEY=relayorb-alphavantage-key:latest,FMP_API_KEY=relayorb-fmp-key:latest,MARKETAUX_API_KEY=relayorb-marketaux-key:latest \
+  --set-env-vars HOT_TRADES_LIMIT=12,BOT_SIGNAL_LOOKBACK_MINUTES=360,CRYPTO_EXCHANGE=binance,FX_PAIRS=USD/JPY,USD/EUR,USD/GBP,USD/CHF,USD/CAD,MARKET_DATA_GATEWAY_URL=https://YOUR-GATEWAY-URL,REDIS_URL=redis://YOUR-REDIS:6379 \
+  --set-secrets OPENAI_API_KEY=relayorb-openai-key:latest \
   --memory 512Mi
 ```
 
@@ -165,18 +167,20 @@ gcloud scheduler jobs create http relayorb-market-intel \
 ## Local run (optional)
 ```bash
 cd deploy/market-intel
-ALPHAVANTAGE_API_KEY=... OPENAI_API_KEY=... npm start
+MARKET_DATA_GATEWAY_URL=... REDIS_URL=redis://localhost:6379 OPENAI_API_KEY=... npm start
 ```
 
 ## Notes
-- Stock/TSX/FX movers require `market/prices` updates (price-streamer should be running).
-- `ALPHAVANTAGE_API_KEY` is only used for the optional stock symbol cache fallback.
+- Stock/TSX/FX movers require Redis hot prices (price-streamer should be running).
 - LLM summaries are only added when `OPENAI_API_KEY` is set.
 - Auto-tune adjusts trend weights using evaluator accuracy; AI only writes explanations.
+- When `RUN_ID` is set and `e2e_runs/{RUN_ID}.testMode` is true, movers/candidates are restricted to `restrictMarkets` and `restrictSymbols`.
 - Firestore output:
   - `market/hotTrades` (ranked trade list + meta)
   - `market/trending` (trending list by horizon + score components)
   - `market/popular` (intelligence-driven popular assets per class)
+  - `market/candidates` (latest candidate batch for bot triggers)
+  - `batches/{batchId}` (durable batch record for missed triggers)
   - `market/prices_snapshot` (latest spot price snapshot for tracked symbols)
   - `market/movers` (15m movers by market from live price snapshots)
   - `market_symbols_stocks` (cached global ticker list)

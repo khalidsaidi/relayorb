@@ -187,10 +187,10 @@ const AUTO_TUNE_INTERVAL_OPTIONS = [6, 12, 24, 48]
 const DIP_HORIZON_OPTIONS: DipHorizon[] = ["1h", "24h", "7d"]
 const TREND_HORIZON_OPTIONS: TrendHorizon[] = ["15m", "1h", "24h", "7d"]
 const DEFAULT_TREND_WEIGHTS: Required<TrendWeights> = {
-  momentum: 40,
-  volume: 25,
+  momentum: 50,
+  volume: 20,
   signals: 20,
-  news: 15,
+  news: 10,
 }
 const RISK_OPTIONS: { value: RiskProfile; label: string }[] = [
   { value: "conservative", label: "Conservative" },
@@ -205,6 +205,7 @@ const ASSET_FOCUS_OPTIONS: { value: AssetClass; label: string }[] = [
 const DEFAULT_UNIVERSE_MODE: MarketUniverseMode = "movers_plus_universe"
 const UNIVERSE_MODE_OPTIONS: { value: MarketUniverseMode; label: string }[] = [
   { value: "movers_plus_universe", label: "Movers + universe" },
+  { value: "weighted_union", label: "Movers + universe (boosted)" },
   { value: "movers_only", label: "Movers only" },
   { value: "universe_only", label: "Universe only" },
   { value: "movers_filtered_by_universe", label: "Movers filtered by universe" },
@@ -450,13 +451,17 @@ export default function DashboardPage() {
           ? data.trendWeights.momentum
           : DEFAULT_TREND_WEIGHTS.momentum
       const weightVolume =
-        typeof data.trendWeights?.volume === "number"
-          ? data.trendWeights.volume
-          : DEFAULT_TREND_WEIGHTS.volume
+        typeof data.trendWeights?.liquidity === "number"
+          ? data.trendWeights.liquidity
+          : typeof data.trendWeights?.volume === "number"
+            ? data.trendWeights.volume
+            : DEFAULT_TREND_WEIGHTS.volume
       const weightSignals =
-        typeof data.trendWeights?.signals === "number"
-          ? data.trendWeights.signals
-          : DEFAULT_TREND_WEIGHTS.signals
+        typeof data.trendWeights?.consensus === "number"
+          ? data.trendWeights.consensus
+          : typeof data.trendWeights?.signals === "number"
+            ? data.trendWeights.signals
+            : DEFAULT_TREND_WEIGHTS.signals
       const weightNews =
         typeof data.trendWeights?.news === "number"
           ? data.trendWeights.news
@@ -1664,14 +1669,18 @@ export default function DashboardPage() {
         typeof trending?.weights?.momentum === "number"
           ? trending.weights.momentum
           : trendMomentumWeight,
-      volume:
-        typeof trending?.weights?.volume === "number"
-          ? trending.weights.volume
-          : trendVolumeWeight,
-      signals:
-        typeof trending?.weights?.signals === "number"
-          ? trending.weights.signals
-          : trendSignalsWeight,
+      liquidity:
+        typeof trending?.weights?.liquidity === "number"
+          ? trending.weights.liquidity
+          : typeof trending?.weights?.volume === "number"
+            ? trending.weights.volume
+            : trendVolumeWeight,
+      consensus:
+        typeof trending?.weights?.consensus === "number"
+          ? trending.weights.consensus
+          : typeof trending?.weights?.signals === "number"
+            ? trending.weights.signals
+            : trendSignalsWeight,
       news:
         typeof trending?.weights?.news === "number"
           ? trending.weights.news
@@ -1792,6 +1801,8 @@ export default function DashboardPage() {
         trendHorizon,
         trendWeights: {
           momentum: trendMomentumWeight,
+          liquidity: trendVolumeWeight,
+          consensus: trendSignalsWeight,
           volume: trendVolumeWeight,
           signals: trendSignalsWeight,
           news: trendNewsWeight,
@@ -2225,9 +2236,9 @@ export default function DashboardPage() {
                   </div>
 
                   <div className="rounded-lg border border-border/60 bg-muted/30 p-4 md:col-span-2">
-                    <div className="text-sm font-medium">Trend scoring</div>
+                    <div className="text-sm font-medium">Score weighting</div>
                     <div className="text-xs text-muted-foreground">
-                      Tune how we rank trending assets across horizons.
+                      Tune the mix used across hot trades and trending lists.
                     </div>
                     <div className="mt-3 grid gap-3 md:grid-cols-2">
                       <div className="space-y-2">
@@ -2280,7 +2291,7 @@ export default function DashboardPage() {
                             />
                           </div>
                           <div className="space-y-1">
-                            <Label className="text-xs text-muted-foreground">Volume</Label>
+                            <Label className="text-xs text-muted-foreground">Liquidity</Label>
                             <Input
                               type="number"
                               inputMode="numeric"
@@ -2310,7 +2321,7 @@ export default function DashboardPage() {
                             />
                           </div>
                           <div className="space-y-1">
-                            <Label className="text-xs text-muted-foreground">Bot signals</Label>
+                            <Label className="text-xs text-muted-foreground">Bot consensus</Label>
                             <Input
                               type="number"
                               inputMode="numeric"
@@ -2862,7 +2873,7 @@ export default function DashboardPage() {
                       </div>
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      Alpha Vantage free tier supports limited symbols per run.
+                      Keep the stock list focused to reduce gateway load.
                     </div>
                   </TabsContent>
 
@@ -3531,7 +3542,7 @@ export default function DashboardPage() {
                     <div>
                       <CardTitle className="text-base">Trending Now</CardTitle>
                       <div className="text-xs text-muted-foreground">
-                        Weighted momentum, volume, and bot signals.
+                        Weighted momentum, liquidity, and bot consensus.
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -3568,7 +3579,7 @@ export default function DashboardPage() {
                             </Button>
                           ))}
                           <div className="w-full text-xs text-muted-foreground sm:ml-auto sm:w-auto">
-                            Weights: M{trendWeightsDisplay.momentum} · V{trendWeightsDisplay.volume} · S{trendWeightsDisplay.signals} · N{trendWeightsDisplay.news}
+                            Weights: M{trendWeightsDisplay.momentum} · L{trendWeightsDisplay.liquidity} · C{trendWeightsDisplay.consensus} · N{trendWeightsDisplay.news}
                           </div>
                         </div>
                         <div className="flex flex-wrap gap-2">
@@ -3619,16 +3630,28 @@ export default function DashboardPage() {
                                     const showNewsMetric = Boolean(
                                       item.news?.count && item.news.count > 0
                                     )
+                                    const scoreComponents = item.scoreComponents || item.components
+                                    const liquidityValue =
+                                      scoreComponents?.liquidity ?? (item.components as { volume?: number } | undefined)?.volume
+                                    const consensusValue =
+                                      scoreComponents?.consensus ?? (item.components as { signals?: number } | undefined)?.signals
                                     const metrics = [
-                                      { key: "momentum", label: "Momentum", value: item.components?.momentum },
-                                      { key: "volume", label: "Volume", value: item.components?.volume },
-                                      { key: "signals", label: "Signals", value: item.components?.signals },
+                                      { key: "momentum", label: "Momentum", value: scoreComponents?.momentum },
+                                      { key: "liquidity", label: "Liquidity", value: liquidityValue },
+                                      { key: "consensus", label: "Consensus", value: consensusValue },
                                     ]
+                                    if (scoreComponents?.universe) {
+                                      metrics.push({
+                                        key: "universe",
+                                        label: "Universe",
+                                        value: scoreComponents?.universe,
+                                      })
+                                    }
                                     if (showNewsMetric) {
                                       metrics.push({
                                         key: "news",
                                         label: "News",
-                                        value: item.components?.news,
+                                        value: scoreComponents?.news,
                                       })
                                     }
                                     return (

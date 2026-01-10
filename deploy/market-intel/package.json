@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "firebase-admin": "^13.6.0",
-    "ccxt": "^4.5.31"
+    "ccxt": "^4.5.31",
+    "redis": "^4.7.1"
   }
 }

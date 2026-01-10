@@ -2,17 +2,47 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import process from "node:process"
 import admin from "firebase-admin"
+import { createClient } from "redis"
 import AlpacaAdapter from "../adapters/alpaca/adapter.js"
-import AlphaVantageAdapter from "../adapters/alphavantage/adapter.js"
 import OandaAdapter from "../adapters/oanda/adapter.js"
 
 const CONFIG_ENV = "RELAYORB_CONFIG_PATH"
 const DEFAULT_CONFIG = "config.json"
 const FREQTRADE_CONFIG_PATH = process.env.RELAYORB_FREQTRADE_CONFIG || ""
+const REDIS_URL = process.env.REDIS_URL || ""
+const REDIS_PREFIX = process.env.REDIS_PREFIX || "relayorb"
+const EVENT_CHANNEL =
+  process.env.RELAYORB_EVENT_CHANNEL || `${REDIS_PREFIX}:events`
+const RUN_ID = process.env.RELAYORB_RUN_ID || process.env.RUN_ID || ""
+const EVENT_AUTO_SCAN = process.env.RELAYORB_EVENT_AUTO_SCAN !== "false"
+const EVENT_BATCH_LIMIT = parseInt(
+  process.env.RELAYORB_EVENT_BATCH_LIMIT || "25",
+  10
+)
+const EVENT_DEBOUNCE_MS = parseInt(
+  process.env.RELAYORB_EVENT_DEBOUNCE_MS || "60000",
+  10
+)
+const BATCH_COLLECTION = process.env.RELAYORB_BATCH_COLLECTION || "batches"
+const BATCH_CONSUMER_ID = process.env.RELAYORB_BATCH_CONSUMER_ID || "agent"
+const BATCH_POLL_ENABLED = process.env.RELAYORB_BATCH_POLL_ENABLED !== "false"
+const BATCH_POLL_INTERVAL_MS = parseInt(
+  process.env.RELAYORB_BATCH_POLL_INTERVAL_MS || "60000",
+  10
+)
+const BATCH_POLL_LIMIT = parseInt(
+  process.env.RELAYORB_BATCH_POLL_LIMIT || "3",
+  10
+)
 
 const log = (message) => {
   const stamp = new Date().toISOString()
   console.log(`[relayorb-agent ${stamp}] ${message}`)
+}
+
+const logEvent = (event, data = {}) => {
+  const payload = { event, ...(RUN_ID ? { runId: RUN_ID } : {}), ...data }
+  log(JSON.stringify(payload))
 }
 
 const DEFAULT_CAPABILITIES = {
@@ -24,11 +54,6 @@ const DEFAULT_CAPABILITIES = {
   alpaca: {
     assetClasses: ["stock"],
     timeframes: ["1m", "5m", "15m", "1h", "1d"],
-    modes: ["signal"],
-  },
-  alphavantage: {
-    assetClasses: ["stock"],
-    timeframes: ["1d"], // Free tier only supports daily
     modes: ["signal"],
   },
   backtrader: {
@@ -177,6 +202,287 @@ function normalizeSignalSymbol(value) {
     }
   }
   return compact
+}
+
+function resolveBotAssetClass(bot) {
+  const desired = bot?.desiredConfig?.assetClass
+  if (desired) return String(desired).toLowerCase()
+  const engine = String(bot?.engine || "").toLowerCase()
+  if (engine === "freqtrade") return "crypto"
+  if (engine === "oanda") return "forex"
+  if (engine === "alpaca") return "stock"
+  if (engine === "backtrader") return "stock"
+  return null
+}
+
+function candidateMagnitude(candidate) {
+  const values = [
+    candidate?.change15m,
+    candidate?.change5m,
+    candidate?.change1m,
+    candidate?.change24h,
+  ].filter((value) => typeof value === "number")
+  if (!values.length) return 0
+  return Math.max(...values.map((value) => Math.abs(value)))
+}
+
+function selectCandidateSymbols(items, assetClass, limit) {
+  if (!Array.isArray(items)) return []
+  const trimmed = items
+    .filter((item) => item?.assetClass === assetClass && item?.symbol)
+    .sort((a, b) => candidateMagnitude(b) - candidateMagnitude(a))
+    .slice(0, Math.max(limit, 0))
+    .map((item) => normalizeSignalSymbol(item.symbol))
+    .filter(Boolean)
+  return Array.from(new Set(trimmed))
+}
+
+async function readCandidateBatch(db) {
+  try {
+    const snap = await db.doc("market/candidates").get()
+    if (!snap.exists) return null
+    const data = snap.data() || {}
+    const items = Array.isArray(data.items) ? data.items : []
+    const batchId = data.batchId || data.meta?.runId || null
+    return { items, batchId }
+  } catch (err) {
+    log(`candidate batch read failed: ${String(err)}`)
+    return null
+  }
+}
+
+function resolveBatchCollection(db) {
+  return db.collection(BATCH_COLLECTION)
+}
+
+function resolveBatchConsumerDoc(db) {
+  return db.collection("batch_consumers").doc(BATCH_CONSUMER_ID)
+}
+
+function toDate(value) {
+  if (!value) return null
+  if (value instanceof Date) return value
+  if (typeof value.toDate === "function") return value.toDate()
+  return null
+}
+
+async function readBatchDoc(db, batchId) {
+  if (!batchId) return null
+  try {
+    const snap = await resolveBatchCollection(db).doc(batchId).get()
+    if (!snap.exists) return null
+    const data = snap.data() || {}
+    return {
+      id: snap.id,
+      items: Array.isArray(data.items) ? data.items : [],
+      createdAt: toDate(data.createdAt),
+    }
+  } catch (err) {
+    log(`batch read failed: ${String(err)}`)
+    return null
+  }
+}
+
+async function readBatchConsumerState(db) {
+  try {
+    const snap = await resolveBatchConsumerDoc(db).get()
+    if (!snap.exists) return null
+    const data = snap.data() || {}
+    return {
+      lastBatchId: data.lastBatchId || null,
+      lastProcessedAt: toDate(data.lastProcessedAt),
+    }
+  } catch (err) {
+    log(`batch consumer read failed: ${String(err)}`)
+    return null
+  }
+}
+
+async function updateBatchConsumerState(db, batchId) {
+  if (!batchId) return
+  try {
+    await resolveBatchConsumerDoc(db).set(
+      {
+        lastBatchId: batchId,
+        lastProcessedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        runId: RUN_ID || null,
+      },
+      { merge: true }
+    )
+    logEvent("ag_cursor_advance", { batchId })
+  } catch (err) {
+    log(`batch consumer update failed: ${String(err)}`)
+  }
+}
+
+async function fetchPendingBatches(db, lastProcessedAt) {
+  try {
+    let query = resolveBatchCollection(db)
+    if (lastProcessedAt) {
+      query = query
+        .where("createdAt", ">", lastProcessedAt)
+        .orderBy("createdAt", "asc")
+        .limit(BATCH_POLL_LIMIT)
+    } else {
+      query = query.orderBy("createdAt", "desc").limit(1)
+    }
+    const snap = await query.get()
+    if (snap.empty) return []
+    const docs = snap.docs.map((doc) => {
+      const data = doc.data() || {}
+      return {
+        id: doc.id,
+        items: Array.isArray(data.items) ? data.items : [],
+        createdAt: toDate(data.createdAt),
+      }
+    })
+    if (!lastProcessedAt) return docs.reverse()
+    return docs
+  } catch (err) {
+    log(`batch lookup failed: ${String(err)}`)
+    return []
+  }
+}
+
+async function queueScanCommand(db, bot, symbols, assetClass) {
+  if (!symbols.length) return
+  const commandsRef = db.collection("bots").doc(bot.id).collection("commands")
+  await commandsRef.add({
+    type: bot.eventCommand || "scan",
+    payload: {
+      symbols,
+      assetClass,
+      timeframe: bot?.desiredConfig?.timeframe,
+      strategy: bot?.desiredConfig?.strategy,
+    },
+    status: "queued",
+    requestedBy: "event:new_batch",
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  })
+  logEvent("ag_queue_scan", {
+    botId: bot.id,
+    assetClass,
+    count: symbols.length,
+  })
+}
+
+async function triggerBatchScan(db, bots, items) {
+  const limit = Math.max(EVENT_BATCH_LIMIT, 1)
+  for (const bot of bots) {
+    const shouldTrigger =
+      bot.eventTrigger !== undefined ? Boolean(bot.eventTrigger) : EVENT_AUTO_SCAN
+    if (!shouldTrigger) continue
+    const assetClass = resolveBotAssetClass(bot)
+    if (!assetClass) continue
+    const symbols = selectCandidateSymbols(items, assetClass, limit)
+    if (symbols.length === 0) continue
+    try {
+      await queueScanCommand(db, bot, symbols, assetClass)
+      log(`queued ${symbols.length} symbols for ${bot.id}`)
+    } catch (err) {
+      log(`event scan failed for ${bot.id}: ${String(err)}`)
+    }
+  }
+}
+
+async function handleBatchScan(db, bots, batch) {
+  const items =
+    Array.isArray(batch?.items) && batch.items.length
+      ? batch.items
+      : (await readCandidateBatch(db))?.items || []
+  if (!items.length) return
+  logEvent("ag_read_candidates", {
+    batchId: batch?.id || batch?.batchId || null,
+    count: items.length,
+  })
+  await triggerBatchScan(db, bots, items)
+  if (batch?.id) {
+    await updateBatchConsumerState(db, batch.id)
+  }
+}
+
+let batchPollInFlight = false
+async function pollForBatches(db, bots) {
+  if (batchPollInFlight) return
+  batchPollInFlight = true
+  try {
+    const state = await readBatchConsumerState(db)
+    const pending = await fetchPendingBatches(db, state?.lastProcessedAt || null)
+    for (const batch of pending) {
+      if (!batch?.id) continue
+      if (batch.id === state?.lastBatchId) continue
+      logEvent("ag_poll_missed_batches", { batchId: batch.id })
+      await handleBatchScan(db, bots, batch)
+    }
+  } catch (err) {
+    log(`batch poll failed: ${String(err)}`)
+  } finally {
+    batchPollInFlight = false
+  }
+}
+
+function startBatchPoller(db, bots) {
+  if (!BATCH_POLL_ENABLED) return
+  pollForBatches(db, bots).catch(() => {})
+  setInterval(() => {
+    pollForBatches(db, bots).catch(() => {})
+  }, BATCH_POLL_INTERVAL_MS)
+}
+
+async function startEventListener(db, bots) {
+  if (!REDIS_URL) return
+  const client = createClient({ url: REDIS_URL })
+  client.on("error", (err) => {
+    log(`redis error: ${String(err)}`)
+  })
+
+  try {
+    await client.connect()
+  } catch (err) {
+    log(`redis connect failed: ${String(err)}`)
+    return
+  }
+
+  const subscriber = client.duplicate()
+  await subscriber.connect()
+  let lastEventAt = 0
+  let lastBatchId = null
+
+  await subscriber.subscribe(EVENT_CHANNEL, async (message) => {
+    let payload
+    try {
+      payload = JSON.parse(message)
+    } catch {
+      return
+    }
+    if (payload?.type !== "new_batch") return
+    const batchId = payload.batchId || payload.runId || null
+    const eventRunId = payload.runId || null
+    const now = Date.now()
+    if (batchId && batchId === lastBatchId) return
+    if (now - lastEventAt < EVENT_DEBOUNCE_MS) return
+    lastEventAt = now
+    lastBatchId = batchId
+
+    logEvent("ag_new_batch_received", { batchId, runId: eventRunId || RUN_ID || null })
+    const batchDoc = batchId ? await readBatchDoc(db, batchId) : null
+    if (batchDoc && batchDoc.items.length) {
+      await handleBatchScan(db, bots, batchDoc)
+      lastBatchId = batchId
+      return
+    }
+
+    const fallback = await readCandidateBatch(db)
+    if (!fallback || !fallback.items.length) return
+    await handleBatchScan(db, bots, {
+      id: batchId || fallback.batchId,
+      items: fallback.items,
+    })
+    lastBatchId = batchId || fallback.batchId
+  })
+
+  log(`redis event listener active on ${EVENT_CHANNEL}`)
 }
 
 function extractSymbolFromText(text) {
@@ -832,8 +1138,6 @@ function createAdapter(bot) {
       return new FreqtradeAdapter(bot)
     case "alpaca":
       return new AlpacaAdapter(bot)
-    case "alphavantage":
-      return new AlphaVantageAdapter(bot)
     case "oanda":
       return new OandaAdapter(bot)
     case "backtrader":
@@ -879,6 +1183,7 @@ async function writeEvents(db, botId, events) {
       severity: event.severity || "info",
       message: event.message || "",
       data: event.data || null,
+      runId: RUN_ID || null,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     })
   }
@@ -900,6 +1205,7 @@ async function writeSignals(db, botId, signals) {
       strength: typeof signal.strength === "number" ? signal.strength : null,
       message: signal.message || "",
       data: signal.data || null,
+      runId: RUN_ID || null,
       createdAt: signalTime
         ? admin.firestore.Timestamp.fromDate(signalTime)
         : admin.firestore.FieldValue.serverTimestamp(),
@@ -920,6 +1226,12 @@ async function applyUpdate(db, bot, update) {
   await db.collection("bots").doc(bot.id).set(patch, { merge: true })
   await writeEvents(db, bot.id, update?.events || [])
   await writeSignals(db, bot.id, update?.signals || [])
+  if (update?.signals?.length) {
+    logEvent("ag_write_bot_signals", {
+      botId: bot.id,
+      count: update.signals.length,
+    })
+  }
 }
 
 async function markBotError(db, bot, err) {
@@ -1065,7 +1377,7 @@ async function main() {
   const config = await loadConfig()
   const db = initFirestore(config.firestore?.projectId)
 
-  log(`loaded config for ${config.bots.length} bot(s)`) 
+  logEvent("ag_run_start", { botCount: config.bots.length })
 
   for (const bot of config.bots) {
     if (!bot.id || !bot.engine) {
@@ -1077,6 +1389,9 @@ async function main() {
     startCommandListener(db, bot, adapter)
     log(`started adapter for ${bot.id} (${bot.engine})`)
   }
+
+  await startEventListener(db, config.bots)
+  startBatchPoller(db, config.bots)
 }
 
 main().catch((err) => {

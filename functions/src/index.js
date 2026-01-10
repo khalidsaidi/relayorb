@@ -1,8 +1,6 @@
 const { onRequest } = require('firebase-functions/v2/https')
-const { defineSecret } = require('firebase-functions/params')
 
-const fmpKey = defineSecret('FMP_API_KEY')
-const FMP_BASE_URL = 'https://financialmodelingprep.com/stable'
+const MARKET_DATA_GATEWAY_URL = process.env.MARKET_DATA_GATEWAY_URL || ''
 
 function mapIntervalToFmp(interval) {
   const mapping = {
@@ -18,19 +16,14 @@ function mapIntervalToFmp(interval) {
   return mapping[interval] || '15min'
 }
 
-function normalizeSymbolForFmp(symbol, assetClass) {
-  const upper = String(symbol || '').trim().toUpperCase()
-  if (!upper) return ''
-  if (assetClass === 'forex' || assetClass === 'crypto') {
-    return upper.replace(/[\/-]/g, '')
-  }
-  return upper.replace(/\s+/g, '')
-}
-
 function buildSeries(data) {
   const series = {}
   data.forEach((entry) => {
-    const date = entry.date || entry.time || entry.timestamp
+    const time = entry.time ?? entry.date ?? entry.timestamp
+    const date =
+      typeof time === 'number'
+        ? new Date(time).toISOString()
+        : time
     if (!date) return
     const open = entry.open
     const high = entry.high
@@ -52,7 +45,6 @@ exports.chartProxy = onRequest(
   {
     cors: true,
     maxInstances: 10,
-    secrets: [fmpKey],
   },
   async (req, res) => {
     try {
@@ -62,9 +54,8 @@ exports.chartProxy = onRequest(
         return res.status(400).json({ error: 'Missing symbol parameter' })
       }
 
-      const FMP_API_KEY = fmpKey.value()
-      if (!FMP_API_KEY) {
-        return res.status(500).json({ error: 'FMP API key is not configured' })
+      if (!MARKET_DATA_GATEWAY_URL) {
+        return res.status(500).json({ error: 'MARKET_DATA_GATEWAY_URL is not configured' })
       }
 
       if (!['stock', 'forex', 'crypto'].includes(assetClass)) {
@@ -72,14 +63,14 @@ exports.chartProxy = onRequest(
       }
 
       const fmpInterval = mapIntervalToFmp(interval)
-      const normalizedSymbol = normalizeSymbolForFmp(symbol, assetClass)
-      if (!normalizedSymbol) {
-        return res.status(400).json({ error: 'Invalid symbol' })
-      }
-
-      const url = new URL(`${FMP_BASE_URL}/historical-chart/${fmpInterval}`)
-      url.searchParams.set('symbol', normalizedSymbol)
-      url.searchParams.set('apikey', FMP_API_KEY)
+      const base = MARKET_DATA_GATEWAY_URL.endsWith('/')
+        ? MARKET_DATA_GATEWAY_URL
+        : `${MARKET_DATA_GATEWAY_URL}/`
+      const url = new URL('v1/fmp/candles', base)
+      url.searchParams.set('symbol', symbol)
+      url.searchParams.set('assetClass', assetClass)
+      url.searchParams.set('interval', fmpInterval)
+      url.searchParams.set('limit', '200')
 
       const response = await fetch(url.toString())
       const data = await response.json()
@@ -88,8 +79,8 @@ exports.chartProxy = onRequest(
         return res.status(response.status).json(data)
       }
 
-      if (!Array.isArray(data)) {
-        const message = data?.error || data?.Error || 'Invalid response from FMP'
+      if (!Array.isArray(data?.candles)) {
+        const message = data?.error || data?.Error || 'Invalid response from gateway'
         return res.status(502).json({ error: message })
       }
 
@@ -97,9 +88,9 @@ exports.chartProxy = onRequest(
       res.set('Access-Control-Allow-Methods', 'GET')
       res.set('Access-Control-Allow-Headers', 'Content-Type')
       res.json({
-        series: buildSeries(data),
+        series: buildSeries(data.candles),
         seriesKey: `FMP ${fmpInterval}`,
-        source: 'fmp',
+        source: data?.source || 'fmp',
       })
     } catch (error) {
       console.error('Chart proxy error:', error)

@@ -1,6 +1,7 @@
 const http = require("http")
 const admin = require("firebase-admin")
 const { GoogleAuth } = require("google-auth-library")
+const { createClient } = require("redis")
 
 const config = {
   projectId:
@@ -28,6 +29,21 @@ const config = {
   openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
   tavilyKey: process.env.TAVILY_API_KEY || "",
   serpApiKey: process.env.SERP_API_KEY || "",
+  redisUrl: process.env.REDIS_URL || "",
+  redisPrefix: process.env.REDIS_PREFIX || "relayorb",
+  redisEventChannel: process.env.REDIS_EVENT_CHANNEL || "",
+  redisEventEnabled: process.env.REDIS_EVENT_ENABLED !== "false",
+  redisEventDebounceMs: parseInt(process.env.REDIS_EVENT_DEBOUNCE_MS || "60000", 10),
+  redisEventJobs: (process.env.REDIS_EVENT_JOBS || "relayorb-signal-evaluator")
+    .split(",")
+    .map((job) => job.trim())
+    .filter(Boolean),
+  batchCollection: process.env.BATCH_COLLECTION || "batches",
+  batchConsumerId: process.env.BATCH_CONSUMER_ID || "refresh-service",
+  batchPollEnabled: process.env.BATCH_POLL_ENABLED !== "false",
+  batchPollIntervalMs: parseInt(process.env.BATCH_POLL_INTERVAL_MS || "60000", 10),
+  batchPollLimit: parseInt(process.env.BATCH_POLL_LIMIT || "3", 10),
+  marketIntelJob: process.env.MARKET_INTEL_JOB || "relayorb-market-intel",
 }
 
 if (!admin.apps.length) {
@@ -61,6 +77,12 @@ function parseBearer(req) {
   return match ? match[1] : null
 }
 
+function readHeader(req, name) {
+  const key = String(name || "").toLowerCase()
+  if (!key) return ""
+  return String(req.headers[key] || "").trim()
+}
+
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max)
 }
@@ -69,6 +91,181 @@ function parseNumber(value) {
   if (value === undefined || value === null) return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function resolveEventChannel() {
+  if (config.redisEventChannel) return config.redisEventChannel
+  const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
+  return `${prefix}events`
+}
+
+function resolveBatchCollection() {
+  return db.collection(config.batchCollection)
+}
+
+function resolveBatchConsumerDoc() {
+  return db.collection("batch_consumers").doc(config.batchConsumerId)
+}
+
+function toDate(value) {
+  if (!value) return null
+  if (value instanceof Date) return value
+  if (typeof value.toDate === "function") return value.toDate()
+  return null
+}
+
+async function readBatchConsumerState() {
+  try {
+    const snap = await resolveBatchConsumerDoc().get()
+    if (!snap.exists) return null
+    const data = snap.data() || {}
+    return {
+      lastBatchId: data.lastBatchId || null,
+      lastProcessedAt: toDate(data.lastProcessedAt),
+    }
+  } catch (err) {
+    console.error("Batch consumer read failed", err.message || err)
+    return null
+  }
+}
+
+async function updateBatchConsumerState(batchId) {
+  if (!batchId) return
+  try {
+    await resolveBatchConsumerDoc().set(
+      {
+        lastBatchId: batchId,
+        lastProcessedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+    console.log("ref_cursor_advance", { batchId })
+  } catch (err) {
+    console.error("Batch consumer update failed", err.message || err)
+  }
+}
+
+async function fetchPendingBatches(lastProcessedAt) {
+  try {
+    let query = resolveBatchCollection()
+    if (lastProcessedAt) {
+      query = query
+        .where("createdAt", ">", lastProcessedAt)
+        .orderBy("createdAt", "asc")
+        .limit(config.batchPollLimit)
+    } else {
+      query = query.orderBy("createdAt", "desc").limit(1)
+    }
+    const snap = await query.get()
+    if (snap.empty) return []
+    const docs = snap.docs.map((doc) => {
+      const data = doc.data() || {}
+      return {
+        id: doc.id,
+        runId: data.runId || data.meta?.runId || null,
+        createdAt: toDate(data.createdAt),
+      }
+    })
+    if (!lastProcessedAt) return docs.reverse()
+    return docs
+  } catch (err) {
+    console.error("Batch lookup failed", err.message || err)
+    return []
+  }
+}
+
+async function runJobsForBatch(batchId, runId) {
+  const jobs = config.redisEventJobs.length ? config.redisEventJobs : config.jobs
+  const overrides = runId ? { env: { RUN_ID: runId } } : undefined
+  await Promise.all(jobs.map((job) => runJob(job, overrides)))
+  await updateBatchConsumerState(batchId)
+}
+
+let batchPollInFlight = false
+async function pollForBatches() {
+  if (batchPollInFlight) return
+  batchPollInFlight = true
+  try {
+    const state = await readBatchConsumerState()
+    const pending = await fetchPendingBatches(state?.lastProcessedAt || null)
+    for (const batch of pending) {
+      if (!batch?.id) continue
+      if (batch.id === state?.lastBatchId) continue
+      console.log("ref_poll_missed_batches", {
+        batchId: batch.id,
+        runId: batch.runId || null,
+      })
+      await runJobsForBatch(batch.id, batch.runId)
+    }
+  } catch (err) {
+    console.error("Batch poll failed", err.message || err)
+  } finally {
+    batchPollInFlight = false
+  }
+}
+
+function startBatchPoller() {
+  if (!config.batchPollEnabled) return
+  pollForBatches().catch(() => {})
+  setInterval(() => {
+    pollForBatches().catch(() => {})
+  }, config.batchPollIntervalMs)
+}
+
+async function startRedisEventListener() {
+  if (!config.redisUrl || !config.redisEventEnabled) return null
+  const client = createClient({ url: config.redisUrl })
+  client.on("error", (err) => {
+    const message = err?.message ? String(err.message) : "Unknown error"
+    console.error("Redis error:", message)
+  })
+
+  try {
+    await client.connect()
+  } catch (err) {
+    console.error("Redis connection failed:", err.message)
+    return null
+  }
+
+  const subscriber = client.duplicate()
+  await subscriber.connect()
+  const channel = resolveEventChannel()
+  let lastEventAt = 0
+  let lastBatchId = null
+
+  await subscriber.subscribe(channel, async (message) => {
+    let payload
+    try {
+      payload = JSON.parse(message)
+    } catch {
+      return
+    }
+    if (payload?.type !== "new_batch") return
+    const batchId = payload.batchId || payload.runId || null
+    const runId = payload.runId || null
+    const now = Date.now()
+    if (batchId && batchId === lastBatchId) return
+    if (now - lastEventAt < config.redisEventDebounceMs) return
+    lastBatchId = batchId
+    lastEventAt = now
+
+    try {
+      const jobs = config.redisEventJobs.length ? config.redisEventJobs : config.jobs
+      console.log("ref_new_batch_received", { batchId, runId })
+      const overrides = runId ? { env: { RUN_ID: runId } } : undefined
+      await Promise.all(jobs.map((job) => runJob(job, overrides)))
+      if (batchId) {
+        await updateBatchConsumerState(batchId)
+      }
+      console.log("ref_trigger_se", { jobs, batchId, runId })
+    } catch (err) {
+      console.error("Redis event job trigger failed", err.message || err)
+    }
+  })
+
+  console.log("Redis event listener active", { channel })
+  return { client, subscriber }
 }
 
 function truncate(text, max = 200) {
@@ -120,6 +317,15 @@ async function readBody(req) {
   })
 }
 
+function resolveRunId(req, body) {
+  return (
+    readHeader(req, "x-run-id") ||
+    body?.runId ||
+    body?.run_id ||
+    ""
+  )
+}
+
 async function verifyRequest(req) {
   const token = parseBearer(req)
   if (!token) {
@@ -145,10 +351,31 @@ async function verifyRequest(req) {
   return { allowed: true, email, uid: decoded.uid }
 }
 
-async function runJob(jobName) {
+async function runJob(jobName, overrides = {}) {
   const client = await auth.getClient()
   const url = `https://run.googleapis.com/v2/projects/${config.projectId}/locations/${config.region}/jobs/${jobName}:run`
-  const res = await client.request({ url, method: "POST" })
+  const envOverrides = overrides?.env || {}
+  const overrideEntries = Object.entries(envOverrides).filter(([, value]) => value !== undefined)
+  const payload =
+    overrideEntries.length > 0
+      ? {
+        overrides: {
+          containerOverrides: [
+            {
+              env: overrideEntries.map(([name, value]) => ({
+                name,
+                value: String(value),
+              })),
+            },
+          ],
+        },
+      }
+      : undefined
+  const res = await client.request({
+    url,
+    method: "POST",
+    data: payload,
+  })
   return res.data
 }
 
@@ -159,12 +386,16 @@ async function handleRefresh(req, res) {
   }
 
   const body = await readBody(req)
+  const runId = resolveRunId(req, body)
   const requestedJobs = Array.isArray(body?.jobs)
     ? body.jobs.map((job) => String(job).trim()).filter(Boolean)
     : []
   const jobList = requestedJobs.length > 0 ? requestedJobs : config.jobs
 
-  const results = await Promise.allSettled(jobList.map((job) => runJob(job)))
+  const overrides = runId ? { env: { RUN_ID: runId } } : undefined
+  const results = await Promise.allSettled(
+    jobList.map((job) => runJob(job, overrides))
+  )
   const jobs = results.map((result, index) => {
     const jobName = jobList[index]
     if (result.status === "fulfilled") {
@@ -192,12 +423,53 @@ async function handleRefresh(req, res) {
           uid: authResult.uid,
         },
         requestId,
+        runId: runId || null,
         jobs,
       },
       { merge: true }
     )
 
+  console.log("ref_refresh", { requestId, runId: runId || null, jobs })
   return sendJson(res, 200, { ok: true, requestId, jobs })
+}
+
+async function handleScanOnce(req, res) {
+  const authResult = await verifyRequest(req)
+  if (!authResult.allowed) {
+    return sendJson(res, 403, { ok: false, error: authResult.error })
+  }
+
+  const body = await readBody(req)
+  const runId = resolveRunId(req, body)
+  if (!runId) {
+    return sendJson(res, 400, { ok: false, error: "Missing runId." })
+  }
+
+  const jobName = String(body?.job || config.marketIntelJob).trim()
+  const redisPrefix = readHeader(req, "x-redis-prefix") || body?.redisPrefix || ""
+  const overrides = {
+    env: compactObject({
+      RUN_ID: runId,
+      REDIS_PREFIX: redisPrefix || undefined,
+      FIRESTORE_RUN_FIELD: body?.firestoreRunField,
+      BATCH_COLLECTION: body?.batchCollection,
+    }),
+  }
+
+  const result = await runJob(jobName, overrides)
+  console.log("ref_scan_once", {
+    runId,
+    job: jobName,
+    execution: result?.name || null,
+  })
+
+  return sendJson(res, 200, {
+    ok: true,
+    runId,
+    batchId: runId,
+    job: jobName,
+    execution: result?.name || null,
+  })
 }
 
 function normalizeAction(value) {
@@ -556,12 +828,26 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, { ok: true })
   }
 
+  if (req.method === "GET" && req.url === "/readyz") {
+    return sendJson(res, 200, { ok: true })
+  }
+
   if (req.method === "POST" && req.url === "/refresh") {
     try {
       await handleRefresh(req, res)
     } catch (err) {
       console.error("Refresh failed", err)
       sendJson(res, 500, { ok: false, error: "Refresh failed." })
+    }
+    return
+  }
+
+  if (req.method === "POST" && req.url === "/admin/scanOnce") {
+    try {
+      await handleScanOnce(req, res)
+    } catch (err) {
+      console.error("ScanOnce failed", err)
+      sendJson(res, 500, { ok: false, error: "ScanOnce failed." })
     }
     return
   }
@@ -582,4 +868,10 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(config.port, () => {
   console.log(`Refresh service listening on ${config.port}`)
+})
+
+startBatchPoller()
+
+startRedisEventListener().catch((err) => {
+  console.error("Redis listener failed", err.message || err)
 })

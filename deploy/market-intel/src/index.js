@@ -1,5 +1,6 @@
 const admin = require("firebase-admin")
 const ccxt = require("ccxt")
+const { createClient } = require("redis")
 
 const config = {
   projectId:
@@ -17,12 +18,18 @@ const config = {
   openaiKey: process.env.OPENAI_API_KEY || "",
   openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
   llmIntervalMinutes: parseInt(process.env.LLM_INTERVAL_MINUTES || "30", 10),
-  marketauxKey: process.env.MARKETAUX_API_KEY || "",
   newsLimit: parseInt(process.env.MARKETAUX_LIMIT || "40", 10),
   newsSymbolLimit: parseInt(process.env.MARKETAUX_SYMBOL_LIMIT || "25", 10),
   newsIntervalMinutes: parseInt(process.env.NEWS_INTERVAL_MINUTES || "30", 10),
-  alphaVantageKey: process.env.ALPHAVANTAGE_API_KEY || "",
-  fmpKey: process.env.FMP_API_KEY || "",
+  marketDataGatewayUrl: process.env.MARKET_DATA_GATEWAY_URL || "",
+  redisUrl: process.env.REDIS_URL || "",
+  redisPrefix: process.env.REDIS_PREFIX || "relayorb",
+  redisLatestMaxAgeMs: parseInt(process.env.REDIS_LATEST_MAX_AGE_MS || "120000", 10),
+  redisEventChannel: process.env.REDIS_EVENT_CHANNEL || "",
+  candidatePublishLimit: parseInt(process.env.CANDIDATE_PUBLISH_LIMIT || "150", 10),
+  batchCollection: process.env.BATCH_COLLECTION || "batches",
+  runId: process.env.RUN_ID || "",
+  firestoreRunField: process.env.FIRESTORE_RUN_FIELD || "runId",
   moverWindowMinutes: parseInt(process.env.MOVER_WINDOW_MINUTES || "15", 10),
   snapshotChunkSize: parseInt(process.env.SNAPSHOT_CHUNK_SIZE || "250", 10),
   snapshotKeep: parseInt(process.env.SNAPSHOT_KEEP || "6", 10),
@@ -30,9 +37,10 @@ const config = {
   moverEnrichLimit: parseInt(process.env.MOVER_ENRICH_LIMIT || "50", 10),
   moverMinPrice: parseFloat(process.env.MOVER_MIN_PRICE || "1"),
   moverMinVolume: parseFloat(process.env.MOVER_MIN_VOLUME || "50000"),
-  stockChangeScale: parseFloat(process.env.STOCK_CHANGE_SCALE || "5"),
-  forexChangeScale: parseFloat(process.env.FX_CHANGE_SCALE || "0.3"),
-  cryptoChangeScale: parseFloat(process.env.CRYPTO_CHANGE_SCALE || "2"),
+  watchlistScoreBoost: parseFloat(process.env.WATCHLIST_SCORE_BOOST || "4"),
+  momentumRatioMax: parseFloat(process.env.MOMENTUM_RATIO_MAX || "2"),
+  momentumVolFloor: parseFloat(process.env.MOMENTUM_VOL_FLOOR || "0.05"),
+  momentumVolCeil: parseFloat(process.env.MOMENTUM_VOL_CEIL || "15"),
   recommendationLimit: parseInt(process.env.RECOMMENDATION_LIMIT || "50", 10),
   minAccuracySignals: parseInt(process.env.MIN_ACCURACY_SIGNALS || "12", 10),
   autoTuneEnabled: process.env.AUTO_TUNE_ENABLED !== "false",
@@ -70,31 +78,31 @@ const UNIVERSE_MODES = new Set([
   "universe_only",
   "movers_plus_universe",
   "movers_filtered_by_universe",
+  "weighted_union",
 ])
 const DEFAULT_UNIVERSE_MODE = "movers_plus_universe"
 const MARKET_SIGNAL_BOT_ID = "market-intel"
-const MARKETAUX_BASE_URL = "https://api.marketaux.com/v1/news/all"
-const FMP_STABLE_BASE_URL = "https://financialmodelingprep.com/stable"
-const TREND_MOMENTUM_SCALES = {
-  "15m": 12,
-  "1h": 6,
-  "24h": 1.5,
-  "7d": 0.5,
+const BASE_SCORE_WEIGHTS = {
+  dip: { momentum: 50, consensus: 20, liquidity: 20, news: 10 },
+  scalp: { momentum: 50, consensus: 20, liquidity: 20, news: 10 },
 }
 const SCORE_WEIGHTS_BY_ASSET = {
   stock: {
-    dip: { momentum: 35, shortMomentum: 10, consensus: 25, liquidity: 20, news: 10 },
-    scalp: { momentum: 40, shortMomentum: 15, consensus: 20, liquidity: 15, news: 10 },
+    dip: { ...BASE_SCORE_WEIGHTS.dip },
+    scalp: { ...BASE_SCORE_WEIGHTS.scalp },
   },
   crypto: {
-    dip: { momentum: 30, shortMomentum: 25, consensus: 25, liquidity: 15, news: 5 },
-    scalp: { momentum: 35, shortMomentum: 30, consensus: 20, liquidity: 10, news: 5 },
+    dip: { ...BASE_SCORE_WEIGHTS.dip },
+    scalp: { ...BASE_SCORE_WEIGHTS.scalp },
   },
   forex: {
-    dip: { momentum: 35, shortMomentum: 20, consensus: 20, liquidity: 20, news: 5 },
-    scalp: { momentum: 40, shortMomentum: 25, consensus: 20, liquidity: 10, news: 5 },
+    dip: { ...BASE_SCORE_WEIGHTS.dip },
+    scalp: { ...BASE_SCORE_WEIGHTS.scalp },
   },
 }
+
+let redis = null
+let redisReady = false
 const SPREAD_PCT_LIMITS = {
   stock: 0.5,
   forex: 0.08,
@@ -114,12 +122,13 @@ const PAIR_QUOTES = new Set([
   "CAD",
   "NZD",
 ])
+const FX_CODES = new Set(["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"])
 const TSX_SUFFIXES = [".TO", ".TSX", ".TSXV", ".V"]
 const DEFAULT_TREND_WEIGHTS = {
-  momentum: 40,
-  volume: 25,
+  momentum: 50,
+  volume: 20,
   signals: 20,
-  news: 15,
+  news: 10,
 }
 
 function parseList(value, fallback = []) {
@@ -150,6 +159,96 @@ function parsePercent(value) {
   return parseNumber(cleaned)
 }
 
+function resolveRedisKey(suffix) {
+  const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
+  return `${prefix}${suffix}`
+}
+
+function resolveEventChannel() {
+  if (config.redisEventChannel) return config.redisEventChannel
+  return resolveRedisKey("events")
+}
+
+async function initRedis() {
+  if (!config.redisUrl) return null
+  const client = createClient({ url: config.redisUrl })
+  client.on("error", (err) => {
+    const message = err?.message ? String(err.message) : "Unknown error"
+    console.error("Redis error:", message)
+  })
+  try {
+    await client.connect()
+    redisReady = true
+    console.log("Redis connected")
+    return client
+  } catch (err) {
+    console.error("Redis connection failed:", err.message)
+    redisReady = false
+    return null
+  }
+}
+
+async function readRedisJson(key) {
+  if (!redis || !redisReady) return null
+  try {
+    const raw = await redis.get(key)
+    if (!raw) return null
+    return JSON.parse(raw)
+  } catch (err) {
+    console.error("Redis read failed:", err.message)
+    return null
+  }
+}
+
+async function readRedisLatestPrices() {
+  const payload = await readRedisJson(resolveRedisKey("prices:latest"))
+  if (!payload || !Array.isArray(payload.items)) return null
+  const updatedAt = parseNumber(payload.updatedAt)
+  if (updatedAt && Date.now() - updatedAt > config.redisLatestMaxAgeMs) {
+    return null
+  }
+  return {
+    items: payload.items,
+    updatedAt: updatedAt ? new Date(updatedAt) : null,
+    meta: payload.meta || null,
+    source: "redis",
+  }
+}
+
+async function readRedisSnapshotBefore(cutoff) {
+  if (!redis || !redisReady) return null
+  const cutoffMs = cutoff instanceof Date ? cutoff.getTime() : Number(cutoff)
+  if (!Number.isFinite(cutoffMs)) return null
+  const indexKey = resolveRedisKey("prices:snapshots")
+  try {
+    const keys = await redis.zRangeByScore(indexKey, 0, cutoffMs, {
+      REV: true,
+      LIMIT: { offset: 0, count: 1 },
+    })
+    if (!keys || keys.length === 0) return null
+    const payload = await readRedisJson(keys[0])
+    if (!payload || !Array.isArray(payload.items)) return null
+    const updatedAt = parseNumber(payload.updatedAt)
+    return {
+      createdAt: updatedAt ? new Date(updatedAt) : cutoff,
+      items: payload.items,
+    }
+  } catch (err) {
+    console.error("Redis snapshot lookup failed:", err.message)
+    return null
+  }
+}
+
+async function publishRedisEvent(payload) {
+  if (!redis || !redisReady) return
+  try {
+    const channel = resolveEventChannel()
+    await redis.publish(channel, JSON.stringify(payload))
+  } catch (err) {
+    console.error("Redis publish failed:", err.message)
+  }
+}
+
 function resolveUniverseMode(value) {
   if (!value) return DEFAULT_UNIVERSE_MODE
   const normalized = String(value).trim().toLowerCase()
@@ -162,6 +261,12 @@ function resolveUniverseModeForAsset(assetConfig, fallback) {
   return DEFAULT_UNIVERSE_MODE
 }
 
+function resolveUniverseBoost(mode, watchlisted) {
+  if (mode !== "weighted_union") return 0
+  if (!watchlisted) return 0
+  return config.watchlistScoreBoost
+}
+
 function parseBotWeights(raw) {
   if (!raw || typeof raw !== "object") return {}
   const parsed = {}
@@ -172,6 +277,101 @@ function parseBotWeights(raw) {
     parsed[String(key)] = clamp(weight, 0, 5)
   })
   return parsed
+}
+
+async function readRunConfig(db, runId) {
+  if (!runId) return null
+  try {
+    const snap = await db.doc(`e2e_runs/${runId}`).get()
+    if (!snap.exists) return null
+    return snap.data() || null
+  } catch (err) {
+    console.error("Run config fetch failed", err.message)
+    return null
+  }
+}
+
+function normalizeMarketTag(value) {
+  if (!value) return null
+  const normalized = String(value).trim().toLowerCase()
+  if (normalized === "stock" || normalized === "stocks" || normalized === "us" || normalized === "tsx") {
+    return "stock"
+  }
+  if (normalized === "forex" || normalized === "fx") return "forex"
+  if (normalized === "crypto" || normalized === "cryptos") return "crypto"
+  return null
+}
+
+function inferAssetClassFromSymbol(symbol) {
+  const normalized = normalizeSymbol(symbol)
+  if (!normalized) return null
+  if (normalized.includes("/")) {
+    const [base, quote] = normalized.split("/")
+    if (FX_CODES.has(base) && FX_CODES.has(quote)) return "forex"
+    return "crypto"
+  }
+  return "stock"
+}
+
+function normalizeTestSymbol(symbol, assetClass) {
+  if (!symbol) return null
+  if (assetClass === "stock") return normalizeTicker(symbol)
+  return normalizeSymbol(symbol)
+}
+
+function buildTestFilter(runConfig) {
+  if (!runConfig || runConfig.testMode !== true) return null
+  const marketSet = new Set(
+    (Array.isArray(runConfig.restrictMarkets) ? runConfig.restrictMarkets : [])
+      .map(normalizeMarketTag)
+      .filter(Boolean)
+  )
+
+  const symbolMap = new Map()
+  const symbols = Array.isArray(runConfig.restrictSymbols) ? runConfig.restrictSymbols : []
+  symbols.forEach((entry) => {
+    let assetClass = null
+    let symbol = null
+    if (typeof entry === "string") {
+      const parts = entry.split(":").map((part) => part.trim())
+      if (parts.length === 2) {
+        const maybeClass = normalizeMarketTag(parts[0])
+        if (maybeClass) {
+          assetClass = maybeClass
+          symbol = parts[1]
+        }
+      }
+      if (!symbol) symbol = entry
+    } else if (entry && typeof entry === "object") {
+      assetClass = normalizeMarketTag(entry.assetClass || entry.market || "")
+      symbol = entry.symbol || entry.ticker || null
+    }
+
+    if (!symbol) return
+    if (!assetClass) assetClass = inferAssetClassFromSymbol(symbol)
+    const normalized = normalizeTestSymbol(symbol, assetClass)
+    if (!normalized || !assetClass) return
+    if (!symbolMap.has(assetClass)) {
+      symbolMap.set(assetClass, new Set())
+    }
+    symbolMap.get(assetClass).add(normalized)
+  })
+
+  return {
+    marketSet,
+    symbolMap,
+    allow(candidate) {
+      if (!candidate) return false
+      if (marketSet.size > 0 && !marketSet.has(candidate.assetClass)) return false
+      if (symbolMap.size > 0) {
+        const allowed = symbolMap.get(candidate.assetClass)
+        if (!allowed) return false
+        const normalized = normalizeTestSymbol(candidate.symbol, candidate.assetClass)
+        if (!normalized || !allowed.has(normalized)) return false
+      }
+      return true
+    },
+  }
 }
 
 function chunkItems(items, size) {
@@ -207,6 +407,7 @@ function normalizeSnapshotStock(item, exchangeHint = null) {
   )
   const change1m = parseNumber(item.change1m)
   const change5m = parseNumber(item.change5m)
+  const change15m = parseNumber(item.change15m)
   const volatility1m = parseNumber(item.volatility1m)
   const volatility5m = parseNumber(item.volatility5m)
   const spreadPct =
@@ -223,6 +424,7 @@ function normalizeSnapshotStock(item, exchangeHint = null) {
     change24h,
     change1m,
     change5m,
+    change15m,
     volatility1m,
     volatility5m,
     bid,
@@ -256,6 +458,7 @@ function normalizeSnapshotForex(item) {
   )
   const change1m = parseNumber(item.change1m)
   const change5m = parseNumber(item.change5m)
+  const change15m = parseNumber(item.change15m)
   const volatility1m = parseNumber(item.volatility1m)
   const volatility5m = parseNumber(item.volatility5m)
   const spreadPct =
@@ -271,6 +474,7 @@ function normalizeSnapshotForex(item) {
     change24h,
     change1m,
     change5m,
+    change15m,
     volatility1m,
     volatility5m,
     bid,
@@ -405,18 +609,6 @@ function computeSnapshotMovers(currentItems, previousItems, options = {}) {
     .sort((a, b) => (b.volume || 0) - (a.volume || 0))
 
   return { candidates, gainers, losers, actives }
-}
-
-function extractAlphaError(data) {
-  if (!data || typeof data !== "object") return null
-  const message = data.Note || data["Error Message"] || data.Information || null
-  if (typeof message !== "string") return null
-  const trimmed = message.trim()
-  return trimmed.length ? trimmed : null
-}
-
-function formatDate(date) {
-  return date.toISOString().slice(0, 10)
 }
 
 function looksLikePair(left, right) {
@@ -605,14 +797,37 @@ async function fetchJson(url, options) {
   return res.json()
 }
 
+function resolveGatewayBase() {
+  if (!config.marketDataGatewayUrl) {
+    throw new Error("MARKET_DATA_GATEWAY_URL is not configured")
+  }
+  return config.marketDataGatewayUrl.endsWith("/")
+    ? config.marketDataGatewayUrl
+    : `${config.marketDataGatewayUrl}/`
+}
+
+function buildGatewayUrl(path, params) {
+  const base = resolveGatewayBase()
+  const normalizedPath = String(path || "").replace(/^\/+/, "")
+  const url = new URL(normalizedPath, base)
+  if (params) {
+    url.search = new URLSearchParams(params).toString()
+  }
+  return url.toString()
+}
+
+async function fetchGatewayJson(path, params) {
+  const url = buildGatewayUrl(path, params)
+  return fetchJson(url)
+}
+
 async function fetchBinanceChange(symbol, interval) {
-  const url = new URL("https://api.binance.com/api/v3/klines")
-  url.search = new URLSearchParams({
+  const payload = await fetchGatewayJson("/v1/binance/klines", {
     symbol,
     interval,
     limit: "2",
-  }).toString()
-  const data = await fetchJson(url.toString())
+  })
+  const data = Array.isArray(payload?.data) ? payload.data : []
   if (!Array.isArray(data) || data.length < 2) return null
   const prevClose = parseNumber(data[data.length - 2]?.[4])
   const lastClose = parseNumber(data[data.length - 1]?.[4])
@@ -621,13 +836,11 @@ async function fetchBinanceChange(symbol, interval) {
 }
 
 async function fetchBinanceTicker(symbol) {
-  const url = new URL("https://api.binance.com/api/v3/ticker/24hr")
-  url.search = new URLSearchParams({ symbol }).toString()
-  const data = await fetchJson(url.toString())
+  const data = await fetchGatewayJson("/v1/binance/ticker", { symbol })
   return {
-    price: parseNumber(data.lastPrice),
-    change24h: parseNumber(data.priceChangePercent),
-    volume: parseNumber(data.quoteVolume ?? data.volume),
+    price: parseNumber(data?.price),
+    change24h: parseNumber(data?.change24h),
+    volume: parseNumber(data?.volume),
   }
 }
 
@@ -674,103 +887,6 @@ async function fetchCryptoWatchlist(pairs) {
     }
   }
   return results
-}
-
-async function fetchText(url, options) {
-  const res = await fetch(url, options)
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`Request failed ${res.status}: ${body.slice(0, 200)}`)
-  }
-  return res.text()
-}
-
-function parseCsvRows(text) {
-  const rows = []
-  let row = []
-  let value = ""
-  let inQuotes = false
-
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i]
-    if (char === '"') {
-      if (inQuotes && text[i + 1] === '"') {
-        value += '"'
-        i += 1
-      } else {
-        inQuotes = !inQuotes
-      }
-      continue
-    }
-
-    if (char === "," && !inQuotes) {
-      row.push(value)
-      value = ""
-      continue
-    }
-
-    if ((char === "\n" || char === "\r") && !inQuotes) {
-      if (char === "\r" && text[i + 1] === "\n") {
-        i += 1
-      }
-      row.push(value)
-      if (row.length > 1 || row[0]) {
-        rows.push(row)
-      }
-      row = []
-      value = ""
-      continue
-    }
-
-    value += char
-  }
-
-  if (value.length > 0 || row.length > 0) {
-    row.push(value)
-    if (row.length > 1 || row[0]) {
-      rows.push(row)
-    }
-  }
-
-  return rows
-}
-
-function parseListingStatus(text) {
-  const trimmed = text.trim()
-  if (!trimmed) return []
-  if (trimmed.startsWith("{")) {
-    throw new Error(`Alpha Vantage listing status error: ${trimmed.slice(0, 200)}`)
-  }
-
-  const rows = parseCsvRows(text)
-  if (rows.length < 2) return []
-  const headers = rows[0].map((header) => String(header || "").trim().toLowerCase())
-  const getIndex = (name) => headers.indexOf(name)
-  const symbolIndex = getIndex("symbol")
-
-  if (symbolIndex === -1) return []
-
-  const nameIndex = getIndex("name")
-  const exchangeIndex = getIndex("exchange")
-  const assetTypeIndex = getIndex("assettype")
-  const ipoDateIndex = getIndex("ipodate")
-  const statusIndex = getIndex("status")
-
-  return rows
-    .slice(1)
-    .map((row) => {
-      const symbol = normalizeTicker(row[symbolIndex] || "")
-      if (!symbol) return null
-      return {
-        symbol,
-        name: String(row[nameIndex] || "").trim() || symbol,
-        exchange: String(row[exchangeIndex] || "").trim(),
-        assetType: String(row[assetTypeIndex] || "").trim(),
-        ipoDate: String(row[ipoDateIndex] || "").trim(),
-        status: String(row[statusIndex] || "").trim(),
-      }
-    })
-    .filter(Boolean)
 }
 
 function initAdmin() {
@@ -877,12 +993,12 @@ async function readControls(db) {
       100
     ),
     volume: clamp(
-      parseNumber(rawWeights.volume) ?? DEFAULT_TREND_WEIGHTS.volume,
+      parseNumber(rawWeights.liquidity ?? rawWeights.volume) ?? DEFAULT_TREND_WEIGHTS.volume,
       0,
       100
     ),
     signals: clamp(
-      parseNumber(rawWeights.signals) ?? DEFAULT_TREND_WEIGHTS.signals,
+      parseNumber(rawWeights.consensus ?? rawWeights.signals) ?? DEFAULT_TREND_WEIGHTS.signals,
       0,
       100
     ),
@@ -914,8 +1030,8 @@ async function readControls(db) {
 }
 
 async function refreshStockSymbolCache(db) {
-  if (!config.alphaVantageKey) {
-    console.log("Stock symbol cache skipped (no Alpha Vantage key)")
+  if (!config.marketDataGatewayUrl) {
+    console.log("Stock symbol cache skipped (no market data gateway)")
     return
   }
 
@@ -932,14 +1048,16 @@ async function refreshStockSymbolCache(db) {
   }
 
   console.log("Refreshing stock symbol cache")
-  const url = `https://www.alphavantage.co/query?function=LISTING_STATUS&apikey=${config.alphaVantageKey}`
-  const csv = await fetchText(url)
-  const listings = parseListingStatus(csv)
-  const active = listings.filter(
-    (entry) => String(entry.status || "").toLowerCase() === "active"
-  )
+  let data = null
+  try {
+    data = await fetchGatewayJson("/v1/fmp/stock-list")
+  } catch (error) {
+    console.error("Stock symbol cache refresh failed:", error.message)
+    return
+  }
+  const listings = Array.isArray(data?.items) ? data.items : []
   const limited =
-    config.symbolCacheMax > 0 ? active.slice(0, config.symbolCacheMax) : active
+    config.symbolCacheMax > 0 ? listings.slice(0, config.symbolCacheMax) : listings
 
   if (limited.length === 0) {
     console.log("Stock symbol cache empty after parsing")
@@ -971,7 +1089,7 @@ async function refreshStockSymbolCache(db) {
     {
       stocksUpdatedAt: updatedAt,
       stocksCount: limited.length,
-      stocksSource: "alphavantage",
+      stocksSource: data?.source || "fmp",
     },
     { merge: true }
   )
@@ -988,10 +1106,14 @@ async function fetchCrypto(db, preferences = {}) {
   const watchlistSet = new Set(watchlist.map(normalizeSymbol).filter(Boolean))
 
   if (!includeTrending && watchlistSet.size === 0) {
-    return []
+    return { items: [], source: null }
   }
   if (filterToWatchlist && watchlistSet.size === 0) {
-    return []
+    return { items: [], source: null }
+  }
+  if (!config.marketDataGatewayUrl) {
+    console.log("Crypto fetch skipped (no market data gateway)")
+    return { items: [], source: null }
   }
 
   let livePrices = null
@@ -1009,16 +1131,15 @@ async function fetchCrypto(db, preferences = {}) {
       if (key) liveMap.set(key, item)
     })
 
-  const url = new URL("https://api.coingecko.com/api/v3/coins/markets")
-  url.search = new URLSearchParams({
+  const payload = await fetchGatewayJson("/v1/coingecko/markets", {
     vs_currency: "usd",
     order: "volume_desc",
     per_page: String(config.cryptoLimit),
     page: "1",
     price_change_percentage: "1h,24h,7d",
-  }).toString()
-
-  const data = await fetchJson(url.toString())
+  })
+  const data = Array.isArray(payload?.data) ? payload.data : []
+  const baseSource = payload?.source || "gateway"
 
   const baseItems = data
     .map((item, index) => {
@@ -1073,7 +1194,7 @@ async function fetchCrypto(db, preferences = {}) {
   }
 
   const items = Array.from(itemsMap.values())
-  if (items.length === 0) return []
+  if (items.length === 0) return { items: [], source: baseSource }
 
   if (liveMap.size > 0) {
     items.forEach((item) => {
@@ -1099,7 +1220,7 @@ async function fetchCrypto(db, preferences = {}) {
     "1h"
   )
 
-  return items.map((item) => {
+  const enriched = items.map((item) => {
     const key = normalizeSymbol(item.symbol)
     const change15m = key ? change15mMap.get(key) : undefined
     const change1h = key ? change1hMap.get(key) : undefined
@@ -1109,9 +1230,20 @@ async function fetchCrypto(db, preferences = {}) {
       change1h: item.change1h ?? (change1h === undefined ? undefined : change1h),
     }
   })
+  if (mode === "weighted_union") {
+    enriched.forEach((item) => {
+      const boost = resolveUniverseBoost(mode, item.watchlisted)
+      if (boost) item.universeBoost = boost
+    })
+  }
+  return { items: enriched, source: baseSource }
 }
 
 async function readLivePrices(db) {
+  if (redisReady) {
+    const redisSnapshot = await readRedisLatestPrices()
+    if (redisSnapshot) return redisSnapshot
+  }
   if (!db) return { items: [], updatedAt: null }
   const snap = await db.doc("market/prices").get()
   if (!snap.exists) return { items: [], updatedAt: null }
@@ -1119,7 +1251,7 @@ async function readLivePrices(db) {
   const items = Array.isArray(data.items) ? data.items : []
   const updatedAt =
     typeof data.updatedAt?.toDate === "function" ? data.updatedAt.toDate() : null
-  return { items, updatedAt }
+  return { items, updatedAt, source: "firestore" }
 }
 
 async function fetchLiveSnapshotMovers(db, options) {
@@ -1144,10 +1276,9 @@ async function fetchLiveSnapshotMovers(db, options) {
   const allowWatchlist = resolvedMode !== "movers_only"
   const filterToWatchlist = resolvedMode === "movers_filtered_by_universe"
   const watchlist = watchlistSet || new Set()
-  const snapshotSource = source || "stream"
-
   const priceSnapshot =
     livePrices && Array.isArray(livePrices.items) ? livePrices : await readLivePrices(db)
+  const snapshotSource = priceSnapshot?.source || source || "stream"
   const rawItems = Array.isArray(priceSnapshot?.items) ? priceSnapshot.items : []
   const currentItems = rawItems
     .filter((item) => item?.assetClass === assetClass)
@@ -1160,15 +1291,27 @@ async function fetchLiveSnapshotMovers(db, options) {
   }
 
   const createdAt = priceSnapshot?.updatedAt || new Date()
-  const snapshot = await writeSnapshot(db, collectionName, currentItems, createdAt, {
-    market,
-    assetClass,
-    source: snapshotSource,
-  })
-  await pruneSnapshots(db, collectionName, config.snapshotKeep)
-
   const cutoff = new Date(createdAt.getTime() - config.moverWindowMinutes * 60 * 1000)
-  const previous = await findSnapshotBefore(db, collectionName, cutoff)
+  let snapshot = null
+  let previous = null
+
+  if (redisReady) {
+    previous = await readRedisSnapshotBefore(cutoff)
+    if (previous && Array.isArray(previous.items)) {
+      previous = {
+        ...previous,
+        items: previous.items.filter((item) => item?.assetClass === assetClass),
+      }
+    }
+  } else {
+    snapshot = await writeSnapshot(db, collectionName, currentItems, createdAt, {
+      market,
+      assetClass,
+      source: snapshotSource,
+    })
+    await pruneSnapshots(db, collectionName, config.snapshotKeep)
+    previous = await findSnapshotBefore(db, collectionName, cutoff)
+  }
 
   let candidates = []
   let gainers = []
@@ -1202,16 +1345,25 @@ async function fetchLiveSnapshotMovers(db, options) {
   })
 
   const candidateMap = new Map()
-  const addCandidate = (item, sideHint = null) => {
+  const addCandidate = (item, sideHint = null, options = {}) => {
     if (!item?.symbol || typeof item.price !== "number") return
     if (filterToWatchlist && !watchlist.has(item.symbol)) return
     if (candidateMap.has(item.symbol)) return
     const change15m = changeMap.has(item.symbol) ? changeMap.get(item.symbol) : item.change15m
+    if (options.requireMomentum) {
+      const hasMomentum =
+        typeof change15m === "number" ||
+        typeof item.change5m === "number" ||
+        typeof item.change1m === "number"
+      if (!hasMomentum) return
+    }
     const volumeRank = volumeRankMap.get(item.symbol)
     const volumeScore =
       volumeRank && volumeList.length > 1
         ? clamp(1 - (volumeRank - 1) / (volumeList.length - 1), 0, 1)
         : undefined
+    const watchlisted = watchlist.has(item.symbol)
+    const universeBoost = resolveUniverseBoost(resolvedMode, watchlisted)
     candidateMap.set(
       item.symbol,
       compactObject({
@@ -1233,21 +1385,28 @@ async function fetchLiveSnapshotMovers(db, options) {
         liquidityRank: volumeRank,
         volumeScore,
         sideHint: sideHint || undefined,
-        watchlisted: watchlist.has(item.symbol),
+        watchlisted,
+        universeBoost: universeBoost || undefined,
         source: snapshotSource,
       })
     )
   }
 
   if (allowTrending) {
-    gainers.slice(0, config.moverEnrichLimit).forEach((item) => addCandidate(item, "buy"))
-    losers.slice(0, config.moverEnrichLimit).forEach((item) => addCandidate(item, "sell"))
+    gainers
+      .slice(0, config.moverEnrichLimit)
+      .forEach((item) => addCandidate(item, "buy", { requireMomentum: true }))
+    losers
+      .slice(0, config.moverEnrichLimit)
+      .forEach((item) => addCandidate(item, "sell", { requireMomentum: true }))
     if (actives.length > 0) {
-      actives.slice(0, config.moverEnrichLimit).forEach((item) => addCandidate(item))
+      actives
+        .slice(0, config.moverEnrichLimit)
+        .forEach((item) => addCandidate(item, null, { requireMomentum: true }))
     } else if (candidates.length > 0) {
       candidates
         .slice(0, config.moverEnrichLimit)
-        .forEach((item) => addCandidate(item))
+        .forEach((item) => addCandidate(item, null, { requireMomentum: true }))
     }
   }
 
@@ -1301,27 +1460,22 @@ async function fetchLiveSnapshotMovers(db, options) {
   }
 }
 
-async function fetchFmpQuote(symbol) {
-  if (!config.fmpKey) return null
+async function fetchFmpQuote(symbol, assetClass = "stock") {
+  if (!config.marketDataGatewayUrl) return null
   try {
-    const url = new URL(`${FMP_STABLE_BASE_URL}/quote`)
-    url.searchParams.set("symbol", symbol)
-    url.searchParams.set("apikey", config.fmpKey)
-    const data = await fetchJson(url.toString())
-    const entry = Array.isArray(data) ? data[0] : data
-    if (!entry) return null
-    const changePercent = parsePercent(
-      entry.changesPercentage ?? entry.changePercentage ?? entry.changePercent ?? entry.change
-    )
-    return {
-      assetClass: "stock",
+    const data = await fetchGatewayJson("/v1/fmp/quote", {
       symbol,
-      name: entry.name || entry.companyName || symbol,
-      price: parseNumber(entry.price),
-      change24h: changePercent,
-      volume: parseNumber(entry.volume),
+      assetClass,
+    })
+    return {
+      assetClass,
+      symbol,
+      name: data?.name || symbol,
+      price: parseNumber(data?.price),
+      change24h: parseNumber(data?.changePercent),
+      volume: parseNumber(data?.volume),
       watchlisted: true,
-      source: "fmp",
+      source: data?.source || "fmp",
     }
   } catch (error) {
     console.error(`Failed to fetch FMP quote for ${symbol}:`, error.message)
@@ -1330,53 +1484,7 @@ async function fetchFmpQuote(symbol) {
 }
 
 async function fetchStockQuote(symbol) {
-  if (config.fmpKey) {
-    return fetchFmpQuote(symbol)
-  }
-  if (!config.alphaVantageKey) return null
-  try {
-    const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(
-      symbol
-    )}&apikey=${config.alphaVantageKey}`
-    const data = await fetchJson(url)
-    const alphaError = extractAlphaError(data)
-    if (alphaError) {
-      // Skip rate limit errors gracefully
-      if (alphaError.includes("rate limit") || alphaError.includes("API call frequency")) {
-        console.log(`Alpha Vantage rate limit hit for ${symbol}, skipping`)
-        return null
-      }
-      return null
-    }
-    const quote = data?.["Global Quote"]
-    if (!quote) return null
-    const price = parseNumber(quote["05. price"])
-    const changePercent = parseNumber(
-      String(quote["10. change percent"] || "").replace(/%/g, "")
-    )
-    return {
-      assetClass: "stock",
-      symbol,
-      name: symbol,
-      price,
-      change24h: changePercent,
-      volume: parseNumber(quote["06. volume"]),
-      watchlisted: true,
-      source: "alphavantage",
-    }
-  } catch (error) {
-    console.error(`Failed to fetch quote for ${symbol}:`, error.message)
-    return null
-  }
-}
-
-function getAlphaVantageList(data, keys) {
-  if (!data) return []
-  for (const key of keys) {
-    const list = data[key]
-    if (Array.isArray(list) && list.length > 0) return list
-  }
-  return []
+  return fetchFmpQuote(symbol, "stock")
 }
 
 async function fetchStocks(db, preferences = {}) {
@@ -1443,55 +1551,7 @@ async function fetchStocks(db, preferences = {}) {
   let source = null
 
   if (includeTrending) {
-    if (!config.alphaVantageKey) {
-      console.log("Alpha Vantage key missing, skipping stock movers fallback")
-    } else {
-      try {
-        const url = `https://www.alphavantage.co/query?function=TOP_GAINERS_LOSERS&apikey=${config.alphaVantageKey}`
-        const data = await fetchJson(url)
-        const alphaError = extractAlphaError(data)
-        if (alphaError) {
-          if (
-            alphaError.includes("rate limit") ||
-            alphaError.includes("API call frequency") ||
-            alphaError.includes("Thank you for using Alpha Vantage")
-          ) {
-            console.log("Alpha Vantage rate limit hit, skipping trending stocks")
-          } else {
-            console.error("Alpha Vantage error:", alphaError)
-          }
-        } else {
-          const gainers = getAlphaVantageList(data, ["top_gainers", "mostGainerStock"])
-          const losers = getAlphaVantageList(data, ["top_losers", "mostLoserStock"])
-          const actives = getAlphaVantageList(data, ["most_actively_traded", "mostActiveStock"])
-
-          const addStock = (stock, index, sideHint) => {
-            const symbol = normalizeTicker(stock.ticker || stock.symbol || "")
-            if (!symbol) return
-            if (filterToWatchlist && !watchlistSet.has(symbol)) return
-            results.set(symbol, {
-              assetClass: "stock",
-              symbol,
-              name: stock.ticker || stock.symbol || symbol,
-              price: parseNumber(stock.price),
-              change24h: parseNumber(String(stock.change_percentage || "").replace(/%/g, "")),
-              volume: parseNumber(stock.volume),
-              sideHint,
-              liquidityRank: index + 1,
-              watchlisted: watchlistSet.has(symbol),
-              source: "alphavantage",
-            })
-            source = "alphavantage"
-          }
-
-          gainers.slice(0, 10).forEach((stock, index) => addStock(stock, index, "buy"))
-          losers.slice(0, 6).forEach((stock, index) => addStock(stock, index, "sell"))
-          actives.slice(0, 6).forEach((stock, index) => addStock(stock, index))
-        }
-      } catch (error) {
-        console.error("Failed to fetch trending stocks:", error.message)
-      }
-    }
+    console.log("Stock movers fallback disabled (stream-only)")
   }
 
   const hasTrendingData = includeTrending && results.size > 0
@@ -1551,58 +1611,31 @@ async function fetchForex(db, preferences = {}) {
       return { items: result.items, movers: result.movers, source: "stream" }
     }
   }
+  if (!config.marketDataGatewayUrl) return { items: [] }
 
-  const grouped = new Map()
-  pairs.forEach((pair) => {
-    const [base, quote] = pair.split("/")
-    if (!base || !quote) return
-    if (!grouped.has(base)) grouped.set(base, new Set())
-    grouped.get(base).add(quote)
-  })
-
-  const end = new Date()
-  const start = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000)
   const results = []
-
-  for (const [base, quotesSet] of grouped.entries()) {
-    const quotes = Array.from(quotesSet)
-    const url = new URL(`${formatDate(start)}..${formatDate(end)}`, "https://api.frankfurter.app")
-    url.search = new URLSearchParams({
-      from: base,
-      to: quotes.join(","),
-    }).toString()
-
-    const data = await fetchJson(url.toString())
-    const rates = data?.rates || {}
-    const dates = Object.keys(rates).sort()
-    if (dates.length < 2) continue
-
-    const lastDate = dates[dates.length - 1]
-    const prevDate = dates[dates.length - 2]
-    const lastRates = rates[lastDate] || {}
-    const prevRates = rates[prevDate] || {}
-
-    quotes.forEach((quote, index) => {
-      const rateNow = parseNumber(lastRates[quote])
-      const ratePrev = parseNumber(prevRates[quote])
-      if (!rateNow || !ratePrev) return
-
-      const change24h = ((rateNow - ratePrev) / ratePrev) * 100
-      const symbol = `${base}/${quote}`
+  for (const pair of pairs) {
+    const normalized = normalizeSymbol(pair)
+    if (!normalized) continue
+    try {
+      const quote = await fetchFmpQuote(normalized, "forex")
+      if (!quote || typeof quote.price !== "number") continue
       results.push({
         assetClass: "forex",
-        symbol,
-        name: symbol,
-        price: rateNow,
-        change24h,
-        liquidityRank: index + 1,
+        symbol: normalized,
+        name: normalized,
+        price: quote.price,
+        change24h: quote.change24h,
+        liquidityRank: results.length + 1,
         watchlisted: pairsInput.length > 0,
-        source: "frankfurter",
+        source: quote.source || "gateway",
       })
-    })
+    } catch (err) {
+      continue
+    }
   }
 
-  return { items: results, source: results.length > 0 ? "frankfurter" : null }
+  return { items: results, source: results.length > 0 ? "gateway" : null }
 }
 
 function getAssetKey(assetClass, symbol) {
@@ -1616,30 +1649,50 @@ function getCandidateKey(candidate) {
   return getAssetKey(candidate.assetClass, candidate.symbol)
 }
 
-function resolveMomentum(candidate, horizon) {
+const HORIZON_MINUTES = {
+  "1m": 1,
+  "5m": 5,
+  "15m": 15,
+  "1h": 60,
+  "24h": 1440,
+  "7d": 10080,
+}
+
+function getHorizonMinutes(horizon) {
+  if (!horizon) return HORIZON_MINUTES["15m"]
+  return HORIZON_MINUTES[horizon] || HORIZON_MINUTES["15m"]
+}
+
+function resolveHorizonChange(candidate, horizon) {
   const change15m = parseNumber(candidate.change15m)
   const change1h = parseNumber(candidate.change1h)
   const change24h = parseNumber(candidate.change24h)
   const change7d = parseNumber(candidate.change7d)
+  const lookup = {
+    "15m": change15m,
+    "1h": change1h,
+    "24h": change24h,
+    "7d": change7d,
+  }
+  const order =
+    horizon === "7d"
+      ? ["7d", "24h", "1h", "15m"]
+      : horizon === "24h"
+        ? ["24h", "7d", "1h", "15m"]
+        : horizon === "1h"
+          ? ["1h", "15m", "24h", "7d"]
+          : ["15m", "1h", "24h", "7d"]
+  for (const key of order) {
+    if (lookup[key] !== undefined) {
+      return { change: lookup[key], window: key, fallback: key !== horizon }
+    }
+  }
+  return { change: undefined, window: horizon, fallback: true }
+}
 
-  if (horizon === "15m" && change15m !== undefined) {
-    return { change: change15m, window: "15m" }
-  }
-  if (horizon === "1h" && change1h !== undefined) {
-    return { change: change1h, window: "1h" }
-  }
-  if (horizon === "24h" && change24h !== undefined) {
-    return { change: change24h, window: "24h" }
-  }
-  if (horizon === "7d" && change7d !== undefined) {
-    return { change: change7d, window: "7d" }
-  }
-
-  if (change24h !== undefined) return { change: change24h, window: "24h" }
-  if (change1h !== undefined) return { change: change1h, window: "1h" }
-  if (change7d !== undefined) return { change: change7d, window: "7d" }
-  if (change15m !== undefined) return { change: change15m, window: "15m" }
-  return { change: undefined, window: horizon }
+function resolveMomentum(candidate, horizon) {
+  const resolved = resolveHorizonChange(candidate, horizon)
+  return { change: resolved.change, window: resolved.window }
 }
 
 function buildVolumeScores(candidates) {
@@ -1679,6 +1732,23 @@ function buildVolumeScores(candidates) {
   })
 
   return { scoreMap, rankMap }
+}
+
+function applyVolumeScores(candidates) {
+  const { scoreMap, rankMap } = buildVolumeScores(candidates)
+  return candidates.map((candidate) => {
+    const key = getCandidateKey(candidate)
+    if (!key) return candidate
+    if (typeof candidate.volumeScore === "number") return candidate
+    const volumeScore = scoreMap.get(key)
+    if (typeof volumeScore !== "number") return candidate
+    const liquidityRank = candidate.liquidityRank ?? rankMap.get(key)
+    return compactObject({
+      ...candidate,
+      volumeScore: volumeScore / 100,
+      liquidityRank: liquidityRank ?? candidate.liquidityRank,
+    })
+  })
 }
 
 function computeSignalScore(signalData) {
@@ -1988,55 +2058,40 @@ function maybeAutoTuneTrendWeights(controls, accuracySummary, accuracyHorizon) {
   }
 }
 
-function computeTrendScore(weights, components) {
-  const momentum = weights.momentum ?? 0
-  const volume = weights.volume ?? 0
-  const signals = weights.signals ?? 0
-  const news = weights.news ?? 0
-  const total = momentum + volume + signals + news
-  if (total <= 0) return 0
-  return (
-    (components.momentum * momentum +
-      components.volume * volume +
-      components.signals * signals +
-      (components.news || 0) * news) /
-    total
-  )
-}
-
-function buildTrending(candidates, signalMap, weights, newsScoreMap) {
+function buildTrending(candidates, signalMap, scoreOptions, newsScoreMap) {
   const byHorizon = {}
   TREND_HORIZONS.forEach((horizon) => {
     byHorizon[horizon] = { crypto: [], stock: [], forex: [] }
   })
 
-  const effectiveWeights =
-    newsScoreMap && newsScoreMap.size > 0
-      ? weights
-      : { ...weights, news: 0 }
   const { scoreMap, rankMap } = buildVolumeScores(candidates)
 
   candidates.forEach((candidate) => {
     const key = getCandidateKey(candidate)
     if (!key) return
     const signalData = signalMap.get(key) || null
-    const signalScore = computeSignalScore(signalData)
-    const volumeScore = scoreMap.get(key) ?? 0
-    const volumeRank = rankMap.get(key)
+    const rankedVolume = scoreMap.get(key)
+    const volumeScore =
+      typeof candidate.volumeScore === "number"
+        ? candidate.volumeScore
+        : typeof rankedVolume === "number"
+          ? rankedVolume / 100
+          : undefined
+    const volumeRank = candidate.liquidityRank ?? rankMap.get(key)
     const newsData = newsScoreMap?.get(key) || null
+    const candidateWithVolume =
+      typeof volumeScore === "number" ? { ...candidate, volumeScore } : candidate
+    const side = resolveTradeSide(candidateWithVolume, signalData)
 
     TREND_HORIZONS.forEach((horizon) => {
-      const { change, window } = resolveMomentum(candidate, horizon)
-      const scale = TREND_MOMENTUM_SCALES[horizon] || 1
-      const momentumScore =
-        change === undefined ? 0 : clamp(Math.abs(change) * scale, 0, 100)
-      const components = {
-        momentum: Number(momentumScore.toFixed(1)),
-        volume: Number(volumeScore.toFixed(1)),
-        signals: Number(signalScore.toFixed(1)),
-        news: Number((newsData?.score ?? 0).toFixed(1)),
-      }
-      const score = computeTrendScore(effectiveWeights, components)
+      const { change, window } = resolveMomentum(candidateWithVolume, horizon)
+      const scoreDetail = scoreTrade(candidateWithVolume, signalData, side, {
+        weights: scoreOptions?.weights,
+        signalWeight: scoreOptions?.signalWeight,
+        horizon,
+        newsScore: newsData?.sentiment ?? null,
+      })
+      const scoreComponents = formatScoreComponents(scoreDetail.components)
 
       const signals = signalData
         ? compactObject({
@@ -2051,21 +2106,23 @@ function buildTrending(candidates, signalMap, weights, newsScoreMap) {
         : undefined
 
       const momentum = compactObject({
-        change15m: candidate.change15m,
-        change1h: candidate.change1h,
-        change24h: candidate.change24h,
-        change7d: candidate.change7d,
+        change15m: candidateWithVolume.change15m,
+        change1h: candidateWithVolume.change1h,
+        change24h: candidateWithVolume.change24h,
+        change7d: candidateWithVolume.change7d,
         window,
       })
 
       const item = compactObject({
-        assetClass: candidate.assetClass,
-        symbol: candidate.symbol,
-        name: candidate.name || candidate.symbol,
-        price: candidate.price,
+        assetClass: candidateWithVolume.assetClass,
+        symbol: candidateWithVolume.symbol,
+        name: candidateWithVolume.name || candidateWithVolume.symbol,
+        price: candidateWithVolume.price,
         horizon,
-        score: Number(score.toFixed(2)),
-        components,
+        score: Number(scoreDetail.score.toFixed(2)),
+        confidence: Number(scoreDetail.confidence.toFixed(2)),
+        scoreComponents: scoreComponents || undefined,
+        components: scoreComponents || undefined,
         news: newsData
           ? {
             count: newsData.count,
@@ -2076,11 +2133,11 @@ function buildTrending(candidates, signalMap, weights, newsScoreMap) {
         momentum,
         signals,
         volumeRank,
-        source: candidate.source,
+        source: candidateWithVolume.source,
       })
 
-      if (byHorizon[horizon]?.[candidate.assetClass]) {
-        byHorizon[horizon][candidate.assetClass].push(item)
+      if (byHorizon[horizon]?.[candidateWithVolume.assetClass]) {
+        byHorizon[horizon][candidateWithVolume.assetClass].push(item)
       }
     })
   })
@@ -2190,19 +2247,13 @@ function buildNewsSymbolLists(candidates, universe) {
 }
 
 async function fetchMarketauxNews(symbols, entityTypes) {
-  if (!config.marketauxKey || !symbols || symbols.length === 0) return []
-  const url = new URL(MARKETAUX_BASE_URL)
-  url.search = new URLSearchParams({
-    api_token: config.marketauxKey,
-    symbols: symbols.join(","),
-    filter_entities: "true",
-    language: "en",
-    limit: String(config.newsLimit),
-    entity_types: entityTypes,
-  }).toString()
-
+  if (!config.marketDataGatewayUrl || !symbols || symbols.length === 0) return []
   try {
-    const data = await fetchJson(url.toString())
+    const data = await fetchGatewayJson("/v1/marketaux/news", {
+      symbols: symbols.join(","),
+      entity_types: entityTypes,
+      limit: String(config.newsLimit),
+    })
     return Array.isArray(data?.data) ? data.data : []
   } catch (err) {
     console.error("Marketaux fetch failed", err.message)
@@ -2320,15 +2371,77 @@ function mapNewsItems(items) {
   return map
 }
 
-async function loadNewsData(db, candidates, controls, universe, runId) {
+function buildOverrideNews(overrides) {
+  if (!overrides || typeof overrides !== "object") return { items: [], scoreMap: new Map() }
+  const entries = Object.entries(overrides)
+    .map(([key, value]) => ({ key, value }))
+    .filter(({ value }) => value && typeof value === "object")
+
+  const items = []
+  entries.forEach(({ key, value }) => {
+    let assetClass = normalizeMarketTag(value.assetClass || value.market || "")
+    let symbol = value.symbol || value.ticker || value.pair || null
+    if (!symbol && typeof key === "string") {
+      const parts = key.split(":").map((part) => part.trim())
+      if (parts.length === 2) {
+        assetClass = assetClass || normalizeMarketTag(parts[0])
+        symbol = parts[1]
+      } else if (parts.length === 1) {
+        symbol = parts[0]
+      }
+    }
+    if (!symbol) return
+    if (!assetClass) assetClass = inferAssetClassFromSymbol(symbol)
+    if (!assetClass) return
+    const normalized = normalizeTestSymbol(symbol, assetClass)
+    if (!normalized) return
+    const sentimentRaw = parseNumber(value.sentimentScore ?? value.sentiment)
+    const sentiment =
+      typeof sentimentRaw === "number" ? clamp(sentimentRaw, -1, 1) : 0
+    const count = Math.max(0, parseNumber(value.headlineCount ?? value.count) || 0)
+    items.push({
+      assetClass,
+      symbol: normalized,
+      count,
+      sentiment,
+      headlines: Array.isArray(value.headlines) ? value.headlines.slice(0, 3) : [],
+    })
+  })
+
+  const maxCount = items.reduce((max, item) => Math.max(max, item.count || 0), 0)
+  const scoreMap = new Map()
+  items.forEach((item) => {
+    const volumeScore = maxCount > 0 ? (item.count / maxCount) * 100 : 0
+    const sentimentScore = clamp(Math.abs(item.sentiment) * 100, 0, 100)
+    const score = clamp(volumeScore * 0.7 + sentimentScore * 0.3, 0, 100)
+    const summary = {
+      assetClass: item.assetClass,
+      symbol: item.symbol,
+      count: item.count,
+      sentiment: Number(item.sentiment.toFixed(2)),
+      score: Number(score.toFixed(1)),
+      headlines: item.headlines,
+      override: true,
+    }
+    const key = getAssetKey(item.assetClass, item.symbol)
+    if (key) scoreMap.set(key, summary)
+  })
+
+  return { items, scoreMap }
+}
+
+async function loadNewsData(db, candidates, controls, universe, runId, runConfig = null) {
   if (!controls.enableNews) {
     console.log("News disabled in controls")
     return { scoreMap: new Map(), updatedAt: null }
   }
-  if (!config.marketauxKey) {
-    console.log("News sentiment skipped (no provider configured)")
+  if (!config.marketDataGatewayUrl) {
+    console.log("News sentiment skipped (no market data gateway)")
     return { scoreMap: new Map(), updatedAt: null }
   }
+
+  const isTestRun = runConfig?.testMode === true
+  const overrides = isTestRun ? runConfig?.overrides?.marketaux : null
 
   const ref = db.doc("market/news")
   const snap = await ref.get()
@@ -2337,7 +2450,7 @@ async function loadNewsData(db, candidates, controls, universe, runId) {
   const intervalMs = (controls.newsIntervalMinutes || config.newsIntervalMinutes) * 60 * 1000
   const shouldFetch = !lastUpdated || Date.now() - lastUpdated.getTime() >= intervalMs
 
-  if (!shouldFetch && cached?.items) {
+  if (!shouldFetch && cached?.items && !isTestRun) {
     console.log(`Using cached news data (${cached.items?.length || 0} items, updated ${Math.round((Date.now() - lastUpdated.getTime()) / 60000)} minutes ago)`)
     return { scoreMap: mapNewsItems(cached.items), updatedAt: cached.updatedAt }
   }
@@ -2350,7 +2463,7 @@ async function loadNewsData(db, candidates, controls, universe, runId) {
   const items = []
   const sources = []
 
-  if (config.marketauxKey && cryptoSymbols.length > 0) {
+  if (config.marketDataGatewayUrl && cryptoSymbols.length > 0) {
     console.log(`Fetching Marketaux news for ${cryptoSymbols.length} crypto symbols`)
     let cryptoNews = []
     try {
@@ -2367,7 +2480,7 @@ async function loadNewsData(db, candidates, controls, universe, runId) {
     sources.push("marketaux")
   }
 
-  if (config.marketauxKey && stockSymbols.length > 0) {
+  if (config.marketDataGatewayUrl && stockSymbols.length > 0) {
     console.log(`Fetching Marketaux news for ${stockSymbols.length} stocks`)
     let stockNews = []
     try {
@@ -2385,7 +2498,18 @@ async function loadNewsData(db, candidates, controls, universe, runId) {
   }
 
   const scoreMap = mapNewsItems(items)
+  if (overrides) {
+    const overrideResult = buildOverrideNews(overrides)
+    overrideResult.scoreMap.forEach((value, key) => scoreMap.set(key, value))
+    if (overrideResult.items.length > 0) {
+      console.log(`Applied ${overrideResult.items.length} Marketaux overrides for test run`)
+    }
+  }
   console.log(`Fetched sentiment for ${items.length} assets (sources: ${sources.join("+") || "none"})`)
+
+  if (isTestRun) {
+    return { scoreMap, updatedAt: admin.firestore.FieldValue.serverTimestamp() }
+  }
 
   await ref.set(
     {
@@ -2636,16 +2760,42 @@ function resolveTradeSide(candidate, signalData) {
   return change >= 0 ? "buy" : "sell"
 }
 
-function resolveScoreWeights(assetClass, profile) {
-  const bucket = SCORE_WEIGHTS_BY_ASSET[assetClass] || SCORE_WEIGHTS_BY_ASSET.stock
-  const weights = bucket[profile] || bucket.scalp
-  const total = Object.values(weights).reduce((sum, value) => sum + value, 0)
-  if (!total || Math.abs(total - 100) < 0.01) return weights
+function normalizeScoreWeightOverrides(overrides) {
+  if (!overrides || typeof overrides !== "object") return null
+  const momentum = parseNumber(overrides.momentum)
+  const liquidity = parseNumber(
+    overrides.liquidity ?? overrides.volume
+  )
+  const consensus = parseNumber(
+    overrides.consensus ?? overrides.signals
+  )
+  const news = parseNumber(overrides.news)
   const normalized = {}
-  Object.entries(weights).forEach(([key, value]) => {
+  if (typeof momentum === "number") normalized.momentum = momentum
+  if (typeof liquidity === "number") normalized.liquidity = liquidity
+  if (typeof consensus === "number") normalized.consensus = consensus
+  if (typeof news === "number") normalized.news = news
+  return Object.keys(normalized).length > 0 ? normalized : null
+}
+
+function normalizeScoreWeights(weights) {
+  if (!weights || typeof weights !== "object") return weights
+  const entries = Object.entries(weights).filter(([, value]) => typeof value === "number")
+  const total = entries.reduce((sum, [, value]) => sum + value, 0)
+  if (!total) return weights
+  const normalized = {}
+  entries.forEach(([key, value]) => {
     normalized[key] = (value / total) * 100
   })
   return normalized
+}
+
+function resolveScoreWeights(assetClass, profile, overrides = null) {
+  const bucket = SCORE_WEIGHTS_BY_ASSET[assetClass] || SCORE_WEIGHTS_BY_ASSET.stock
+  const base = bucket[profile] || bucket.scalp
+  const overrideMap = normalizeScoreWeightOverrides(overrides)
+  const merged = overrideMap ? { ...base, ...overrideMap } : { ...base }
+  return normalizeScoreWeights(merged)
 }
 
 function blendWeighted(values) {
@@ -2656,58 +2806,81 @@ function blendWeighted(values) {
   return entries.reduce((sum, entry) => sum + entry.value * (entry.weight / totalWeight), 0)
 }
 
-function scoreTrade(candidate, signalData, side, weights = {}, newsScore = null) {
+function resolveVolatilityScale(candidate, horizonMinutes, fallbackSeed = null) {
+  const volatility5m = parseNumber(candidate.volatility5m)
+  const volatility1m = parseNumber(candidate.volatility1m)
+  let base = volatility5m ?? volatility1m
+  let baseMinutes = volatility5m ? 5 : volatility1m ? 1 : null
+  let fallback = false
+
+  if (!(typeof base === "number") || base <= 0 || !baseMinutes) {
+    const seed =
+      typeof fallbackSeed === "number" && fallbackSeed > 0
+        ? fallbackSeed
+        : config.momentumVolFloor
+    base = seed
+    baseMinutes = horizonMinutes
+    fallback = true
+  }
+
+  const scaled = baseMinutes ? base * Math.sqrt(horizonMinutes / baseMinutes) : base
+  const value = clamp(scaled, config.momentumVolFloor, config.momentumVolCeil)
+  return { value, fallback }
+}
+
+function formatScoreComponents(components) {
+  if (!components || typeof components !== "object") return undefined
+  const penalties = components.penalties || {}
+  const round = (value) =>
+    typeof value === "number" && Number.isFinite(value) ? Number(value.toFixed(2)) : undefined
+  return compactObject({
+    momentum: round(components.momentum),
+    consensus: round(components.consensus),
+    liquidity: round(components.liquidity),
+    news: round(components.news),
+    universe: round(components.universe),
+    penalties: compactObject({
+      spread: round(penalties.spread),
+      liquidity: round(penalties.liquidity),
+      price: round(penalties.price),
+      volume: round(penalties.volume),
+      sentiment: round(penalties.sentiment),
+    }),
+  })
+}
+
+function scoreTrade(candidate, signalData, side, options = {}) {
+  const weightsOverride = options.weights || null
+  const signalWeight =
+    typeof options.signalWeight === "number" ? options.signalWeight : 1
+  const newsScore = options.newsScore
+  const horizon = options.horizon || "15m"
+
   const rawChange1m = parseNumber(candidate.change1m)
   const rawChange5m = parseNumber(candidate.change5m)
-  const rawChange15m = parseNumber(candidate.change15m)
-  const rawChange1h = parseNumber(candidate.change1h)
-  const rawChange24h = parseNumber(candidate.change24h)
-  const longChangeRaw = rawChange15m ?? rawChange1h ?? rawChange24h
-  const longChange = typeof longChangeRaw === "number" ? longChangeRaw : null
   const shortBlend = blendWeighted([
     { value: rawChange5m, weight: 0.6 },
     { value: rawChange1m, weight: 0.4 },
   ])
+  const longResolved = resolveHorizonChange(candidate, horizon)
+  const longChange =
+    typeof longResolved.change === "number" ? longResolved.change : null
   const changeBase =
     shortBlend !== null
       ? (longChange !== null ? longChange * 0.6 + shortBlend * 0.4 : shortBlend)
       : longChange ?? 0
-  const baseScale =
-    candidate.assetClass === "forex"
-      ? config.forexChangeScale
-      : candidate.assetClass === "crypto"
-        ? config.cryptoChangeScale
-        : config.stockChangeScale
-  const volatilityScale =
-    typeof candidate.volatility5m === "number" && candidate.volatility5m > 0
-      ? candidate.volatility5m * 3
-      : null
-  const changeScale = volatilityScale
-    ? clamp(volatilityScale, baseScale * 0.3, baseScale * 3)
-    : baseScale
-  const shortScaleRaw =
-    typeof candidate.volatility1m === "number" && candidate.volatility1m > 0
-      ? candidate.volatility1m
-      : typeof candidate.volatility5m === "number" && candidate.volatility5m > 0
-        ? candidate.volatility5m
-        : changeScale / 3
-  const shortScale = clamp(shortScaleRaw, baseScale * 0.1, baseScale)
-  const momentumRatio =
-    changeScale > 0 ? clamp(Math.abs(changeBase) / changeScale, 0, 1) : 0
-  const oversoldRatio =
-    changeScale > 0 && changeBase < 0
-      ? clamp(Math.abs(changeBase) / changeScale, 0, 1)
-      : 0
-  const shortMomentumRatio =
-    typeof shortBlend === "number" && shortScale > 0
-      ? clamp(Math.abs(shortBlend) / shortScale, 0, 1)
-      : 0
+  const horizonMinutes = getHorizonMinutes(longResolved.window || horizon)
+  const fallbackSeed = Math.max(
+    typeof shortBlend === "number" ? Math.abs(shortBlend) : 0,
+    typeof longChange === "number" ? Math.abs(longChange) / 3 : 0,
+    config.momentumVolFloor
+  )
+  const volatility = resolveVolatilityScale(candidate, horizonMinutes, fallbackSeed)
+  const volatilityScale = volatility.value
 
   let consensusRatio = 0
   let consensusRatioRaw = 0
-  let recencyScore = 0
   let confidence = 0
-  const signalWeight = typeof weights.signalWeight === "number" ? weights.signalWeight : 1
 
   if (signalData && (signalData.total > 0 || signalData.weightedTotal > 0)) {
     const totalWeight = signalData.weightedTotal ?? signalData.total ?? 0
@@ -2721,37 +2894,50 @@ function scoreTrade(candidate, signalData, side, weights = {}, newsScore = null)
         ? clamp(recentCount / config.signalMinRecent, 0, 1)
         : 1
     consensusRatio = consensusRatioRaw * recencyFactor
-    recencyScore = recencyFactor * 10
     const confidenceBase = signalData.recentWeight ?? totalWeight
     confidence = clamp(confidenceBase / 5, 0, 1)
   }
   let volumeRatio = 0
   if (typeof candidate.volumeScore === "number") {
-    volumeRatio = clamp(candidate.volumeScore, 0, 1)
+    const normalized = candidate.volumeScore > 1 ? candidate.volumeScore / 100 : candidate.volumeScore
+    volumeRatio = clamp(normalized, 0, 1)
   } else if (candidate.liquidityRank) {
     const denom = Math.max(config.moverTopLimit - 1, 1)
     volumeRatio = clamp(1 - (candidate.liquidityRank - 1) / denom, 0, 1)
   }
   const sentimentRatio =
-    typeof newsScore === "number" ? clamp((newsScore + 1) / 2, 0, 1) : 0.5
+    typeof newsScore === "number" ? clamp((newsScore + 1) / 2, 0, 1) : 0
 
   const profile = side === "buy" && changeBase < 0 ? "dip" : "scalp"
-  const weightSet = resolveScoreWeights(candidate.assetClass, profile)
-  let momentumScore = oversoldRatio * (weightSet.momentum ?? 0)
-  if (profile !== "dip") {
-    momentumScore = momentumRatio * (weightSet.momentum ?? 0)
+  const weightSet = resolveScoreWeights(candidate.assetClass, profile, weightsOverride)
+  const directionalChange = side === "sell" ? -changeBase : changeBase
+  let momentumBase = 0
+  if (profile === "dip") {
+    momentumBase = changeBase < 0 ? Math.abs(changeBase) : 0
+  } else {
+    momentumBase = directionalChange > 0 ? directionalChange : 0
   }
-  const shortMomentumScore = shortMomentumRatio * (weightSet.shortMomentum ?? 0)
+  const momentumRatio =
+    volatilityScale > 0
+      ? clamp(momentumBase / volatilityScale, 0, config.momentumRatioMax)
+      : 0
+  const momentumStrength =
+    config.momentumRatioMax > 0
+      ? clamp(momentumRatio / config.momentumRatioMax, 0, 1)
+      : 0
+  const momentumScore = momentumStrength * (weightSet.momentum ?? 0)
   const consensusScore = consensusRatio * (weightSet.consensus ?? 0)
   const liquidityScore = volumeRatio * (weightSet.liquidity ?? 0)
   const newsSentimentScore = sentimentRatio * (weightSet.news ?? 0)
+  const universeScore =
+    typeof candidate.universeBoost === "number" ? candidate.universeBoost : 0
   let score =
     momentumScore +
-    shortMomentumScore +
     consensusScore +
     liquidityScore +
-    newsSentimentScore
-  if (profile === "dip" && sentimentRatio < 0.35) score -= 5
+    newsSentimentScore +
+    universeScore
+  const sentimentPenalty = profile === "dip" && sentimentRatio < 0.35 ? 5 : 0
 
   let liquidityPenalty = 0
   if (volumeRatio > 0 && volumeRatio < 0.1) liquidityPenalty += 6
@@ -2763,88 +2949,84 @@ function scoreTrade(candidate, signalData, side, weights = {}, newsScore = null)
       spreadPenalty = clamp((candidate.spreadPct - limit) * 20, 0, 15)
     }
   }
-  score -= liquidityPenalty + spreadPenalty
+  score -= liquidityPenalty + spreadPenalty + sentimentPenalty
 
+  let pricePenalty = 0
   if (
     candidate.assetClass === "stock" &&
     typeof candidate.price === "number" &&
     candidate.price < config.moverMinPrice
   ) {
-    score -= 10
+    pricePenalty = 10
   }
+  score -= pricePenalty
+  let volumePenalty = 0
   if (
     candidate.assetClass === "stock" &&
     typeof candidate.volume === "number" &&
     config.moverMinVolume > 0 &&
     candidate.volume < config.moverMinVolume
   ) {
-    score -= 10
+    volumePenalty = 10
   }
+  score -= volumePenalty
 
   score = clamp(score, 0, 100)
+
+  const confidenceParts = [
+    shortBlend !== null ? 0.25 : 0,
+    longChange !== null ? 0.25 : 0,
+    !volatility.fallback ? 0.2 : 0,
+    signalData && (signalData.total > 0 || signalData.weightedTotal > 0) ? 0.2 : 0,
+    volumeRatio > 0 ? 0.1 : 0,
+  ]
+  let confidenceScore = confidenceParts.reduce((sum, value) => sum + value, 0)
+  if (longResolved.fallback) confidenceScore *= 0.85
+  if (volatility.fallback) confidenceScore *= 0.9
+  if (confidence > 0) {
+    confidenceScore = Math.max(confidenceScore, confidence * 0.4)
+  }
+  confidenceScore = clamp(confidenceScore, 0, 1)
 
   return {
     profile,
     score,
-    confidence,
-    momentumScore,
-    shortMomentumScore,
-    consensusScore,
-    strengthScore: signalData?.total
-      ? clamp((signalData.strengthSum || 0) / signalData.total, 0, 1) * 10
-      : 0,
-    recencyScore,
-    liquidityScore,
-    watchlistScore: 0,
-    primaryScore: 0,
-    newsSentimentScore,
+    confidence: confidenceScore,
+    components: {
+      momentum: momentumScore,
+      consensus: consensusScore,
+      liquidity: liquidityScore,
+      news: newsSentimentScore,
+      universe: universeScore,
+      penalties: {
+        spread: spreadPenalty ? -spreadPenalty : 0,
+        liquidity: liquidityPenalty ? -liquidityPenalty : 0,
+        price: pricePenalty ? -pricePenalty : 0,
+        volume: volumePenalty ? -volumePenalty : 0,
+        sentiment: sentimentPenalty ? -sentimentPenalty : 0,
+      },
+    },
+    momentum: {
+      changeBase,
+      shortBlend,
+      longChange,
+      longWindow: longResolved.window || horizon,
+    },
   }
-}
-
-function normalizeFmpCandleSymbol(symbol, assetClass) {
-  if (!symbol) return symbol
-  const upper = String(symbol).trim().toUpperCase()
-  if (assetClass === "forex" || assetClass === "crypto") {
-    return upper.replace(/[\/-]/g, "")
-  }
-  return upper.replace(/\s+/g, "")
 }
 
 async function fetchFmpCandles(symbol, assetClass, interval = "15min", limit = 120) {
-  if (!config.fmpKey) return []
+  if (!config.marketDataGatewayUrl) return []
   if (!symbol) return []
   if (assetClass !== "stock" && assetClass !== "forex") return []
-  const fmpSymbol = normalizeFmpCandleSymbol(symbol, assetClass)
-  if (!fmpSymbol) return []
-  const url = new URL(`${FMP_STABLE_BASE_URL}/historical-chart/${interval}`)
-  url.searchParams.set("symbol", fmpSymbol)
-  url.searchParams.set("apikey", config.fmpKey)
-
   try {
-    const data = await fetchJson(url.toString())
-    if (!Array.isArray(data)) return []
-    const candles = data
-      .map((entry) => {
-        const time = entry.date || entry.time || entry.timestamp
-        const parsedTime = time ? new Date(time).getTime() : null
-        const open = parseNumber(entry.open)
-        const high = parseNumber(entry.high)
-        const low = parseNumber(entry.low)
-        const close = parseNumber(entry.close)
-        if (!parsedTime || open === undefined || high === undefined || low === undefined || close === undefined) {
-          return null
-        }
-        return {
-          time: parsedTime,
-          open,
-          high,
-          low,
-          close,
-          volume: parseNumber(entry.volume),
-        }
-      })
-      .filter(Boolean)
-      .sort((a, b) => a.time - b.time)
+    const data = await fetchGatewayJson("/v1/fmp/candles", {
+      symbol,
+      assetClass,
+      interval,
+      limit: String(limit),
+    })
+    const candles = Array.isArray(data?.candles) ? data.candles : []
     if (candles.length === 0) return []
     return candles.slice(-limit)
   } catch (error) {
@@ -3218,7 +3400,7 @@ function markPrimary(candidates, primarySets) {
   })
 }
 
-function buildHotTrades(candidates, signalMap, scoreWeights, newsScoreMap = null) {
+function buildHotTrades(candidates, signalMap, scoreOptions, newsScoreMap = null) {
   const scored = candidates.map((candidate) => {
     const symbolKey = getCandidateKey(candidate)
     const signalData = symbolKey ? signalMap.get(symbolKey) : null
@@ -3226,19 +3408,13 @@ function buildHotTrades(candidates, signalMap, scoreWeights, newsScoreMap = null
     const assetKey = getAssetKey(candidate.assetClass, candidate.symbol)
     const newsData = newsScoreMap && assetKey ? newsScoreMap.get(assetKey) : null
     const newsSentiment = newsData?.sentiment ?? null // -1 to 1 range
-    const scoreDetail = scoreTrade(candidate, signalData, side, scoreWeights, newsSentiment)
-    const scoreComponents = {
-      base: 0,
-      momentum: Number(scoreDetail.momentumScore.toFixed(2)),
-      shortMomentum: Number(scoreDetail.shortMomentumScore.toFixed(2)),
-      consensus: Number(scoreDetail.consensusScore.toFixed(2)),
-      strength: Number(scoreDetail.strengthScore.toFixed(2)),
-      recency: Number(scoreDetail.recencyScore.toFixed(2)),
-      liquidity: Number(scoreDetail.liquidityScore.toFixed(2)),
-      watchlist: Number(scoreDetail.watchlistScore.toFixed(2)),
-      primary: Number(scoreDetail.primaryScore.toFixed(2)),
-      news: Number((scoreDetail.newsSentimentScore || 0).toFixed(2)),
-    }
+    const scoreDetail = scoreTrade(candidate, signalData, side, {
+      weights: scoreOptions?.weights,
+      signalWeight: scoreOptions?.signalWeight,
+      horizon: scoreOptions?.horizon || "15m",
+      newsScore: newsSentiment,
+    })
+    const scoreComponents = formatScoreComponents(scoreDetail.components)
 
     const signals = signalData
       ? compactObject({
@@ -3276,7 +3452,7 @@ function buildHotTrades(candidates, signalMap, scoreWeights, newsScoreMap = null
       profile: scoreDetail.profile,
       score: Number(scoreDetail.score.toFixed(2)),
       confidence: Number(scoreDetail.confidence.toFixed(2)),
-      scoreComponents,
+      scoreComponents: scoreComponents || undefined,
       primary: candidate.primary ? true : undefined,
       momentum: Object.keys(momentum).length ? momentum : undefined,
       signals,
@@ -3290,14 +3466,10 @@ function buildHotTrades(candidates, signalMap, scoreWeights, newsScoreMap = null
 
 function buildActionBoard(hotTrades, newsScoreMap, limit) {
   const cap = Number.isFinite(limit) ? Math.max(1, limit) : 10
-  const newsWeight = 0.15
+  const newsWeight = 0
 
   const scoreTradeForAction = (trade) => {
-    const base = typeof trade.score === "number" ? trade.score : 0
-    const key = getAssetKey(trade.assetClass, trade.symbol)
-    const newsScore = key ? newsScoreMap?.get(key)?.score : null
-    const boost = typeof newsScore === "number" ? newsScore * newsWeight : 0
-    return base + boost
+    return typeof trade.score === "number" ? trade.score : 0
   }
 
   const rankList = (list) =>
@@ -3392,22 +3564,36 @@ function buildScoreDriversLine(components) {
   if (!components) return null
   const entries = [
     { key: "momentum", label: "momentum", value: components.momentum },
-    { key: "shortMomentum", label: "short-term momentum", value: components.shortMomentum },
     { key: "consensus", label: "bot consensus", value: components.consensus },
-    { key: "strength", label: "signal strength", value: components.strength },
-    { key: "recency", label: "signal recency", value: components.recency },
     { key: "liquidity", label: "liquidity", value: components.liquidity },
-    { key: "watchlist", label: "watchlist boost", value: components.watchlist },
-    { key: "primary", label: "primary focus", value: components.primary },
     { key: "news", label: "news sentiment", value: components.news },
+    { key: "universe", label: "universe boost", value: components.universe },
   ]
+  const penalties = components.penalties || {}
+  const penaltyEntries = [
+    { key: "spread", label: "spread", value: penalties.spread },
+    { key: "liquidity", label: "liquidity", value: penalties.liquidity },
+    { key: "price", label: "price", value: penalties.price },
+    { key: "volume", label: "volume", value: penalties.volume },
+    { key: "sentiment", label: "sentiment", value: penalties.sentiment },
+  ]
+    .filter((entry) => typeof entry.value === "number" && entry.value < 0)
+    .sort((a, b) => a.value - b.value)
   const drivers = entries
     .filter((entry) => typeof entry.value === "number" && entry.value > 0)
     .sort((a, b) => b.value - a.value)
     .slice(0, 3)
     .map((entry) => entry.label)
-  if (drivers.length === 0) return "Score is mostly baseline."
-  return `Top drivers: ${joinList(drivers)}.`
+  const penaltiesLabel = penaltyEntries.slice(0, 2).map((entry) => entry.label)
+  if (drivers.length === 0 && penaltiesLabel.length === 0) {
+    return "Score is driven mostly by limited data."
+  }
+  if (drivers.length === 0) {
+    return `Score is muted by penalties: ${joinList(penaltiesLabel)}.`
+  }
+  const penaltiesLine =
+    penaltiesLabel.length > 0 ? ` Penalties: ${joinList(penaltiesLabel)}.` : ""
+  return `Top drivers: ${joinList(drivers)}.${penaltiesLine}`
 }
 
 function describeConfidence(confidence, totalSignals) {
@@ -3424,35 +3610,36 @@ function describeConfidence(confidence, totalSignals) {
 function buildScoreBreakdown(components, totalScore) {
   if (!components || typeof totalScore !== "number") return null
   const parts = []
-  if (typeof components.base === "number") {
-    parts.push(`base ${formatNumber(components.base, 0)}`)
-  }
   if (typeof components.momentum === "number") {
     parts.push(`momentum ${formatNumber(components.momentum, 1)}`)
-  }
-  if (typeof components.shortMomentum === "number") {
-    parts.push(`short momentum ${formatNumber(components.shortMomentum, 1)}`)
   }
   if (typeof components.consensus === "number") {
     parts.push(`consensus ${formatNumber(components.consensus, 1)}`)
   }
-  if (typeof components.strength === "number") {
-    parts.push(`strength ${formatNumber(components.strength, 1)}`)
-  }
-  if (typeof components.recency === "number") {
-    parts.push(`recency ${formatNumber(components.recency, 1)}`)
-  }
   if (typeof components.liquidity === "number") {
     parts.push(`liquidity ${formatNumber(components.liquidity, 1)}`)
   }
-  if (typeof components.watchlist === "number") {
-    parts.push(`watchlist ${formatNumber(components.watchlist, 1)}`)
-  }
-  if (typeof components.primary === "number") {
-    parts.push(`primary ${formatNumber(components.primary, 1)}`)
-  }
   if (typeof components.news === "number") {
     parts.push(`news ${formatNumber(components.news, 1)}`)
+  }
+  if (typeof components.universe === "number") {
+    parts.push(`universe ${formatNumber(components.universe, 1)}`)
+  }
+  const penalties = components.penalties || {}
+  if (typeof penalties.spread === "number" && penalties.spread !== 0) {
+    parts.push(`spread penalty ${formatNumber(penalties.spread, 1)}`)
+  }
+  if (typeof penalties.liquidity === "number" && penalties.liquidity !== 0) {
+    parts.push(`liquidity penalty ${formatNumber(penalties.liquidity, 1)}`)
+  }
+  if (typeof penalties.price === "number" && penalties.price !== 0) {
+    parts.push(`price penalty ${formatNumber(penalties.price, 1)}`)
+  }
+  if (typeof penalties.volume === "number" && penalties.volume !== 0) {
+    parts.push(`volume penalty ${formatNumber(penalties.volume, 1)}`)
+  }
+  if (typeof penalties.sentiment === "number" && penalties.sentiment !== 0) {
+    parts.push(`sentiment penalty ${formatNumber(penalties.sentiment, 1)}`)
   }
   if (!parts.length) return null
   return `Score model: ${parts.join(" + ")} = ${formatNumber(totalScore, 1)}.`
@@ -3565,19 +3752,29 @@ function buildTradeAnalysis(trade, trendItem, newsItem, options) {
   if (confidenceLine) details.push(confidenceLine)
 
   if (trendItem) {
-    const components = trendItem.components || {}
+    const components = trendItem.scoreComponents || trendItem.components || {}
     details.push(
       `Trend check (${options.trendHorizon}): ${formatNumber(trendItem.score, 1)}/100.`
     )
     details.push(
       `Trend drivers: momentum ${describeComponentStrength(
         components.momentum
-      )}, volume ${describeComponentStrength(
-        components.volume
-      )}, bot signals ${describeComponentStrength(
-        components.signals
+      )}, consensus ${describeComponentStrength(
+        components.consensus
+      )}, liquidity ${describeComponentStrength(
+        components.liquidity
       )}, and news ${describeComponentStrength(components.news)}.`
     )
+    const penalties = components.penalties || {}
+    const penaltyBits = []
+    if (penalties.spread) penaltyBits.push("spread")
+    if (penalties.liquidity) penaltyBits.push("liquidity")
+    if (penalties.price) penaltyBits.push("price")
+    if (penalties.volume) penaltyBits.push("volume")
+    if (penalties.sentiment) penaltyBits.push("sentiment")
+    if (penaltyBits.length > 0) {
+      details.push(`Trend penalties: ${joinList(penaltyBits)}.`)
+    }
   } else {
     details.push(`Trend check (${options.trendHorizon}): no data yet.`)
   }
@@ -3636,7 +3833,7 @@ function attachTradeAnalysis(trade, context) {
     ? {
       horizon: trendItem.horizon || context.trendHorizon,
       score: trendItem.score,
-      components: trendItem.components,
+      components: trendItem.scoreComponents || trendItem.components,
       momentum: trendItem.momentum,
     }
     : undefined
@@ -3717,6 +3914,62 @@ function buildPriceSnapshot(candidates) {
     })
   })
   return Array.from(map.values())
+}
+
+function candidateMagnitude(candidate) {
+  const values = [
+    candidate?.change15m,
+    candidate?.change5m,
+    candidate?.change1m,
+    candidate?.change24h,
+  ].filter((value) => typeof value === "number")
+  if (values.length === 0) return 0
+  return Math.max(...values.map((value) => Math.abs(value)))
+}
+
+function buildCandidateBatch(candidates, limit) {
+  if (!Array.isArray(candidates)) return []
+  const trimmed = candidates
+    .map((candidate) =>
+      compactObject({
+        assetClass: candidate.assetClass,
+        symbol: candidate.symbol,
+        name: candidate.name,
+        market: candidate.assetClass,
+        reason: candidate.reason || candidate.sideHint || null,
+        price: candidate.price,
+        change1m: candidate.change1m,
+        change5m: candidate.change5m,
+        change15m: candidate.change15m,
+        change24h: candidate.change24h,
+        volume: candidate.volume,
+        volatility1m: candidate.volatility1m,
+        volatility5m: candidate.volatility5m,
+        spreadPct: candidate.spreadPct,
+        sideHint: candidate.sideHint,
+        watchlisted: candidate.watchlisted,
+        primary: candidate.primary,
+        source: candidate.source,
+      })
+    )
+    .sort((a, b) => candidateMagnitude(b) - candidateMagnitude(a))
+  const max = Number.isFinite(limit) && limit > 0 ? limit : trimmed.length
+  return trimmed.slice(0, max).map((item, index) => ({
+    ...item,
+    rank: index + 1,
+  }))
+}
+
+function countCandidates(items) {
+  return items.reduce(
+    (acc, item) => {
+      const key = item?.assetClass
+      if (!key || !acc[key]) return acc
+      acc[key] += 1
+      return acc
+    },
+    { crypto: 0, stock: 0, forex: 0 }
+  )
 }
 
 async function dispatchSignalRequests(db, picks, controls) {
@@ -3883,16 +4136,18 @@ function buildFetchStatus({ items, error, preferences, listKey, source }) {
 
 async function run() {
   const db = initAdmin()
+  redis = await initRedis()
   const startedAt = new Date()
-  const runId = `${startedAt.getTime()}-${Math.random().toString(36).slice(2, 8)}`
+  const runId =
+    config.runId || `${startedAt.getTime()}-${Math.random().toString(36).slice(2, 8)}`
 
-  console.log("Market intel run started", { startedAt: startedAt.toISOString(), runId })
+  console.log("mi_run_start", { startedAt: startedAt.toISOString(), runId })
 
   await refreshStockSymbolCache(db).catch((err) => {
     console.error("Stock symbol cache refresh failed", err.message)
   })
 
-  const [universe, controls] = await Promise.all([
+  const [universe, controls, runConfig] = await Promise.all([
     readUniverse(db).catch((err) => {
       console.error("Universe fetch failed", err.message)
       return {
@@ -3921,7 +4176,20 @@ async function run() {
         autoTuneNotes: "",
       }
     }),
+    readRunConfig(db, runId),
   ])
+
+  const testFilter = buildTestFilter(runConfig)
+  if (testFilter) {
+    console.log("mi_test_mode", {
+      runId,
+      restrictMarkets: Array.from(testFilter.marketSet),
+      restrictSymbols: Array.from(testFilter.symbolMap.entries()).map(([key, set]) => ({
+        assetClass: key,
+        count: set.size,
+      })),
+    })
+  }
 
   const llmIntervalMinutes = controls.llmIntervalMinutes
   const llmEnabled = controls.enableLLM && Boolean(config.openaiKey)
@@ -4012,9 +4280,33 @@ async function run() {
   if (stockResult.error) console.error("Stock fetch failed", stockResult.error)
   if (forexResult.error) console.error("Forex fetch failed", forexResult.error)
 
-  const candidates = markPrimary([...crypto, ...stocks, ...forex], primarySets)
-  const newsData = await loadNewsData(db, candidates, controls, universe, runId)
-  const hotTrades = buildHotTrades(candidates, botSignals, { signalWeight }, newsData.scoreMap)
+  let candidates = applyVolumeScores(
+    markPrimary([...crypto, ...stocks, ...forex], primarySets)
+  )
+  if (testFilter) {
+    candidates = candidates.filter((candidate) => testFilter.allow(candidate))
+  }
+  const candidateBatch = buildCandidateBatch(candidates, config.candidatePublishLimit)
+  const candidateBatchCounts = countCandidates(candidateBatch)
+  const batchDocRef = db.collection(config.batchCollection).doc(runId)
+  const batchDoc = compactObject({
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    batchId: runId,
+    runId,
+    docPath: "market/candidates",
+    count: candidateBatch.length,
+    counts: candidateBatchCounts,
+    sources: {
+      crypto: cryptoResult.source || "gateway",
+      stocks: stockResult.source || "stream",
+      forex: forexResult.source || "stream",
+    },
+    items: candidateBatch,
+  })
+  const newsData = await loadNewsData(db, candidates, controls, universe, runId, runConfig)
+  const scoreOptions = { weights: controls.trendWeights, signalWeight, horizon: "15m" }
+  const hotTrades = buildHotTrades(candidates, botSignals, scoreOptions, newsData.scoreMap)
   const recommendationMap = await buildRecommendations(hotTrades, config.recommendationLimit)
   const hotTradesWithRecommendations = hotTrades.map((trade) => {
     const key = getAssetKey(trade.assetClass, trade.symbol)
@@ -4024,7 +4316,7 @@ async function run() {
   const trendingByHorizon = buildTrending(
     candidates,
     botSignals,
-    controls.trendWeights,
+    scoreOptions,
     newsData.scoreMap
   )
   const actionBoard = buildActionBoard(
@@ -4033,10 +4325,7 @@ async function run() {
     config.actionBoardLimit
   )
   const trendLookup = buildTrendLookup(trendingByHorizon, controls.trendHorizon)
-  const effectiveTrendWeights =
-    newsData.scoreMap && newsData.scoreMap.size > 0
-      ? controls.trendWeights
-      : { ...controls.trendWeights, news: 0 }
+  const scoreWeightDisplay = resolveScoreWeights("stock", "scalp", controls.trendWeights)
   const popularItems = buildPopularList(hotTradesWithRecommendations, config.popularPerClass)
   const priceSnapshot = buildPriceSnapshot(candidates)
   await monitorPaperTrading(db, priceSnapshot).catch((err) => {
@@ -4050,27 +4339,21 @@ async function run() {
       error: cryptoResult.error,
       preferences: universe.crypto,
       listKey: "symbols",
-      source: "coingecko",
+      source: cryptoResult.source || "gateway",
     }),
     stock: buildFetchStatus({
       items: stocks,
       error: stockResult.error,
       preferences: universe.stocks,
       listKey: "symbols",
-      source:
-        stockResult.source ||
-        (config.fmpKey
-          ? "fmp"
-          : config.alphaVantageKey
-            ? "alphavantage"
-            : "disabled"),
+      source: stockResult.source || "stream",
     }),
     forex: buildFetchStatus({
       items: forex,
       error: forexResult.error,
       preferences: universe.forex,
       listKey: "pairs",
-      source: forexResult.source || (config.fmpKey ? "fmp" : "frankfurter"),
+      source: forexResult.source || "stream",
     }),
   }
   const candidateCounts = {
@@ -4091,18 +4374,18 @@ async function run() {
         meta: {
           runId,
           sources: {
-            stocks:
-              stockResult.source ||
-              (config.fmpKey
-                ? "fmp"
-                : config.alphaVantageKey
-                  ? "alphavantage"
-                  : "disabled"),
-            forex: forexResult.source || (config.fmpKey ? "fmp" : "frankfurter"),
+            stocks: stockResult.source || "stream",
+            forex: forexResult.source || "stream",
           },
         },
       }
       : null
+
+  console.log("mi_compute_movers", {
+    runId,
+    markets: Object.keys(moversMarkets),
+    candidates: candidateCounts,
+  })
 
   const existing = await db.doc("market/hotTrades").get()
   const previousItems = existing.exists ? existing.data()?.items : []
@@ -4154,7 +4437,7 @@ async function run() {
   const analysisContext = {
     trendLookup: trendLookup.lookup,
     trendHorizon: trendLookup.horizon,
-    trendWeights: effectiveTrendWeights,
+    trendWeights: scoreWeightDisplay,
     newsScoreMap: newsData.scoreMap,
     newsWeight: actionBoard.newsWeight,
     signalLookbackMinutes: config.signalLookbackMinutes,
@@ -4201,13 +4484,9 @@ async function run() {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         items: analyzedItems,
         sources: {
-          crypto: "coingecko",
-          stocks: config.fmpKey
-            ? "fmp"
-            : config.alphaVantageKey
-              ? "alphavantage"
-              : "disabled",
-          forex: config.fmpKey ? "fmp" : "frankfurter",
+          crypto: cryptoResult.source || "gateway",
+          stocks: stockResult.source || "stream",
+          forex: forexResult.source || "stream",
         },
         meta: compactObject({
           runId,
@@ -4232,7 +4511,7 @@ async function run() {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         horizons: TREND_HORIZONS,
         byHorizon: trendingByHorizon,
-        weights: controls.trendWeights,
+        weights: scoreWeightDisplay,
         meta: {
           runId,
           defaultHorizon: controls.trendHorizon,
@@ -4277,20 +4556,35 @@ async function run() {
           fetchStatus,
           candidateCounts,
           sources: {
-            crypto: "coingecko",
-            stocks:
-              stockResult.source ||
-              (config.fmpKey
-                ? "fmp"
-                : config.alphaVantageKey
-                  ? "alphavantage"
-                  : "disabled"),
-            forex: forexResult.source || (config.fmpKey ? "fmp" : "frankfurter"),
+            crypto: cryptoResult.source || "gateway",
+            stocks: stockResult.source || "stream",
+            forex: forexResult.source || "stream",
           },
         },
       },
       { merge: true }
     ),
+    db.doc("market/candidates").set(
+      {
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        batchId: runId,
+        runId,
+        items: candidateBatch,
+        meta: compactObject({
+          runId,
+          limit: config.candidatePublishLimit,
+          count: candidateBatch.length,
+          counts: candidateBatchCounts,
+          sources: {
+            crypto: cryptoResult.source || "gateway",
+            stocks: stockResult.source || "stream",
+            forex: forexResult.source || "stream",
+          },
+        }),
+      },
+      { merge: true }
+    ),
+    batchDocRef.set(batchDoc, { merge: true }),
     db.doc("market/prices_snapshot").set(
       {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -4308,6 +4602,27 @@ async function run() {
     autoTuneWrite,
   ])
 
+  console.log("mi_write_batch", {
+    runId,
+    batchId: runId,
+    count: candidateBatch.length,
+  })
+
+  await publishRedisEvent(
+    compactObject({
+      type: "new_batch",
+      batchId: runId,
+      runId,
+      docPath: "market/candidates",
+      batchPath: `${config.batchCollection}/${runId}`,
+      count: candidateBatch.length,
+      counts: candidateBatchCounts,
+      publishedAt: Date.now(),
+    })
+  )
+
+  console.log("mi_publish_new_batch", { runId, batchId: runId })
+
   const dispatchList =
     analyzedActionBoard.allPicks && analyzedActionBoard.allPicks.length > 0
       ? analyzedActionBoard.allPicks
@@ -4318,7 +4633,11 @@ async function run() {
 
   await emitMarketSignals(db, trendingByHorizon, controls)
 
-  console.log("Market intel run completed", { count: items.length })
+  console.log("mi_run_complete", { runId, count: items.length })
+
+  if (redis) {
+    await redis.quit().catch(() => {})
+  }
 }
 
 run().catch((err) => {

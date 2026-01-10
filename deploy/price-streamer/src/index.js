@@ -1,5 +1,6 @@
 const admin = require("firebase-admin")
 const http = require("http")
+const { createClient } = require("redis")
 const WebSocket = require("ws")
 
 const config = {
@@ -9,6 +10,7 @@ const config = {
     process.env.GOOGLE_CLOUD_PROJECT ||
     "relayorb",
   fmpKey: process.env.FMP_API_KEY || "",
+  marketDataGatewayUrl: process.env.MARKET_DATA_GATEWAY_URL || "",
   binanceWsBase: process.env.BINANCE_WS_BASE || "wss://stream.binance.com:9443",
   watchlistRefreshMs: parseInt(process.env.WATCHLIST_REFRESH_MS || "60000", 10),
   cryptoPollMs: parseInt(process.env.CRYPTO_POLL_MS || "15000", 10),
@@ -17,7 +19,14 @@ const config = {
   writeMs: parseInt(process.env.PRICE_WRITE_MS || "2000", 10),
   maxSymbols: parseInt(process.env.PRICE_STREAM_MAX_SYMBOLS || "120", 10),
   historyMinutes: parseInt(process.env.PRICE_HISTORY_MINUTES || "10", 10),
+  redisUrl: process.env.REDIS_URL || "",
+  redisPrefix: process.env.REDIS_PREFIX || "relayorb",
+  redisLatestTtlSeconds: parseInt(process.env.REDIS_LATEST_TTL_SECONDS || "120", 10),
+  redisSnapshotTtlSeconds: parseInt(process.env.REDIS_SNAPSHOT_TTL_SECONDS || "1800", 10),
+  redisSnapshotMs: parseInt(process.env.REDIS_SNAPSHOT_MS || "60000", 10),
   port: parseInt(process.env.PORT || "8080", 10),
+  runId: process.env.RUN_ID || "",
+  firestoreRunField: process.env.FIRESTORE_RUN_FIELD || "runId",
 }
 
 const FMP_STABLE_BASE_URL = "https://financialmodelingprep.com/stable"
@@ -27,6 +36,7 @@ const UNIVERSE_MODES = new Set([
   "universe_only",
   "movers_plus_universe",
   "movers_filtered_by_universe",
+  "weighted_union",
 ])
 const FX_CODES = new Set(["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"])
 const STREAM_SYMBOL_TTL_MS = 30 * 60 * 1000
@@ -36,7 +46,8 @@ if (!admin.apps.length) {
 }
 
 const db = admin.firestore()
-const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+const runId =
+  config.runId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
 const state = {
   watchlist: {
@@ -56,6 +67,9 @@ const state = {
   lastFlushAt: null,
   lastFlushError: null,
   fmpBackoffUntil: 0,
+  redis: null,
+  redisReady: false,
+  lastRedisSnapshotAt: 0,
 }
 
 let server = null
@@ -68,6 +82,30 @@ function parseNumber(value) {
   if (value === undefined || value === null) return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function resolveRedisKey(suffix) {
+  const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
+  return `${prefix}${suffix}`
+}
+
+async function initRedis() {
+  if (!config.redisUrl) return null
+  const client = createClient({ url: config.redisUrl })
+  client.on("error", (err) => {
+    const message = err?.message ? String(err.message) : "Unknown error"
+    console.error("Redis error:", message)
+  })
+  try {
+    await client.connect()
+    state.redisReady = true
+    console.log("Redis connected")
+    return client
+  } catch (err) {
+    console.error("Redis connection failed:", err.message)
+    state.redisReady = false
+    return null
+  }
 }
 
 function isFmpRateLimited() {
@@ -189,7 +227,7 @@ function resolveUniverseMode(value) {
 }
 
 function shouldIncludeUniverse(mode) {
-  return mode === "movers_plus_universe" || mode === "universe_only"
+  return mode === "movers_plus_universe" || mode === "universe_only" || mode === "weighted_union"
 }
 
 function mapWithConcurrency(items, limit, mapper) {
@@ -214,8 +252,51 @@ async function fetchJson(url) {
   return res.json()
 }
 
+function resolveGatewayBase() {
+  if (!config.marketDataGatewayUrl) return null
+  return config.marketDataGatewayUrl.endsWith("/")
+    ? config.marketDataGatewayUrl
+    : `${config.marketDataGatewayUrl}/`
+}
+
+function buildGatewayUrl(path, params) {
+  const base = resolveGatewayBase()
+  if (!base) return null
+  const normalizedPath = String(path || "").replace(/^\/+/, "")
+  const url = new URL(normalizedPath, base)
+  if (params) {
+    url.search = new URLSearchParams(params).toString()
+  }
+  return url.toString()
+}
+
+async function fetchGatewayJson(path, params) {
+  const url = buildGatewayUrl(path, params)
+  if (!url) return null
+  return fetchJson(url)
+}
+
 async function fetchFmpQuote(symbol, assetClass = "stock") {
-  if (!config.fmpKey || !symbol) return null
+  if (!symbol) return null
+  if (config.marketDataGatewayUrl) {
+    try {
+      const data = await fetchGatewayJson("/v1/fmp/quote", {
+        symbol,
+        assetClass,
+      })
+      if (!data || typeof data?.price !== "number") return null
+      return {
+        symbol,
+        price: data.price,
+        bid: parseNumber(data.bid),
+        ask: parseNumber(data.ask),
+        volume: parseNumber(data.volume),
+      }
+    } catch (err) {
+      console.error(`Gateway quote failed for ${symbol}:`, err.message)
+    }
+  }
+  if (!config.fmpKey) return null
   if (isFmpRateLimited()) return null
   const normalized = normalizeFmpQuoteSymbol(symbol, assetClass)
   if (!normalized) return null
@@ -386,13 +467,52 @@ function buildHealthPayload() {
       stock: state.watchlist.stock.size,
       forex: state.watchlist.forex.size,
     },
+    redis: {
+      enabled: Boolean(config.redisUrl),
+      connected: Boolean(state.redisReady),
+    },
+  }
+}
+
+function shouldWriteRedisSnapshot(now) {
+  if (!config.redisSnapshotMs || config.redisSnapshotMs <= 0) return false
+  return now - state.lastRedisSnapshotAt >= config.redisSnapshotMs
+}
+
+async function writeRedisPrices(items, meta) {
+  if (!state.redis || !state.redisReady) return
+  const now = Date.now()
+  const latestKey = resolveRedisKey("prices:latest")
+  const payload = JSON.stringify({
+    updatedAt: now,
+    items,
+    meta,
+  })
+  const multi = state.redis.multi()
+  multi.set(latestKey, payload, { EX: Math.max(config.redisLatestTtlSeconds, 10) })
+
+  if (shouldWriteRedisSnapshot(now)) {
+    const snapshotKey = resolveRedisKey(`prices:snapshot:${now}`)
+    const indexKey = resolveRedisKey("prices:snapshots")
+    const ttlSeconds = Math.max(config.redisSnapshotTtlSeconds, 300)
+    const cutoff = now - ttlSeconds * 1000
+    multi.set(snapshotKey, payload, { EX: ttlSeconds })
+    multi.zAdd(indexKey, [{ score: now, value: snapshotKey }])
+    multi.zRemRangeByScore(indexKey, 0, cutoff)
+    state.lastRedisSnapshotAt = now
+  }
+
+  try {
+    await multi.exec()
+  } catch (err) {
+    console.error("Redis price write failed:", err.message)
   }
 }
 
 function startServer() {
   const serverInstance = http.createServer((req, res) => {
     const path = (req.url || "/").split("?")[0]
-    if (path === "/" || path === "/healthz") {
+    if (path === "/" || path === "/healthz" || path === "/readyz") {
       const payload = buildHealthPayload()
       const body = JSON.stringify(payload)
       res.writeHead(200, {
@@ -677,6 +797,7 @@ function connectBinance(streamSymbols) {
 async function pollCryptoPrices() {
   const symbols = Array.from(state.watchlist.crypto)
   if (!config.fmpKey || symbols.length === 0) return
+  console.log("ps_ingest", { runId, assetClass: "crypto", count: symbols.length })
   const results = await mapWithConcurrency(symbols, 5, (symbol) =>
     fetchFmpQuote(symbol, "crypto")
   )
@@ -695,6 +816,7 @@ async function pollCryptoPrices() {
 async function pollStockPrices() {
   const symbols = Array.from(state.watchlist.stock)
   if (!config.fmpKey || symbols.length === 0) return
+  console.log("ps_ingest", { runId, assetClass: "stock", count: symbols.length })
   const results = await mapWithConcurrency(symbols, 5, (symbol) =>
     fetchFmpQuote(symbol, "stock")
   )
@@ -713,6 +835,7 @@ async function pollStockPrices() {
 async function pollForexPrices() {
   const symbols = Array.from(state.watchlist.forex)
   if (!config.fmpKey || symbols.length === 0) return
+  console.log("ps_ingest", { runId, assetClass: "forex", count: symbols.length })
   const results = await mapWithConcurrency(symbols, 5, (symbol) =>
     fetchFmpQuote(symbol, "forex")
   )
@@ -757,28 +880,53 @@ async function flushPrices() {
     )
   })
   try {
+    const stockSource = config.marketDataGatewayUrl
+      ? "gateway"
+      : config.fmpKey
+        ? "fmp"
+        : "disabled"
+    const forexSource = config.marketDataGatewayUrl
+      ? "gateway"
+      : config.fmpKey
+        ? "fmp"
+        : "disabled"
+    const cryptoSource = state.binanceDisabled
+      ? config.marketDataGatewayUrl
+        ? "gateway"
+        : config.fmpKey
+          ? "fmp"
+          : "disabled"
+      : config.marketDataGatewayUrl
+        ? "binance+gateway"
+      : config.fmpKey
+          ? "binance+fmp"
+          : "binance"
+
+    const meta = {
+      runId,
+      count: items.length,
+      sources: {
+        crypto: cryptoSource,
+        stock: stockSource,
+        forex: forexSource,
+      },
+      watchlist: {
+        crypto: state.watchlist.crypto.size,
+        stock: state.watchlist.stock.size,
+        forex: state.watchlist.forex.size,
+      },
+    }
+    await writeRedisPrices(items, meta)
+    console.log("ps_write_redis", {
+      runId,
+      count: items.length,
+      updatedAt: new Date().toISOString(),
+    })
     await db.doc("market/prices").set(
       {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         items,
-        meta: {
-          runId,
-          count: items.length,
-          sources: {
-            crypto: state.binanceDisabled
-              ? "fmp"
-              : config.fmpKey
-                ? "binance+fmp"
-                : "binance",
-            stock: config.fmpKey ? "fmp" : "disabled",
-            forex: config.fmpKey ? "fmp" : "disabled",
-          },
-          watchlist: {
-            crypto: state.watchlist.crypto.size,
-            stock: state.watchlist.stock.size,
-            forex: state.watchlist.forex.size,
-          },
-        },
+        meta,
       },
       { merge: true }
     )
@@ -791,6 +939,7 @@ async function flushPrices() {
 }
 
 async function run() {
+  state.redis = await initRedis()
   await refreshWatchlist()
 
   setInterval(refreshWatchlist, Math.max(config.watchlistRefreshMs, 15000))
@@ -805,7 +954,7 @@ async function run() {
   }, Math.max(config.forexPollMs, 5000))
   setInterval(flushPrices, Math.max(config.writeMs, 1000))
 
-  console.log("Price streamer running", { runId })
+  console.log("ps_run_start", { runId })
 }
 
 server = startServer()
@@ -816,6 +965,9 @@ run().catch((err) => {
 
 function shutdown() {
   if (state.binanceSocket) state.binanceSocket.terminate()
+  if (state.redis) {
+    state.redis.quit().catch(() => {})
+  }
   if (server) {
     server.close(() => process.exit(0))
     return

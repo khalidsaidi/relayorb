@@ -11,9 +11,9 @@ RelayOrb is a multi-asset market intelligence platform that provides trading sig
 
 The brain of the platform that:
 - Fetches real-time data for ALL asset classes:
-  - **Crypto:** CoinGecko movers + Binance intraday deltas
-  - **Stocks/TSX/FX:** Live price snapshots from `market/prices` (price streamer using FMP stable quotes)
-  - **News/Sentiment:** Marketaux (optional)
+  - **Crypto:** CoinGecko movers + Binance intraday deltas (via market-data-gateway)
+  - **Stocks/TSX/FX:** Live price snapshots from `market/prices` (price streamer via market-data-gateway)
+  - **News/Sentiment:** Marketaux (via market-data-gateway, optional)
 - Generates trading signals based on:
   - Momentum analysis (15m, 1h, 24h, 7d changes)
   - Volume anomalies
@@ -35,7 +35,7 @@ The brain of the platform that:
 
 Streams near real-time prices into Firestore:
 - **Crypto:** Binance WebSocket trades
-- **Stocks/FX:** FMP quote polling for tracked symbols
+- **Stocks/FX:** FMP quote polling via market-data-gateway for tracked symbols
 
 Writes to `market/prices` for live UI updates and paper trading.
 
@@ -75,40 +75,37 @@ User interface showing:
 
 ## Data Flow
 
-```
-1. Market Data Sources
-   ├── CoinGecko (Crypto movers)
-   ├── Binance (Crypto intraday deltas)
-   ├── FMP stable quotes (price streamer for stocks/FX)
-   └── Marketaux (News)
-           ↓
-2. Market Intelligence Engine
-   ├── Fetches all data
-   ├── Analyzes trends
-   ├── Generates signals
-   └── AI explanations
-           ↓
-3. Price Streamer
-   └── Live prices into `market/prices`
-           ↓
-4. Bot Engines
-   ├── Freqtrade (Crypto signals)
-   └── Backtrader (Stock/FX signals)
-           ↓
-5. Signal Aggregation
-   ├── Weighted scoring
-   ├── Confidence calculation
-   └── Cross-asset ranking
-           ↓
-6. Firestore Database
-   ├── market/hotTrades
-   ├── market/trending
-   ├── market/popular
-   ├── market/prices_snapshot
-   └── bots/*/signals
-           ↓
-7. Web Dashboard
-   └── Users see unified signals
+```mermaid
+graph TD
+  UI[Frontend UI] <--> FS[Firestore]
+  PS[Price Streamer] --> FS
+  MI[Market Intel] --> FS
+  SE[Signal Evaluator] --> FS
+  AG[RelayOrb Agent] --> FS
+  REF[Refresh Service] --> SE
+  FS --> AG
+  FS --> SE
+  PS --> RS[Redis Hot Store]
+  RS --> MI
+  RS --> SE
+  RS --> AG
+  RS --> REF
+  MI -- "publish new_batch" --> RS
+
+  PS --> MDG[Market Data Gateway]
+  MI --> MDG
+  SE --> MDG
+  CP[Chart Proxy] --> MDG
+
+  MDG --> FMP[FMP]
+  MDG --> CG[CoinGecko]
+  MDG --> BN[Binance REST]
+  MDG --> MX[Marketaux]
+
+  PS --> BNWS[Binance WebSocket]
+  AG --> FT[Freqtrade]
+  AG --> BT[Backtrader]
+  UI --> TV[TradingView]
 ```
 
 ## Firestore Schema
@@ -130,6 +127,11 @@ User interface showing:
 
 ### Analytics
 - `analytics/signalPerformance` - Historical accuracy metrics
+
+## Hot Data Store (Redis)
+
+Redis stores short-lived price windows and snapshots used for 15-minute movers and real-time scoring.
+Firestore remains the latest-state store for UI and configs.
 - `analytics/botAccuracy` - Per-bot accuracy tracking
 
 ## Deployment
@@ -137,8 +139,9 @@ User interface showing:
 ### Google Cloud Platform
 - **Cloud Run:** Market-intel job (scheduled every 5 minutes)
 - **Cloud Run:** Price streamer service (live prices)
+- **Cloud Run:** Market data gateway (centralized vendor access)
 - **Cloud Scheduler:** Triggers market-intel execution
-- **Secret Manager:** API keys (FMP, Marketaux, OpenAI, Alpha Vantage optional)
+- **Secret Manager:** API keys (FMP, Marketaux, OpenAI)
 - **Firestore:** NoSQL database for all data
 - **Firebase Hosting:** Web dashboard
 
@@ -151,9 +154,7 @@ User interface showing:
 ## Configuration
 
 ### Environment Variables (Cloud Run)
-- `FMP_API_KEY` - FMP quotes/candles (price streamer + chart data)
-- `ALPHAVANTAGE_API_KEY` - Optional stock symbol cache fallback
-- `MARKETAUX_API_KEY` - News data
+- `MARKET_DATA_GATEWAY_URL` - Centralized market data service
 - `OPENAI_API_KEY` - AI explanations
 - `EMIT_MARKET_SIGNALS` - Enable signal generation
 - `MARKET_SIGNAL_LIMIT` - Signals per asset class
