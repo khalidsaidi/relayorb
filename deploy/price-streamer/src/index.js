@@ -1,8 +1,7 @@
 const admin = require("firebase-admin")
 const http = require("http")
+const crypto = require("crypto")
 const { createClient } = require("redis")
-const WebSocket = require("ws")
-
 const config = {
   projectId:
     process.env.FIREBASE_PROJECT_ID ||
@@ -11,14 +10,14 @@ const config = {
     "relayorb",
   fmpKey: process.env.FMP_API_KEY || "",
   marketDataGatewayUrl: process.env.MARKET_DATA_GATEWAY_URL || "",
-  binanceWsBase: process.env.BINANCE_WS_BASE || "wss://stream.binance.com:9443",
   watchlistRefreshMs: parseInt(process.env.WATCHLIST_REFRESH_MS || "60000", 10),
-  cryptoPollMs: parseInt(process.env.CRYPTO_POLL_MS || "15000", 10),
-  stockPollMs: parseInt(process.env.STOCK_POLL_MS || "15000", 10),
-  forexPollMs: parseInt(process.env.FOREX_POLL_MS || "15000", 10),
+  cryptoPollMs: parseInt(process.env.CRYPTO_POLL_MS || "30000", 10),
+  stockPollMs: parseInt(process.env.STOCK_POLL_MS || "30000", 10),
+  forexPollMs: parseInt(process.env.FOREX_POLL_MS || "30000", 10),
   writeMs: parseInt(process.env.PRICE_WRITE_MS || "2000", 10),
   maxSymbols: parseInt(process.env.PRICE_STREAM_MAX_SYMBOLS || "120", 10),
   historyMinutes: parseInt(process.env.PRICE_HISTORY_MINUTES || "10", 10),
+  quoteBatchSize: parseInt(process.env.PRICE_STREAM_BATCH_SIZE || "50", 10),
   redisUrl: process.env.REDIS_URL || "",
   redisPrefix: process.env.REDIS_PREFIX || "relayorb",
   redisLatestTtlSeconds: parseInt(process.env.REDIS_LATEST_TTL_SECONDS || "120", 10),
@@ -27,6 +26,11 @@ const config = {
   port: parseInt(process.env.PORT || "8080", 10),
   runId: process.env.RUN_ID || "",
   firestoreRunField: process.env.FIRESTORE_RUN_FIELD || "runId",
+  pipelineEventsEnabled: process.env.PIPELINE_EVENTS_ENABLED !== "false",
+  pipelineEventsStream: process.env.PIPELINE_EVENTS_STREAM || "",
+  pipelineEventsMaxlen: parseInt(process.env.PIPELINE_EVENTS_MAXLEN || "20000", 10),
+  pipelineEventsSampleRate: parseFloat(process.env.PIPELINE_EVENTS_SAMPLE_RATE || "0.2"),
+  pipelineEventsRunEnv: process.env.PIPELINE_EVENTS_RUN_ENV || "prod",
 }
 
 const FMP_STABLE_BASE_URL = "https://financialmodelingprep.com/stable"
@@ -49,6 +53,63 @@ const db = admin.firestore()
 const runId =
   config.runId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
+function resolvePipelineStream() {
+  if (config.pipelineEventsStream) return config.pipelineEventsStream
+  const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
+  return `${prefix}pipeline_events`
+}
+
+function createEventId() {
+  if (crypto.randomUUID) return crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function shouldSample(rate) {
+  if (!Number.isFinite(rate)) return false
+  if (rate >= 1) return true
+  if (rate <= 0) return false
+  return Math.random() < rate
+}
+
+function hashParams(value) {
+  if (!value) return null
+  try {
+    const serialized = typeof value === "string" ? value : JSON.stringify(value)
+    return crypto.createHash("sha256").update(serialized).digest("hex").slice(0, 12)
+  } catch (_) {
+    return null
+  }
+}
+
+async function publishPipelineEvent(event) {
+  if (!config.pipelineEventsEnabled || !state.redis || !state.redisReady) return
+  const stream = resolvePipelineStream()
+  const maxlen = Number.isFinite(config.pipelineEventsMaxlen)
+    ? Math.max(config.pipelineEventsMaxlen, 1000)
+    : 20000
+  const payload = JSON.stringify(event)
+  const command = ["XADD", stream, "MAXLEN", "~", String(maxlen), "*", "payload", payload]
+  try {
+    await Promise.race([
+      state.redis.sendCommand(command),
+      new Promise((resolve) => setTimeout(resolve, 75)),
+    ])
+  } catch (err) {
+    console.error("Pipeline event publish failed:", err.message)
+  }
+}
+
+function buildPipelineEvent(payload) {
+  return {
+    ts: new Date().toISOString(),
+    eventId: createEventId(),
+    runEnv: config.pipelineEventsRunEnv,
+    service: "price-streamer",
+    severity: "info",
+    ...payload,
+  }
+}
+
 const state = {
   watchlist: {
     crypto: new Set(),
@@ -59,11 +120,6 @@ const state = {
   priceHistory: new Map(),
   dirty: false,
   lastWatchHash: "",
-  binanceSocket: null,
-  binanceSymbols: new Map(),
-  binanceReconnect: null,
-  binanceBackoffMs: 1000,
-  binanceDisabled: false,
   lastFlushAt: null,
   lastFlushError: null,
   fmpBackoffUntil: 0,
@@ -73,10 +129,6 @@ const state = {
 }
 
 let server = null
-
-function clamp(value, min, max) {
-  return Math.min(Math.max(value, min), max)
-}
 
 function parseNumber(value) {
   if (value === undefined || value === null) return undefined
@@ -211,13 +263,13 @@ function normalizeFmpQuoteSymbol(raw, assetClass) {
   return symbol
 }
 
-function toBinanceSymbol(pair) {
-  const normalized = normalizeSymbol(pair)
-  if (!normalized || !normalized.includes("/")) return null
-  const [base, quoteRaw] = normalized.split("/")
-  if (!base || !quoteRaw) return null
-  const quote = quoteRaw === "USD" ? "USDT" : quoteRaw
-  return `${base}${quote}`
+function chunkList(items, size) {
+  const chunkSize = Math.max(1, size || 1)
+  const chunks = []
+  for (let i = 0; i < items.length; i += chunkSize) {
+    chunks.push(items.slice(i, i + chunkSize))
+  }
+  return chunks
 }
 
 function resolveUniverseMode(value) {
@@ -228,19 +280,6 @@ function resolveUniverseMode(value) {
 
 function shouldIncludeUniverse(mode) {
   return mode === "movers_plus_universe" || mode === "universe_only" || mode === "weighted_union"
-}
-
-function mapWithConcurrency(items, limit, mapper) {
-  const results = new Array(items.length)
-  let index = 0
-  const workers = new Array(Math.min(limit, items.length)).fill(null).map(async () => {
-    while (index < items.length) {
-      const current = index
-      index += 1
-      results[current] = await mapper(items[current], current)
-    }
-  })
-  return Promise.all(workers).then(() => results)
 }
 
 async function fetchJson(url) {
@@ -273,7 +312,66 @@ function buildGatewayUrl(path, params) {
 async function fetchGatewayJson(path, params) {
   const url = buildGatewayUrl(path, params)
   if (!url) return null
-  return fetchJson(url)
+  const shouldEmit = config.pipelineEventsEnabled && shouldSample(config.pipelineEventsSampleRate)
+  const startedAt = Date.now()
+  const endpointName = String(path || "").replace(/^\/+/, "")
+  const paramsHash = hashParams(params)
+  if (shouldEmit) {
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "price_streamer",
+        eventType: "gateway_call",
+        edgeKey: "price_streamer->market_data_gateway",
+        nodeIds: ["price_streamer", "market_data_gateway"],
+        status: "start",
+        meta: {
+          endpointName,
+          paramsHash,
+        },
+      })
+    )
+  }
+  try {
+    const data = await fetchJson(url)
+    if (shouldEmit) {
+      await publishPipelineEvent(
+        buildPipelineEvent({
+          stationId: "price_streamer",
+          eventType: "gateway_call",
+          edgeKey: "price_streamer->market_data_gateway",
+          nodeIds: ["price_streamer", "market_data_gateway"],
+          status: "end",
+          durationMs: Date.now() - startedAt,
+          meta: {
+            endpointName,
+            paramsHash,
+            httpStatus: 200,
+          },
+        })
+      )
+    }
+    return data
+  } catch (err) {
+    if (shouldEmit) {
+      await publishPipelineEvent(
+        buildPipelineEvent({
+          stationId: "price_streamer",
+          eventType: "gateway_call",
+          edgeKey: "price_streamer->market_data_gateway",
+          nodeIds: ["price_streamer", "market_data_gateway"],
+          status: "error",
+          durationMs: Date.now() - startedAt,
+          severity: "error",
+          meta: {
+            endpointName,
+            paramsHash,
+          },
+          error: { message: err?.message ? String(err.message) : "Gateway error" },
+        })
+      )
+    }
+    throw err
+  }
 }
 
 async function fetchFmpQuote(symbol, assetClass = "stock") {
@@ -326,6 +424,60 @@ async function fetchFmpQuote(symbol, assetClass = "stock") {
     console.error(`FMP quote failed for ${normalized}:`, message)
     return null
   }
+}
+
+async function fetchFmpQuotesBatch(symbols, assetClass = "stock") {
+  if (!Array.isArray(symbols) || symbols.length === 0) return []
+  if (config.marketDataGatewayUrl) {
+    try {
+      const data = await fetchGatewayJson("/v1/fmp/quotes", {
+        symbols: symbols.join(","),
+        assetClass,
+      })
+      return Array.isArray(data?.items) ? data.items : []
+    } catch (err) {
+      console.error(`Gateway batch quote failed for ${assetClass}:`, err.message)
+    }
+  }
+  if (!config.fmpKey) return []
+  if (isFmpRateLimited()) return []
+
+  const normalized = symbols
+    .map((symbol) => normalizeFmpQuoteSymbol(symbol, assetClass))
+    .filter(Boolean)
+  if (normalized.length === 0) return []
+
+  const results = []
+  const batches = chunkList(Array.from(new Set(normalized)), 100)
+  for (const batch of batches) {
+    try {
+      const url = new URL(`${FMP_STABLE_BASE_URL}/quote`)
+      url.searchParams.set("symbol", batch.join(","))
+      url.searchParams.set("apikey", config.fmpKey)
+      const data = await fetchJson(url.toString())
+      const entries = Array.isArray(data) ? data : []
+      entries.forEach((entry) => {
+        if (!entry || typeof entry.price !== "number") return
+        results.push({
+          symbol: entry.symbol || "",
+          price: parseNumber(entry.price),
+          bid: parseNumber(entry.bid),
+          ask: parseNumber(entry.ask),
+          volume:
+            parseNumber(entry.volume) ??
+            parseNumber(entry.avgVolume) ??
+            parseNumber(entry.volumeAvg),
+        })
+      })
+    } catch (err) {
+      const message = err?.message ? String(err.message) : "Unknown error"
+      if (message.includes("429") || message.includes("Limit Reach")) {
+        markFmpRateLimited()
+      }
+      console.error(`Batch quote failed for ${assetClass}:`, message)
+    }
+  }
+  return results
 }
 
 function normalizeSnapshotForex(item) {
@@ -694,7 +846,6 @@ async function refreshWatchlist() {
     next.forex.forEach((symbol) => allowedKeys.add(`forex:${symbol}`))
     prunePriceCache(allowedKeys)
 
-    rebuildCryptoStream()
     console.log("Watchlist refreshed", {
       crypto: next.crypto.size,
       stock: next.stock.size,
@@ -705,150 +856,65 @@ async function refreshWatchlist() {
   }
 }
 
-function buildBinanceMap(symbols) {
-  const map = new Map()
-  symbols.forEach((symbol) => {
-    const binance = toBinanceSymbol(symbol)
-    if (!binance) return
-    map.set(binance.toUpperCase(), symbol)
-  })
-  return map
-}
-
-function rebuildCryptoStream() {
-  if (state.binanceDisabled) {
-    if (state.binanceSocket) {
-      state.binanceSocket.terminate()
-      state.binanceSocket = null
-    }
-    state.binanceSymbols = new Map()
-    return
-  }
-  const symbols = Array.from(state.watchlist.crypto)
-  const binanceMap = buildBinanceMap(symbols)
-  const streamSymbols = Array.from(binanceMap.keys())
-
-  if (streamSymbols.length === 0) {
-    if (state.binanceSocket) {
-      state.binanceSocket.terminate()
-      state.binanceSocket = null
-    }
-    state.binanceSymbols = new Map()
-    return
-  }
-
-  state.binanceSymbols = binanceMap
-  connectBinance(streamSymbols)
-}
-
-function connectBinance(streamSymbols) {
-  if (state.binanceSocket) {
-    state.binanceSocket.terminate()
-    state.binanceSocket = null
-  }
-
-  const streams = streamSymbols.map((symbol) => `${symbol.toLowerCase()}@trade`).join("/")
-  const url = `${config.binanceWsBase}/stream?streams=${streams}`
-  const ws = new WebSocket(url)
-  state.binanceSocket = ws
-
-  ws.on("message", (raw) => {
-    try {
-      const payload = JSON.parse(raw.toString())
-      const data = payload?.data
-      const symbol = data?.s ? String(data.s).toUpperCase() : null
-      const price = parseNumber(data?.p ?? data?.c)
-      if (!symbol || typeof price !== "number") return
-      const key = state.binanceSymbols.get(symbol)
-      if (!key) return
-      updatePrice("crypto", key, price, "binance")
-    } catch (err) {
-      console.error("Binance stream parse error:", err.message)
-    }
-  })
-
-  ws.on("close", () => {
-    if (state.binanceDisabled) return
-    if (state.binanceReconnect) return
-    state.binanceReconnect = setTimeout(() => {
-      state.binanceReconnect = null
-      state.binanceBackoffMs = clamp(state.binanceBackoffMs * 1.5, 1000, 30000)
-      connectBinance(streamSymbols)
-    }, state.binanceBackoffMs)
-  })
-
-  ws.on("error", (err) => {
-    const message = err?.message ? String(err.message) : "Unknown error"
-    if (message.includes("451")) {
-      console.error("Binance stream blocked (451). Falling back to FMP polling.")
-      state.binanceDisabled = true
-      if (state.binanceReconnect) {
-        clearTimeout(state.binanceReconnect)
-        state.binanceReconnect = null
-      }
-      ws.terminate()
-      return
-    }
-    console.error("Binance stream error:", message)
-    ws.close()
-  })
-}
 
 async function pollCryptoPrices() {
   const symbols = Array.from(state.watchlist.crypto)
-  if (!config.fmpKey || symbols.length === 0) return
+  if ((!config.fmpKey && !config.marketDataGatewayUrl) || symbols.length === 0) return
   console.log("ps_ingest", { runId, assetClass: "crypto", count: symbols.length })
-  const results = await mapWithConcurrency(symbols, 5, (symbol) =>
-    fetchFmpQuote(symbol, "crypto")
-  )
-  results.forEach((entry) => {
-    if (!entry) return
-    const symbol = normalizeSymbolForKey(entry.symbol, "crypto")
-    if (!symbol || typeof entry.price !== "number") return
-    updatePrice("crypto", symbol, entry.price, "fmp", {
-      bid: entry.bid,
-      ask: entry.ask,
-      volume: entry.volume,
+  const batches = chunkList(symbols, config.quoteBatchSize)
+  for (const batch of batches) {
+    const results = await fetchFmpQuotesBatch(batch, "crypto")
+    results.forEach((entry) => {
+      if (!entry) return
+      const symbol = normalizeSymbolForKey(entry.symbol, "crypto")
+      if (!symbol || typeof entry.price !== "number") return
+      updatePrice("crypto", symbol, entry.price, "fmp", {
+        bid: entry.bid,
+        ask: entry.ask,
+        volume: entry.volume,
+      })
     })
-  })
+  }
 }
 
 async function pollStockPrices() {
   const symbols = Array.from(state.watchlist.stock)
-  if (!config.fmpKey || symbols.length === 0) return
+  if ((!config.fmpKey && !config.marketDataGatewayUrl) || symbols.length === 0) return
   console.log("ps_ingest", { runId, assetClass: "stock", count: symbols.length })
-  const results = await mapWithConcurrency(symbols, 5, (symbol) =>
-    fetchFmpQuote(symbol, "stock")
-  )
-  results.forEach((entry) => {
-    if (!entry) return
-    const symbol = normalizeSymbolForKey(entry.symbol, "stock")
-    if (!symbol || typeof entry.price !== "number") return
-    updatePrice("stock", symbol, entry.price, "fmp", {
-      bid: entry.bid,
-      ask: entry.ask,
-      volume: entry.volume,
+  const batches = chunkList(symbols, config.quoteBatchSize)
+  for (const batch of batches) {
+    const results = await fetchFmpQuotesBatch(batch, "stock")
+    results.forEach((entry) => {
+      if (!entry) return
+      const symbol = normalizeSymbolForKey(entry.symbol, "stock")
+      if (!symbol || typeof entry.price !== "number") return
+      updatePrice("stock", symbol, entry.price, "fmp", {
+        bid: entry.bid,
+        ask: entry.ask,
+        volume: entry.volume,
+      })
     })
-  })
+  }
 }
 
 async function pollForexPrices() {
   const symbols = Array.from(state.watchlist.forex)
-  if (!config.fmpKey || symbols.length === 0) return
+  if ((!config.fmpKey && !config.marketDataGatewayUrl) || symbols.length === 0) return
   console.log("ps_ingest", { runId, assetClass: "forex", count: symbols.length })
-  const results = await mapWithConcurrency(symbols, 5, (symbol) =>
-    fetchFmpQuote(symbol, "forex")
-  )
-  results.forEach((entry) => {
-    if (!entry) return
-    const symbol = normalizeSymbolForKey(entry.symbol, "forex")
-    if (!symbol || typeof entry.price !== "number") return
-    updatePrice("forex", symbol, entry.price, "fmp", {
-      bid: entry.bid,
-      ask: entry.ask,
-      volume: entry.volume,
+  const batches = chunkList(symbols, config.quoteBatchSize)
+  for (const batch of batches) {
+    const results = await fetchFmpQuotesBatch(batch, "forex")
+    results.forEach((entry) => {
+      if (!entry) return
+      const symbol = normalizeSymbolForKey(entry.symbol, "forex")
+      if (!symbol || typeof entry.price !== "number") return
+      updatePrice("forex", symbol, entry.price, "fmp", {
+        bid: entry.bid,
+        ask: entry.ask,
+        volume: entry.volume,
+      })
     })
-  })
+  }
 }
 
 async function flushPrices() {
@@ -856,6 +922,7 @@ async function flushPrices() {
   state.dirty = false
 
   const now = Date.now()
+  const startedAt = Date.now()
   const items = Array.from(state.priceCache.values()).map((item) => {
     const key = `${item.assetClass}:${item.symbol}`
     const history = state.priceHistory.get(key) || []
@@ -890,17 +957,11 @@ async function flushPrices() {
       : config.fmpKey
         ? "fmp"
         : "disabled"
-    const cryptoSource = state.binanceDisabled
-      ? config.marketDataGatewayUrl
-        ? "gateway"
-        : config.fmpKey
-          ? "fmp"
-          : "disabled"
-      : config.marketDataGatewayUrl
-        ? "binance+gateway"
+    const cryptoSource = config.marketDataGatewayUrl
+      ? "gateway"
       : config.fmpKey
-          ? "binance+fmp"
-          : "binance"
+        ? "fmp"
+        : "disabled"
 
     const meta = {
       runId,
@@ -930,11 +991,63 @@ async function flushPrices() {
       },
       { merge: true }
     )
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "price_streamer",
+        eventType: "fs_write",
+        edgeKey: "price_streamer->firestore",
+        nodeIds: ["price_streamer", "firestore"],
+        status: "end",
+        durationMs: Date.now() - startedAt,
+        meta: {
+          runId,
+          count: items.length,
+        },
+        outputs: {
+          firestoreDocs: ["market/prices"],
+        },
+      })
+    )
     state.lastFlushAt = Date.now()
     state.lastFlushError = null
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "redis_hot",
+        eventType: "redis_write",
+        edgeKey: "price_streamer->redis",
+        nodeIds: ["price_streamer", "redis"],
+        status: "end",
+        durationMs: Date.now() - startedAt,
+        meta: {
+          symbolsUpdated: items.length,
+          markets: Object.keys(meta.sources || {}),
+          sources: meta.sources,
+          watchlist: meta.watchlist,
+        },
+        outputs: {
+          redisKeys: [
+            `${config.redisPrefix ? `${config.redisPrefix}:` : ""}prices:latest`,
+            `${config.redisPrefix ? `${config.redisPrefix}:` : ""}prices:snapshot:*`,
+          ],
+          firestoreDocs: ["market/prices"],
+        },
+      })
+    )
   } catch (err) {
     console.error("Failed to write market/prices:", err.message)
     state.lastFlushError = err.message
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "redis_hot",
+        eventType: "redis_write",
+        edgeKey: "price_streamer->redis",
+        nodeIds: ["price_streamer", "redis"],
+        status: "error",
+        durationMs: Date.now() - startedAt,
+        severity: "error",
+        error: { message: err?.message ? String(err.message) : "write failed" },
+      })
+    )
   }
 }
 
@@ -964,7 +1077,6 @@ run().catch((err) => {
 })
 
 function shutdown() {
-  if (state.binanceSocket) state.binanceSocket.terminate()
   if (state.redis) {
     state.redis.quit().catch(() => {})
   }

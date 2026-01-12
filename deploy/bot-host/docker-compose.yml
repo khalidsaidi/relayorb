@@ -8,6 +8,11 @@ services:
       - RELAYORB_CONFIG_PATH=/config/config.json
       - NODE_ENV=production
       - RELAYORB_FREQTRADE_CONFIG=/relayorb/freqtrade/user_data/config.json
+      - REDIS_URL=${REDIS_URL:-redis://10.19.89.107:6379}
+      - REDIS_PREFIX=${REDIS_PREFIX:-relayorb}
+      - PIPELINE_EVENTS_ENABLED=${PIPELINE_EVENTS_ENABLED:-true}
+      - PIPELINE_EVENTS_STREAM=${PIPELINE_EVENTS_STREAM:-relayorb:pipeline_events}
+      - PIPELINE_EVENTS_RUN_ENV=${PIPELINE_EVENTS_RUN_ENV:-prod}
       - REDIS_URL=${REDIS_URL:-}
       - REDIS_PREFIX=${REDIS_PREFIX:-relayorb}
       - RELAYORB_EVENT_CHANNEL=${RELAYORB_EVENT_CHANNEL:-}

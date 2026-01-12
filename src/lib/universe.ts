@@ -1,5 +1,4 @@
 export const DEFAULT_EXCHANGES = [
-  "binance",
   "kraken",
   "coinbase",
   "kucoin",

@@ -11,7 +11,7 @@ RelayOrb is a multi-asset market intelligence platform that provides trading sig
 
 The brain of the platform that:
 - Fetches real-time data for ALL asset classes:
-  - **Crypto:** CoinGecko movers + Binance intraday deltas (via market-data-gateway)
+  - **Crypto:** CoinGecko movers + FMP intraday deltas (via market-data-gateway)
   - **Stocks/TSX/FX:** Live price snapshots from `market/prices` (price streamer via market-data-gateway)
   - **News/Sentiment:** Marketaux (via market-data-gateway, optional)
 - Generates trading signals based on:
@@ -34,7 +34,7 @@ The brain of the platform that:
 **Runs:** Cloud Run service (always-on)
 
 Streams near real-time prices into Firestore:
-- **Crypto:** Binance WebSocket trades
+- **Crypto:** FMP quote polling via market-data-gateway for tracked symbols
 - **Stocks/FX:** FMP quote polling via market-data-gateway for tracked symbols
 
 Writes to `market/prices` for live UI updates and paper trading.
@@ -99,10 +99,8 @@ graph TD
 
   MDG --> FMP[FMP]
   MDG --> CG[CoinGecko]
-  MDG --> BN[Binance REST]
   MDG --> MX[Marketaux]
 
-  PS --> BNWS[Binance WebSocket]
   AG --> FT[Freqtrade]
   AG --> BT[Backtrader]
   UI --> TV[TradingView]

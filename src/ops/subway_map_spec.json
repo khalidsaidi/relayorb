@@ -1,0 +1,54 @@
+{
+  "lines": [
+    { "id": "core", "label": "Core" },
+    { "id": "bots", "label": "Bots" },
+    { "id": "providers", "label": "Providers" },
+    { "id": "charts", "label": "Charts" }
+  ],
+  "stations": [
+    { "id": "redis_hot", "label": "Redis Hot Store", "x": 120, "y": 160, "category": "store", "core": true },
+    { "id": "mi_movers", "label": "Movers 15m", "x": 300, "y": 160, "category": "compute", "core": true },
+    { "id": "mi_candidates", "label": "Candidates Merge", "x": 480, "y": 160, "category": "compute", "core": true },
+    { "id": "scoring", "label": "Score Engine", "x": 660, "y": 160, "category": "score", "core": true },
+    { "id": "analysis_written", "label": "Analysis Written", "x": 840, "y": 160, "category": "score", "core": true },
+    { "id": "mi_batch_written", "label": "Batch Written", "x": 1020, "y": 160, "category": "queue", "core": true },
+    { "id": "mi_new_batch", "label": "new_batch Published", "x": 1200, "y": 160, "category": "queue", "core": true },
+    { "id": "refresh_trigger", "label": "Refresh Trigger", "x": 1380, "y": 160, "category": "queue", "core": true },
+    { "id": "agent", "label": "RelayOrb Agent", "x": 1560, "y": 160, "category": "bot", "core": true },
+    { "id": "bot_signals", "label": "Bot Signals", "x": 1740, "y": 160, "category": "bot", "core": true },
+    { "id": "signal_eval", "label": "Signal Eval", "x": 1920, "y": 160, "category": "score", "core": true },
+    { "id": "ui_visible", "label": "UI Visible", "x": 2100, "y": 160, "category": "ui", "core": true },
+
+    { "id": "refresh_poll", "label": "Refresh Poll", "x": 1380, "y": 320, "category": "queue", "core": false },
+    { "id": "bot_engine:unknown", "label": "Bot Engine", "x": 1560, "y": 320, "category": "bot", "core": false },
+    { "id": "signal_performance", "label": "Signal Performance", "x": 2100, "y": 320, "category": "score", "core": false },
+
+    { "id": "mdg", "label": "Market Data Gateway", "x": 540, "y": 380, "category": "gateway", "core": false },
+    { "id": "provider:unknown", "label": "Unknown Provider", "x": 900, "y": 520, "category": "provider", "core": false },
+
+    { "id": "chart_proxy", "label": "Chart Proxy", "x": 780, "y": 320, "category": "chart", "core": false }
+  ],
+  "edges": [
+    { "from": "redis_hot", "to": "mi_movers", "lineId": "core" },
+    { "from": "mi_movers", "to": "mi_candidates", "lineId": "core" },
+    { "from": "mi_candidates", "to": "scoring", "lineId": "core" },
+    { "from": "scoring", "to": "analysis_written", "lineId": "core" },
+    { "from": "analysis_written", "to": "mi_batch_written", "lineId": "core" },
+    { "from": "mi_batch_written", "to": "mi_new_batch", "lineId": "core" },
+    { "from": "mi_new_batch", "to": "refresh_trigger", "lineId": "core" },
+    { "from": "refresh_trigger", "to": "agent", "lineId": "core" },
+    { "from": "agent", "to": "bot_signals", "lineId": "core" },
+    { "from": "bot_signals", "to": "signal_eval", "lineId": "core" },
+    { "from": "signal_eval", "to": "ui_visible", "lineId": "core" },
+
+    { "from": "mi_new_batch", "to": "refresh_poll", "lineId": "core" },
+    { "from": "agent", "to": "bot_engine:unknown", "lineId": "bots" },
+    { "from": "signal_eval", "to": "signal_performance", "lineId": "bots" },
+
+    { "from": "mi_movers", "to": "mdg", "lineId": "providers" },
+    { "from": "signal_eval", "to": "mdg", "lineId": "providers" },
+    { "from": "chart_proxy", "to": "mdg", "lineId": "charts" },
+
+    { "from": "mdg", "to": "provider:unknown", "lineId": "providers" }
+  ]
+}

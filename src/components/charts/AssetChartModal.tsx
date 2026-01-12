@@ -12,7 +12,7 @@ type AssetChartModalProps = {
  * Normalizes symbol for TradingView widget
  * TradingView supports:
  * - Stocks: Exchange:SYMBOL (NASDAQ:AAPL, NYSE:MSFT) or just SYMBOL
- * - Crypto: Exchange:SYMBOL (BINANCE:BTCUSDT, COINBASE:ETHUSD)
+ * - Crypto: Exchange:SYMBOL (COINBASE:BTCUSD, KRAKEN:ETHUSD)
  * - Forex: OANDA:EURUSD, FX:EURUSD, or FX_IDC:EURUSD
  */
 function normalizeSymbolForTradingView(
@@ -31,7 +31,7 @@ function normalizeSymbolForTradingView(
     // For less common ones, you might want to add exchange prefix
     return cleanSymbol
   } else if (assetClass === 'crypto') {
-    // Crypto: Use exchange prefix (default BINANCE). Convert USD -> USDT for Binance pairs.
+    // Crypto: Use exchange prefix (default COINBASE).
     const exchangeHint = (exchange || '').toUpperCase()
     const exchangePrefix = exchangeHint.includes('COINBASE')
       ? 'COINBASE'
@@ -39,7 +39,7 @@ function normalizeSymbolForTradingView(
         ? 'KRAKEN'
         : exchangeHint.includes('BITSTAMP')
           ? 'BITSTAMP'
-          : 'BINANCE'
+          : 'COINBASE'
 
     // If already has exchange prefix, keep it.
     if (trimmed.includes(':')) {
@@ -69,8 +69,8 @@ function normalizeSymbolForTradingView(
     if (!quote) {
       return `${exchangePrefix}:${base}`
     }
-    if (quote === 'USD' && exchangePrefix === 'BINANCE') {
-      quote = 'USDT'
+    if (quote === 'USDT') {
+      quote = 'USD'
     }
     return `${exchangePrefix}:${base}${quote}`
   } else if (assetClass === 'forex') {

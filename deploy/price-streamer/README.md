@@ -1,13 +1,12 @@
 # Price Streamer (Live Prices Service)
 
 Long-running service that pushes near real-time prices into Redis (hot store) and Firestore `market/prices`.
-It uses Binance WebSocket for crypto and the market-data-gateway for FMP quotes (fallbacks to direct FMP if no gateway is configured).
+It uses the market-data-gateway for FMP quotes (fallbacks to direct FMP if no gateway is configured).
 
 ## Environment variables
 - `FIREBASE_PROJECT_ID` (optional; defaults to Cloud Run project)
 - `MARKET_DATA_GATEWAY_URL` (recommended for centralized market data)
 - `FMP_API_KEY` (optional fallback for stocks/FX when no gateway)
-- `BINANCE_WS_BASE` (optional; default: `wss://stream.binance.com:9443`)
 - `REDIS_URL` (recommended for hot prices + snapshots)
 - `REDIS_PREFIX` (default: `relayorb`)
 - `REDIS_LATEST_TTL_SECONDS` (default: 120)

@@ -1,4 +1,5 @@
 const http = require("http")
+const crypto = require("crypto")
 const admin = require("firebase-admin")
 const { GoogleAuth } = require("google-auth-library")
 const { createClient } = require("redis")
@@ -38,10 +39,14 @@ const config = {
     .split(",")
     .map((job) => job.trim())
     .filter(Boolean),
+  pipelineEventsEnabled: process.env.PIPELINE_EVENTS_ENABLED !== "false",
+  pipelineEventsStream: process.env.PIPELINE_EVENTS_STREAM || "",
+  pipelineEventsMaxlen: parseInt(process.env.PIPELINE_EVENTS_MAXLEN || "20000", 10),
+  pipelineEventsRunEnv: process.env.PIPELINE_EVENTS_RUN_ENV || "prod",
   batchCollection: process.env.BATCH_COLLECTION || "batches",
   batchConsumerId: process.env.BATCH_CONSUMER_ID || "refresh-service",
   batchPollEnabled: process.env.BATCH_POLL_ENABLED !== "false",
-  batchPollIntervalMs: parseInt(process.env.BATCH_POLL_INTERVAL_MS || "60000", 10),
+  batchPollIntervalMs: parseInt(process.env.BATCH_POLL_INTERVAL_MS || "15000", 10),
   batchPollLimit: parseInt(process.env.BATCH_POLL_LIMIT || "3", 10),
   marketIntelJob: process.env.MARKET_INTEL_JOB || "relayorb-market-intel",
 }
@@ -52,6 +57,68 @@ if (!admin.apps.length) {
 
 const db = admin.firestore()
 const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] })
+
+let pipelineRedis = null
+let pipelineRedisReady = false
+
+function resolvePipelineStream() {
+  if (config.pipelineEventsStream) return config.pipelineEventsStream
+  const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
+  return `${prefix}pipeline_events`
+}
+
+function createEventId() {
+  if (crypto.randomUUID) return crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function buildPipelineEvent(payload) {
+  return {
+    ts: new Date().toISOString(),
+    eventId: createEventId(),
+    runEnv: config.pipelineEventsRunEnv,
+    service: "refresh-service",
+    severity: "info",
+    ...payload,
+  }
+}
+
+async function publishPipelineEvent(event) {
+  if (!config.pipelineEventsEnabled || !pipelineRedis || !pipelineRedisReady) return
+  const stream = resolvePipelineStream()
+  const maxlen = Number.isFinite(config.pipelineEventsMaxlen)
+    ? Math.max(config.pipelineEventsMaxlen, 1000)
+    : 20000
+  const payload = JSON.stringify(event)
+  const command = ["XADD", stream, "MAXLEN", "~", String(maxlen), "*", "payload", payload]
+  try {
+    await Promise.race([
+      pipelineRedis.sendCommand(command),
+      new Promise((resolve) => setTimeout(resolve, 75)),
+    ])
+  } catch (err) {
+    console.error("Pipeline event publish failed:", err.message)
+  }
+}
+
+async function initPipelineRedis() {
+  if (!config.redisUrl || !config.pipelineEventsEnabled) return null
+  const client = createClient({ url: config.redisUrl })
+  client.on("error", (err) => {
+    pipelineRedisReady = false
+    console.error("Pipeline Redis error:", err?.message || err)
+  })
+  try {
+    await client.connect()
+    pipelineRedisReady = true
+    pipelineRedis = client
+    return client
+  } catch (err) {
+    console.error("Pipeline Redis connection failed:", err.message)
+    pipelineRedisReady = false
+    return null
+  }
+}
 
 function compactObject(obj) {
   return Object.fromEntries(
@@ -132,6 +199,7 @@ async function readBatchConsumerState() {
 async function updateBatchConsumerState(batchId) {
   if (!batchId) return
   try {
+    const docPath = `batch_consumers/${config.batchConsumerId}`
     await resolveBatchConsumerDoc().set(
       {
         lastBatchId: batchId,
@@ -141,6 +209,19 @@ async function updateBatchConsumerState(batchId) {
       { merge: true }
     )
     console.log("ref_cursor_advance", { batchId })
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "refresh_service",
+        eventType: "cursor_write",
+        edgeKey: "refresh_service->firestore",
+        nodeIds: ["refresh_service", "firestore"],
+        status: "end",
+        batchId,
+        outputs: {
+          firestoreDocs: [docPath],
+        },
+      })
+    )
   } catch (err) {
     console.error("Batch consumer update failed", err.message || err)
   }
@@ -180,6 +261,21 @@ async function runJobsForBatch(batchId, runId) {
   const overrides = runId ? { env: { RUN_ID: runId } } : undefined
   await Promise.all(jobs.map((job) => runJob(job, overrides)))
   await updateBatchConsumerState(batchId)
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "refresh_trigger",
+      eventType: "se_trigger",
+      edgeKey: "refresh_service->signal_evaluator",
+      nodeIds: ["refresh_service", "signal_evaluator"],
+      status: "end",
+      batchId: batchId || undefined,
+      meta: {
+        jobs,
+        runId: runId || null,
+        source: "poll",
+      },
+    })
+  )
 }
 
 let batchPollInFlight = false
@@ -196,6 +292,20 @@ async function pollForBatches() {
         batchId: batch.id,
         runId: batch.runId || null,
       })
+      await publishPipelineEvent(
+        buildPipelineEvent({
+          stationId: "refresh_poll",
+          eventType: "batch_poll",
+          edgeKey: "firestore->refresh_service",
+          nodeIds: ["refresh_service", "firestore"],
+          status: "end",
+          batchId: batch.id,
+          meta: { runId: batch.runId || null },
+          inputs: {
+            firestoreDocs: [`${config.batchCollection}/*`, "batch_consumers/*"],
+          },
+        })
+      )
       await runJobsForBatch(batch.id, batch.runId)
     }
   } catch (err) {
@@ -253,12 +363,34 @@ async function startRedisEventListener() {
     try {
       const jobs = config.redisEventJobs.length ? config.redisEventJobs : config.jobs
       console.log("ref_new_batch_received", { batchId, runId })
+      await publishPipelineEvent(
+        buildPipelineEvent({
+          stationId: "refresh_trigger",
+          eventType: "batch_consume",
+          edgeKey: "new_batch->refresh_service",
+          nodeIds: ["refresh_service", "new_batch"],
+          status: "start",
+          batchId: batchId || undefined,
+          meta: { runId: runId || null, source: "redis_event" },
+        })
+      )
       const overrides = runId ? { env: { RUN_ID: runId } } : undefined
       await Promise.all(jobs.map((job) => runJob(job, overrides)))
       if (batchId) {
         await updateBatchConsumerState(batchId)
       }
       console.log("ref_trigger_se", { jobs, batchId, runId })
+      await publishPipelineEvent(
+        buildPipelineEvent({
+          stationId: "refresh_trigger",
+          eventType: "se_trigger",
+          edgeKey: "refresh_service->signal_evaluator",
+          nodeIds: ["refresh_service", "signal_evaluator"],
+          status: "end",
+          batchId: batchId || undefined,
+          meta: { jobs, runId: runId || null },
+        })
+      )
     } catch (err) {
       console.error("Redis event job trigger failed", err.message || err)
     }
@@ -315,6 +447,189 @@ async function readBody(req) {
       }
     })
   })
+}
+
+function parseRequestUrl(req) {
+  try {
+    return new URL(req.url || "", "http://localhost")
+  } catch {
+    return null
+  }
+}
+
+function parseStreamFields(fields) {
+  const data = {}
+  if (!Array.isArray(fields)) return data
+  for (let i = 0; i < fields.length; i += 2) {
+    const key = fields[i]
+    const value = fields[i + 1]
+    if (key) data[key] = value
+  }
+  return data
+}
+
+function decodeEventPayload(fields) {
+  const raw = fields?.payload
+  if (!raw) return null
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return { raw }
+  }
+}
+
+function sendSseEvent(res, id, payload) {
+  if (id) res.write(`id: ${id}\n`)
+  res.write("event: pipeline\n")
+  res.write(`data: ${JSON.stringify(payload)}\n\n`)
+}
+
+function resolveEventBatchId(event) {
+  if (!event || typeof event !== "object") return null
+  if (event.batchId) return String(event.batchId)
+  const meta = event.meta || {}
+  if (meta && typeof meta === "object") {
+    if (meta.runId) return String(meta.runId)
+    if (meta.batchId) return String(meta.batchId)
+    if (meta.batch_id) return String(meta.batch_id)
+  }
+  return null
+}
+
+function eventMatchesSearch(event, filters) {
+  if (!event || typeof event !== "object") return false
+  if (filters.batchId) {
+    const batchId = resolveEventBatchId(event) || ""
+    if (!batchId.includes(filters.batchId)) return false
+  }
+  if (filters.symbolKey) {
+    const symbolKey = String(event.symbolKey || "")
+    if (!symbolKey.toLowerCase().includes(filters.symbolKey.toLowerCase())) return false
+  }
+  if (filters.edgeKey) {
+    const edgeKey = String(event.edgeKey || "")
+    if (!edgeKey.includes(filters.edgeKey)) return false
+  }
+  if (filters.stationId) {
+    const stationId = String(event.stationId || "")
+    if (!stationId.includes(filters.stationId)) return false
+  }
+  return true
+}
+
+async function handleOpsEvents(req, res) {
+  const authResult = await verifyRequest(req)
+  if (!authResult.allowed) {
+    return sendJson(res, 403, { ok: false, error: authResult.error })
+  }
+
+  if (!config.redisUrl) {
+    return sendJson(res, 500, { ok: false, error: "REDIS_URL not configured." })
+  }
+
+  const url = parseRequestUrl(req)
+  const stream = resolvePipelineStream()
+  const tailCount = parseInt(url?.searchParams.get("tail") || "200", 10)
+  const sinceParam = url?.searchParams.get("since") || ""
+  let lastId = sinceParam || "$"
+
+  setCors(res)
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  })
+  res.write("\n")
+
+  const client = createClient({ url: config.redisUrl })
+  client.on("error", (err) => {
+    console.error("Ops stream redis error:", err?.message || err)
+  })
+
+  try {
+    await client.connect()
+  } catch (err) {
+    console.error("Ops stream redis connect failed:", err.message)
+    res.write(`event: error\ndata: ${JSON.stringify({ error: "Redis connection failed." })}\n\n`)
+    res.end()
+    return
+  }
+
+  let closed = false
+  req.on("close", () => {
+    closed = true
+  })
+
+  if (tailCount > 0 && !sinceParam) {
+    try {
+      const reply = await client.sendCommand([
+        "XREVRANGE",
+        stream,
+        "+",
+        "-",
+        "COUNT",
+        String(Math.min(tailCount, 500)),
+      ])
+      if (Array.isArray(reply) && reply.length > 0) {
+        const ordered = reply.slice().reverse()
+        for (const entry of ordered) {
+          const id = entry?.[0]
+          const fields = parseStreamFields(entry?.[1] || [])
+          const payload = decodeEventPayload(fields)
+          if (payload) sendSseEvent(res, id, payload)
+          if (id) lastId = id
+        }
+      }
+    } catch (err) {
+      console.error("Ops stream tail failed:", err?.message || err)
+    }
+  }
+
+  res.write(`event: ready\ndata: ${JSON.stringify({ stream, lastId })}\n\n`)
+
+  let lastPingAt = Date.now()
+  while (!closed) {
+    try {
+      const reply = await client.sendCommand([
+        "XREAD",
+        "BLOCK",
+        "15000",
+        "COUNT",
+        "100",
+        "STREAMS",
+        stream,
+        lastId,
+      ])
+      if (Array.isArray(reply) && reply.length > 0) {
+        for (const streamReply of reply) {
+          const entries = streamReply?.[1] || []
+          for (const entry of entries) {
+            const id = entry?.[0]
+            const fields = parseStreamFields(entry?.[1] || [])
+            const payload = decodeEventPayload(fields)
+            if (payload) sendSseEvent(res, id, payload)
+            if (id) lastId = id
+          }
+        }
+      }
+      if (Date.now() - lastPingAt > 15000) {
+        res.write(": ping\n\n")
+        lastPingAt = Date.now()
+      }
+    } catch (err) {
+      console.error("Ops stream read failed:", err?.message || err)
+      res.write(`event: error\ndata: ${JSON.stringify({ error: "Stream read failed." })}\n\n`)
+      break
+    }
+  }
+
+  try {
+    await client.quit()
+  } catch (err) {
+    console.error("Ops stream quit failed:", err?.message || err)
+  }
+  res.end()
 }
 
 function resolveRunId(req, body) {
@@ -763,6 +1078,90 @@ async function requestAiAdvice(trade) {
   }
 }
 
+async function handleOpsEventsSearch(req, res) {
+  const authResult = await verifyRequest(req)
+  if (!authResult.allowed) {
+    return sendJson(res, 403, { ok: false, error: authResult.error })
+  }
+
+  if (!config.redisUrl) {
+    return sendJson(res, 500, { ok: false, error: "REDIS_URL not configured." })
+  }
+
+  const url = parseRequestUrl(req)
+  const batchId = url?.searchParams.get("batchId")?.trim() || ""
+  const symbolKey = url?.searchParams.get("symbolKey")?.trim() || ""
+  const edgeKey = url?.searchParams.get("edgeKey")?.trim() || ""
+  const stationId = url?.searchParams.get("stationId")?.trim() || ""
+  const limit = Math.max(1, Math.min(parseInt(url?.searchParams.get("limit") || "200", 10), 300))
+  const scanLimit = Math.max(
+    limit,
+    Math.min(parseInt(url?.searchParams.get("scan") || "2000", 10), 5000)
+  )
+  const before = url?.searchParams.get("before")?.trim() || ""
+  const startId = before ? `(${before}` : "+"
+
+  const client = createClient({ url: config.redisUrl })
+  client.on("error", (err) => {
+    console.error("Ops search redis error:", err?.message || err)
+  })
+
+  try {
+    await client.connect()
+  } catch (err) {
+    console.error("Ops search redis connect failed:", err.message)
+    return sendJson(res, 500, { ok: false, error: "Redis connection failed." })
+  }
+
+  const stream = resolvePipelineStream()
+  const results = []
+  let scanned = 0
+  let cursor = startId
+
+  try {
+    while (results.length < limit && scanned < scanLimit) {
+      const count = Math.min(500, scanLimit - scanned)
+      const reply = await client.sendCommand([
+        "XREVRANGE",
+        stream,
+        cursor,
+        "-",
+        "COUNT",
+        String(count),
+      ])
+      if (!Array.isArray(reply) || reply.length === 0) break
+
+      for (const entry of reply) {
+        const id = entry?.[0]
+        const fields = parseStreamFields(entry?.[1] || [])
+        const payload = decodeEventPayload(fields)
+        scanned += 1
+        if (payload && eventMatchesSearch(payload, { batchId, symbolKey, edgeKey, stationId })) {
+          results.push(payload)
+          if (results.length >= limit) break
+        }
+        if (id) cursor = `(${id}`
+      }
+
+      const lastEntryId = reply[reply.length - 1]?.[0]
+      if (lastEntryId) cursor = `(${lastEntryId}`
+      if (reply.length < count) break
+    }
+  } catch (err) {
+    console.error("Ops search failed:", err?.message || err)
+  } finally {
+    await client.quit().catch(() => {})
+  }
+
+  setCors(res)
+  return sendJson(res, 200, {
+    ok: true,
+    events: results,
+    scanned,
+    nextCursor: cursor.startsWith("(") ? cursor.slice(1) : cursor,
+  })
+}
+
 async function handleAdvice(req, res) {
   const authResult = await verifyRequest(req)
   if (!authResult.allowed) {
@@ -832,6 +1231,26 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, { ok: true })
   }
 
+  if (req.method === "GET" && req.url?.startsWith("/ops/events/search")) {
+    try {
+      await handleOpsEventsSearch(req, res)
+    } catch (err) {
+      console.error("Ops search failed", err)
+      sendJson(res, 500, { ok: false, error: "Ops search failed." })
+    }
+    return
+  }
+
+  if (req.method === "GET" && req.url?.startsWith("/ops/events")) {
+    try {
+      await handleOpsEvents(req, res)
+    } catch (err) {
+      console.error("Ops stream failed", err)
+      sendJson(res, 500, { ok: false, error: "Ops stream failed." })
+    }
+    return
+  }
+
   if (req.method === "POST" && req.url === "/refresh") {
     try {
       await handleRefresh(req, res)
@@ -868,6 +1287,10 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(config.port, () => {
   console.log(`Refresh service listening on ${config.port}`)
+})
+
+initPipelineRedis().catch((err) => {
+  console.error("Pipeline Redis init failed", err.message || err)
 })
 
 startBatchPoller()

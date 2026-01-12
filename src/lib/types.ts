@@ -207,6 +207,7 @@ export type MarketHotTrade = {
   recommendation?: MarketTradeRecommendation
   source?: string
   rationale?: string
+  origins?: string[]
 }
 
 export type MarketHotTradesDoc = {
@@ -417,4 +418,35 @@ export type PaperPosition = {
   unrealizedPnL?: number
   stopLoss?: number
   takeProfit?: number
+}
+
+export type PipelineEvent = {
+  ts: string
+  eventId: string
+  runEnv?: string
+  batchId?: string | null
+  symbolKey?: string | null
+  service: string
+  stationId: string
+  eventType?: string
+  edgeKey?: string
+  nodeIds?: string[]
+  status: "start" | "end" | "error"
+  durationMs?: number
+  severity?: "info" | "warn" | "error"
+  meta?: Record<string, unknown>
+  inputs?: {
+    redisKeys?: string[]
+    firestoreDocs?: string[]
+    providerCalls?: Array<Record<string, unknown>>
+  }
+  outputs?: {
+    redisKeys?: string[]
+    firestoreDocs?: string[]
+  }
+  error?: {
+    message?: string
+    code?: string | number
+    stackShort?: string
+  }
 }

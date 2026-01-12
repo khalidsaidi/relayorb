@@ -27,6 +27,8 @@ import {
   PanelRight,
   TrendingUp,
   BarChart3,
+  Network,
+  Share2,
 } from "lucide-react"
 import { useAuth } from "@/features/auth/auth-context"
 import { auth, firebaseEnabled } from "@/lib/firebase"
@@ -46,6 +48,8 @@ const navItems: NavItem[] = [
   { to: "/signals", label: "Signals", icon: <Activity className="h-4 w-4" /> },
   { to: "/bots", label: "Bots", icon: <Bot className="h-4 w-4" /> },
   { to: "/portfolio", label: "Portfolio", icon: <BarChart3 className="h-4 w-4" /> },
+  { to: "/ops/subway", label: "Ops Subway", icon: <Network className="h-4 w-4" /> },
+  { to: "/ops/graph", label: "Ops Graph", icon: <Share2 className="h-4 w-4" /> },
 ]
 
 const SIDEBAR_STORAGE_KEY = "relayorb.sidebar.collapsed"
@@ -58,6 +62,8 @@ function usePageTitle() {
   if (pathname.startsWith("/signals")) return "Signals"
   if (pathname.startsWith("/portfolio")) return "Portfolio"
   if (pathname.startsWith("/dashboard")) return "Dashboard"
+  if (pathname.startsWith("/ops/graph")) return "Ops Graph"
+  if (pathname.startsWith("/ops")) return "Ops Subway"
   return "Dashboard"
 }
 

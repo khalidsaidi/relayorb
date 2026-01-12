@@ -190,6 +190,8 @@ const DEFAULT_TREND_WEIGHTS: Required<TrendWeights> = {
   momentum: 50,
   volume: 20,
   signals: 20,
+  liquidity: 0,
+  consensus: 0,
   news: 10,
 }
 const RISK_OPTIONS: { value: RiskProfile; label: string }[] = [
@@ -1803,8 +1805,6 @@ export default function DashboardPage() {
           momentum: trendMomentumWeight,
           liquidity: trendVolumeWeight,
           consensus: trendSignalsWeight,
-          volume: trendVolumeWeight,
-          signals: trendSignalsWeight,
           news: trendNewsWeight,
         },
         botWeights: {

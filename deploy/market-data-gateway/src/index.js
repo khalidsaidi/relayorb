@@ -1,4 +1,6 @@
 const http = require("http")
+const crypto = require("crypto")
+const { createClient } = require("redis")
 
 const config = {
   fmpKey: process.env.FMP_API_KEY || "",
@@ -7,7 +9,6 @@ const config = {
   fmpBaseUrl: process.env.FMP_BASE_URL || "https://financialmodelingprep.com",
   fmpStableBaseUrl:
     process.env.FMP_STABLE_BASE_URL || "https://financialmodelingprep.com/stable",
-  binanceBaseUrl: process.env.BINANCE_BASE_URL || "https://api.binance.com",
   coingeckoBaseUrl: process.env.COINGECKO_BASE_URL || "https://api.coingecko.com/api/v3",
   marketauxBaseUrl: process.env.MARKETAUX_BASE_URL || "https://api.marketaux.com/v1/news/all",
   cacheDefaultMs: parseInt(process.env.MDG_CACHE_TTL_MS || "15000", 10),
@@ -15,9 +16,17 @@ const config = {
   cacheMarketsMs: parseInt(process.env.MDG_MARKETS_TTL_MS || "60000", 10),
   cacheNewsMs: parseInt(process.env.MDG_NEWS_TTL_MS || "120000", 10),
   cacheStockListMs: parseInt(process.env.MDG_STOCK_LIST_TTL_MS || "21600000", 10),
+  redisUrl: process.env.REDIS_URL || "",
+  redisPrefix: process.env.REDIS_PREFIX || "relayorb",
+  pipelineEventsEnabled: process.env.PIPELINE_EVENTS_ENABLED !== "false",
+  pipelineEventsStream: process.env.PIPELINE_EVENTS_STREAM || "",
+  pipelineEventsMaxlen: parseInt(process.env.PIPELINE_EVENTS_MAXLEN || "20000", 10),
+  pipelineEventsRunEnv: process.env.PIPELINE_EVENTS_RUN_ENV || "prod",
 }
 
 const cache = new Map()
+let pipelineRedis = null
+let pipelineRedisReady = false
 
 function logEvent(event, data = {}) {
   console.log(JSON.stringify({ event, ...data }))
@@ -39,6 +48,119 @@ function setCached(key, value, ttlMs) {
     value,
     expiresAt: Date.now() + Math.max(ttlMs, 0),
   })
+}
+
+function resolvePipelineStream() {
+  if (config.pipelineEventsStream) return config.pipelineEventsStream
+  const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
+  return `${prefix}pipeline_events`
+}
+
+function createEventId() {
+  if (crypto.randomUUID) return crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function hashParams(value) {
+  if (!value) return null
+  try {
+    const serialized = typeof value === "string" ? value : JSON.stringify(value)
+    return crypto.createHash("sha256").update(serialized).digest("hex").slice(0, 12)
+  } catch (_) {
+    return null
+  }
+}
+
+function sanitizeUrl(rawUrl) {
+  if (!rawUrl) return ""
+  try {
+    const parsed = new URL(rawUrl)
+    parsed.search = ""
+    parsed.hash = ""
+    return parsed.toString()
+  } catch (_) {
+    return String(rawUrl).split("?")[0]
+  }
+}
+
+function buildPipelineEvent(payload) {
+  return {
+    ts: new Date().toISOString(),
+    eventId: createEventId(),
+    runEnv: config.pipelineEventsRunEnv,
+    service: "market-data-gateway",
+    severity: "info",
+    ...payload,
+  }
+}
+
+async function publishPipelineEvent(event) {
+  if (!config.pipelineEventsEnabled || !pipelineRedis || !pipelineRedisReady) return
+  const stream = resolvePipelineStream()
+  const maxlen = Number.isFinite(config.pipelineEventsMaxlen)
+    ? Math.max(config.pipelineEventsMaxlen, 1000)
+    : 20000
+  const payload = JSON.stringify(event)
+  const command = ["XADD", stream, "MAXLEN", "~", String(maxlen), "*", "payload", payload]
+  try {
+    await Promise.race([
+      pipelineRedis.sendCommand(command),
+      new Promise((resolve) => setTimeout(resolve, 75)),
+    ])
+  } catch (err) {
+    console.error("Pipeline event publish failed:", err.message)
+  }
+}
+
+async function emitProviderEvent({ stationId, status, startMs, meta, error }) {
+  const durationMs = startMs ? Date.now() - startMs : undefined
+  const providerStation = stationId || "provider:unknown"
+  const edgeKey = `market_data_gateway->${providerStation}`
+  const nodeIds = ["market_data_gateway", providerStation]
+  const providerMeta = meta || {}
+  const endpointName = providerMeta.endpointName
+  const paramsHash = providerMeta.paramsHash
+  const providerId = providerMeta.providerId
+  const base = {
+    status,
+    durationMs,
+    severity: status === "error" ? "error" : "info",
+    meta: {
+      ...providerMeta,
+      latencyMs: durationMs,
+    },
+    inputs: providerId || endpointName
+      ? {
+        providerCalls: [
+          {
+            providerId,
+            endpointName,
+            paramsHash,
+            cacheHit: providerMeta.cacheHit,
+          },
+        ],
+      }
+      : undefined,
+    error: error || undefined,
+  }
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "mdg",
+      eventType: "provider_call",
+      edgeKey,
+      nodeIds,
+      ...base,
+    })
+  )
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: providerStation,
+      eventType: "provider_call",
+      edgeKey,
+      nodeIds,
+      ...base,
+    })
+  )
 }
 
 function parseNumber(value) {
@@ -129,13 +251,22 @@ function normalizeFmpQuoteSymbol(symbol, assetClass) {
   return normalized
 }
 
+function chunkList(items, size) {
+  const chunkSize = Math.max(1, size || 1)
+  const chunks = []
+  for (let i = 0; i < items.length; i += chunkSize) {
+    chunks.push(items.slice(i, i + chunkSize))
+  }
+  return chunks
+}
+
 async function fetchJson(url, options) {
-  logEvent("mdg_request", { url })
+  logEvent("mdg_request", { url: sanitizeUrl(url) })
   const res = await fetch(url, options)
   if (!res.ok) {
     const body = await res.text()
     if (res.status === 429) {
-      logEvent("mdg_rate_limited", { url, status: res.status })
+      logEvent("mdg_rate_limited", { url: sanitizeUrl(url), status: res.status })
     }
     throw new Error(`Request failed ${res.status}: ${body.slice(0, 200)}`)
   }
@@ -143,16 +274,34 @@ async function fetchJson(url, options) {
 }
 
 async function fetchText(url, options) {
-  logEvent("mdg_request", { url })
+  logEvent("mdg_request", { url: sanitizeUrl(url) })
   const res = await fetch(url, options)
   if (!res.ok) {
     const body = await res.text()
     if (res.status === 429) {
-      logEvent("mdg_rate_limited", { url, status: res.status })
+      logEvent("mdg_rate_limited", { url: sanitizeUrl(url), status: res.status })
     }
     throw new Error(`Request failed ${res.status}: ${body.slice(0, 200)}`)
   }
   return res.text()
+}
+
+async function initPipelineRedis() {
+  if (!config.redisUrl || !config.pipelineEventsEnabled) return
+  pipelineRedis = createClient({ url: config.redisUrl })
+  pipelineRedis.on("error", (err) => {
+    const message = err?.message ? String(err.message) : "Unknown error"
+    console.error("Pipeline redis error:", message)
+    pipelineRedisReady = false
+  })
+  try {
+    await pipelineRedis.connect()
+    pipelineRedisReady = true
+  } catch (err) {
+    console.error("Pipeline redis connect failed:", err.message)
+    pipelineRedis = null
+    pipelineRedisReady = false
+  }
 }
 
 function parseCsvRows(text) {
@@ -234,6 +383,36 @@ function respondJson(res, status, payload) {
   res.end(JSON.stringify(payload))
 }
 
+function buildFmpQuotePayload(entry, symbol, assetClass) {
+  if (!entry) return null
+  const bid = parseNumber(entry.bid)
+  const ask = parseNumber(entry.ask)
+  const volume = parseNumber(entry.volume) ?? parseNumber(entry.avgVolume)
+  const changePercent = parsePercent(
+    entry.changesPercentage ?? entry.changePercentage ?? entry.changePercent ?? entry.change
+  )
+  const price =
+    parseNumber(entry.price) ??
+    parseNumber(entry.lastSale) ??
+    parseNumber(entry.last) ??
+    parseNumber(entry.close) ??
+    (bid !== undefined && ask !== undefined ? (bid + ask) / 2 : bid ?? ask)
+
+  if (typeof price !== "number") return null
+
+  return {
+    symbol,
+    assetClass,
+    price,
+    bid,
+    ask,
+    volume,
+    changePercent,
+    name: entry.name || entry.companyName || symbol,
+    source: "fmp",
+  }
+}
+
 async function handleFmpQuote(req, res, params) {
   if (!config.fmpKey) {
     respondJson(res, 500, { error: "FMP API key is not configured" })
@@ -250,50 +429,188 @@ async function handleFmpQuote(req, res, params) {
   const cached = getCached(cacheKey)
   if (cached) {
     respondJson(res, 200, cached)
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "end",
+      meta: {
+        providerId: "fmp",
+        endpointName: "quote",
+        cacheHit: true,
+        assetClass,
+        paramsHash: hashParams({ symbol: normalized, assetClass }),
+        httpStatus: 200,
+      },
+    })
     return
   }
 
+  const startedAt = Date.now()
   const url = new URL(`${config.fmpStableBaseUrl}/quote`)
   url.searchParams.set("symbol", normalized)
   url.searchParams.set("apikey", config.fmpKey)
-  const data = await fetchJson(url.toString())
-  const entry = Array.isArray(data) ? data[0] : data
+  let entry = null
+  try {
+    const data = await fetchJson(url.toString())
+    entry = Array.isArray(data) ? data[0] : data
+  } catch (err) {
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "error",
+      startMs: startedAt,
+      meta: {
+        providerId: "fmp",
+        endpointName: "quote",
+        assetClass,
+        paramsHash: hashParams({ symbol: normalized, assetClass }),
+      },
+      error: { message: err?.message ? String(err.message) : "Request failed" },
+    })
+    throw err
+  }
   if (!entry) {
     respondJson(res, 404, { error: "Quote not found" })
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "end",
+      startMs: startedAt,
+      meta: {
+        providerId: "fmp",
+        endpointName: "quote",
+        assetClass,
+        paramsHash: hashParams({ symbol: normalized, assetClass }),
+        httpStatus: 404,
+      },
+    })
     return
   }
 
-  const bid = parseNumber(entry.bid)
-  const ask = parseNumber(entry.ask)
-  const volume = parseNumber(entry.volume) ?? parseNumber(entry.avgVolume)
-  const changePercent = parsePercent(
-    entry.changesPercentage ?? entry.changePercentage ?? entry.changePercent ?? entry.change
-  )
-  const price =
-    parseNumber(entry.price) ??
-    parseNumber(entry.lastSale) ??
-    parseNumber(entry.last) ??
-    parseNumber(entry.close) ??
-    (bid !== undefined && ask !== undefined ? (bid + ask) / 2 : bid ?? ask)
-
-  if (typeof price !== "number") {
+  const payload = buildFmpQuotePayload(entry, symbol, assetClass)
+  if (!payload) {
     respondJson(res, 502, { error: "Invalid price response" })
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "error",
+      startMs: startedAt,
+      meta: {
+        providerId: "fmp",
+        endpointName: "quote",
+        assetClass,
+        paramsHash: hashParams({ symbol: normalized, assetClass }),
+        httpStatus: 502,
+      },
+      error: { message: "Invalid price response" },
+    })
     return
-  }
-
-  const payload = {
-    symbol,
-    assetClass,
-    price,
-    bid,
-    ask,
-    volume,
-    changePercent,
-    name: entry.name || entry.companyName || symbol,
-    source: "fmp",
   }
   setCached(cacheKey, payload, config.cacheDefaultMs)
   respondJson(res, 200, payload)
+  await emitProviderEvent({
+    stationId: "provider:fmp",
+    status: "end",
+    startMs: startedAt,
+    meta: {
+      providerId: "fmp",
+      endpointName: "quote",
+      assetClass,
+      paramsHash: hashParams({ symbol: normalized, assetClass }),
+      httpStatus: 200,
+    },
+  })
+}
+
+async function handleFmpQuotes(req, res, params) {
+  if (!config.fmpKey) {
+    respondJson(res, 500, { error: "FMP API key is not configured" })
+    return
+  }
+  const symbolsRaw = params.get("symbols") || ""
+  const assetClass = params.get("assetClass") || "stock"
+  const rawSymbols = symbolsRaw
+    .split(",")
+    .map((symbol) => symbol.trim())
+    .filter(Boolean)
+  if (rawSymbols.length === 0) {
+    respondJson(res, 400, { error: "Symbols are required" })
+    return
+  }
+
+  const normalized = []
+  rawSymbols.forEach((symbol) => {
+    const normalizedSymbol = normalizeFmpQuoteSymbol(symbol, assetClass)
+    if (normalizedSymbol) normalized.push(normalizedSymbol)
+  })
+  const uniqueSymbols = Array.from(new Set(normalized))
+  if (uniqueSymbols.length === 0) {
+    respondJson(res, 400, { error: "No valid symbols provided" })
+    return
+  }
+
+  const items = []
+  const pending = []
+  const startedAt = Date.now()
+  uniqueSymbols.forEach((symbol) => {
+    const cacheKey = `fmp:quote:${assetClass}:${symbol}`
+    const cached = getCached(cacheKey)
+    if (cached) {
+      items.push(cached)
+    } else {
+      pending.push(symbol)
+    }
+  })
+
+  if (pending.length > 0) {
+    const batches = chunkList(pending, 100)
+    for (const batch of batches) {
+      const url = new URL(`${config.fmpStableBaseUrl}/quote`)
+      url.searchParams.set("symbol", batch.join(","))
+      url.searchParams.set("apikey", config.fmpKey)
+      let entries = []
+      try {
+        const data = await fetchJson(url.toString())
+        entries = Array.isArray(data) ? data : []
+      } catch (err) {
+        await emitProviderEvent({
+          stationId: "provider:fmp",
+          status: "error",
+          startMs: startedAt,
+          meta: {
+            providerId: "fmp",
+            endpointName: "quotes",
+            assetClass,
+            paramsHash: hashParams({ count: pending.length, assetClass }),
+          },
+          error: { message: err?.message ? String(err.message) : "Request failed" },
+        })
+        throw err
+      }
+      entries.forEach((entry) => {
+        const entrySymbol = String(entry?.symbol || "").toUpperCase().trim()
+        if (!entrySymbol) return
+        const payload = buildFmpQuotePayload(entry, entrySymbol, assetClass)
+        if (!payload) return
+        const cacheKey = `fmp:quote:${assetClass}:${entrySymbol}`
+        setCached(cacheKey, payload, config.cacheDefaultMs)
+        items.push(payload)
+      })
+    }
+  }
+
+  respondJson(res, 200, { items, assetClass, source: "fmp" })
+  await emitProviderEvent({
+    stationId: "provider:fmp",
+    status: "end",
+    startMs: startedAt,
+    meta: {
+      providerId: "fmp",
+      endpointName: "quotes",
+      assetClass,
+      cacheHit: items.length > 0 && pending.length === 0,
+      paramsHash: hashParams({ count: uniqueSymbols.length, assetClass }),
+      symbolsRequested: uniqueSymbols.length,
+      symbolsReturned: items.length,
+      httpStatus: 200,
+    },
+  })
 }
 
 async function handleFmpCandles(req, res, params) {
@@ -317,15 +634,58 @@ async function handleFmpCandles(req, res, params) {
   const cached = getCached(cacheKey)
   if (cached) {
     respondJson(res, 200, cached)
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "end",
+      meta: {
+        providerId: "fmp",
+        endpointName: "candles",
+        cacheHit: true,
+        assetClass,
+        paramsHash: hashParams({ symbol: normalized, assetClass, interval: fmpInterval, limit }),
+        httpStatus: 200,
+      },
+    })
     return
   }
 
+  const startedAt = Date.now()
   const url = new URL(`${config.fmpStableBaseUrl}/historical-chart/${fmpInterval}`)
   url.searchParams.set("symbol", normalized)
   url.searchParams.set("apikey", config.fmpKey)
-  const data = await fetchJson(url.toString())
+  let data = []
+  try {
+    data = await fetchJson(url.toString())
+  } catch (err) {
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "error",
+      startMs: startedAt,
+      meta: {
+        providerId: "fmp",
+        endpointName: "candles",
+        assetClass,
+        paramsHash: hashParams({ symbol: normalized, assetClass, interval: fmpInterval, limit }),
+      },
+      error: { message: err?.message ? String(err.message) : "Request failed" },
+    })
+    throw err
+  }
   if (!Array.isArray(data)) {
     respondJson(res, 502, { error: "Invalid candles response" })
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "error",
+      startMs: startedAt,
+      meta: {
+        providerId: "fmp",
+        endpointName: "candles",
+        assetClass,
+        paramsHash: hashParams({ symbol: normalized, assetClass, interval: fmpInterval, limit }),
+        httpStatus: 502,
+      },
+      error: { message: "Invalid candles response" },
+    })
     return
   }
   const candles = data
@@ -360,6 +720,19 @@ async function handleFmpCandles(req, res, params) {
   }
   setCached(cacheKey, payload, config.cacheCandlesMs)
   respondJson(res, 200, payload)
+  await emitProviderEvent({
+    stationId: "provider:fmp",
+    status: "end",
+    startMs: startedAt,
+    meta: {
+      providerId: "fmp",
+      endpointName: "candles",
+      assetClass,
+      paramsHash: hashParams({ symbol: normalized, assetClass, interval: fmpInterval, limit }),
+      httpStatus: 200,
+      candles: payload.candles.length,
+    },
+  })
 }
 
 async function handleFmpStockList(req, res) {
@@ -372,12 +745,40 @@ async function handleFmpStockList(req, res) {
   const cached = getCached(cacheKey)
   if (cached) {
     respondJson(res, 200, cached)
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "end",
+      meta: {
+        providerId: "fmp",
+        endpointName: "stock-list",
+        cacheHit: true,
+        paramsHash: hashParams("stock-list"),
+        httpStatus: 200,
+      },
+    })
     return
   }
 
+  const startedAt = Date.now()
   const url = new URL(`${config.fmpBaseUrl}/api/v3/stock/list`)
   url.searchParams.set("apikey", config.fmpKey)
-  const raw = await fetchText(url.toString())
+  let raw = ""
+  try {
+    raw = await fetchText(url.toString())
+  } catch (err) {
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "error",
+      startMs: startedAt,
+      meta: {
+        providerId: "fmp",
+        endpointName: "stock-list",
+        paramsHash: hashParams("stock-list"),
+      },
+      error: { message: err?.message ? String(err.message) : "Request failed" },
+    })
+    throw err
+  }
   const trimmed = raw.trim()
   let items = []
 
@@ -402,63 +803,18 @@ async function handleFmpStockList(req, res) {
   const payload = { items, source: "fmp" }
   setCached(cacheKey, payload, config.cacheStockListMs)
   respondJson(res, 200, payload)
-}
-
-async function handleBinanceTicker(req, res, params) {
-  const symbol = params.get("symbol") || ""
-  if (!symbol) {
-    respondJson(res, 400, { error: "Missing symbol" })
-    return
-  }
-  const cacheKey = `binance:ticker:${symbol}`
-  const cached = getCached(cacheKey)
-  if (cached) {
-    respondJson(res, 200, cached)
-    return
-  }
-
-  const url = new URL(`${config.binanceBaseUrl}/api/v3/ticker/24hr`)
-  url.searchParams.set("symbol", symbol)
-  const data = await fetchJson(url.toString())
-  const payload = {
-    symbol,
-    price: parseNumber(data.lastPrice),
-    change24h: parseNumber(data.priceChangePercent),
-    volume: parseNumber(data.quoteVolume ?? data.volume),
-    source: "binance",
-  }
-  setCached(cacheKey, payload, config.cacheDefaultMs)
-  respondJson(res, 200, payload)
-}
-
-async function handleBinanceKlines(req, res, params) {
-  const symbol = params.get("symbol") || ""
-  const interval = params.get("interval") || "1m"
-  const limit = clamp(parseInt(params.get("limit") || "2", 10), 1, 1000)
-  const startTime = params.get("startTime")
-  const endTime = params.get("endTime")
-  if (!symbol) {
-    respondJson(res, 400, { error: "Missing symbol" })
-    return
-  }
-
-  const cacheKey = `binance:klines:${symbol}:${interval}:${limit}:${startTime || ""}:${endTime || ""}`
-  const cached = getCached(cacheKey)
-  if (cached) {
-    respondJson(res, 200, cached)
-    return
-  }
-
-  const url = new URL(`${config.binanceBaseUrl}/api/v3/klines`)
-  url.searchParams.set("symbol", symbol)
-  url.searchParams.set("interval", interval)
-  url.searchParams.set("limit", String(limit))
-  if (startTime) url.searchParams.set("startTime", startTime)
-  if (endTime) url.searchParams.set("endTime", endTime)
-  const data = await fetchJson(url.toString())
-  const payload = { symbol, interval, data, source: "binance" }
-  setCached(cacheKey, payload, config.cacheDefaultMs)
-  respondJson(res, 200, payload)
+  await emitProviderEvent({
+    stationId: "provider:fmp",
+    status: "end",
+    startMs: startedAt,
+    meta: {
+      providerId: "fmp",
+      endpointName: "stock-list",
+      paramsHash: hashParams("stock-list"),
+      httpStatus: 200,
+      count: items.length,
+    },
+  })
 }
 
 async function handleCoingeckoMarkets(req, res, params) {
@@ -472,19 +828,59 @@ async function handleCoingeckoMarkets(req, res, params) {
   const cached = getCached(cacheKey)
   if (cached) {
     respondJson(res, 200, cached)
+    await emitProviderEvent({
+      stationId: "provider:coingecko",
+      status: "end",
+      meta: {
+        providerId: "coingecko",
+        endpointName: "markets",
+        cacheHit: true,
+        paramsHash: hashParams({ vsCurrency, order, perPage, page, priceChange }),
+        httpStatus: 200,
+      },
+    })
     return
   }
 
+  const startedAt = Date.now()
   const url = new URL(`${config.coingeckoBaseUrl}/coins/markets`)
   url.searchParams.set("vs_currency", vsCurrency)
   url.searchParams.set("order", order)
   url.searchParams.set("per_page", String(perPage))
   url.searchParams.set("page", String(page))
   url.searchParams.set("price_change_percentage", priceChange)
-  const data = await fetchJson(url.toString())
+  let data = null
+  try {
+    data = await fetchJson(url.toString())
+  } catch (err) {
+    await emitProviderEvent({
+      stationId: "provider:coingecko",
+      status: "error",
+      startMs: startedAt,
+      meta: {
+        providerId: "coingecko",
+        endpointName: "markets",
+        paramsHash: hashParams({ vsCurrency, order, perPage, page, priceChange }),
+      },
+      error: { message: err?.message ? String(err.message) : "Request failed" },
+    })
+    throw err
+  }
   const payload = { data, source: "coingecko" }
   setCached(cacheKey, payload, config.cacheMarketsMs)
   respondJson(res, 200, payload)
+  await emitProviderEvent({
+    stationId: "provider:coingecko",
+    status: "end",
+    startMs: startedAt,
+    meta: {
+      providerId: "coingecko",
+      endpointName: "markets",
+      paramsHash: hashParams({ vsCurrency, order, perPage, page, priceChange }),
+      httpStatus: 200,
+      count: Array.isArray(data) ? data.length : undefined,
+    },
+  })
 }
 
 async function handleMarketauxNews(req, res, params) {
@@ -505,9 +901,21 @@ async function handleMarketauxNews(req, res, params) {
   const cached = getCached(cacheKey)
   if (cached) {
     respondJson(res, 200, cached)
+    await emitProviderEvent({
+      stationId: "provider:marketaux",
+      status: "end",
+      meta: {
+        providerId: "marketaux",
+        endpointName: "news",
+        cacheHit: true,
+        paramsHash: hashParams({ symbols, entityTypes, limit }),
+        httpStatus: 200,
+      },
+    })
     return
   }
 
+  const startedAt = Date.now()
   const url = new URL(config.marketauxBaseUrl)
   url.searchParams.set("api_token", config.marketauxKey)
   url.searchParams.set("symbols", symbols)
@@ -518,10 +926,38 @@ async function handleMarketauxNews(req, res, params) {
     url.searchParams.set("entity_types", entityTypes)
   }
 
-  const data = await fetchJson(url.toString())
+  let data = null
+  try {
+    data = await fetchJson(url.toString())
+  } catch (err) {
+    await emitProviderEvent({
+      stationId: "provider:marketaux",
+      status: "error",
+      startMs: startedAt,
+      meta: {
+        providerId: "marketaux",
+        endpointName: "news",
+        paramsHash: hashParams({ symbols, entityTypes, limit }),
+      },
+      error: { message: err?.message ? String(err.message) : "Request failed" },
+    })
+    throw err
+  }
   const payload = { data: Array.isArray(data?.data) ? data.data : [], source: "marketaux" }
   setCached(cacheKey, payload, config.cacheNewsMs)
   respondJson(res, 200, payload)
+  await emitProviderEvent({
+    stationId: "provider:marketaux",
+    status: "end",
+    startMs: startedAt,
+    meta: {
+      providerId: "marketaux",
+      endpointName: "news",
+      paramsHash: hashParams({ symbols, entityTypes, limit }),
+      httpStatus: 200,
+      count: Array.isArray(payload.data) ? payload.data.length : undefined,
+    },
+  })
 }
 
 async function requestHandler(req, res) {
@@ -556,20 +992,6 @@ async function requestHandler(req, res) {
       })
       return
     }
-    if (path === "/ping/binance") {
-      const pingUrl = new URL(`${config.binanceBaseUrl}/api/v3/ping`)
-      try {
-        await fetchText(pingUrl.toString())
-        respondJson(res, 200, { ok: true, source: "binance" })
-      } catch (err) {
-        respondJson(res, 200, {
-          ok: false,
-          source: "binance",
-          error: err instanceof Error ? err.message : String(err),
-        })
-      }
-      return
-    }
     if (path === "/ping/coingecko") {
       const pingUrl = new URL(`${config.coingeckoBaseUrl}/ping`)
       const data = await fetchJson(pingUrl.toString())
@@ -595,20 +1017,16 @@ async function requestHandler(req, res) {
       await handleFmpQuote(req, res, params)
       return
     }
+    if (path === "/v1/fmp/quotes") {
+      await handleFmpQuotes(req, res, params)
+      return
+    }
     if (path === "/v1/fmp/candles") {
       await handleFmpCandles(req, res, params)
       return
     }
     if (path === "/v1/fmp/stock-list") {
       await handleFmpStockList(req, res)
-      return
-    }
-    if (path === "/v1/binance/ticker") {
-      await handleBinanceTicker(req, res, params)
-      return
-    }
-    if (path === "/v1/binance/klines") {
-      await handleBinanceKlines(req, res, params)
       return
     }
     if (path === "/v1/coingecko/markets") {
@@ -635,7 +1053,14 @@ server.listen(config.port, () => {
   console.log("Market data gateway listening", { port: config.port })
 })
 
+initPipelineRedis().catch((err) => {
+  console.error("Pipeline redis init failed:", err.message)
+})
+
 function shutdown() {
+  if (pipelineRedis) {
+    pipelineRedis.quit().catch(() => {})
+  }
   server.close(() => process.exit(0))
 }
 

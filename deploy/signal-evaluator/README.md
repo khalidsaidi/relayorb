@@ -4,7 +4,7 @@ This worker evaluates bot signals against real market prices and writes accuracy
 to Firestore so the UI can display prediction accuracy and best-performing bots.
 
 ## Data sources
-- Crypto: Binance klines via market-data-gateway
+- Crypto: FMP candles via market-data-gateway
 - Stocks: FMP daily + intraday via market-data-gateway
 - Forex: FMP daily + intraday via market-data-gateway
 - Live snapshot: Redis `prices:latest` (fallback to Firestore `market/prices`)

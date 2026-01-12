@@ -3,7 +3,7 @@
 This worker pulls market data on a schedule, merges it with bot signals, and writes ranked `market/hotTrades`, `market/trending`, and `market/popular` docs into Firestore.
 
 ## Data sources
-- Crypto: CoinGecko + Binance intraday deltas (via market-data-gateway)
+- Crypto: FMP quotes/candles + CoinGecko (via market-data-gateway)
 - Stocks/TSX/FX: Live price snapshots from Redis (price-streamer), with Firestore fallback
 - News/Sentiment: Marketaux (via market-data-gateway, optional)
 
@@ -60,7 +60,6 @@ Example `botWeights`:
 - `SIGNAL_RECENT_MINUTES` (default: 30)
 - `SIGNAL_MIN_RECENT` (default: 2)
 - `CRYPTO_LIMIT` (default: 40)
-- `CRYPTO_EXCHANGE` (default: binance)
 - `FX_PAIRS` (default: `USD/JPY,USD/EUR,USD/GBP,USD/CHF,USD/CAD`)
 - `MARKETAUX_LIMIT` (default: 40)
 - `MARKETAUX_SYMBOL_LIMIT` (default: 25)
@@ -141,7 +140,7 @@ gcloud run jobs create relayorb-market-intel \
   --image gcr.io/relayorb/market-intel \
   --region us-west1 \
   --service-account relayorb-market-intel@relayorb.iam.gserviceaccount.com \
-  --set-env-vars HOT_TRADES_LIMIT=12,BOT_SIGNAL_LOOKBACK_MINUTES=360,CRYPTO_EXCHANGE=binance,FX_PAIRS=USD/JPY,USD/EUR,USD/GBP,USD/CHF,USD/CAD,MARKET_DATA_GATEWAY_URL=https://YOUR-GATEWAY-URL,REDIS_URL=redis://YOUR-REDIS:6379 \
+  --set-env-vars HOT_TRADES_LIMIT=12,BOT_SIGNAL_LOOKBACK_MINUTES=360,FX_PAIRS=USD/JPY,USD/EUR,USD/GBP,USD/CHF,USD/CAD,MARKET_DATA_GATEWAY_URL=https://YOUR-GATEWAY-URL,REDIS_URL=redis://YOUR-REDIS:6379 \
   --set-secrets OPENAI_API_KEY=relayorb-openai-key:latest \
   --memory 512Mi
 ```

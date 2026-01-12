@@ -1,6 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import process from "node:process"
+import crypto from "node:crypto"
 import admin from "firebase-admin"
 import { createClient } from "redis"
 import AlpacaAdapter from "../adapters/alpaca/adapter.js"
@@ -27,13 +28,23 @@ const BATCH_COLLECTION = process.env.RELAYORB_BATCH_COLLECTION || "batches"
 const BATCH_CONSUMER_ID = process.env.RELAYORB_BATCH_CONSUMER_ID || "agent"
 const BATCH_POLL_ENABLED = process.env.RELAYORB_BATCH_POLL_ENABLED !== "false"
 const BATCH_POLL_INTERVAL_MS = parseInt(
-  process.env.RELAYORB_BATCH_POLL_INTERVAL_MS || "60000",
+  process.env.RELAYORB_BATCH_POLL_INTERVAL_MS || "15000",
   10
 )
 const BATCH_POLL_LIMIT = parseInt(
   process.env.RELAYORB_BATCH_POLL_LIMIT || "3",
   10
 )
+const PIPELINE_EVENTS_ENABLED = process.env.PIPELINE_EVENTS_ENABLED !== "false"
+const PIPELINE_EVENTS_STREAM = process.env.PIPELINE_EVENTS_STREAM || ""
+const PIPELINE_EVENTS_MAXLEN = parseInt(
+  process.env.PIPELINE_EVENTS_MAXLEN || "20000",
+  10
+)
+const PIPELINE_EVENTS_SAMPLE_RATE = parseFloat(
+  process.env.PIPELINE_EVENTS_SAMPLE_RATE || "0.15"
+)
+const PIPELINE_EVENTS_RUN_ENV = process.env.PIPELINE_EVENTS_RUN_ENV || "prod"
 
 const log = (message) => {
   const stamp = new Date().toISOString()
@@ -45,9 +56,78 @@ const logEvent = (event, data = {}) => {
   log(JSON.stringify(payload))
 }
 
+let pipelineRedis = null
+let pipelineRedisReady = false
+
+function resolvePipelineStream() {
+  if (PIPELINE_EVENTS_STREAM) return PIPELINE_EVENTS_STREAM
+  const prefix = REDIS_PREFIX ? `${REDIS_PREFIX}:` : ""
+  return `${prefix}pipeline_events`
+}
+
+function createEventId() {
+  if (crypto.randomUUID) return crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function shouldSample(rate) {
+  if (!Number.isFinite(rate)) return false
+  if (rate >= 1) return true
+  if (rate <= 0) return false
+  return Math.random() < rate
+}
+
+function buildPipelineEvent(payload) {
+  return {
+    ts: new Date().toISOString(),
+    eventId: createEventId(),
+    runEnv: PIPELINE_EVENTS_RUN_ENV,
+    service: "relayorb-agent",
+    severity: "info",
+    ...payload,
+  }
+}
+
+async function publishPipelineEvent(event) {
+  if (!PIPELINE_EVENTS_ENABLED || !pipelineRedis || !pipelineRedisReady) return
+  const stream = resolvePipelineStream()
+  const maxlen = Number.isFinite(PIPELINE_EVENTS_MAXLEN)
+    ? Math.max(PIPELINE_EVENTS_MAXLEN, 1000)
+    : 20000
+  const payload = JSON.stringify(event)
+  const command = ["XADD", stream, "MAXLEN", "~", String(maxlen), "*", "payload", payload]
+  try {
+    await Promise.race([
+      pipelineRedis.sendCommand(command),
+      new Promise((resolve) => setTimeout(resolve, 75)),
+    ])
+  } catch (err) {
+    log(`pipeline event publish failed: ${String(err)}`)
+  }
+}
+
+async function initPipelineRedis() {
+  if (!REDIS_URL || !PIPELINE_EVENTS_ENABLED) return null
+  const client = createClient({ url: REDIS_URL })
+  client.on("error", (err) => {
+    pipelineRedisReady = false
+    log(`pipeline redis error: ${String(err)}`)
+  })
+  try {
+    await client.connect()
+    pipelineRedisReady = true
+    pipelineRedis = client
+    return client
+  } catch (err) {
+    pipelineRedisReady = false
+    log(`pipeline redis connect failed: ${String(err)}`)
+    return null
+  }
+}
+
 const DEFAULT_CAPABILITIES = {
   freqtrade: {
-    exchanges: ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
+    exchanges: ["kraken", "coinbase", "kucoin", "bybit", "okx"],
     timeframes: ["1m", "5m", "15m", "1h", "4h", "1d"],
     modes: ["signal", "paper", "live"],
   },
@@ -122,6 +202,15 @@ function resolveCapabilities(bot) {
     timeframes: bot.capabilities.timeframes?.length ? bot.capabilities.timeframes : base.timeframes,
     modes: bot.capabilities.modes?.length ? bot.capabilities.modes : base.modes,
   }
+}
+
+function resolveTradingMode(bot) {
+  const raw = typeof bot?.desiredConfig?.mode === "string" ? bot.desiredConfig.mode : ""
+  const normalized = raw.trim().toLowerCase()
+  if (!normalized) return "paper"
+  if (normalized === "live") return "live"
+  if (["paper", "dry-run", "dryrun", "signal"].includes(normalized)) return "paper"
+  return normalized
 }
 
 function withBaseUrl(baseUrl, endpoint) {
@@ -365,6 +454,27 @@ async function queueScanCommand(db, bot, symbols, assetClass) {
     assetClass,
     count: symbols.length,
   })
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: `bot_engine:${bot.engine || "unknown"}`,
+      eventType: "bot_run",
+      edgeKey: `relayorb_agent->bot_engine:${bot.engine || "unknown"}`,
+      nodeIds: ["relayorb_agent", `bot_engine:${bot.engine || "unknown"}`],
+      status: "end",
+      batchId: RUN_ID || undefined,
+      meta: {
+        botId: bot.id,
+        engine: bot.engine,
+        botEngineId: bot.engine,
+        assetClass,
+        count: symbols.length,
+        mode: bot?.desiredConfig?.mode || null,
+        strategy: bot?.desiredConfig?.strategy || null,
+        timeframe: bot?.desiredConfig?.timeframe || null,
+        tradingMode: resolveTradingMode(bot),
+      },
+    })
+  )
 }
 
 async function triggerBatchScan(db, bots, items) {
@@ -396,6 +506,22 @@ async function handleBatchScan(db, bots, batch) {
     batchId: batch?.id || batch?.batchId || null,
     count: items.length,
   })
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "agent",
+      eventType: "fs_read",
+      edgeKey: "firestore->relayorb_agent",
+      nodeIds: ["relayorb_agent", "firestore"],
+      status: "end",
+      batchId: batch?.id || batch?.batchId || undefined,
+      meta: {
+        candidateCount: items.length,
+      },
+      inputs: {
+        firestoreDocs: [batch?.id ? `${BATCH_COLLECTION}/${batch.id}` : "market/candidates"],
+      },
+    })
+  )
   await triggerBatchScan(db, bots, items)
   if (batch?.id) {
     await updateBatchConsumerState(db, batch.id)
@@ -413,6 +539,17 @@ async function pollForBatches(db, bots) {
       if (!batch?.id) continue
       if (batch.id === state?.lastBatchId) continue
       logEvent("ag_poll_missed_batches", { batchId: batch.id })
+      await publishPipelineEvent(
+        buildPipelineEvent({
+          stationId: "agent",
+          eventType: "batch_poll",
+          edgeKey: "firestore->relayorb_agent",
+          nodeIds: ["relayorb_agent", "firestore"],
+          status: "end",
+          batchId: batch.id,
+          meta: { source: "poll", candidateCount: batch.items?.length || 0 },
+        })
+      )
       await handleBatchScan(db, bots, batch)
     }
   } catch (err) {
@@ -466,6 +603,20 @@ async function startEventListener(db, bots) {
     lastBatchId = batchId
 
     logEvent("ag_new_batch_received", { batchId, runId: eventRunId || RUN_ID || null })
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "agent",
+        eventType: "batch_consume",
+        edgeKey: "new_batch->relayorb_agent",
+        nodeIds: ["relayorb_agent", "new_batch"],
+        status: "end",
+        batchId: batchId || undefined,
+        meta: { source: "redis_event", runId: eventRunId || RUN_ID || null },
+        inputs: {
+          redisKeys: [EVENT_CHANNEL],
+        },
+      })
+    )
     const batchDoc = batchId ? await readBatchDoc(db, batchId) : null
     if (batchDoc && batchDoc.items.length) {
       await handleBatchScan(db, bots, batchDoc)
@@ -1227,10 +1378,73 @@ async function applyUpdate(db, bot, update) {
   await writeEvents(db, bot.id, update?.events || [])
   await writeSignals(db, bot.id, update?.signals || [])
   if (update?.signals?.length) {
+    const sampledSignals = update.signals.slice(0, 5).map((signal) => {
+      const symbol = resolveSignalSymbol(signal)
+      return {
+        symbolKey: symbol ? `${resolveBotAssetClass(bot) || "unknown"}:${symbol}` : null,
+        signal: signal.side || null,
+        strength: typeof signal.strength === "number" ? signal.strength : null,
+      }
+    })
     logEvent("ag_write_bot_signals", {
       botId: bot.id,
       count: update.signals.length,
     })
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "bot_signals",
+        eventType: "fs_write",
+        edgeKey: "relayorb_agent->bot_signals",
+        nodeIds: ["relayorb_agent", "bot_signals", "firestore"],
+        status: "end",
+        batchId: RUN_ID || undefined,
+        meta: {
+          botId: bot.id,
+          engine: bot.engine,
+          botEngineId: bot.engine,
+          count: update.signals.length,
+          mode: bot?.desiredConfig?.mode || null,
+          strategy: bot?.desiredConfig?.strategy || null,
+          timeframe: bot?.desiredConfig?.timeframe || null,
+          runtimeMs:
+            typeof update?.summary?.runtimeMs === "number" ? update.summary.runtimeMs : null,
+          perSymbolSignals: sampledSignals,
+          tradingMode: resolveTradingMode(bot),
+        },
+        outputs: {
+          firestoreDocs: [`bots/${bot.id}/signals`],
+        },
+      })
+    )
+    if (shouldSample(PIPELINE_EVENTS_SAMPLE_RATE)) {
+      const sampled = update.signals.slice(0, 6)
+      await Promise.all(
+        sampled.map((signal) => {
+          const symbol = resolveSignalSymbol(signal)
+          return publishPipelineEvent(
+            buildPipelineEvent({
+              stationId: "bot_signals",
+              eventType: "fs_write",
+              edgeKey: "relayorb_agent->bot_signals",
+              nodeIds: ["relayorb_agent", "bot_signals", "firestore"],
+              status: "end",
+              batchId: RUN_ID || undefined,
+              symbolKey: symbol ? `${resolveBotAssetClass(bot) || "unknown"}:${symbol}` : undefined,
+              meta: {
+                botId: bot.id,
+                engine: bot.engine,
+                botEngineId: bot.engine,
+                side: signal.side || null,
+                strength: typeof signal.strength === "number" ? signal.strength : null,
+                strategy: bot?.desiredConfig?.strategy || null,
+                timeframe: bot?.desiredConfig?.timeframe || null,
+                tradingMode: resolveTradingMode(bot),
+              },
+            })
+          )
+        })
+      )
+    }
   }
 }
 
@@ -1376,8 +1590,20 @@ function startCommandListener(db, bot, adapter) {
 async function main() {
   const config = await loadConfig()
   const db = initFirestore(config.firestore?.projectId)
+  await initPipelineRedis()
 
   logEvent("ag_run_start", { botCount: config.bots.length })
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "agent",
+      eventType: "service_start",
+      edgeKey: "relayorb_agent->bot_engine:unknown",
+      nodeIds: ["relayorb_agent"],
+      status: "start",
+      batchId: RUN_ID || undefined,
+      meta: { botCount: config.bots.length },
+    })
+  )
 
   for (const bot of config.bots) {
     if (!bot.id || !bot.engine) {

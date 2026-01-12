@@ -23,7 +23,7 @@
         }
       },
       "capabilities": {
-        "exchanges": ["binance", "kraken", "coinbase", "kucoin", "bybit", "okx"],
+        "exchanges": ["kraken", "coinbase", "kucoin", "bybit", "okx"],
         "timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"],
         "modes": ["signal", "paper", "live"]
       },

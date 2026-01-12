@@ -1,4 +1,5 @@
 const admin = require("firebase-admin")
+const crypto = require("crypto")
 const { adjustEvaluationTime, isMarketOpen } = require("./marketHours")
 const { createClient } = require("redis")
 
@@ -58,14 +59,20 @@ const config = {
   maxFxPairs: parseInt(process.env.EVAL_MAX_FX_PAIRS || "8", 10),
   runId: process.env.RUN_ID || "",
   firestoreRunField: process.env.FIRESTORE_RUN_FIELD || "runId",
+  pipelineEventsEnabled: process.env.PIPELINE_EVENTS_ENABLED !== "false",
+  pipelineEventsStream: process.env.PIPELINE_EVENTS_STREAM || "",
+  pipelineEventsMaxlen: parseInt(process.env.PIPELINE_EVENTS_MAXLEN || "20000", 10),
+  pipelineEventsSampleRate: parseFloat(process.env.PIPELINE_EVENTS_SAMPLE_RATE || "0.15"),
+  pipelineEventsRunEnv: process.env.PIPELINE_EVENTS_RUN_ENV || "prod",
 }
 
 const caches = {
-  binance: new Map(),
   fmpStocksDaily: new Map(),
   fmpStocksIntraday: new Map(),
   fmpForexDaily: new Map(),
   fmpForexIntraday: new Map(),
+  fmpCryptoDaily: new Map(),
+  fmpCryptoIntraday: new Map(),
 }
 
 let marketPriceCache = null
@@ -75,6 +82,53 @@ const REFERENCE_TOLERANCE_MS = 5 * 60 * 1000
 
 let redis = null
 let redisReady = false
+
+function resolvePipelineStream() {
+  if (config.pipelineEventsStream) return config.pipelineEventsStream
+  const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
+  return `${prefix}pipeline_events`
+}
+
+function createEventId() {
+  if (crypto.randomUUID) return crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function shouldSample(rate) {
+  if (!Number.isFinite(rate)) return false
+  if (rate >= 1) return true
+  if (rate <= 0) return false
+  return Math.random() < rate
+}
+
+function buildPipelineEvent(payload) {
+  return {
+    ts: new Date().toISOString(),
+    eventId: createEventId(),
+    runEnv: config.pipelineEventsRunEnv,
+    service: "signal-evaluator",
+    severity: "info",
+    ...payload,
+  }
+}
+
+async function publishPipelineEvent(event) {
+  if (!config.pipelineEventsEnabled || !redis || !redisReady) return
+  const stream = resolvePipelineStream()
+  const maxlen = Number.isFinite(config.pipelineEventsMaxlen)
+    ? Math.max(config.pipelineEventsMaxlen, 1000)
+    : 20000
+  const payload = JSON.stringify(event)
+  const command = ["XADD", stream, "MAXLEN", "~", String(maxlen), "*", "payload", payload]
+  try {
+    await Promise.race([
+      redis.sendCommand(command),
+      new Promise((resolve) => setTimeout(resolve, 75)),
+    ])
+  } catch (err) {
+    console.error("Pipeline event publish failed:", err.message)
+  }
+}
 
 function parseNumber(value) {
   const parsed = Number(value)
@@ -87,6 +141,23 @@ function parseTimestamp(value) {
   if (typeof value?.toDate === "function") return value.toDate()
   const parsed = new Date(value)
   return Number.isFinite(parsed.getTime()) ? parsed : null
+}
+
+function shouldSample(rate) {
+  if (!Number.isFinite(rate)) return false
+  if (rate >= 1) return true
+  if (rate <= 0) return false
+  return Math.random() < rate
+}
+
+function hashParams(value) {
+  if (!value) return null
+  try {
+    const serialized = typeof value === "string" ? value : JSON.stringify(value)
+    return crypto.createHash("sha256").update(serialized).digest("hex").slice(0, 12)
+  } catch (_) {
+    return null
+  }
 }
 
 function resolveRedisKey(suffix) {
@@ -126,7 +197,27 @@ async function readRedisJson(key) {
 }
 
 async function loadRedisPriceSnapshot() {
-  const payload = await readRedisJson(resolveRedisKey("prices:latest"))
+  const key = resolveRedisKey("prices:latest")
+  const payload = await readRedisJson(key)
+  if (config.pipelineEventsEnabled) {
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "redis_hot",
+        eventType: "redis_read",
+        edgeKey: "redis->signal_evaluator",
+        nodeIds: ["redis", "signal_evaluator"],
+        status: "end",
+        batchId: config.runId || undefined,
+        meta: {
+          key,
+          hit: Boolean(payload),
+        },
+        inputs: {
+          redisKeys: [key],
+        },
+      })
+    )
+  }
   if (!payload || !Array.isArray(payload.items)) return null
   const updatedAt = parseTimestamp(payload.updatedAt)
   if (updatedAt && Date.now() - updatedAt.getTime() > config.redisLatestMaxAgeMs) {
@@ -262,14 +353,85 @@ function buildGatewayUrl(path, params) {
 
 async function fetchGatewayJson(path, params) {
   const url = buildGatewayUrl(path, params)
-  return fetchJson(url)
+  const shouldEmit = config.pipelineEventsEnabled && shouldSample(config.pipelineEventsSampleRate)
+  const startedAt = Date.now()
+  const endpointName = String(path || "").replace(/^\/+/, "")
+  const paramsHash = hashParams(params)
+  if (shouldEmit) {
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "mdg",
+        eventType: "gateway_call",
+        edgeKey: "signal_evaluator->market_data_gateway",
+        nodeIds: ["signal_evaluator", "market_data_gateway"],
+        status: "start",
+        batchId: config.runId || undefined,
+        meta: {
+          endpointName,
+          paramsHash,
+        },
+      })
+    )
+  }
+  try {
+    const data = await fetchJson(url)
+    if (shouldEmit) {
+      await publishPipelineEvent(
+        buildPipelineEvent({
+          stationId: "mdg",
+          eventType: "gateway_call",
+          edgeKey: "signal_evaluator->market_data_gateway",
+          nodeIds: ["signal_evaluator", "market_data_gateway"],
+          status: "end",
+          durationMs: Date.now() - startedAt,
+          batchId: config.runId || undefined,
+          meta: {
+            endpointName,
+            paramsHash,
+            httpStatus: 200,
+          },
+          inputs: {
+            providerCalls: [
+              {
+                providerId: "mdg",
+                endpointName,
+                paramsHash,
+              },
+            ],
+          },
+        })
+      )
+    }
+    return data
+  } catch (err) {
+    if (shouldEmit) {
+      await publishPipelineEvent(
+        buildPipelineEvent({
+          stationId: "mdg",
+          eventType: "gateway_call",
+          edgeKey: "signal_evaluator->market_data_gateway",
+          nodeIds: ["signal_evaluator", "market_data_gateway"],
+          status: "error",
+          durationMs: Date.now() - startedAt,
+          batchId: config.runId || undefined,
+          severity: "error",
+          meta: {
+            endpointName,
+            paramsHash,
+          },
+          error: { message: err?.message ? String(err.message) : "Gateway error" },
+        })
+      )
+    }
+    throw err
+  }
 }
 
 function normalizeFmpSymbol(symbol, assetClass) {
   if (!symbol) return null
   const cleaned = String(symbol).trim().toUpperCase()
   if (!cleaned) return null
-  if (assetClass === "forex") {
+  if (assetClass === "forex" || assetClass === "crypto") {
     return cleaned.replace(/[\\/-]/g, "")
   }
   return cleaned.replace(/\s+/g, "")
@@ -293,6 +455,11 @@ function parseFmpSeries(data) {
 function getFmpCache(assetClass, interval) {
   if (assetClass === "forex") {
     return interval === "15min" ? caches.fmpForexIntraday : caches.fmpForexDaily
+  }
+  if (assetClass === "crypto") {
+    return interval === "15min" || interval === "1h"
+      ? caches.fmpCryptoIntraday
+      : caches.fmpCryptoDaily
   }
   return interval === "15min" ? caches.fmpStocksIntraday : caches.fmpStocksDaily
 }
@@ -329,59 +496,9 @@ async function getFmpPrice(symbol, assetClass, interval, timestampMs) {
   return { price: close, source: "fmp" }
 }
 
-async function fetchBinanceClose(symbol, interval, bucketStart) {
-  const key = `${symbol}|${interval}|${bucketStart}`
-  if (caches.binance.has(key)) return caches.binance.get(key)
-  if (!config.marketDataGatewayUrl) {
-    caches.binance.set(key, null)
-    return null
-  }
-
-  const intervalMs = interval === "1h" ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000
-
-  try {
-    const payload = await fetchGatewayJson("/v1/binance/klines", {
-      symbol,
-      interval,
-      startTime: String(bucketStart),
-      endTime: String(bucketStart + intervalMs),
-      limit: "1",
-    })
-    const data = Array.isArray(payload?.data) ? payload.data : []
-    if (!Array.isArray(data) || data.length === 0) {
-      caches.binance.set(key, null)
-      return null
-    }
-    const close = parseNumber(data[0][4])
-    caches.binance.set(key, close)
-    return close
-  } catch (err) {
-    caches.binance.set(key, null)
-    return null
-  }
-}
-
 async function getCryptoPrice(pair, timestampMs, horizonKey) {
-  const [base, quoteRaw] = pair.split("/")
-  if (!base || !quoteRaw) return null
-  const quote = quoteRaw === "USD" ? "USDT" : quoteRaw
-
-  const interval = horizonKey === "1h" ? "1h" : "1d"
-  const intervalMs = interval === "1h" ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000
-  const bucketStart = Math.floor(timestampMs / intervalMs) * intervalMs
-
-  const candidates = quote === quoteRaw
-    ? [`${base}${quote}`]
-    : [`${base}${quote}`, `${base}${quoteRaw}`]
-
-  for (const symbol of candidates) {
-    const price = await fetchBinanceClose(symbol, interval, bucketStart)
-    if (price) {
-      return { price, source: "binance" }
-    }
-  }
-
-  return null
+  const interval = horizonKey === "1h" ? "1h" : "1day"
+  return getFmpPrice(pair, "crypto", interval, timestampMs)
 }
 
 function findIntradayClose(entries, targetTime) {
@@ -474,6 +591,24 @@ function lookupSnapshotPrice(snapshot, assetClass, symbol) {
 }
 
 async function evaluateSignals(db) {
+  const evalStartedAt = Date.now()
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "signal_eval",
+      eventType: "fs_read",
+      edgeKey: "firestore->signal_evaluator",
+      nodeIds: ["signal_evaluator", "firestore"],
+      status: "start",
+      batchId: config.runId || undefined,
+      meta: {
+        lookbackHours: config.evalLookbackHours,
+        maxSignals: config.evalMaxSignals,
+      },
+      inputs: {
+        firestoreDocs: ["bots/*/signals"],
+      },
+    })
+  )
   const nowMs = Date.now()
   const cutoff = new Date(nowMs - config.evalLookbackHours * 60 * 60 * 1000)
   const minHorizonMinutes = Math.min(...Object.values(HORIZONS))
@@ -704,6 +839,26 @@ async function evaluateSignals(db) {
     processed.updated += 1
   }
 
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "signal_eval",
+      eventType: "fs_read",
+      edgeKey: "firestore->signal_evaluator",
+      nodeIds: ["signal_evaluator", "firestore"],
+      status: "end",
+      batchId: config.runId || undefined,
+      durationMs: Date.now() - evalStartedAt,
+      meta: {
+        updated: processed.updated,
+        skipped: processed.skipped,
+        signalsScanned: snap.size,
+      },
+      inputs: {
+        firestoreDocs: ["bots/*/signals"],
+      },
+    })
+  )
+
   return processed
 }
 
@@ -720,7 +875,25 @@ function ensureNestedBucket(container, key, horizonKey) {
 }
 
 async function buildPerformanceReport(db) {
+  const reportStartedAt = Date.now()
   const cutoff = new Date(Date.now() - config.aggLookbackDays * 24 * 60 * 60 * 1000)
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "signal_eval",
+      eventType: "fs_read",
+      edgeKey: "firestore->signal_evaluator",
+      nodeIds: ["signal_evaluator", "firestore"],
+      status: "start",
+      batchId: config.runId || undefined,
+      meta: {
+        lookbackDays: config.aggLookbackDays,
+        maxSignals: config.aggMaxSignals,
+      },
+      inputs: {
+        firestoreDocs: ["bots/*/signals"],
+      },
+    })
+  )
   const snap = await db
     .collectionGroup("signals")
     .where("createdAt", ">=", admin.firestore.Timestamp.fromDate(cutoff))
@@ -986,6 +1159,44 @@ async function buildPerformanceReport(db) {
         { merge: true }
       )
     )
+  )
+
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "signal_eval",
+      eventType: "fs_write",
+      edgeKey: "signal_evaluator->firestore",
+      nodeIds: ["signal_evaluator", "firestore"],
+      status: "end",
+      batchId: config.runId || undefined,
+      durationMs: Date.now() - reportStartedAt,
+      meta: {
+        signalsScanned: snap.size,
+        lookbackDays: config.aggLookbackDays,
+      },
+      outputs: {
+        firestoreDocs: ["analytics/signalPerformance", "bots/*/analytics/signalPerformance"],
+      },
+    })
+  )
+
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "signal_performance",
+      eventType: "performance_report",
+      edgeKey: "signal_evaluator->signal_performance",
+      nodeIds: ["signal_evaluator", "signal_performance", "firestore"],
+      status: "end",
+      batchId: config.runId || undefined,
+      durationMs: Date.now() - reportStartedAt,
+      meta: {
+        signalsScanned: snap.size,
+        lookbackDays: config.aggLookbackDays,
+      },
+      outputs: {
+        firestoreDocs: ["analytics/signalPerformance", "bots/*/analytics/signalPerformance"],
+      },
+    })
   )
 }
 

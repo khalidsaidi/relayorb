@@ -26,6 +26,10 @@ The UI calls this with the Firebase ID token and the service verifies the admin 
 - `BATCH_POLL_INTERVAL_MS` (default: 60000)
 - `BATCH_POLL_LIMIT` (default: 3)
 - `MARKET_INTEL_JOB` (default: relayorb-market-intel)
+- `PIPELINE_EVENTS_ENABLED` (default: true)
+- `PIPELINE_EVENTS_STREAM` (optional override for Redis stream)
+- `PIPELINE_EVENTS_MAXLEN` (default: 20000)
+- `PIPELINE_EVENTS_RUN_ENV` (default: prod)
 
 ## Deploy
 ```bash
@@ -69,3 +73,5 @@ Set `VITE_REFRESH_URL` to the Cloud Run service URL in your app environment.
 - `POST /refresh` (starts jobs)
 - `POST /admin/scanOnce` (triggers market-intel with `RUN_ID`)
 - `POST /advice` (per-trade AI recommendation)
+- `GET /ops/events` (SSE pipeline events stream; requires auth)
+- `GET /ops/events/search` (filtered history for batchId/symbolKey/edgeKey; requires auth)
