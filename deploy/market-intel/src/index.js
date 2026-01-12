@@ -1,5 +1,5 @@
 const admin = require("firebase-admin")
-const ccxt = require("ccxt")
+const crypto = require("crypto")
 const { createClient } = require("redis")
 
 const config = {
@@ -14,7 +14,6 @@ const config = {
   signalRecentMinutes: parseInt(process.env.SIGNAL_RECENT_MINUTES || "30", 10),
   signalMinRecent: parseInt(process.env.SIGNAL_MIN_RECENT || "2", 10),
   cryptoLimit: parseInt(process.env.CRYPTO_LIMIT || "40", 10),
-  cryptoExchange: process.env.CRYPTO_EXCHANGE || "binance",
   openaiKey: process.env.OPENAI_API_KEY || "",
   openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
   llmIntervalMinutes: parseInt(process.env.LLM_INTERVAL_MINUTES || "30", 10),
@@ -26,6 +25,11 @@ const config = {
   redisPrefix: process.env.REDIS_PREFIX || "relayorb",
   redisLatestMaxAgeMs: parseInt(process.env.REDIS_LATEST_MAX_AGE_MS || "120000", 10),
   redisEventChannel: process.env.REDIS_EVENT_CHANNEL || "",
+  pipelineEventsEnabled: process.env.PIPELINE_EVENTS_ENABLED !== "false",
+  pipelineEventsStream: process.env.PIPELINE_EVENTS_STREAM || "",
+  pipelineEventsMaxlen: parseInt(process.env.PIPELINE_EVENTS_MAXLEN || "20000", 10),
+  pipelineEventsSampleRate: parseFloat(process.env.PIPELINE_EVENTS_SAMPLE_RATE || "0.15"),
+  pipelineEventsRunEnv: process.env.PIPELINE_EVENTS_RUN_ENV || "prod",
   candidatePublishLimit: parseInt(process.env.CANDIDATE_PUBLISH_LIMIT || "150", 10),
   batchCollection: process.env.BATCH_COLLECTION || "batches",
   runId: process.env.RUN_ID || "",
@@ -38,6 +42,7 @@ const config = {
   moverMinPrice: parseFloat(process.env.MOVER_MIN_PRICE || "1"),
   moverMinVolume: parseFloat(process.env.MOVER_MIN_VOLUME || "50000"),
   watchlistScoreBoost: parseFloat(process.env.WATCHLIST_SCORE_BOOST || "4"),
+  primaryScoreBoost: parseFloat(process.env.PRIMARY_SCORE_BOOST || "3"),
   momentumRatioMax: parseFloat(process.env.MOMENTUM_RATIO_MAX || "2"),
   momentumVolFloor: parseFloat(process.env.MOMENTUM_VOL_FLOOR || "0.05"),
   momentumVolCeil: parseFloat(process.env.MOMENTUM_VOL_CEIL || "15"),
@@ -100,13 +105,65 @@ const SCORE_WEIGHTS_BY_ASSET = {
     scalp: { ...BASE_SCORE_WEIGHTS.scalp },
   },
 }
+const RISK_WEIGHT_MULTIPLIERS = {
+  conservative: { momentum: 0.85, consensus: 1.15, liquidity: 1.15, news: 1.05 },
+  balanced: { momentum: 1, consensus: 1, liquidity: 1, news: 1 },
+  aggressive: { momentum: 1.15, consensus: 0.9, liquidity: 0.85, news: 0.95 },
+}
 
 let redis = null
 let redisReady = false
+let activeRunId = ""
 const SPREAD_PCT_LIMITS = {
   stock: 0.5,
   forex: 0.08,
   crypto: 0.3,
+}
+
+function resolvePipelineStream() {
+  if (config.pipelineEventsStream) return config.pipelineEventsStream
+  const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
+  return `${prefix}pipeline_events`
+}
+
+function createEventId() {
+  if (crypto.randomUUID) return crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function shouldSample(rate) {
+  if (typeof rate !== "number" || rate >= 1) return true
+  if (rate <= 0) return false
+  return Math.random() <= rate
+}
+
+function buildPipelineEvent(payload) {
+  return {
+    ts: new Date().toISOString(),
+    eventId: createEventId(),
+    runEnv: config.pipelineEventsRunEnv,
+    service: "market-intel",
+    severity: "info",
+    ...payload,
+  }
+}
+
+async function publishPipelineEvent(event) {
+  if (!config.pipelineEventsEnabled || !redis || !redisReady) return
+  const stream = resolvePipelineStream()
+  const maxlen = Number.isFinite(config.pipelineEventsMaxlen)
+    ? Math.max(config.pipelineEventsMaxlen, 1000)
+    : 20000
+  const payload = JSON.stringify(event)
+  const command = ["XADD", stream, "MAXLEN", "~", String(maxlen), "*", "payload", payload]
+  try {
+    await Promise.race([
+      redis.sendCommand(command),
+      new Promise((resolve) => setTimeout(resolve, 75)),
+    ])
+  } catch (err) {
+    console.error("Pipeline event publish failed:", err.message)
+  }
 }
 const PAIR_QUOTES = new Set([
   "USDT",
@@ -159,6 +216,16 @@ function parsePercent(value) {
   return parseNumber(cleaned)
 }
 
+function hashParams(value) {
+  if (!value) return null
+  try {
+    const serialized = typeof value === "string" ? value : JSON.stringify(value)
+    return crypto.createHash("sha256").update(serialized).digest("hex").slice(0, 12)
+  } catch (_) {
+    return null
+  }
+}
+
 function resolveRedisKey(suffix) {
   const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
   return `${prefix}${suffix}`
@@ -201,7 +268,27 @@ async function readRedisJson(key) {
 }
 
 async function readRedisLatestPrices() {
-  const payload = await readRedisJson(resolveRedisKey("prices:latest"))
+  const key = resolveRedisKey("prices:latest")
+  const payload = await readRedisJson(key)
+  if (config.pipelineEventsEnabled) {
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "redis_hot",
+        eventType: "redis_read",
+        edgeKey: "redis->market_intel",
+        nodeIds: ["redis", "market_intel"],
+        status: "end",
+        batchId: activeRunId || undefined,
+        meta: {
+          key,
+          hit: Boolean(payload),
+        },
+        inputs: {
+          redisKeys: [key],
+        },
+      })
+    )
+  }
   if (!payload || !Array.isArray(payload.items)) return null
   const updatedAt = parseNumber(payload.updatedAt)
   if (updatedAt && Date.now() - updatedAt > config.redisLatestMaxAgeMs) {
@@ -226,6 +313,25 @@ async function readRedisSnapshotBefore(cutoff) {
       LIMIT: { offset: 0, count: 1 },
     })
     if (!keys || keys.length === 0) return null
+    if (config.pipelineEventsEnabled) {
+      await publishPipelineEvent(
+        buildPipelineEvent({
+          stationId: "redis_hot",
+          eventType: "redis_read",
+          edgeKey: "redis->market_intel",
+          nodeIds: ["redis", "market_intel"],
+          status: "end",
+          batchId: activeRunId || undefined,
+          meta: {
+            key: indexKey,
+            hit: true,
+          },
+          inputs: {
+            redisKeys: [indexKey],
+          },
+        })
+      )
+    }
     const payload = await readRedisJson(keys[0])
     if (!payload || !Array.isArray(payload.items)) return null
     const updatedAt = parseNumber(payload.updatedAt)
@@ -265,6 +371,39 @@ function resolveUniverseBoost(mode, watchlisted) {
   if (mode !== "weighted_union") return 0
   if (!watchlisted) return 0
   return config.watchlistScoreBoost
+}
+
+function normalizeOrigins(origins) {
+  if (!Array.isArray(origins)) return []
+  const cleaned = origins
+    .map((origin) => String(origin || "").trim())
+    .filter(Boolean)
+  return Array.from(new Set(cleaned))
+}
+
+function normalizeOriginsForEvent(origins) {
+  const normalized = normalizeOrigins(origins)
+  return normalized.length > 0 ? normalized : ["unknown"]
+}
+
+function mergeOrigins(existing, next) {
+  const merged = new Set([...(existing || []), ...(next || [])])
+  return Array.from(merged)
+}
+
+function summarizeOrigins(items) {
+  const counts = {}
+  items.forEach((item) => {
+    const origins = normalizeOrigins(item.origins)
+    if (origins.length === 0) {
+      counts.unknown = (counts.unknown || 0) + 1
+      return
+    }
+    origins.forEach((origin) => {
+      counts[origin] = (counts[origin] || 0) + 1
+    })
+  })
+  return counts
 }
 
 function parseBotWeights(raw) {
@@ -644,59 +783,19 @@ function normalizeSymbol(raw) {
   return compact
 }
 
-/**
- * Normalizes crypto symbol using CCXT
- * CCXT provides robust symbol normalization across exchanges
- * @param {string} symbol - The crypto symbol to normalize
- * @returns {string} - Normalized symbol in BASE/USD format for Twelve Data
- */
-function normalizeCryptoSymbolWithCCXT(symbol) {
-  try {
-    // Create a dummy exchange instance to use CCXT's normalization utilities
-    const exchange = new ccxt.binance()
-    
-    let normalized = symbol.trim().toUpperCase()
-    
-    // If it already has a separator, normalize it
-    if (normalized.includes('/') || normalized.includes('-')) {
-      const marketId = normalized.replace('-', '/')
-      const parts = marketId.split('/')
-      if (parts.length === 2) {
-        // Convert USDT to USD for Twelve Data
-        const quote = parts[1] === 'USDT' ? 'USD' : parts[1]
-        return `${parts[0]}/${quote}`
-      }
-    }
-    
-    // If no separator, try to infer from common patterns
-    const commonQuotes = ['USDT', 'USDC', 'USD', 'BTC', 'ETH', 'EUR']
-    for (const quote of commonQuotes) {
-      if (normalized.endsWith(quote) && normalized.length > quote.length) {
-        const base = normalized.slice(0, -quote.length)
-        const normalizedQuote = quote === 'USDT' ? 'USD' : quote
-        return `${base}/${normalizedQuote}`
-      }
-    }
-    
-    // Default: assume base currency, add USD
-    return `${normalized}/USD`
-  } catch (err) {
-    console.warn('[MarketIntel] CCXT normalization failed, using fallback:', err.message)
-    // Fallback to simple normalization
-    const trimmed = symbol.trim().toUpperCase()
-    if (trimmed.includes('/')) {
-      const parts = trimmed.split('/')
-      const quote = parts[1] === 'USDT' ? 'USD' : parts[1] || 'USD'
-      return `${parts[0]}/${quote}`
-    }
-    return `${trimmed}/USD`
+function normalizeCryptoSymbolForCharting(symbol) {
+  const normalized = normalizeSymbol(symbol)
+  if (!normalized) return symbol
+  if (normalized.includes("/")) {
+    const [base, quoteRaw] = normalized.split("/")
+    const quote = quoteRaw === "USDT" ? "USD" : quoteRaw
+    return `${base}/${quote}`
   }
+  return normalized
 }
 
 /**
- * Normalizes symbol for Twelve Data API charting
- * Ensures symbols are in the format expected by the charting service
- * Uses CCXT for crypto symbols for better normalization
+ * Normalizes symbol for charting.
  * @param {string} symbol - The symbol to normalize
  * @param {string} assetClass - The asset class: 'crypto', 'stock', or 'forex'
  * @returns {string} - Normalized symbol for charting
@@ -712,8 +811,7 @@ function normalizeSymbolForCharting(symbol, assetClass) {
   }
   
   if (assetClass === 'crypto') {
-    // Use CCXT for robust crypto symbol normalization
-    return normalizeCryptoSymbolWithCCXT(symbol)
+    return normalizeCryptoSymbolForCharting(symbol)
   } else if (assetClass === 'forex') {
     // For forex, keep slash format (EUR/USD, USD/JPY)
     if (!trimmed.includes('/')) {
@@ -755,15 +853,6 @@ function normalizeSignalKey(raw) {
   if (normalized && normalized.includes("/")) return normalized
   const ticker = normalizeTicker(raw)
   return ticker || normalized
-}
-
-function toBinanceSymbol(pair) {
-  const normalized = normalizeSymbol(pair)
-  if (!normalized || !normalized.includes("/")) return null
-  const [base, quoteRaw] = normalized.split("/")
-  if (!base || !quoteRaw) return null
-  const quote = quoteRaw === "USD" ? "USDT" : quoteRaw
-  return `${base}${quote}`
 }
 
 function uniqueList(items) {
@@ -818,39 +907,111 @@ function buildGatewayUrl(path, params) {
 
 async function fetchGatewayJson(path, params) {
   const url = buildGatewayUrl(path, params)
-  return fetchJson(url)
+  const shouldEmit = config.pipelineEventsEnabled && shouldSample(config.pipelineEventsSampleRate)
+  const startedAt = Date.now()
+  const endpointName = String(path || "").replace(/^\/+/, "")
+  const paramsHash = hashParams(params)
+  if (shouldEmit) {
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "mdg",
+        eventType: "gateway_call",
+        edgeKey: "market_intel->market_data_gateway",
+        nodeIds: ["market_intel", "market_data_gateway"],
+        status: "start",
+        batchId: activeRunId || undefined,
+        meta: {
+          endpointName,
+          paramsHash,
+        },
+      })
+    )
+  }
+  try {
+    const data = await fetchJson(url)
+    if (shouldEmit) {
+      await publishPipelineEvent(
+        buildPipelineEvent({
+          stationId: "mdg",
+          eventType: "gateway_call",
+          edgeKey: "market_intel->market_data_gateway",
+          nodeIds: ["market_intel", "market_data_gateway"],
+          status: "end",
+          durationMs: Date.now() - startedAt,
+          batchId: activeRunId || undefined,
+          meta: {
+            endpointName,
+            paramsHash,
+            httpStatus: 200,
+          },
+          inputs: {
+            providerCalls: [
+              {
+                providerId: "mdg",
+                endpointName,
+                paramsHash,
+              },
+            ],
+          },
+        })
+      )
+    }
+    return data
+  } catch (err) {
+    if (shouldEmit) {
+      await publishPipelineEvent(
+        buildPipelineEvent({
+          stationId: "mdg",
+          eventType: "gateway_call",
+          edgeKey: "market_intel->market_data_gateway",
+          nodeIds: ["market_intel", "market_data_gateway"],
+          status: "error",
+          durationMs: Date.now() - startedAt,
+          batchId: activeRunId || undefined,
+          severity: "error",
+          meta: {
+            endpointName,
+            paramsHash,
+          },
+          error: { message: err?.message ? String(err.message) : "Gateway error" },
+        })
+      )
+    }
+    throw err
+  }
 }
 
-async function fetchBinanceChange(symbol, interval) {
-  const payload = await fetchGatewayJson("/v1/binance/klines", {
-    symbol,
-    interval,
+function resolveCryptoInterval(interval) {
+  const normalized = String(interval || "").trim().toLowerCase()
+  if (normalized === "15m" || normalized === "15min" || normalized === "15") return "15min"
+  if (normalized === "1h" || normalized === "60m" || normalized === "1hour") return "1h"
+  if (normalized === "1d" || normalized === "24h" || normalized === "1day") return "1day"
+  return "15min"
+}
+
+async function fetchFmpChange(pair, interval) {
+  const normalized = normalizeSymbol(pair)
+  if (!normalized) return null
+  const fmpInterval = resolveCryptoInterval(interval)
+  const data = await fetchGatewayJson("/v1/fmp/candles", {
+    symbol: normalized,
+    assetClass: "crypto",
+    interval: fmpInterval,
     limit: "2",
   })
-  const data = Array.isArray(payload?.data) ? payload.data : []
-  if (!Array.isArray(data) || data.length < 2) return null
-  const prevClose = parseNumber(data[data.length - 2]?.[4])
-  const lastClose = parseNumber(data[data.length - 1]?.[4])
+  const candles = Array.isArray(data?.candles) ? data.candles : []
+  if (candles.length < 2) return null
+  const prevClose = parseNumber(candles[candles.length - 2]?.close)
+  const lastClose = parseNumber(candles[candles.length - 1]?.close)
   if (!prevClose || !lastClose) return null
   return ((lastClose - prevClose) / prevClose) * 100
-}
-
-async function fetchBinanceTicker(symbol) {
-  const data = await fetchGatewayJson("/v1/binance/ticker", { symbol })
-  return {
-    price: parseNumber(data?.price),
-    change24h: parseNumber(data?.change24h),
-    volume: parseNumber(data?.volume),
-  }
 }
 
 async function fetchCryptoIntradayChanges(pairs, interval) {
   const results = new Map()
   for (const pair of pairs) {
-    const symbol = toBinanceSymbol(pair)
-    if (!symbol) continue
     try {
-      const change = await fetchBinanceChange(symbol, interval)
+      const change = await fetchFmpChange(pair, interval)
       if (change !== null && change !== undefined) {
         results.set(normalizeSymbol(pair), change)
       }
@@ -866,21 +1027,20 @@ async function fetchCryptoWatchlist(pairs) {
   for (const pair of pairs) {
     const normalized = normalizeSymbol(pair)
     if (!normalized) continue
-    const symbol = toBinanceSymbol(normalized)
-    if (!symbol) continue
     try {
-      const data = await fetchBinanceTicker(symbol)
+      const data = await fetchFmpQuote(normalized, "crypto")
       if (!data) continue
       results.push({
         assetClass: "crypto",
         symbol: normalized,
         name: normalized,
-        exchange: config.cryptoExchange,
+        exchange: "COINBASE",
         price: data.price,
         change24h: data.change24h,
         volume: data.volume,
         watchlisted: true,
-        source: "binance",
+        origins: ["user_universe"],
+        source: "fmp",
       })
     } catch (err) {
       continue
@@ -899,6 +1059,19 @@ function initAdmin() {
 async function readUniverse(db) {
   const snap = await db.doc("market/universe").get()
   const data = snap.exists ? snap.data() : {}
+  if (config.pipelineEventsEnabled) {
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "market_intel",
+        eventType: "fs_read",
+        edgeKey: "firestore->market_intel",
+        nodeIds: ["market_intel", "firestore"],
+        status: "end",
+        batchId: activeRunId || undefined,
+        inputs: { firestoreDocs: ["market/universe"] },
+      })
+    )
+  }
 
   const crypto = data?.crypto || {}
   const stocks = data?.stocks || {}
@@ -939,6 +1112,19 @@ async function readUniverse(db) {
 async function readControls(db) {
   const snap = await db.doc("market/controls").get()
   const data = snap.exists ? snap.data() : {}
+  if (config.pipelineEventsEnabled) {
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "market_intel",
+        eventType: "fs_read",
+        edgeKey: "firestore->market_intel",
+        nodeIds: ["market_intel", "firestore"],
+        status: "end",
+        batchId: activeRunId || undefined,
+        inputs: { firestoreDocs: ["market/controls"] },
+      })
+    )
+  }
   const parsedInterval = Number(data?.llmIntervalMinutes)
   const llmIntervalMinutes =
     Number.isFinite(parsedInterval) && parsedInterval > 0
@@ -1147,11 +1333,13 @@ async function fetchCrypto(db, preferences = {}) {
       const normalized = normalizeSymbol(symbol)
       const watchlisted = normalized ? watchlistSet.has(normalized) : false
       const live = normalized ? liveMap.get(normalized) : null
+      const origins = ["trending"]
+      if (watchlisted) origins.push("user_universe")
       return {
         assetClass: "crypto",
         symbol,
         name: item.name || symbol,
-        exchange: config.cryptoExchange,
+        exchange: "COINBASE",
         price: typeof live?.price === "number" ? live.price : parseNumber(item.current_price),
         change1h: parseNumber(item.price_change_percentage_1h_in_currency),
         change24h: parseNumber(item.price_change_percentage_24h_in_currency),
@@ -1164,6 +1352,7 @@ async function fetchCrypto(db, preferences = {}) {
         volume: parseNumber(item.total_volume),
         liquidityRank: index + 1,
         watchlisted,
+        origins,
         source: "coingecko",
       }
     })
@@ -1248,6 +1437,19 @@ async function readLivePrices(db) {
   const snap = await db.doc("market/prices").get()
   if (!snap.exists) return { items: [], updatedAt: null }
   const data = snap.data() || {}
+  if (config.pipelineEventsEnabled) {
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "market_intel",
+        eventType: "fs_read",
+        edgeKey: "firestore->market_intel",
+        nodeIds: ["market_intel", "firestore"],
+        status: "end",
+        batchId: activeRunId || undefined,
+        inputs: { firestoreDocs: ["market/prices"] },
+      })
+    )
+  }
   const items = Array.isArray(data.items) ? data.items : []
   const updatedAt =
     typeof data.updatedAt?.toDate === "function" ? data.updatedAt.toDate() : null
@@ -1348,7 +1550,21 @@ async function fetchLiveSnapshotMovers(db, options) {
   const addCandidate = (item, sideHint = null, options = {}) => {
     if (!item?.symbol || typeof item.price !== "number") return
     if (filterToWatchlist && !watchlist.has(item.symbol)) return
-    if (candidateMap.has(item.symbol)) return
+    const originTags = normalizeOrigins(options.origins)
+    const existing = candidateMap.get(item.symbol)
+    if (existing) {
+      const nextOrigins = mergeOrigins(existing.origins, originTags)
+      const watchlisted = existing.watchlisted || watchlist.has(item.symbol)
+      const universeBoost = resolveUniverseBoost(resolvedMode, watchlisted)
+      candidateMap.set(item.symbol, {
+        ...existing,
+        watchlisted,
+        universeBoost: universeBoost || existing.universeBoost,
+        origins: nextOrigins.length > 0 ? nextOrigins : existing.origins,
+        sideHint: existing.sideHint || sideHint || undefined,
+      })
+      return
+    }
     const change15m = changeMap.has(item.symbol) ? changeMap.get(item.symbol) : item.change15m
     if (options.requireMomentum) {
       const hasMomentum =
@@ -1387,6 +1603,7 @@ async function fetchLiveSnapshotMovers(db, options) {
         sideHint: sideHint || undefined,
         watchlisted,
         universeBoost: universeBoost || undefined,
+        origins: originTags.length > 0 ? originTags : undefined,
         source: snapshotSource,
       })
     )
@@ -1395,18 +1612,26 @@ async function fetchLiveSnapshotMovers(db, options) {
   if (allowTrending) {
     gainers
       .slice(0, config.moverEnrichLimit)
-      .forEach((item) => addCandidate(item, "buy", { requireMomentum: true }))
+      .forEach((item) =>
+        addCandidate(item, "buy", { requireMomentum: true, origins: ["mover15m"] })
+      )
     losers
       .slice(0, config.moverEnrichLimit)
-      .forEach((item) => addCandidate(item, "sell", { requireMomentum: true }))
+      .forEach((item) =>
+        addCandidate(item, "sell", { requireMomentum: true, origins: ["mover15m"] })
+      )
     if (actives.length > 0) {
       actives
         .slice(0, config.moverEnrichLimit)
-        .forEach((item) => addCandidate(item, null, { requireMomentum: true }))
+        .forEach((item) =>
+          addCandidate(item, null, { requireMomentum: true, origins: ["mover15m"] })
+        )
     } else if (candidates.length > 0) {
       candidates
         .slice(0, config.moverEnrichLimit)
-        .forEach((item) => addCandidate(item, null, { requireMomentum: true }))
+        .forEach((item) =>
+          addCandidate(item, null, { requireMomentum: true, origins: ["mover15m"] })
+        )
     }
   }
 
@@ -1425,7 +1650,7 @@ async function fetchLiveSnapshotMovers(db, options) {
           change15m = ((current.price - prev.price) / prev.price) * 100
         }
       }
-      addCandidate({ ...current, change15m })
+      addCandidate({ ...current, change15m }, null, { origins: ["user_universe"] })
     })
   }
 
@@ -2790,12 +3015,46 @@ function normalizeScoreWeights(weights) {
   return normalized
 }
 
-function resolveScoreWeights(assetClass, profile, overrides = null) {
+function applyRiskProfile(weights, riskProfile) {
+  if (!weights || typeof weights !== "object") return weights
+  const multipliers =
+    RISK_WEIGHT_MULTIPLIERS[riskProfile] || RISK_WEIGHT_MULTIPLIERS.balanced
+  return {
+    momentum: (weights.momentum ?? 0) * (multipliers.momentum ?? 1),
+    consensus: (weights.consensus ?? 0) * (multipliers.consensus ?? 1),
+    liquidity: (weights.liquidity ?? 0) * (multipliers.liquidity ?? 1),
+    news: (weights.news ?? 0) * (multipliers.news ?? 1),
+  }
+}
+
+function resolveScoreWeights(assetClass, profile, overrides = null, riskProfile = "balanced") {
   const bucket = SCORE_WEIGHTS_BY_ASSET[assetClass] || SCORE_WEIGHTS_BY_ASSET.stock
   const base = bucket[profile] || bucket.scalp
   const overrideMap = normalizeScoreWeightOverrides(overrides)
   const merged = overrideMap ? { ...base, ...overrideMap } : { ...base }
-  return normalizeScoreWeights(merged)
+  const riskAdjusted = applyRiskProfile(merged, riskProfile)
+  return normalizeScoreWeights(riskAdjusted)
+}
+
+function cleanTrendWeightsForDoc(weights) {
+  const momentum = parseNumber(weights?.momentum)
+  const liquidity = parseNumber(weights?.liquidity ?? weights?.volume)
+  const consensus = parseNumber(weights?.consensus ?? weights?.signals)
+  const news = parseNumber(weights?.news)
+  const cleaned = {
+    momentum:
+      typeof momentum === "number" ? momentum : DEFAULT_TREND_WEIGHTS.momentum,
+    liquidity:
+      typeof liquidity === "number" ? liquidity : DEFAULT_TREND_WEIGHTS.volume,
+    consensus:
+      typeof consensus === "number" ? consensus : DEFAULT_TREND_WEIGHTS.signals,
+    news: typeof news === "number" ? news : DEFAULT_TREND_WEIGHTS.news,
+  }
+  return {
+    ...cleaned,
+    volume: admin.firestore.FieldValue.delete(),
+    signals: admin.firestore.FieldValue.delete(),
+  }
 }
 
 function blendWeighted(values) {
@@ -2855,6 +3114,9 @@ function scoreTrade(candidate, signalData, side, options = {}) {
     typeof options.signalWeight === "number" ? options.signalWeight : 1
   const newsScore = options.newsScore
   const horizon = options.horizon || "15m"
+  const riskProfile = VALID_RISK.has(options.riskProfile)
+    ? options.riskProfile
+    : "balanced"
 
   const rawChange1m = parseNumber(candidate.change1m)
   const rawChange5m = parseNumber(candidate.change5m)
@@ -2909,7 +3171,12 @@ function scoreTrade(candidate, signalData, side, options = {}) {
     typeof newsScore === "number" ? clamp((newsScore + 1) / 2, 0, 1) : 0
 
   const profile = side === "buy" && changeBase < 0 ? "dip" : "scalp"
-  const weightSet = resolveScoreWeights(candidate.assetClass, profile, weightsOverride)
+  const weightSet = resolveScoreWeights(
+    candidate.assetClass,
+    profile,
+    weightsOverride,
+    riskProfile
+  )
   const directionalChange = side === "sell" ? -changeBase : changeBase
   let momentumBase = 0
   if (profile === "dip") {
@@ -2929,8 +3196,10 @@ function scoreTrade(candidate, signalData, side, options = {}) {
   const consensusScore = consensusRatio * (weightSet.consensus ?? 0)
   const liquidityScore = volumeRatio * (weightSet.liquidity ?? 0)
   const newsSentimentScore = sentimentRatio * (weightSet.news ?? 0)
-  const universeScore =
+  const universeBoost =
     typeof candidate.universeBoost === "number" ? candidate.universeBoost : 0
+  const primaryBoost = candidate.primary ? config.primaryScoreBoost : 0
+  const universeScore = universeBoost + primaryBoost
   let score =
     momentumScore +
     consensusScore +
@@ -3018,7 +3287,9 @@ function scoreTrade(candidate, signalData, side, options = {}) {
 async function fetchFmpCandles(symbol, assetClass, interval = "15min", limit = 120) {
   if (!config.marketDataGatewayUrl) return []
   if (!symbol) return []
-  if (assetClass !== "stock" && assetClass !== "forex") return []
+  if (assetClass !== "stock" && assetClass !== "forex" && assetClass !== "crypto") {
+    return []
+  }
   try {
     const data = await fetchGatewayJson("/v1/fmp/candles", {
       symbol,
@@ -3454,6 +3725,7 @@ function buildHotTrades(candidates, signalMap, scoreOptions, newsScoreMap = null
       confidence: Number(scoreDetail.confidence.toFixed(2)),
       scoreComponents: scoreComponents || undefined,
       primary: candidate.primary ? true : undefined,
+      origins: candidate.origins,
       momentum: Object.keys(momentum).length ? momentum : undefined,
       signals,
       source: candidate.source,
@@ -4140,6 +4412,7 @@ async function run() {
   const startedAt = new Date()
   const runId =
     config.runId || `${startedAt.getTime()}-${Math.random().toString(36).slice(2, 8)}`
+  activeRunId = runId
 
   console.log("mi_run_start", { startedAt: startedAt.toISOString(), runId })
 
@@ -4280,14 +4553,89 @@ async function run() {
   if (stockResult.error) console.error("Stock fetch failed", stockResult.error)
   if (forexResult.error) console.error("Forex fetch failed", forexResult.error)
 
-  let candidates = applyVolumeScores(
-    markPrimary([...crypto, ...stocks, ...forex], primarySets)
-  )
+  const focusSet = new Set(Array.isArray(controls.assetFocus) ? controls.assetFocus : [])
+  const rawCandidates = [...crypto, ...stocks, ...forex]
+  const focusedCandidates =
+    focusSet.size > 0 && focusSet.size < 3
+      ? rawCandidates.filter((candidate) => focusSet.has(candidate.assetClass))
+      : rawCandidates
+  let candidates = applyVolumeScores(markPrimary(focusedCandidates, primarySets))
   if (testFilter) {
     candidates = candidates.filter((candidate) => testFilter.allow(candidate))
   }
   const candidateBatch = buildCandidateBatch(candidates, config.candidatePublishLimit)
   const candidateBatchCounts = countCandidates(candidateBatch)
+  const originBreakdown = summarizeOrigins(candidateBatch)
+  const sampleOrigins = (list) =>
+    list
+      .slice(0, 6)
+      .map((item) => item.symbol)
+      .filter(Boolean)
+      .slice(0, 6)
+  const moversSample = sampleOrigins(candidateBatch.filter((c) => (c.origins || []).includes("mover15m")))
+  const universeSample = sampleOrigins(candidateBatch.filter((c) => (c.origins || []).includes("user_universe")))
+  const manualSample = sampleOrigins(candidateBatch.filter((c) => (c.origins || []).includes("manual")))
+  const trendingSample = sampleOrigins(candidateBatch.filter((c) => (c.origins || []).includes("trending")))
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "mi_candidates",
+      eventType: "candidates_merge",
+      edgeKey: "movers_15m->candidates_merge",
+      nodeIds: ["market_intel", "candidates_merge"],
+      status: "end",
+      batchId: runId,
+      meta: {
+        runId,
+        count: candidateBatch.length,
+        counts: candidateBatchCounts,
+        origins: originBreakdown,
+        assetFocus: controls.assetFocus,
+        riskProfile: controls.riskProfile,
+        originsBreakdown: {
+          mover15m: originBreakdown.mover15m || 0,
+          user_universe: originBreakdown.user_universe || 0,
+          manual: originBreakdown.manual || 0,
+          trending: originBreakdown.trending || 0,
+          other: originBreakdown.other || 0,
+        },
+        originSamples: {
+          mover15m: moversSample,
+          user_universe: universeSample,
+          manual: manualSample,
+          trending: trendingSample,
+        },
+      },
+      outputs: {
+        firestoreDocs: ["market/candidates"],
+      },
+    })
+  )
+  if (config.pipelineEventsEnabled && shouldSample(config.pipelineEventsSampleRate)) {
+    const sampled = candidateBatch.slice(0, 25)
+    await Promise.all(
+      sampled.map((candidate) =>
+        publishPipelineEvent(
+          buildPipelineEvent({
+            stationId: "mi_candidates",
+            eventType: "candidates_merge",
+            edgeKey: "movers_15m->candidates_merge",
+            nodeIds: ["market_intel", "candidates_merge"],
+            status: "end",
+            batchId: runId,
+            symbolKey: candidate.assetClass && candidate.symbol
+              ? `${candidate.assetClass}:${candidate.symbol}`
+              : undefined,
+            meta: {
+              origins: normalizeOriginsForEvent(candidate.origins),
+              watchlisted: candidate.watchlisted || false,
+              sideHint: candidate.sideHint || null,
+              source: candidate.source || null,
+            },
+          })
+        )
+      )
+    )
+  }
   const batchDocRef = db.collection(config.batchCollection).doc(runId)
   const batchDoc = compactObject({
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -4305,8 +4653,41 @@ async function run() {
     items: candidateBatch,
   })
   const newsData = await loadNewsData(db, candidates, controls, universe, runId, runConfig)
-  const scoreOptions = { weights: controls.trendWeights, signalWeight, horizon: "15m" }
+  const scoreOptions = {
+    weights: controls.trendWeights,
+    signalWeight,
+    horizon: "15m",
+    riskProfile: controls.riskProfile,
+  }
   const hotTrades = buildHotTrades(candidates, botSignals, scoreOptions, newsData.scoreMap)
+  const scoreSummary = hotTrades.reduce(
+    (acc, trade) => {
+      if (trade.side === "buy") acc.buy += 1
+      else if (trade.side === "sell") acc.sell += 1
+      else acc.hold += 1
+      return acc
+    },
+    { buy: 0, sell: 0, hold: 0 }
+  )
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "scoring",
+      eventType: "score_compute",
+      edgeKey: "candidates_merge->score_compute",
+      nodeIds: ["market_intel", "score_compute", "firestore"],
+      status: "end",
+      batchId: runId,
+      meta: {
+        runId,
+        scored: hotTrades.length,
+        buy: scoreSummary.buy,
+        sell: scoreSummary.sell,
+        hold: scoreSummary.hold,
+        riskProfile: controls.riskProfile,
+        weights: scoreOptions.weights,
+      },
+    })
+  )
   const recommendationMap = await buildRecommendations(hotTrades, config.recommendationLimit)
   const hotTradesWithRecommendations = hotTrades.map((trade) => {
     const key = getAssetKey(trade.assetClass, trade.symbol)
@@ -4325,7 +4706,13 @@ async function run() {
     config.actionBoardLimit
   )
   const trendLookup = buildTrendLookup(trendingByHorizon, controls.trendHorizon)
-  const scoreWeightDisplay = resolveScoreWeights("stock", "scalp", controls.trendWeights)
+  const scoreWeightDisplay = resolveScoreWeights(
+    "stock",
+    "scalp",
+    controls.trendWeights,
+    controls.riskProfile
+  )
+  const trendWeightsDoc = cleanTrendWeightsForDoc(scoreWeightDisplay)
   const popularItems = buildPopularList(hotTradesWithRecommendations, config.popularPerClass)
   const priceSnapshot = buildPriceSnapshot(candidates)
   await monitorPaperTrading(db, priceSnapshot).catch((err) => {
@@ -4333,6 +4720,40 @@ async function run() {
   })
 
   const trimmed = hotTradesWithRecommendations.slice(0, config.hotTradesLimit)
+  if (config.pipelineEventsEnabled && shouldSample(config.pipelineEventsSampleRate)) {
+    const sampled = trimmed.slice(0, 20)
+    await Promise.all(
+      sampled.map((trade) =>
+        publishPipelineEvent(
+          buildPipelineEvent({
+            stationId: "scoring",
+            eventType: "score_compute",
+            edgeKey: "candidates_merge->score_compute",
+            nodeIds: ["market_intel", "score_compute", "firestore"],
+            status: "end",
+            batchId: runId,
+            symbolKey: trade.assetClass && trade.symbol
+              ? `${trade.assetClass}:${trade.symbol}`
+              : undefined,
+            meta: {
+              score: trade.score,
+              action: trade.side,
+              profile: trade.profile,
+              origins: normalizeOriginsForEvent(trade.origins),
+              confidence: trade.confidence,
+              holdMinutes: trade?.recommendation?.holdMinutes ?? null,
+              stopLossPct: trade?.recommendation?.stopLossPct ?? null,
+              takeProfitPct: trade?.recommendation?.takeProfitPct ?? null,
+              reasonsShort:
+                typeof trade?.rationale === "string"
+                  ? trade.rationale.slice(0, 140)
+                  : undefined,
+            },
+          })
+        )
+      )
+    )
+  }
   const fetchStatus = {
     crypto: buildFetchStatus({
       items: crypto,
@@ -4386,6 +4807,31 @@ async function run() {
     markets: Object.keys(moversMarkets),
     candidates: candidateCounts,
   })
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "mi_movers",
+      eventType: "compute_movers",
+      edgeKey: "market_intel->movers_15m",
+      nodeIds: ["market_intel", "movers_15m", "redis"],
+      status: "end",
+      batchId: runId,
+      durationMs: Date.now() - startedAt.getTime(),
+      meta: {
+        runId,
+        markets: Object.keys(moversMarkets),
+        candidateCounts,
+        sources: {
+          crypto: cryptoResult.source || "gateway",
+          stocks: stockResult.source || "stream",
+          forex: forexResult.source || "stream",
+        },
+        windowMinutes: config.moverWindowMinutes,
+      },
+      outputs: {
+        firestoreDocs: moversDoc ? ["market/movers"] : undefined,
+      },
+    })
+  )
 
   const existing = await db.doc("market/hotTrades").get()
   const previousItems = existing.exists ? existing.data()?.items : []
@@ -4511,7 +4957,7 @@ async function run() {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         horizons: TREND_HORIZONS,
         byHorizon: trendingByHorizon,
-        weights: scoreWeightDisplay,
+        weights: trendWeightsDoc,
         meta: {
           runId,
           defaultHorizon: controls.trendHorizon,
@@ -4602,11 +5048,49 @@ async function run() {
     autoTuneWrite,
   ])
 
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "analysis_written",
+      eventType: "analysis_write",
+      edgeKey: "score_compute->firestore",
+      nodeIds: ["score_compute", "firestore", "ui"],
+      status: "end",
+      batchId: runId,
+      meta: {
+        runId,
+        hotTrades: analyzedItems.length,
+        trendingHorizon: controls.trendHorizon,
+        popularCount: popularItems.length,
+      },
+      outputs: {
+        firestoreDocs: ["market/hotTrades", "market/trending", "market/popular"],
+      },
+    })
+  )
+
   console.log("mi_write_batch", {
     runId,
     batchId: runId,
     count: candidateBatch.length,
   })
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "mi_batch_written",
+      eventType: "fs_write",
+      edgeKey: "candidates_merge->firestore",
+      nodeIds: ["candidates_merge", "firestore"],
+      status: "end",
+      batchId: runId,
+      meta: {
+        runId,
+        count: candidateBatch.length,
+        counts: candidateBatchCounts,
+      },
+      outputs: {
+        firestoreDocs: ["market/candidates", `${config.batchCollection}/${runId}`],
+      },
+    })
+  )
 
   await publishRedisEvent(
     compactObject({
@@ -4622,6 +5106,25 @@ async function run() {
   )
 
   console.log("mi_publish_new_batch", { runId, batchId: runId })
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "mi_new_batch",
+      eventType: "batch_publish",
+      edgeKey: "market_intel->new_batch",
+      nodeIds: ["market_intel", "new_batch", "redis"],
+      status: "end",
+      batchId: runId,
+      meta: {
+        runId,
+        count: candidateBatch.length,
+        counts: candidateBatchCounts,
+        channel: resolveEventChannel(),
+      },
+      outputs: {
+        redisKeys: [resolveEventChannel()],
+      },
+    })
+  )
 
   const dispatchList =
     analyzedActionBoard.allPicks && analyzedActionBoard.allPicks.length > 0
