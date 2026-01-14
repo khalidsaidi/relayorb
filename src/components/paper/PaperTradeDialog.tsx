@@ -16,6 +16,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { toast } from "sonner"
 import { useMarketPrices } from "@/features/market/use-market-prices"
 import type { MarketHotTrade } from "@/lib/types"
+import { formatAssetPrice } from "@/lib/format"
 
 interface PaperTradeDialogProps {
     open: boolean
@@ -38,7 +39,7 @@ export function PaperTradeDialog({ open, onOpenChange, tradeStr }: PaperTradeDia
     const [takeProfit, setTakeProfit] = useState("")
     const [loading, setLoading] = useState(false)
 
-    const livePrice = prices[tradeStr.symbol] || tradeStr.price || 100
+    const livePrice = prices[tradeStr.symbol] ?? tradeStr.price ?? 100
     const price = livePrice
 
     // Calculate derived values
@@ -83,7 +84,7 @@ export function PaperTradeDialog({ open, onOpenChange, tradeStr }: PaperTradeDia
                 <DialogHeader>
                     <DialogTitle>Paper Trade: {tradeStr.symbol}</DialogTitle>
                     <DialogDescription>
-                        Placing a {side.toUpperCase()} order at ${price.toFixed(tradeStr.assetClass === "forex" ? 5 : 2)}
+                        Placing a {side.toUpperCase()} order at ${formatAssetPrice(price, tradeStr.assetClass)}
                         {livePrices[tradeStr.symbol] && " (Live)"}.
                     </DialogDescription>
                 </DialogHeader>
@@ -98,7 +99,7 @@ export function PaperTradeDialog({ open, onOpenChange, tradeStr }: PaperTradeDia
                     </Tabs>
 
                     {/* Amount Mode */}
-                    <Tabs value={mode} onValueChange={(v) => setMode(v as any)} className="w-full">
+                    <Tabs value={mode} onValueChange={(v) => setMode(v as "usd" | "share")} className="w-full">
                         <TabsList className="grid w-full grid-cols-2">
                             <TabsTrigger value="usd">Amount ($)</TabsTrigger>
                             <TabsTrigger value="share">Quantity (Units)</TabsTrigger>

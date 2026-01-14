@@ -8,10 +8,20 @@ import {
     addDoc,
     increment,
 } from "firebase/firestore"
+import type { FieldValue, Timestamp } from "firebase/firestore"
 import { db } from "@/lib/firebase"
-import type { PaperWallet } from "@/lib/types"
+import type { PaperPosition, PaperTransaction, PaperWallet } from "@/lib/types"
 
 const DEFAULT_STARTING_BALANCE = 100000
+
+type FirestoreTimestamp = Timestamp | FieldValue
+type PaperWalletWrite = Omit<PaperWallet, "createdAt" | "updatedAt"> & {
+    createdAt: FirestoreTimestamp
+    updatedAt: FirestoreTimestamp
+}
+type PaperTransactionWrite = Omit<PaperTransaction, "id" | "timestamp"> & {
+    timestamp: FirestoreTimestamp
+}
 
 /**
  * Ensure a user has a paper wallet. If not, create one with default balance.
@@ -26,12 +36,12 @@ export async function ensurePaperWallet(userId: string): Promise<PaperWallet | n
     }
 
     // Create new wallet
-    const newWallet: Partial<PaperWallet> = {
+    const newWallet: PaperWalletWrite = {
         userId,
         balance: DEFAULT_STARTING_BALANCE,
         currency: "USD",
-        createdAt: serverTimestamp() as any,
-        updatedAt: serverTimestamp() as any,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
     }
 
     await setDoc(walletRef, newWallet)
@@ -75,7 +85,7 @@ export async function executePaperTrade(
 
     // Record transaction
     const txRef = collection(db, "users", userId, "paper", "wallet", "transactions")
-    const newTx: any = {
+    const newTx: PaperTransactionWrite = {
         userId,
         symbol: trade.symbol,
         assetClass: trade.assetClass,
@@ -84,7 +94,7 @@ export async function executePaperTrade(
         price: trade.price,
         cost: cost,
         type: "open", // Simplified: assuming all are "open" for now or we track positions separately
-        timestamp: serverTimestamp() as any,
+        timestamp: serverTimestamp(),
     }
     if (trade.botId) newTx.botId = trade.botId
     if (trade.stopLoss) newTx.stopLoss = trade.stopLoss
@@ -104,10 +114,10 @@ export async function executePaperTrade(
     const positionSnap = await getDoc(positionRef)
 
     if (positionSnap.exists()) {
-        const currentPos = positionSnap.data()
-        const newQuantity = isBuy
-            ? currentPos.quantity + trade.quantity
-            : currentPos.quantity - trade.quantity
+            const currentPos = positionSnap.data() as PaperPosition
+            const newQuantity = isBuy
+                ? currentPos.quantity + trade.quantity
+                : currentPos.quantity - trade.quantity
 
         if (newQuantity <= 0) {
             // Close position if sold out
@@ -117,7 +127,7 @@ export async function executePaperTrade(
             await deleteDoc(positionRef)
         } else {
             // Update
-            const updates: any = {
+            const updates: Partial<PaperPosition> & { updatedAt: FirestoreTimestamp } = {
                 quantity: newQuantity,
                 updatedAt: serverTimestamp(),
             }

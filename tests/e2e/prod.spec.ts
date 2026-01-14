@@ -1,31 +1,30 @@
 import { test, expect } from "@playwright/test"
+import { signInTestUser } from "./utils/auth"
 
-const e2eTarget = process.env.RELAYORB_E2E_TARGET || "emulator"
-
-test.describe("RelayOrb production flow", () => {
-  test.skip(e2eTarget !== "prod", "Production-only checks")
-
+test.describe("RelayOrb ops graph", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/dashboard")
-    const testButton = page.getByRole("button", { name: /test sign in/i })
-    try {
-      await testButton.waitFor({ state: "visible", timeout: 5000 })
-      await testButton.click()
-    } catch {
-      // Already signed in or test sign-in is not available.
-    }
-    await expect(page.getByRole("tab", { name: "Opportunities" })).toBeVisible()
+    await signInTestUser(page)
   })
 
-  test("loads dashboard shell", async ({ page }) => {
-    await page.getByRole("tab", { name: "Advanced" }).click()
-    const eventStream = page.getByText("Recent Event Stream")
-    await eventStream.scrollIntoViewIfNeeded()
-    await expect(eventStream).toBeVisible()
+  test("renders ops graph canvas", async ({ page }) => {
+    await page.goto("/ops/graph")
+    await expect(page.getByRole("heading", { name: /ops graph/i })).toBeVisible()
+    const graph = page.getByTestId("ops-graph-canvas")
+    await expect(graph).toBeVisible()
+    await expect(graph.locator("canvas").first()).toBeVisible({ timeout: 15000 })
+    await expect(page.getByRole("button", { name: /ops layout/i })).toBeVisible()
+    await expect(page.getByRole("button", { name: /auto layout/i })).toBeVisible()
   })
 
-  test("loads bots list", async ({ page }) => {
-    await page.goto("/bots")
-    await expect(page.getByText("Connected bot instances")).toBeVisible()
+  test("supports ops map and auto layout toggles", async ({ page }) => {
+    test.setTimeout(120_000)
+    await page.goto("/ops/graph")
+    await expect(page.getByRole("button", { name: /ops layout/i })).toBeVisible()
+    const autoLayout = page.getByRole("button", { name: /auto layout/i })
+    await autoLayout.click()
+    await expect(page.getByRole("button", { name: /auto layout/i })).toBeVisible({ timeout: 30000 })
+    const opsLayout = page.getByRole("button", { name: /ops layout/i })
+    await opsLayout.click()
+    await expect(page.getByRole("button", { name: /ops layout/i })).toBeVisible()
   })
 })

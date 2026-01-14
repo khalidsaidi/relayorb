@@ -79,8 +79,8 @@ export default function PaperPage() {
                 return
             }
 
-            const items = priceSnap.data()?.items || []
-            const priceItem = items.find((p: any) => p.symbol === pos.symbol)
+            const items = (priceSnap.data()?.items as Array<{ symbol: string; price: number }> | undefined) || []
+            const priceItem = items.find((p) => p.symbol === pos.symbol)
             const exitPrice = priceItem ? priceItem.price : null
 
             if (!exitPrice) {
@@ -91,16 +91,17 @@ export default function PaperPage() {
             const { executePaperTrade } = await import("@/features/paper/paper-service")
             await executePaperTrade(user.uid, {
                 symbol: pos.symbol,
-                assetClass: pos.assetClass as any,
+                assetClass: pos.assetClass,
                 side: "sell",
                 price: exitPrice,
                 quantity: pos.quantity
             })
 
             toast.success(`Closed ${pos.symbol} at ${formatCurrency(exitPrice)}`)
-        } catch (e: any) {
+        } catch (e: unknown) {
             console.error("Close failed:", e)
-            toast.error(e.message || "Failed to close position")
+            const message = e instanceof Error ? e.message : "Failed to close position"
+            toast.error(message)
         }
     }
 

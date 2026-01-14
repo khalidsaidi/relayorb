@@ -366,7 +366,6 @@ export default function BotDetailPage() {
     exchangeTrimmed,
     pairsInput,
     timeframeTrimmed,
-    mode,
     strategyTrimmed,
     riskMaxOpenOrders,
     riskMaxPositionSize,

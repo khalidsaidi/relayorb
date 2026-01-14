@@ -66,8 +66,11 @@ def run_strategy(strategy_id: str, config: Dict):
                 # Add data feed to cerebro (must be done before adding strategy)
                 sym_cerebro.adddata(datafeed, name=sym)
                 
-                # Add strategy
-                strategy_class = create_strategy(config.get('strategy', 'default'))
+                # Add strategy - now asset-class aware
+                strategy_class = create_strategy(
+                    config.get('strategy', 'default'),
+                    asset_class=asset_class
+                )
                 sym_cerebro.addstrategy(strategy_class)
                 
                 # Configure broker

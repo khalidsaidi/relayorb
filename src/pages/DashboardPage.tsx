@@ -34,7 +34,7 @@ import type {
 } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { formatRelativeTimestamp, formatTimestamp } from "@/lib/format"
+import { formatAssetPrice, formatRelativeTimestamp, formatTimestamp } from "@/lib/format"
 import { StatusBadge } from "@/components/StatusBadge"
 import { MarketStatusBadge } from "@/components/MarketStatusBadge"
 import { PaperTradeButton } from "@/components/paper/PaperTradeButton"
@@ -57,9 +57,11 @@ import { toast } from "sonner"
 import { useAuth } from "@/features/auth/auth-context"
 import { useMarketPrices } from "@/features/market/use-market-prices"
 import { useStreamSymbols } from "@/features/market/use-stream-symbols"
-import { X, BarChart3, InfoIcon } from "lucide-react"
+import { X, BarChart3, InfoIcon, Clipboard, Sparkles } from "lucide-react"
 import { AssetChartModal } from "@/components/charts/AssetChartModal"
 import { usePaperAutomation } from "@/features/paper/use-paper-monitor"
+import { PipelineHealthBadge } from "@/components/PipelineHealthBadge"
+import { copyAiPrompt } from "@/features/ai/ai-prompt"
 
 function signalBadgeVariant(side?: string) {
   switch (side) {
@@ -2051,6 +2053,7 @@ export default function DashboardPage() {
             Spot high-probability dips and momentum shifts across your universe.
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-4">
+            <PipelineHealthBadge showLabel />
             <MarketStatusBadge assetClass="crypto" />
             <MarketStatusBadge assetClass="stock" />
             <MarketStatusBadge assetClass="forex" />
@@ -3357,8 +3360,8 @@ export default function DashboardPage() {
                                 <div className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
                                   <span className="font-bold text-foreground">
                                     {(() => {
-                                      const current = prices[trade.symbol] || trade.price
-                                      return current ? (current < 1 ? current.toFixed(4) : current.toFixed(2)) : "--"
+                                      const current = prices[trade.symbol] ?? trade.price
+                                      return formatAssetPrice(current, trade.assetClass)
                                     })()}
                                   </span>
                                   {livePrices[trade.symbol] && (
@@ -3494,8 +3497,8 @@ export default function DashboardPage() {
                               <div className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
                                 <span className="font-bold text-foreground">
                                   {(() => {
-                                    const current = prices[trade.symbol] || trade.price
-                                    return current ? (current < 1 ? current.toFixed(4) : current.toFixed(2)) : "--"
+                                    const current = prices[trade.symbol] ?? trade.price
+                                    return formatAssetPrice(current, trade.assetClass)
                                   })()}
                                 </span>
                                 {livePrices[trade.symbol] && (
@@ -3701,8 +3704,8 @@ export default function DashboardPage() {
                                               </div>
                                               <div className="inline-flex items-center gap-1.5 text-[11px] font-bold">
                                                 {(() => {
-                                                  const current = prices[item.symbol] || item.price
-                                                  return current ? (current < 1 ? current.toFixed(4) : current.toFixed(2)) : "--"
+                                                  const current = prices[item.symbol] ?? item.price
+                                                  return formatAssetPrice(current, item.assetClass)
                                                 })()}
                                                 {livePrices[item.symbol] && (
                                                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
@@ -3801,51 +3804,78 @@ export default function DashboardPage() {
                       <div className="text-sm opacity-70">No buy ideas yet.</div>
                     ) : (
                       buyIdeas.map((trade) => (
-                        <div key={`buy-${trade.symbol}`} className="group flex items-center justify-between">
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <div className="text-sm font-medium">{trade.symbol}</div>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-5 w-5"
-                                onClick={() => {
-                                  setBreakdownAsset(trade)
-                                  setBreakdownOpen(true)
-                                }}
-                                title="Score breakdown"
-                              >
-                                <InfoIcon className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-5 w-5"
-                                onClick={() => {
-                                  setChartAsset(trade)
-                                  setChartOpen(true)
-                                }}
-                                title="View Chart"
-                              >
-                                <BarChart3 className="h-3.5 w-3.5" />
-                              </Button>
-                              <PaperTradeButton trade={trade} size="icon" className="h-5 w-5 opacity-0 hover:opacity-100 group-hover:opacity-100 transition-opacity" />
+                        <div key={`buy-${trade.symbol}`} className="group space-y-1">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <div className="text-sm font-medium">{trade.symbol}</div>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-5 w-5"
+                                  onClick={() => {
+                                    setBreakdownAsset(trade)
+                                    setBreakdownOpen(true)
+                                  }}
+                                  title="Score breakdown"
+                                >
+                                  <InfoIcon className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-5 w-5"
+                                  onClick={() => {
+                                    setChartAsset(trade)
+                                    setChartOpen(true)
+                                  }}
+                                  title="View Chart"
+                                >
+                                  <BarChart3 className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-5 w-5"
+                                  onClick={async () => {
+                                    const ok = await copyAiPrompt(trade)
+                                    if (ok) toast.success("AI prompt copied")
+                                    else toast.error("Failed to copy prompt")
+                                  }}
+                                  title="Copy AI prompt"
+                                >
+                                  <Clipboard className="h-3.5 w-3.5" />
+                                </Button>
+                                <PaperTradeButton trade={trade} size="icon" className="h-5 w-5 opacity-0 hover:opacity-100 group-hover:opacity-100 transition-opacity" />
+                              </div>
+                              <div className="text-xs text-muted-foreground flex items-center gap-1">
+                                {(() => {
+                                  const current = prices[trade.symbol] ?? trade.price
+                                  return formatAssetPrice(current, trade.assetClass)
+                                })()}
+                                {livePrices[trade.symbol] && (
+                                  <span className="h-1 w-1 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
+                                )}
+                                <span>·</span>
+                                24h: {formatChange(trade.momentum?.change24h)}
+                              </div>
                             </div>
-                            <div className="text-xs text-muted-foreground flex items-center gap-1">
-                              {(() => {
-                                const current = prices[trade.symbol] || trade.price
-                                return current ? (current < 1 ? current.toFixed(4) : current.toFixed(2)) : "--"
-                              })()}
-                              {livePrices[trade.symbol] && (
-                                <span className="h-1 w-1 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
-                              )}
-                              <span>·</span>
-                              24h: {formatChange(trade.momentum?.change24h)}
-                            </div>
+                            <Badge variant="outline" className={scoreTone(trade.score)}>
+                              {trade.score?.toFixed(0) ?? "--"}
+                            </Badge>
                           </div>
-                          <Badge variant="outline" className={scoreTone(trade.score)}>
-                            {trade.score?.toFixed(0) ?? "--"}
-                          </Badge>
+                          {trade.analysis?.details?.length ? (
+                            <details className="text-[10px] text-muted-foreground">
+                              <summary className="cursor-pointer text-[10px] flex items-center gap-1">
+                                <Sparkles className="h-3 w-3" /> Why this pick
+                              </summary>
+                              <ul className="mt-1 space-y-0.5 break-words list-disc pl-4">
+                                {trade.analysis.details.slice(0, 4).map((line, index) => (
+                                  <li key={`${trade.symbol}-buy-detail-${index}`}>{line}</li>
+                                ))}
+                              </ul>
+                            </details>
+                          ) : null}
                         </div>
                       ))
                     )}
@@ -3868,52 +3898,79 @@ export default function DashboardPage() {
                       sellIdeas.map((trade) => (
                         <div
                           key={`sell-${trade.symbol}`}
-                          className="group flex items-center justify-between"
+                          className="group space-y-1"
                         >
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <div className="text-sm font-medium">{trade.symbol}</div>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-5 w-5"
-                                onClick={() => {
-                                  setBreakdownAsset(trade)
-                                  setBreakdownOpen(true)
-                                }}
-                                title="Score breakdown"
-                              >
-                                <InfoIcon className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-5 w-5"
-                                onClick={() => {
-                                  setChartAsset(trade)
-                                  setChartOpen(true)
-                                }}
-                                title="View Chart"
-                              >
-                                <BarChart3 className="h-3.5 w-3.5" />
-                              </Button>
-                              <PaperTradeButton trade={trade} size="icon" className="h-5 w-5 opacity-0 hover:opacity-100 group-hover:opacity-100 transition-opacity" />
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <div className="text-sm font-medium">{trade.symbol}</div>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-5 w-5"
+                                  onClick={() => {
+                                    setBreakdownAsset(trade)
+                                    setBreakdownOpen(true)
+                                  }}
+                                  title="Score breakdown"
+                                >
+                                  <InfoIcon className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-5 w-5"
+                                  onClick={() => {
+                                    setChartAsset(trade)
+                                    setChartOpen(true)
+                                  }}
+                                  title="View Chart"
+                                >
+                                  <BarChart3 className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-5 w-5"
+                                  onClick={async () => {
+                                    const ok = await copyAiPrompt(trade)
+                                    if (ok) toast.success("AI prompt copied")
+                                    else toast.error("Failed to copy prompt")
+                                  }}
+                                  title="Copy AI prompt"
+                                >
+                                  <Clipboard className="h-3.5 w-3.5" />
+                                </Button>
+                                <PaperTradeButton trade={trade} size="icon" className="h-5 w-5 opacity-0 hover:opacity-100 group-hover:opacity-100 transition-opacity" />
+                              </div>
+                              <div className="text-xs text-muted-foreground flex items-center gap-1">
+                                {(() => {
+                                  const current = prices[trade.symbol] ?? trade.price
+                                  return formatAssetPrice(current, trade.assetClass)
+                                })()}
+                                {livePrices[trade.symbol] && (
+                                  <span className="h-1 w-1 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
+                                )}
+                                <span>·</span>
+                                24h: {formatChange(trade.momentum?.change24h)}
+                              </div>
                             </div>
-                            <div className="text-xs text-muted-foreground flex items-center gap-1">
-                              {(() => {
-                                const current = prices[trade.symbol] || trade.price
-                                return current ? (current < 1 ? current.toFixed(4) : current.toFixed(2)) : "--"
-                              })()}
-                              {livePrices[trade.symbol] && (
-                                <span className="h-1 w-1 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
-                              )}
-                              <span>·</span>
-                              24h: {formatChange(trade.momentum?.change24h)}
-                            </div>
+                            <Badge variant="outline" className={scoreTone(trade.score)}>
+                              {trade.score?.toFixed(0) ?? "--"}
+                            </Badge>
                           </div>
-                          <Badge variant="outline" className={scoreTone(trade.score)}>
-                            {trade.score?.toFixed(0) ?? "--"}
-                          </Badge>
+                          {trade.analysis?.details?.length ? (
+                            <details className="text-[10px] text-muted-foreground">
+                              <summary className="cursor-pointer text-[10px] flex items-center gap-1">
+                                <Sparkles className="h-3 w-3" /> Why this pick
+                              </summary>
+                              <ul className="mt-1 space-y-0.5 break-words list-disc pl-4">
+                                {trade.analysis.details.slice(0, 4).map((line, index) => (
+                                  <li key={`${trade.symbol}-sell-detail-${index}`}>{line}</li>
+                                ))}
+                              </ul>
+                            </details>
+                          ) : null}
                         </div>
                       ))
                     )}

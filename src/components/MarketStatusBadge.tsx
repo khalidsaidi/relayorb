@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { Clock, TrendingUp, Moon, Sun } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import {
   Tooltip,
@@ -6,65 +6,114 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { getMarketStatus } from "@/lib/marketHours"
-import type { MarketStatus } from "@/lib/types"
+import {
+  useMarketStatus,
+  formatTimeUntil,
+  getMarketStatusColor,
+  type MarketSessionStatus,
+} from "@/features/market/use-market-status"
 
-type AssetClass = "crypto" | "stock" | "forex"
+function StatusIcon({ status }: { status: MarketSessionStatus }) {
+  switch (status) {
+    case "open":
+      return <TrendingUp className="h-3.5 w-3.5" />
+    case "pre":
+      return <Sun className="h-3.5 w-3.5" />
+    case "after":
+      return <Moon className="h-3.5 w-3.5" />
+    case "closed":
+    default:
+      return <Clock className="h-3.5 w-3.5" />
+  }
+}
 
 type MarketStatusBadgeProps = {
-  assetClass: AssetClass
-  showCountdown?: boolean
+  assetClass?: "stock" | "crypto" | "forex"
+  showLabel?: boolean
+  size?: "sm" | "md"
 }
 
-const assetLabels: Record<AssetClass, string> = {
-  crypto: "Crypto",
-  stock: "Stocks",
-  forex: "Forex",
-}
+export function MarketStatusBadge({
+  assetClass = "stock",
+  showLabel = true,
+  size = "sm",
+}: MarketStatusBadgeProps) {
+  const marketStatus = useMarketStatus()
+  const status = marketStatus[assetClass]
+  const colorClass = getMarketStatusColor(status.status)
 
-export function MarketStatusBadge({ assetClass, showCountdown = true }: MarketStatusBadgeProps) {
-  const [status, setStatus] = useState<MarketStatus | null>(null)
-
-  useEffect(() => {
-    // Initial status
-    setStatus(getMarketStatus(assetClass))
-
-    // Update every second for countdown
-    const interval = setInterval(() => {
-      setStatus(getMarketStatus(assetClass))
-    }, 1000)
-
-    return () => clearInterval(interval)
-  }, [assetClass])
-
-  if (!status) return null
-
-  const badgeClass = status.isOpen
-    ? "bg-emerald-500/15 text-emerald-800"
-    : "bg-slate-500/10 text-slate-700"
+  const tooltipContent = (
+    <div className="space-y-1 text-xs">
+      <div className="font-medium capitalize">{assetClass} Market</div>
+      <div className="text-muted-foreground">{status.label}</div>
+      {status.timeUntilChange && (
+        <div className="text-muted-foreground">
+          {status.status === "open" ? "Closes in " : "Opens in "}
+          {formatTimeUntil(status.timeUntilChange)}
+        </div>
+      )}
+    </div>
+  )
 
   return (
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>
-          <div className="flex flex-col items-center gap-1">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-muted-foreground">
-                {assetLabels[assetClass]}
-              </span>
-              <Badge variant="outline" className={badgeClass}>
-                {status.isOpen ? "OPEN" : "CLOSED"}
-              </Badge>
-            </div>
-            {showCountdown && status.assetClass !== "crypto" && (
-              <span className="text-xs text-muted-foreground">
-                {status.nextChangeLabel} {status.countdown}
-              </span>
-            )}
-          </div>
+          <Badge
+            variant="outline"
+            className={`cursor-default ${colorClass} ${
+              size === "sm" ? "px-2 py-0.5 text-xs" : "px-3 py-1"
+            }`}
+          >
+            <StatusIcon status={status.status} />
+            {showLabel && <span className="ml-1.5">{status.label}</span>}
+          </Badge>
         </TooltipTrigger>
-        <TooltipContent>
-          <p className="text-xs">{status.hoursText}</p>
+        <TooltipContent side="bottom">{tooltipContent}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
+/**
+ * A compact inline indicator for market status
+ */
+export function MarketStatusIndicator({
+  assetClass = "stock",
+}: {
+  assetClass?: "stock" | "crypto" | "forex"
+}) {
+  const marketStatus = useMarketStatus()
+  const status = marketStatus[assetClass]
+
+  const dotColor =
+    status.status === "open"
+      ? "bg-emerald-500"
+      : status.status === "pre" || status.status === "after"
+        ? "bg-amber-500"
+        : "bg-slate-400"
+
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex items-center gap-1.5 cursor-default">
+            <span
+              className={`h-2 w-2 rounded-full ${dotColor} ${
+                status.status === "open" ? "animate-pulse" : ""
+              }`}
+            />
+            <span className="text-xs text-muted-foreground">{status.label}</span>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">
+          <span className="capitalize">{assetClass}</span>: {status.label}
+          {status.timeUntilChange && (
+            <span className="text-muted-foreground">
+              {" "}
+              ({formatTimeUntil(status.timeUntilChange)})
+            </span>
+          )}
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>

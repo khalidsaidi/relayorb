@@ -27,10 +27,34 @@ export function formatRelativeTimestamp(ts?: FirestoreTimestamp) {
 }
 
 export function formatCurrency(value: number) {
+  const abs = Math.abs(value)
+
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: abs < 0.01 ? 6 : abs < 1 ? 4 : 2,
   }).format(value)
+}
+
+type AssetClass = "crypto" | "stock" | "forex" | string | undefined
+
+function getPriceDecimals(value: number, assetClass?: AssetClass) {
+  if (assetClass === "forex") {
+    // Forex pairs typically quote to 5 decimals; keep 6 for tiny edge cases
+    return value < 0.01 ? 6 : 5
+  }
+
+  if (value < 0.01) return 6
+  if (assetClass === "crypto") return value < 1 ? 5 : 4
+  return value < 1 ? 4 : 2
+}
+
+export function formatAssetPrice(value?: number | null, assetClass?: AssetClass) {
+  if (value === null || value === undefined) return "—"
+  if (!Number.isFinite(value)) return "—"
+  const decimals = getPriceDecimals(value, assetClass)
+  return value.toFixed(decimals)
 }
 
 // Re-export market-related formatting functions for convenience

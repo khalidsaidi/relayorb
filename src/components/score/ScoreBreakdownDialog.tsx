@@ -83,7 +83,7 @@ export function ScoreBreakdownDialog({ open, onOpenChange, asset }: ScoreBreakdo
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-md sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>
             {asset?.symbol ? `${asset.symbol} Score Breakdown` : "Score Breakdown"}
@@ -101,61 +101,57 @@ export function ScoreBreakdownDialog({ open, onOpenChange, asset }: ScoreBreakdo
         </DialogHeader>
 
         {asset ? (
-          <div className="space-y-4">
-            <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-              {profile ? <Badge variant="outline">Profile: {profile}</Badge> : null}
-              {asset.source ? <Badge variant="outline">Source: {asset.source}</Badge> : null}
+          <div className="space-y-3">
+            <div className="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+              {profile ? <Badge variant="outline" className="text-[10px]">Profile: {profile}</Badge> : null}
+              {asset.source ? <Badge variant="outline" className="text-[10px]">Source: {asset.source}</Badge> : null}
               {asset.signals?.total ? (
-                <Badge variant="outline">
+                <Badge variant="outline" className="text-[10px]">
                   Bots: {asset.signals.buy ?? 0} buy / {asset.signals.sell ?? 0} sell
                 </Badge>
               ) : null}
             </div>
 
-            <div className="space-y-2">
-              <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+            <div className="space-y-1.5">
+              <div className="text-[10px] uppercase tracking-[0.15em] text-muted-foreground font-medium">
                 Components
               </div>
               {componentRows.length > 0 ? (
-                <div className="grid gap-2">
+                <div className="grid gap-1">
                   {componentRows.map((row) => (
                     <div
                       key={row.key}
-                      className="flex items-center justify-between rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-sm"
+                      className="flex items-center justify-between rounded border border-border/50 bg-muted/20 px-2.5 py-1.5 text-xs"
                     >
                       <span>{row.label}</span>
-                      <span className="font-mono">{formatValue(row.value)}</span>
+                      <span className="font-mono text-[11px]">{formatValue(row.value)}</span>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="text-sm text-muted-foreground">
-                  No component breakdown available for this asset yet.
+                <div className="text-xs text-muted-foreground">
+                  No component breakdown available.
                 </div>
               )}
             </div>
 
             {analysis?.summary || analysis?.details?.length ? (
-              <div className="space-y-2">
-                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+              <div className="space-y-1.5">
+                <div className="text-[10px] uppercase tracking-[0.15em] text-muted-foreground font-medium">
                   Explanation
                 </div>
                 {analysis.summary ? (
-                  <div className="text-sm text-muted-foreground">{analysis.summary}</div>
+                  <div className="text-xs text-muted-foreground">{analysis.summary}</div>
                 ) : null}
                 {analysis.details?.length ? (
-                  <ul className="space-y-1 text-sm text-muted-foreground">
+                  <ul className="space-y-0.5 text-xs text-muted-foreground list-disc pl-4 max-h-48 overflow-y-auto">
                     {analysis.details.map((detail, index) => (
                       <li key={`${asset.symbol}-detail-${index}`}>{detail}</li>
                     ))}
                   </ul>
                 ) : null}
               </div>
-            ) : (
-              <div className="text-sm text-muted-foreground">
-                No written breakdown available yet.
-              </div>
-            )}
+            ) : null}
           </div>
         ) : null}
       </DialogContent>

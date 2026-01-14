@@ -109,7 +109,8 @@ export function isForexMarketOpen(timestamp: Date | number): boolean {
 /**
  * Check if crypto market is open (always true)
  */
-export function isCryptoMarketOpen(_timestamp: Date | number): boolean {
+export function isCryptoMarketOpen(timestamp: Date | number): boolean {
+  void timestamp
   return true // Crypto trades 24/7
 }
 
@@ -133,7 +134,7 @@ export function isMarketOpen(assetClass: AssetClass, timestamp: Date | number): 
  * Get the next market open time for stocks
  */
 export function getNextStockMarketOpen(timestamp: Date | number): Date {
-  let date = typeof timestamp === "number" ? new Date(timestamp) : new Date(timestamp.getTime())
+  const date = typeof timestamp === "number" ? new Date(timestamp) : new Date(timestamp.getTime())
   let etTime = toZonedTime(date, ET_TIMEZONE)
 
   // Calculate today's market open time for comparison
@@ -202,7 +203,7 @@ export function getNextStockMarketClose(timestamp: Date | number): Date {
  * Get the next market open time for forex
  */
 export function getNextForexMarketOpen(timestamp: Date | number): Date {
-  let date = typeof timestamp === "number" ? new Date(timestamp) : new Date(timestamp.getTime())
+  const date = typeof timestamp === "number" ? new Date(timestamp) : new Date(timestamp.getTime())
   let etTime = toZonedTime(date, ET_TIMEZONE)
 
   // If currently open, return next week's open (Sunday 5 PM)

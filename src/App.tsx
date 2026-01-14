@@ -6,8 +6,8 @@ import SignalsPage from "@/pages/SignalsPage"
 import BotsPage from "@/pages/BotsPage"
 import BotDetailPage from "@/pages/BotDetailPage"
 import PaperPage from "@/pages/PaperPage"
-import OpsSubwayPage from "@/pages/OpsSubwayPage"
-import OpsGraphPage from "@/pages/OpsGraphPage"
+import OpsGraphX6Page from "@/pages/OpsGraphX6Page"
+import LiveChartsPage from "@/pages/LiveChartsPage"
 import { RequireAuth } from "@/features/auth/RequireAuth"
 import { AppShell } from "@/components/layout/AppShell"
 import { Toaster } from "@/components/ui/sonner"
@@ -26,8 +26,8 @@ export default function App() {
             <Route path="/bots" element={<BotsPage />} />
             <Route path="/bots/:botId" element={<BotDetailPage />} />
             <Route path="/portfolio" element={<PaperPage />} />
-            <Route path="/ops/subway" element={<OpsSubwayPage />} />
-            <Route path="/ops/graph" element={<OpsGraphPage />} />
+            <Route path="/charts" element={<LiveChartsPage />} />
+            <Route path="/ops/graph" element={<OpsGraphX6Page />} />
           </Route>
         </Route>
 

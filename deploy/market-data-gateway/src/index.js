@@ -760,7 +760,8 @@ async function handleFmpStockList(req, res) {
   }
 
   const startedAt = Date.now()
-  const url = new URL(`${config.fmpBaseUrl}/api/v3/stock/list`)
+  // Use stable API endpoint instead of deprecated v3 endpoint
+  const url = new URL(`${config.fmpStableBaseUrl}/stock-list`)
   url.searchParams.set("apikey", config.fmpKey)
   let raw = ""
   try {

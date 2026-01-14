@@ -8,8 +8,14 @@ if (!process.env.VITE_E2E_TEST_EMAIL) {
 if (!process.env.VITE_E2E_TEST_PASSWORD) {
   process.env.VITE_E2E_TEST_PASSWORD = defaultE2EPassword
 }
+if (!process.env.VITE_E2E) {
+  process.env.VITE_E2E = "true"
+}
+if (!process.env.RELAYORB_E2E_TARGET) {
+  process.env.RELAYORB_E2E_TARGET = "prod"
+}
 
-const reuseExistingServer = process.env.VITE_E2E !== "true"
+const reuseExistingServer = true
 const webPort = Number.parseInt(process.env.VITE_E2E_PORT || "5175", 10)
 const baseURL = `http://127.0.0.1:${Number.isFinite(webPort) ? webPort : 5175}`
 

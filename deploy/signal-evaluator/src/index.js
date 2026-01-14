@@ -143,13 +143,6 @@ function parseTimestamp(value) {
   return Number.isFinite(parsed.getTime()) ? parsed : null
 }
 
-function shouldSample(rate) {
-  if (!Number.isFinite(rate)) return false
-  if (rate >= 1) return true
-  if (rate <= 0) return false
-  return Math.random() < rate
-}
-
 function hashParams(value) {
   if (!value) return null
   try {

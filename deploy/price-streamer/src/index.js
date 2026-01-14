@@ -17,7 +17,8 @@ const config = {
   writeMs: parseInt(process.env.PRICE_WRITE_MS || "2000", 10),
   maxSymbols: parseInt(process.env.PRICE_STREAM_MAX_SYMBOLS || "120", 10),
   historyMinutes: parseInt(process.env.PRICE_HISTORY_MINUTES || "10", 10),
-  quoteBatchSize: parseInt(process.env.PRICE_STREAM_BATCH_SIZE || "50", 10),
+  quoteConcurrency: parseInt(process.env.PRICE_STREAM_CONCURRENCY || "5", 10),
+  quoteBatchDelayMs: parseInt(process.env.PRICE_STREAM_BATCH_DELAY_MS || "200", 10),
   redisUrl: process.env.REDIS_URL || "",
   redisPrefix: process.env.REDIS_PREFIX || "relayorb",
   redisLatestTtlSeconds: parseInt(process.env.REDIS_LATEST_TTL_SECONDS || "120", 10),
@@ -31,6 +32,10 @@ const config = {
   pipelineEventsMaxlen: parseInt(process.env.PIPELINE_EVENTS_MAXLEN || "20000", 10),
   pipelineEventsSampleRate: parseFloat(process.env.PIPELINE_EVENTS_SAMPLE_RATE || "0.2"),
   pipelineEventsRunEnv: process.env.PIPELINE_EVENTS_RUN_ENV || "prod",
+  // Rate limiting: 300 calls/minute on FMP plan
+  rateLimitPerMinute: parseInt(process.env.FMP_RATE_LIMIT_PER_MINUTE || "300", 10),
+  rateLimitWarningPct: parseFloat(process.env.FMP_RATE_LIMIT_WARNING_PCT || "0.83"),
+  rateLimitCriticalPct: parseFloat(process.env.FMP_RATE_LIMIT_CRITICAL_PCT || "0.93"),
 }
 
 const FMP_STABLE_BASE_URL = "https://financialmodelingprep.com/stable"
@@ -44,6 +49,169 @@ const UNIVERSE_MODES = new Set([
 ])
 const FX_CODES = new Set(["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"])
 const STREAM_SYMBOL_TTL_MS = 30 * 60 * 1000
+
+// ============================================================================
+// MARKET HOURS SERVICE
+// ============================================================================
+
+/**
+ * US Stock Market Hours (NYSE/NASDAQ) in Eastern Time
+ * - Pre-market:  4:00 AM - 9:30 AM ET
+ * - Regular:     9:30 AM - 4:00 PM ET  
+ * - After-hours: 4:00 PM - 8:00 PM ET
+ * - Closed:      8:00 PM - 4:00 AM ET + weekends + holidays
+ */
+const US_MARKET_HOURS = {
+  preMarketStart: 4 * 60,      // 4:00 AM ET in minutes
+  regularStart: 9 * 60 + 30,   // 9:30 AM ET
+  regularEnd: 16 * 60,         // 4:00 PM ET
+  afterHoursEnd: 20 * 60,      // 8:00 PM ET
+}
+
+// NYSE holidays 2026 (add more years as needed)
+const US_MARKET_HOLIDAYS = new Set([
+  "2026-01-01", // New Year's Day
+  "2026-01-19", // MLK Day
+  "2026-02-16", // Presidents Day
+  "2026-04-03", // Good Friday
+  "2026-05-25", // Memorial Day
+  "2026-07-03", // Independence Day (observed)
+  "2026-09-07", // Labor Day
+  "2026-11-26", // Thanksgiving
+  "2026-12-25", // Christmas
+])
+
+/**
+ * Get current time in Eastern Time
+ */
+function getEasternTime() {
+  const now = new Date()
+  // Convert to ET (handles DST automatically)
+  const etString = now.toLocaleString("en-US", { timeZone: "America/New_York" })
+  const etDate = new Date(etString)
+  return {
+    date: etDate,
+    dayOfWeek: etDate.getDay(), // 0=Sunday, 6=Saturday
+    minuteOfDay: etDate.getHours() * 60 + etDate.getMinutes(),
+    dateString: etDate.toISOString().split("T")[0],
+  }
+}
+
+/**
+ * Get market status for a given asset class
+ * @param {string} assetClass - 'stock', 'crypto', or 'forex'
+ * @returns {{ status: string, isOpen: boolean, nextChange: Date | null }}
+ */
+function getMarketStatus(assetClass) {
+  if (assetClass === "crypto") {
+    // Crypto markets are always open
+    return { status: "open", isOpen: true, nextChange: null }
+  }
+
+  const et = getEasternTime()
+  
+  if (assetClass === "forex") {
+    // Forex: Sunday 5pm ET - Friday 5pm ET
+    const isWeekend = et.dayOfWeek === 0 || et.dayOfWeek === 6
+    const isFridayAfter5pm = et.dayOfWeek === 5 && et.minuteOfDay >= 17 * 60
+    const isSundayBefore5pm = et.dayOfWeek === 0 && et.minuteOfDay < 17 * 60
+    
+    if (isWeekend && !isSundayBefore5pm && et.dayOfWeek !== 0) {
+      return { status: "closed", isOpen: false, nextChange: null }
+    }
+    if (isFridayAfter5pm || isSundayBefore5pm) {
+      return { status: "closed", isOpen: false, nextChange: null }
+    }
+    return { status: "open", isOpen: true, nextChange: null }
+  }
+
+  // US Stock market
+  const isWeekend = et.dayOfWeek === 0 || et.dayOfWeek === 6
+  const isHoliday = US_MARKET_HOLIDAYS.has(et.dateString)
+  
+  if (isWeekend || isHoliday) {
+    return { status: "closed", isOpen: false, nextChange: null }
+  }
+
+  const { preMarketStart, regularStart, regularEnd, afterHoursEnd } = US_MARKET_HOURS
+  const minute = et.minuteOfDay
+
+  if (minute < preMarketStart) {
+    return { status: "closed", isOpen: false, nextChange: null }
+  }
+  if (minute < regularStart) {
+    return { status: "pre", isOpen: false, nextChange: null }
+  }
+  if (minute < regularEnd) {
+    return { status: "open", isOpen: true, nextChange: null }
+  }
+  if (minute < afterHoursEnd) {
+    return { status: "after", isOpen: false, nextChange: null }
+  }
+  return { status: "closed", isOpen: false, nextChange: null }
+}
+
+// ============================================================================
+// RATE LIMIT TRACKING
+// ============================================================================
+
+const rateLimit = {
+  callsThisMinute: 0,
+  minuteStartedAt: Date.now(),
+  callsToday: 0,
+  dayStartedAt: Date.now(),
+  status: "ok", // 'ok' | 'warning' | 'throttled' | 'exhausted'
+}
+
+function resetRateLimitIfNeeded() {
+  const now = Date.now()
+  // Reset minute counter
+  if (now - rateLimit.minuteStartedAt >= 60000) {
+    rateLimit.callsThisMinute = 0
+    rateLimit.minuteStartedAt = now
+    // Reset throttle status
+    if (rateLimit.status === "throttled" || rateLimit.status === "exhausted") {
+      rateLimit.status = "ok"
+    }
+  }
+  // Reset daily counter
+  if (now - rateLimit.dayStartedAt >= 24 * 60 * 60 * 1000) {
+    rateLimit.callsToday = 0
+    rateLimit.dayStartedAt = now
+  }
+}
+
+function trackApiCall() {
+  resetRateLimitIfNeeded()
+  rateLimit.callsThisMinute++
+  rateLimit.callsToday++
+  
+  const utilizationPct = rateLimit.callsThisMinute / config.rateLimitPerMinute
+  if (utilizationPct >= config.rateLimitCriticalPct) {
+    rateLimit.status = "exhausted"
+  } else if (utilizationPct >= config.rateLimitWarningPct) {
+    rateLimit.status = "warning"
+  } else {
+    rateLimit.status = "ok"
+  }
+}
+
+function canMakeApiCall() {
+  resetRateLimitIfNeeded()
+  return rateLimit.callsThisMinute < config.rateLimitPerMinute
+}
+
+function getRateLimitStatus() {
+  resetRateLimitIfNeeded()
+  return {
+    status: rateLimit.status,
+    callsThisMinute: rateLimit.callsThisMinute,
+    limitPerMinute: config.rateLimitPerMinute,
+    utilizationPct: Math.round((rateLimit.callsThisMinute / config.rateLimitPerMinute) * 100),
+    callsToday: rateLimit.callsToday,
+    throttled: rateLimit.status === "throttled" || rateLimit.status === "exhausted",
+  }
+}
 
 if (!admin.apps.length) {
   admin.initializeApp({ projectId: config.projectId })
@@ -126,6 +294,27 @@ const state = {
   redis: null,
   redisReady: false,
   lastRedisSnapshotAt: 0,
+  // Health tracking
+  startedAt: Date.now(),
+  lastHeartbeatAt: null,
+  consecutiveErrors: 0,
+  lastPollAt: {
+    crypto: null,
+    stock: null,
+    forex: null,
+  },
+  pollErrors: {
+    crypto: 0,
+    stock: 0,
+    forex: 0,
+  },
+}
+
+// Staleness thresholds (in ms)
+const STALENESS_THRESHOLDS = {
+  price: 120000,      // 2 minutes - prices should update every 30s
+  poll: 90000,        // 90 seconds - polls should happen every 30s
+  heartbeat: 300000,  // 5 minutes - heartbeat interval
 }
 
 let server = null
@@ -282,13 +471,41 @@ function shouldIncludeUniverse(mode) {
   return mode === "movers_plus_universe" || mode === "universe_only" || mode === "weighted_union"
 }
 
-async function fetchJson(url) {
-  const res = await fetch(url)
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`Request failed ${res.status}: ${body.slice(0, 200)}`)
+async function fetchJson(url, timeoutMs = 15000, retries = 2) {
+  let lastError = null
+  
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+    
+    try {
+      const res = await fetch(url, { signal: controller.signal })
+      clearTimeout(timeoutId)
+      
+      if (!res.ok) {
+        const body = await res.text()
+        throw new Error(`Request failed ${res.status}: ${body.slice(0, 200)}`)
+      }
+      return res.json()
+    } catch (err) {
+      clearTimeout(timeoutId)
+      lastError = err
+      
+      // Don't retry on 4xx errors or if we've exhausted retries
+      if (err.message?.includes('Request failed 4') || attempt === retries) {
+        break
+      }
+      
+      // Exponential backoff: 100ms, 200ms, 400ms
+      const delay = 100 * Math.pow(2, attempt)
+      await new Promise(r => setTimeout(r, delay))
+    }
   }
-  return res.json()
+  
+  if (lastError?.name === 'AbortError') {
+    throw new Error(`Request timed out after ${timeoutMs}ms`)
+  }
+  throw lastError
 }
 
 function resolveGatewayBase() {
@@ -376,8 +593,16 @@ async function fetchGatewayJson(path, params) {
 
 async function fetchFmpQuote(symbol, assetClass = "stock") {
   if (!symbol) return null
+  
+  // Check rate limit before making call
+  if (!canMakeApiCall()) {
+    console.warn(`Rate limit reached, skipping quote for ${symbol}`)
+    return null
+  }
+  
   if (config.marketDataGatewayUrl) {
     try {
+      trackApiCall()
       const data = await fetchGatewayJson("/v1/fmp/quote", {
         symbol,
         assetClass,
@@ -389,6 +614,7 @@ async function fetchFmpQuote(symbol, assetClass = "stock") {
         bid: parseNumber(data.bid),
         ask: parseNumber(data.ask),
         volume: parseNumber(data.volume),
+        source: "gateway",
       }
     } catch (err) {
       console.error(`Gateway quote failed for ${symbol}:`, err.message)
@@ -399,6 +625,7 @@ async function fetchFmpQuote(symbol, assetClass = "stock") {
   const normalized = normalizeFmpQuoteSymbol(symbol, assetClass)
   if (!normalized) return null
   try {
+    trackApiCall()
     const url = new URL(`${FMP_STABLE_BASE_URL}/quote`)
     url.searchParams.set("symbol", normalized)
     url.searchParams.set("apikey", config.fmpKey)
@@ -415,7 +642,7 @@ async function fetchFmpQuote(symbol, assetClass = "stock") {
       parseNumber(entry.close) ??
       (bid !== undefined && ask !== undefined ? (bid + ask) / 2 : bid ?? ask)
     if (typeof price !== "number") return null
-    return { symbol, price, bid, ask, volume }
+    return { symbol, price, bid, ask, volume, source: "fmp" }
   } catch (err) {
     const message = err?.message ? String(err.message) : "Unknown error"
     if (message.includes("429") || message.includes("Limit Reach")) {
@@ -426,58 +653,208 @@ async function fetchFmpQuote(symbol, assetClass = "stock") {
   }
 }
 
-async function fetchFmpQuotesBatch(symbols, assetClass = "stock") {
+/**
+ * Fetch quotes for multiple symbols using parallel single-quote requests.
+ * This replaces batch quotes which don't work on all FMP plans.
+ * 
+ * @param {string[]} symbols - Symbols to fetch
+ * @param {string} assetClass - 'stock', 'crypto', or 'forex'
+ * @returns {Promise<Array<{symbol: string, quote: object|null, error: string|null}>>}
+ */
+async function fetchQuotesParallel(symbols, assetClass) {
   if (!Array.isArray(symbols) || symbols.length === 0) return []
-  if (config.marketDataGatewayUrl) {
-    try {
-      const data = await fetchGatewayJson("/v1/fmp/quotes", {
-        symbols: symbols.join(","),
-        assetClass,
-      })
-      return Array.isArray(data?.items) ? data.items : []
-    } catch (err) {
-      console.error(`Gateway batch quote failed for ${assetClass}:`, err.message)
+  
+  const concurrency = config.quoteConcurrency
+  const delayMs = config.quoteBatchDelayMs
+  const results = []
+  
+  // Process in chunks with concurrency control
+  for (let i = 0; i < symbols.length; i += concurrency) {
+    const chunk = symbols.slice(i, i + concurrency)
+    
+    // Check rate limit before each chunk
+    if (!canMakeApiCall()) {
+      console.warn(`Rate limit reached, stopping at ${i}/${symbols.length} symbols for ${assetClass}`)
+      break
+    }
+    
+    const promises = chunk.map(async (symbol) => {
+      try {
+        const quote = await fetchFmpQuote(symbol, assetClass)
+        return { symbol, quote, error: null }
+      } catch (err) {
+        return { symbol, quote: null, error: err.message }
+      }
+    })
+    
+    const chunkResults = await Promise.all(promises)
+    results.push(...chunkResults)
+    
+    // Small delay between chunks to avoid rate limiting
+    if (i + concurrency < symbols.length) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
     }
   }
-  if (!config.fmpKey) return []
-  if (isFmpRateLimited()) return []
+  
+  return results
+}
 
-  const normalized = symbols
-    .map((symbol) => normalizeFmpQuoteSymbol(symbol, assetClass))
-    .filter(Boolean)
-  if (normalized.length === 0) return []
+// ============================================================================
+// STOCK DISCOVERY (Gainers/Losers/Actives during market hours)
+// ============================================================================
 
+/**
+ * Fetch extended hours (pre-market / after-hours) quote for a stock symbol
+ * Uses /stable/aftermarket-quote which returns bid/ask even when regular market is closed
+ * 
+ * @param {string} symbol - Stock symbol
+ * @returns {Promise<{symbol: string, price: number, bid: number, ask: number, source: string}|null>}
+ */
+async function fetchExtendedHoursQuote(symbol) {
+  if (!symbol || !config.fmpKey) return null
+  if (!canMakeApiCall()) return null
+  
+  try {
+    trackApiCall()
+    const url = new URL(`${FMP_STABLE_BASE_URL}/aftermarket-quote`)
+    url.searchParams.set("symbol", symbol)
+    url.searchParams.set("apikey", config.fmpKey)
+    const data = await fetchJson(url.toString())
+    const entry = Array.isArray(data) ? data[0] : data
+    
+    if (!entry) return null
+    
+    const bid = parseNumber(entry.bidPrice) ?? parseNumber(entry.bid)
+    const ask = parseNumber(entry.askPrice) ?? parseNumber(entry.ask)
+    
+    // Calculate mid price from bid/ask since extended hours may not have a "price" field
+    const price = parseNumber(entry.price) ?? 
+      (bid !== undefined && ask !== undefined ? (bid + ask) / 2 : null)
+    
+    if (typeof price !== "number") return null
+    
+    return {
+      symbol,
+      price,
+      bid,
+      ask,
+      volume: parseNumber(entry.volume),
+      source: "fmp_extended",
+    }
+  } catch (err) {
+    console.error(`Extended hours quote failed for ${symbol}:`, err.message)
+    return null
+  }
+}
+
+/**
+ * Fetch quotes with extended hours fallback for stocks during pre/after market
+ * 
+ * @param {string[]} symbols - Stock symbols to fetch
+ * @returns {Promise<Array<{symbol: string, quote: object|null, error: string|null}>>}
+ */
+async function fetchStockQuotesWithExtendedHours(symbols) {
+  if (!Array.isArray(symbols) || symbols.length === 0) return []
+  
+  const marketStatus = getMarketStatus("stock")
+  const useExtendedHours = marketStatus.status === "pre" || marketStatus.status === "after"
+  
+  const concurrency = config.quoteConcurrency
+  const delayMs = config.quoteBatchDelayMs
   const results = []
-  const batches = chunkList(Array.from(new Set(normalized)), 100)
-  for (const batch of batches) {
+  
+  for (let i = 0; i < symbols.length; i += concurrency) {
+    const chunk = symbols.slice(i, i + concurrency)
+    
+    if (!canMakeApiCall()) {
+      console.warn(`Rate limit reached, stopping at ${i}/${symbols.length} stock symbols`)
+      break
+    }
+    
+    const promises = chunk.map(async (symbol) => {
+      try {
+        // Try regular quote first
+        let quote = await fetchFmpQuote(symbol, "stock")
+        
+        // If no regular quote and we're in extended hours, try extended hours endpoint
+        if (!quote && useExtendedHours) {
+          quote = await fetchExtendedHoursQuote(symbol)
+        }
+        
+        return { symbol, quote, error: null }
+      } catch (err) {
+        return { symbol, quote: null, error: err.message }
+      }
+    })
+    
+    const chunkResults = await Promise.all(promises)
+    results.push(...chunkResults)
+    
+    if (i + concurrency < symbols.length) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+  }
+  
+  return results
+}
+
+/**
+ * Fetch FMP gainers/losers/actives endpoints (only returns data during market hours)
+ * Returns top 10 from each category for a total of up to 30 discovery symbols
+ */
+async function fetchStockMovers() {
+  const marketStatus = getMarketStatus("stock")
+  
+  // Only fetch during regular market hours - these endpoints return empty otherwise
+  if (marketStatus.status !== "open") {
+    console.log("ps_discovery_skip", { 
+      reason: "market_closed", 
+      marketStatus: marketStatus.status 
+    })
+    return []
+  }
+  
+  if (!canMakeApiCall()) {
+    console.log("ps_discovery_skip", { reason: "rate_limit" })
+    return []
+  }
+  
+  const discoveredSymbols = new Set()
+  const endpoints = [
+    { path: "/stable/stock_market/gainers", name: "gainers" },
+    { path: "/stable/stock_market/losers", name: "losers" },
+    { path: "/stable/stock_market/actives", name: "actives" },
+  ]
+  
+  for (const { path, name } of endpoints) {
     try {
-      const url = new URL(`${FMP_STABLE_BASE_URL}/quote`)
-      url.searchParams.set("symbol", batch.join(","))
+      trackApiCall()
+      const url = new URL(`https://financialmodelingprep.com${path}`)
       url.searchParams.set("apikey", config.fmpKey)
       const data = await fetchJson(url.toString())
-      const entries = Array.isArray(data) ? data : []
-      entries.forEach((entry) => {
-        if (!entry || typeof entry.price !== "number") return
-        results.push({
-          symbol: entry.symbol || "",
-          price: parseNumber(entry.price),
-          bid: parseNumber(entry.bid),
-          ask: parseNumber(entry.ask),
-          volume:
-            parseNumber(entry.volume) ??
-            parseNumber(entry.avgVolume) ??
-            parseNumber(entry.volumeAvg),
-        })
+      
+      if (!Array.isArray(data)) continue
+      
+      // Take top 10 from each category
+      const symbols = data.slice(0, 10).map((item) => item?.symbol).filter(Boolean)
+      symbols.forEach((s) => discoveredSymbols.add(s))
+      
+      console.log("ps_discovery", { 
+        endpoint: name, 
+        found: symbols.length,
+        symbols: symbols.slice(0, 5).join(",") + (symbols.length > 5 ? "..." : "")
       })
     } catch (err) {
-      const message = err?.message ? String(err.message) : "Unknown error"
-      if (message.includes("429") || message.includes("Limit Reach")) {
-        markFmpRateLimited()
-      }
-      console.error(`Batch quote failed for ${assetClass}:`, message)
+      console.error(`Discovery ${name} failed:`, err.message)
     }
   }
-  return results
+  
+  console.log("ps_discovery_complete", { 
+    totalDiscovered: discoveredSymbols.size,
+    rateLimit: getRateLimitStatus().utilizationPct + "%"
+  })
+  
+  return Array.from(discoveredSymbols)
 }
 
 function normalizeSnapshotForex(item) {
@@ -608,17 +985,57 @@ function prunePriceCache(allowedKeys) {
 }
 
 function buildHealthPayload() {
+  const now = Date.now()
+  const priceAge = state.lastFlushAt ? now - state.lastFlushAt : null
+  const isPriceStale = priceAge !== null && priceAge > STALENESS_THRESHOLDS.price
+  
+  // Get market status for each asset class
+  const marketStatus = {
+    crypto: getMarketStatus("crypto").status,
+    stock: getMarketStatus("stock").status,
+    forex: getMarketStatus("forex").status,
+  }
+  
+  // Check poll staleness per asset class
+  const pollHealth = {}
+  for (const asset of ["crypto", "stock", "forex"]) {
+    const lastPoll = state.lastPollAt[asset]
+    const pollAge = lastPoll ? now - lastPoll : null
+    const isStale = pollAge !== null && pollAge > STALENESS_THRESHOLDS.poll
+    pollHealth[asset] = {
+      lastPollAt: lastPoll ? new Date(lastPoll).toISOString() : null,
+      ageMs: pollAge,
+      isStale,
+      errors: state.pollErrors[asset] || 0,
+      marketStatus: marketStatus[asset],
+    }
+  }
+  
+  // Determine overall health status
+  const hasStaleData = isPriceStale || Object.values(pollHealth).some(p => p.isStale)
+  const hasErrors = state.consecutiveErrors > 3 || Object.values(state.pollErrors).some(e => e > 5)
+  const status = hasErrors ? "degraded" : hasStaleData ? "stale" : "ok"
+  
   return {
-    status: "ok",
+    service: "price_streamer",
+    status,
     runId,
+    startedAt: new Date(state.startedAt).toISOString(),
+    uptimeMs: now - state.startedAt,
     updatedAt: state.lastFlushAt ? new Date(state.lastFlushAt).toISOString() : null,
+    priceAgeMs: priceAge,
+    isPriceStale,
     lastFlushError: state.lastFlushError || null,
+    consecutiveErrors: state.consecutiveErrors,
     priceCount: state.priceCache.size,
     watchlist: {
       crypto: state.watchlist.crypto.size,
       stock: state.watchlist.stock.size,
       forex: state.watchlist.forex.size,
     },
+    marketStatus,
+    pollHealth,
+    rateLimit: getRateLimitStatus(),
     redis: {
       enabled: Boolean(config.redisUrl),
       connected: Boolean(state.redisReady),
@@ -834,6 +1251,19 @@ async function refreshWatchlist() {
       addSymbols(topSymbols.forex, "forex")
     }
 
+    // Stock Discovery: Add gainers/losers/actives during market hours
+    // This runs only when US stock market is open
+    if (config.fmpKey) {
+      const discoveredStocks = await fetchStockMovers()
+      if (discoveredStocks.length > 0) {
+        addSymbols(discoveredStocks, "stock")
+        console.log("ps_discovery_added", { 
+          count: discoveredStocks.length,
+          stocksTotal: next.stock.size 
+        })
+      }
+    }
+
     const nextHash = buildWatchHash(next)
     if (nextHash === state.lastWatchHash) return
 
@@ -860,60 +1290,193 @@ async function refreshWatchlist() {
 async function pollCryptoPrices() {
   const symbols = Array.from(state.watchlist.crypto)
   if ((!config.fmpKey && !config.marketDataGatewayUrl) || symbols.length === 0) return
-  console.log("ps_ingest", { runId, assetClass: "crypto", count: symbols.length })
-  const batches = chunkList(symbols, config.quoteBatchSize)
-  for (const batch of batches) {
-    const results = await fetchFmpQuotesBatch(batch, "crypto")
-    results.forEach((entry) => {
-      if (!entry) return
-      const symbol = normalizeSymbolForKey(entry.symbol, "crypto")
-      if (!symbol || typeof entry.price !== "number") return
-      updatePrice("crypto", symbol, entry.price, "fmp", {
-        bid: entry.bid,
-        ask: entry.ask,
-        volume: entry.volume,
+  
+  const marketStatus = getMarketStatus("crypto")
+  console.log("ps_ingest", { 
+    runId, 
+    assetClass: "crypto", 
+    count: symbols.length,
+    marketStatus: marketStatus.status,
+    rateLimit: getRateLimitStatus().utilizationPct + "%"
+  })
+  
+  try {
+    // Use parallel single quotes instead of batch
+    const results = await fetchQuotesParallel(symbols, "crypto")
+    let successCount = 0
+    let errorCount = 0
+    
+    results.forEach(({ symbol, quote, error }) => {
+      if (error) {
+        errorCount++
+        return
+      }
+      if (!quote) return
+      
+      const normalizedSymbol = normalizeSymbolForKey(quote.symbol || symbol, "crypto")
+      if (!normalizedSymbol || typeof quote.price !== "number") return
+      
+      successCount++
+      updatePrice("crypto", normalizedSymbol, quote.price, quote.source || "fmp", {
+        bid: quote.bid,
+        ask: quote.ask,
+        volume: quote.volume,
       })
     })
+    
+    console.log("ps_ingest_complete", { 
+      runId, 
+      assetClass: "crypto", 
+      requested: symbols.length,
+      success: successCount,
+      errors: errorCount,
+    })
+    
+    state.lastPollAt.crypto = Date.now()
+    state.pollErrors.crypto = errorCount > 0 ? errorCount : 0
+  } catch (err) {
+    state.pollErrors.crypto = (state.pollErrors.crypto || 0) + 1
+    console.error("ps_poll_error", { assetClass: "crypto", error: err.message, consecutiveErrors: state.pollErrors.crypto })
   }
 }
 
 async function pollStockPrices() {
   const symbols = Array.from(state.watchlist.stock)
   if ((!config.fmpKey && !config.marketDataGatewayUrl) || symbols.length === 0) return
-  console.log("ps_ingest", { runId, assetClass: "stock", count: symbols.length })
-  const batches = chunkList(symbols, config.quoteBatchSize)
-  for (const batch of batches) {
-    const results = await fetchFmpQuotesBatch(batch, "stock")
-    results.forEach((entry) => {
-      if (!entry) return
-      const symbol = normalizeSymbolForKey(entry.symbol, "stock")
-      if (!symbol || typeof entry.price !== "number") return
-      updatePrice("stock", symbol, entry.price, "fmp", {
-        bid: entry.bid,
-        ask: entry.ask,
-        volume: entry.volume,
+  
+  const marketStatus = getMarketStatus("stock")
+  const useExtendedHours = marketStatus.status === "pre" || marketStatus.status === "after"
+  
+  console.log("ps_ingest", { 
+    runId, 
+    assetClass: "stock", 
+    count: symbols.length,
+    marketStatus: marketStatus.status,
+    extendedHours: useExtendedHours,
+    rateLimit: getRateLimitStatus().utilizationPct + "%"
+  })
+  
+  try {
+    // Use extended hours fetching which tries regular quotes first,
+    // then falls back to aftermarket-quote during pre/after market hours
+    const results = await fetchStockQuotesWithExtendedHours(symbols)
+    let successCount = 0
+    let errorCount = 0
+    let extendedCount = 0
+    
+    results.forEach(({ symbol, quote, error }) => {
+      if (error) {
+        errorCount++
+        return
+      }
+      if (!quote) return
+      
+      const normalizedSymbol = normalizeSymbolForKey(quote.symbol || symbol, "stock")
+      if (!normalizedSymbol || typeof quote.price !== "number") return
+      
+      successCount++
+      if (quote.source === "fmp_extended") extendedCount++
+      
+      updatePrice("stock", normalizedSymbol, quote.price, quote.source || "fmp", {
+        bid: quote.bid,
+        ask: quote.ask,
+        volume: quote.volume,
       })
     })
+    
+    console.log("ps_ingest_complete", { 
+      runId, 
+      assetClass: "stock", 
+      requested: symbols.length,
+      success: successCount,
+      extendedHours: extendedCount,
+      errors: errorCount,
+      marketStatus: marketStatus.status,
+    })
+    
+    state.lastPollAt.stock = Date.now()
+    state.pollErrors.stock = errorCount > 0 ? errorCount : 0
+  } catch (err) {
+    state.pollErrors.stock = (state.pollErrors.stock || 0) + 1
+    console.error("ps_poll_error", { assetClass: "stock", error: err.message, consecutiveErrors: state.pollErrors.stock })
   }
 }
 
 async function pollForexPrices() {
   const symbols = Array.from(state.watchlist.forex)
   if ((!config.fmpKey && !config.marketDataGatewayUrl) || symbols.length === 0) return
-  console.log("ps_ingest", { runId, assetClass: "forex", count: symbols.length })
-  const batches = chunkList(symbols, config.quoteBatchSize)
-  for (const batch of batches) {
-    const results = await fetchFmpQuotesBatch(batch, "forex")
-    results.forEach((entry) => {
-      if (!entry) return
-      const symbol = normalizeSymbolForKey(entry.symbol, "forex")
-      if (!symbol || typeof entry.price !== "number") return
-      updatePrice("forex", symbol, entry.price, "fmp", {
-        bid: entry.bid,
-        ask: entry.ask,
-        volume: entry.volume,
+  
+  const marketStatus = getMarketStatus("forex")
+  console.log("ps_ingest", { 
+    runId, 
+    assetClass: "forex", 
+    count: symbols.length,
+    marketStatus: marketStatus.status,
+    rateLimit: getRateLimitStatus().utilizationPct + "%"
+  })
+  
+  try {
+    // Use parallel single quotes instead of batch
+    const results = await fetchQuotesParallel(symbols, "forex")
+    let successCount = 0
+    let errorCount = 0
+    
+    results.forEach(({ symbol, quote, error }) => {
+      if (error) {
+        errorCount++
+        return
+      }
+      if (!quote) return
+      
+      const normalizedSymbol = normalizeSymbolForKey(quote.symbol || symbol, "forex")
+      if (!normalizedSymbol || typeof quote.price !== "number") return
+      
+      successCount++
+      updatePrice("forex", normalizedSymbol, quote.price, quote.source || "fmp", {
+        bid: quote.bid,
+        ask: quote.ask,
+        volume: quote.volume,
       })
     })
+    
+    console.log("ps_ingest_complete", { 
+      runId, 
+      assetClass: "forex", 
+      requested: symbols.length,
+      success: successCount,
+      errors: errorCount,
+    })
+    
+    state.lastPollAt.forex = Date.now()
+    state.pollErrors.forex = errorCount > 0 ? errorCount : 0
+  } catch (err) {
+    state.pollErrors.forex = (state.pollErrors.forex || 0) + 1
+    console.error("ps_poll_error", { assetClass: "forex", error: err.message, consecutiveErrors: state.pollErrors.forex })
+  }
+}
+
+/**
+ * Write pipeline health status to Firestore for UI visibility
+ * Called periodically to track service health across the pipeline
+ */
+async function writeHeartbeat() {
+  const now = Date.now()
+  if (state.lastHeartbeatAt && now - state.lastHeartbeatAt < STALENESS_THRESHOLDS.heartbeat) {
+    return // Don't write too frequently
+  }
+  
+  const health = buildHealthPayload()
+  try {
+    await db.doc("pipeline/price_streamer").set({
+      ...health,
+      service: "price_streamer",
+      heartbeatAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true })
+    state.lastHeartbeatAt = now
+    state.consecutiveErrors = 0
+  } catch (err) {
+    state.consecutiveErrors = (state.consecutiveErrors || 0) + 1
+    console.error("ps_heartbeat_error", { error: err.message, consecutiveErrors: state.consecutiveErrors })
   }
 }
 
@@ -1066,6 +1629,14 @@ async function run() {
     pollForexPrices().catch((err) => console.error("Forex poll error:", err.message))
   }, Math.max(config.forexPollMs, 5000))
   setInterval(flushPrices, Math.max(config.writeMs, 1000))
+  
+  // Heartbeat: write health status to Firestore every 5 minutes
+  setInterval(() => {
+    writeHeartbeat().catch((err) => console.error("Heartbeat error:", err.message))
+  }, STALENESS_THRESHOLDS.heartbeat)
+  
+  // Initial heartbeat
+  writeHeartbeat().catch((err) => console.error("Initial heartbeat error:", err.message))
 
   console.log("ps_run_start", { runId })
 }

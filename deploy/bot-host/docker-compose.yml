@@ -19,6 +19,7 @@ services:
       - RELAYORB_EVENT_AUTO_SCAN=${RELAYORB_EVENT_AUTO_SCAN:-true}
       - RELAYORB_EVENT_BATCH_LIMIT=${RELAYORB_EVENT_BATCH_LIMIT:-25}
       - RELAYORB_EVENT_DEBOUNCE_MS=${RELAYORB_EVENT_DEBOUNCE_MS:-60000}
+      - STRUCTURED_LOGGING=${STRUCTURED_LOGGING:-true}
     volumes:
       - ./agent-config/config.json:/config/config.json:ro
       - ./secrets/service-account.json:/secrets/service-account.json:ro

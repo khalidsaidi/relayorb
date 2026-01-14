@@ -46,18 +46,69 @@ const PIPELINE_EVENTS_SAMPLE_RATE = parseFloat(
 )
 const PIPELINE_EVENTS_RUN_ENV = process.env.PIPELINE_EVENTS_RUN_ENV || "prod"
 
-const log = (message) => {
+// Structured JSON logging for Cloud Logging
+const STRUCTURED_LOGGING = process.env.STRUCTURED_LOGGING === "true"
+
+const log = (message, extra = {}) => {
   const stamp = new Date().toISOString()
+  if (STRUCTURED_LOGGING) {
+    const entry = {
+      severity: "INFO",
+      message: typeof message === "string" ? message : JSON.stringify(message),
+      timestamp: stamp,
+      service: "relayorb-agent",
+      ...extra,
+    }
+    console.log(JSON.stringify(entry))
+    return
+  }
   console.log(`[relayorb-agent ${stamp}] ${message}`)
 }
 
 const logEvent = (event, data = {}) => {
   const payload = { event, ...(RUN_ID ? { runId: RUN_ID } : {}), ...data }
-  log(JSON.stringify(payload))
+  if (STRUCTURED_LOGGING) {
+    const entry = {
+      severity: "INFO",
+      message: event,
+      timestamp: new Date().toISOString(),
+      service: "relayorb-agent",
+      ...payload,
+    }
+    console.log(JSON.stringify(entry))
+  } else {
+    log(JSON.stringify(payload))
+  }
+}
+
+const logError = (message, error = null, extra = {}) => {
+  const stamp = new Date().toISOString()
+  if (STRUCTURED_LOGGING) {
+    const entry = {
+      severity: "ERROR",
+      message: typeof message === "string" ? message : JSON.stringify(message),
+      timestamp: stamp,
+      service: "relayorb-agent",
+      error: error?.message || null,
+      stack: error?.stack || null,
+      ...extra,
+    }
+    console.error(JSON.stringify(entry))
+  } else {
+    console.error(`[relayorb-agent ${stamp}] ERROR: ${message}`, error)
+  }
 }
 
 let pipelineRedis = null
 let pipelineRedisReady = false
+
+// Agent health tracking
+const agentHealth = {
+  startedAt: Date.now(),
+  lastHeartbeatAt: null,
+  bots: new Map(), // botId -> { lastPollAt, lastSignalAt, consecutiveErrors, status }
+}
+const HEARTBEAT_INTERVAL_MS = 300000 // 5 minutes
 
 function resolvePipelineStream() {
   if (PIPELINE_EVENTS_STREAM) return PIPELINE_EVENTS_STREAM
@@ -902,6 +953,170 @@ class FreqtradeAdapter {
     })
   }
 
+  /**
+   * Extract signals from Freqtrade's analyzed dataframe for a specific pair
+   * Uses the strategy's buy/sell indicators
+   */
+  extractSignalsFromDataframe(pair, dataframe) {
+    if (!dataframe || !Array.isArray(dataframe.data) || dataframe.data.length === 0) {
+      return []
+    }
+    
+    const signals = []
+    const columns = dataframe.columns || []
+    const data = dataframe.data
+    
+    // Find column indices
+    const dateIdx = columns.indexOf("date")
+    const closeIdx = columns.indexOf("close")
+    const enterLongIdx = columns.indexOf("enter_long") !== -1 
+      ? columns.indexOf("enter_long") 
+      : columns.indexOf("buy")
+    const exitLongIdx = columns.indexOf("exit_long") !== -1 
+      ? columns.indexOf("exit_long") 
+      : columns.indexOf("sell")
+    const rsiIdx = columns.indexOf("rsi")
+    
+    // Check the last few candles for signals
+    const checkCandles = Math.min(5, data.length)
+    for (let i = data.length - checkCandles; i < data.length; i++) {
+      const row = data[i]
+      if (!row) continue
+      
+      const hasEnter = enterLongIdx >= 0 && row[enterLongIdx] === 1
+      const hasExit = exitLongIdx >= 0 && row[exitLongIdx] === 1
+      
+      if (!hasEnter && !hasExit) continue
+      
+      const price = closeIdx >= 0 ? row[closeIdx] : null
+      const rsi = rsiIdx >= 0 ? row[rsiIdx] : null
+      const timestamp = dateIdx >= 0 ? row[dateIdx] : null
+      
+      const side = hasEnter ? "buy" : "sell"
+      const indicators = rsi !== null ? { rsi: Number(rsi.toFixed(2)) } : {}
+      
+      signals.push({
+        symbol: pair,
+        side,
+        strength: 0.75, // Freqtrade strategy signals are high confidence
+        message: `${side.toUpperCase()} signal from strategy for ${pair}`,
+        timestamp: timestamp || new Date().toISOString(),
+        data: {
+          pair,
+          symbol: pair,
+          source: "freqtrade_dataframe",
+          price,
+          indicators,
+          assetClass: "crypto",
+        },
+      })
+    }
+    
+    return signals
+  }
+
+  /**
+   * Request analysis for specific symbols
+   * Updates the whitelist temporarily and triggers analysis
+   */
+  async analyzeSymbols(symbols) {
+    if (!Array.isArray(symbols) || symbols.length === 0) {
+      return { signals: [], analyzed: 0 }
+    }
+    
+    const signals = []
+    const pairs = symbols.map(s => normalizePair(s, "/"))
+    
+    try {
+      // Get current whitelist
+      const config = await this.request("/show_config")
+      const currentWhitelist = config?.exchange?.pair_whitelist || []
+      
+      // Get available pairs
+      let availablePairs = []
+      try {
+        const pairlists = await this.request("/pairlists")
+        availablePairs = Array.isArray(pairlists?.whitelist) 
+          ? pairlists.whitelist 
+          : []
+      } catch {
+        availablePairs = currentWhitelist
+      }
+      
+      // Filter to pairs that are available
+      const validPairs = pairs.filter(p => 
+        availablePairs.length === 0 || 
+        availablePairs.includes(p) || 
+        availablePairs.includes(p.replace("/", ""))
+      )
+      
+      if (validPairs.length === 0) {
+        log(`No valid pairs to analyze from ${pairs.join(", ")}`)
+        return { signals: [], analyzed: 0 }
+      }
+      
+      // Get current config to determine timeframe
+      const ftConfig = await this.request("/show_config")
+      const timeframe = ftConfig?.timeframe || "15m"
+      
+      // Try to get analyzed candles for each pair using /pair_candles
+      for (const pair of validPairs.slice(0, 10)) { // Limit to 10 pairs per scan
+        try {
+          // Use /pair_candles endpoint (available in Freqtrade 2024.11+)
+          const candleResult = await this.request(`/pair_candles?pair=${encodeURIComponent(pair)}&timeframe=${timeframe}&limit=50`)
+          
+          if (candleResult && candleResult.data && candleResult.data.length > 0) {
+            // Convert pair_candles response to dataframe format for signal extraction
+            const dataframe = {
+              columns: candleResult.columns || candleResult.all_columns || [],
+              data: candleResult.data,
+            }
+            const pairSignals = this.extractSignalsFromDataframe(pair, dataframe)
+            for (const signal of pairSignals) {
+              const key = JSON.stringify({ 
+                symbol: signal.symbol, 
+                side: signal.side,
+                timestamp: signal.timestamp 
+              })
+              if (!this.signalDeduper.has(key)) {
+                this.signalDeduper.add(key)
+                signals.push(signal)
+              }
+            }
+          }
+        } catch (err) {
+          // Pair may not be in whitelist or endpoint may not be available
+          log(`Freqtrade candles request failed for ${pair}: ${String(err)}`)
+        }
+      }
+      
+      // Also check for any new signals in logs after analysis
+      try {
+        const rawLogs = await this.request("/logs")
+        const normalized = this.normalizeLogs(rawLogs)
+        const logSignals = this.extractSignalsFromLogs(normalized)
+        
+        for (const signal of logSignals) {
+          const pair = signal?.data?.pair || ""
+          if (pairs.some(p => p.includes(pair) || pair.includes(p))) {
+            const key = JSON.stringify(signal)
+            if (!this.signalDeduper.has(key)) {
+              this.signalDeduper.add(key)
+              signals.push(signal)
+            }
+          }
+        }
+      } catch {
+        // Ignore log errors during scan
+      }
+      
+      return { signals, analyzed: validPairs.length }
+    } catch (err) {
+      log(`Freqtrade analysis failed: ${String(err)}`)
+      return { signals: [], analyzed: 0, error: String(err) }
+    }
+  }
+
   async poll() {
     const state = {}
     let status = "offline"
@@ -996,10 +1211,80 @@ class FreqtradeAdapter {
         const freqtradeResult = await applyFreqtradeConfig(payload || {})
         await this.request("/reload_config", { method: "POST" })
         return { status: "online", result: freqtradeResult }
-      case "backtest":
-      case "paper":
-      case "live":
-        throw new Error(`Freqtrade does not support '${type}' via REST API. Use start/stop or configure dry_run.`)
+      case "scan":
+      case "analyze":
+        // Active analysis of specific symbols
+        const symbols = Array.isArray(payload?.symbols) ? payload.symbols : []
+        if (symbols.length === 0) {
+          return { status: "online", signals: [], error: "No symbols provided" }
+        }
+        const analysisResult = await this.analyzeSymbols(symbols)
+        return { 
+          status: "online", 
+          signals: analysisResult.signals,
+          analyzed: analysisResult.analyzed,
+        }
+      case "execute_trade":
+      case "trade":
+        // Execute a trade via Freqtrade (paper or live depending on dry_run config)
+        const tradePayload = payload || {}
+        const pair = tradePayload.pair || tradePayload.symbol
+        const side = tradePayload.side || "buy"
+        
+        if (!pair) {
+          return { status: "error", error: "No pair/symbol provided for trade" }
+        }
+        
+        try {
+          if (side === "buy" || side === "enter") {
+            // Force entry for the pair
+            const result = await this.request("/forcebuy", {
+              method: "POST",
+              body: {
+                pair,
+                price: tradePayload.price || null,
+                stake_amount: tradePayload.amount || null,
+              },
+            })
+            return { 
+              status: "online", 
+              trade: result,
+              executed: true,
+              side: "buy",
+              pair,
+            }
+          } else if (side === "sell" || side === "exit") {
+            // Force exit for the pair
+            const result = await this.request("/forceexit", {
+              method: "POST",
+              body: {
+                tradeid: tradePayload.tradeId || "all",
+              },
+            })
+            return { 
+              status: "online", 
+              trade: result,
+              executed: true,
+              side: "sell",
+              pair,
+            }
+          } else {
+            return { status: "error", error: `Unknown trade side: ${side}` }
+          }
+        } catch (err) {
+          return { status: "error", error: String(err), pair, side }
+        }
+      
+      case "get_trades":
+        // Get current open trades
+        const trades = await this.request("/status")
+        return { status: "online", trades: trades || [] }
+      
+      case "get_balance":
+        // Get current balance
+        const balance = await this.request("/balance")
+        return { status: "online", balance }
+      
       default:
         throw new Error(`Unsupported command: ${type}`)
     }
@@ -1068,9 +1353,8 @@ class BacktraderAdapter {
     }
 
     const runConfig = this.resolveRunConfig()
-    const allowedSymbols = new Set(
-      (runConfig.symbols || []).map((item) => String(item).trim().toUpperCase())
-    )
+    // Dynamic symbols - no longer filter by static config symbols
+    // All signals from this bot's strategies are accepted
     const strategyPrefix = `${this.bot.id}-`
 
     const runEvent = await this.maybeRunStrategy()
@@ -1118,14 +1402,14 @@ class BacktraderAdapter {
         : ""
       let signalsData = await this.request(`/signals${query}`)
       let rawSignals = Array.isArray(signalsData?.signals) ? signalsData.signals : []
+      // Filter signals by strategy prefix - accept all signals from this bot's strategies
+      // No longer filtering by static config symbols since symbols are dispatched dynamically
       let filteredSignals = rawSignals.filter((sig) => {
         if (sig?.strategy_id) {
           return String(sig.strategy_id).startsWith(strategyPrefix)
         }
-        if (allowedSymbols.size === 0) return true
-        const symbol = sig?.symbol || sig?.data?.symbol
-        if (!symbol) return false
-        return allowedSymbols.has(String(symbol).trim().toUpperCase())
+        // Accept signals without strategy_id (legacy signals)
+        return true
       })
       
       let retryCount = 0
@@ -1138,10 +1422,7 @@ class BacktraderAdapter {
           if (sig?.strategy_id) {
             return String(sig.strategy_id).startsWith(strategyPrefix)
           }
-          if (allowedSymbols.size === 0) return true
-          const symbol = sig?.symbol || sig?.data?.symbol
-          if (!symbol) return false
-          return allowedSymbols.has(String(symbol).trim().toUpperCase())
+          return true
         })
       }
 
@@ -1184,6 +1465,19 @@ class BacktraderAdapter {
   }
 
   async maybeRunStrategy() {
+    // Skip automatic strategy runs - symbols are now dispatched dynamically
+    // by Market Intel via scan commands. This prevents duplicate work and
+    // removes the static symbol limitation from bot configs.
+    //
+    // The bot will only analyze symbols when it receives a "scan" command
+    // from Market Intel with the dynamically discovered symbols.
+    //
+    // If you need fallback polling (e.g., when Market Intel is down),
+    // you can set ENABLE_FALLBACK_POLLING=true in the environment.
+    if (process.env.ENABLE_FALLBACK_POLLING !== "true") {
+      return null
+    }
+    
     const config = this.resolveRunConfig()
     if (!config.symbols.length) return null
 
@@ -1230,53 +1524,91 @@ class BacktraderAdapter {
         return { status: "idle" }
       case "scan":
       case "analyze":
-        // Trigger strategy run for symbols in payload
+        // Trigger strategy run for symbols in payload with improved timing and retry
         const symbols = Array.isArray(payload?.symbols) ? payload.symbols : []
         if (symbols.length === 0) {
           throw new Error("scan/analyze requires symbols array in payload")
         }
         
+        const assetClass = payload?.assetClass || this.bot.desiredConfig?.assetClass || "stock"
         const scanId = `${this.bot.id}-scan-${Date.now()}`
         this.lastRunId = scanId
+        
         await this.request("/run", {
           method: "POST",
           body: {
             id: scanId,
             config: {
               symbols: symbols,
-              assetClass: payload?.assetClass || this.bot.desiredConfig?.assetClass || "stock",
+              assetClass,
               timeframe: payload?.timeframe || this.bot.desiredConfig?.timeframe || "1d",
               strategy: payload?.strategy || this.bot.desiredConfig?.strategy || "default",
             },
           },
         })
         
-        const waitMs = Math.min(60000, Math.max(8000, symbols.length * 750))
-        await new Promise((resolve) => setTimeout(resolve, waitMs))
-        const signalsData = await this.request(
-          `/signals?strategy_id=${encodeURIComponent(scanId)}`
-        )
-        const rawSignals = Array.isArray(signalsData?.signals) ? signalsData.signals : []
-        const scannedSignals = []
-        for (const sig of rawSignals) {
-          const signal = this.buildSignal(
-            sig,
-            payload?.assetClass || this.bot.desiredConfig?.assetClass || "stock"
+        // Adaptive wait time based on symbol count and asset class
+        // Crypto/Forex need less data, stocks may need more due to market hours
+        const baseWaitMs = assetClass === "crypto" ? 600 : assetClass === "forex" ? 700 : 800
+        const initialWaitMs = Math.min(90000, Math.max(10000, symbols.length * baseWaitMs))
+        await new Promise((resolve) => setTimeout(resolve, initialWaitMs))
+        
+        // Retry with exponential backoff to handle slow strategy runs
+        const maxRetries = 6
+        const retryDelays = [3000, 5000, 8000, 12000, 15000, 20000]
+        let scannedSignals = []
+        
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+          const signalsData = await this.request(
+            `/signals?strategy_id=${encodeURIComponent(scanId)}`
           )
-          if (!signal) continue
-          const symbol = signal.symbol || sig.symbol || sig.data?.symbol || "unknown"
-          const key = JSON.stringify({
-            symbol,
-            side: signal.side,
-            message: sig.message,
-            strategy_id: sig.strategy_id,
-          })
-          if (this.signalDeduper.has(key)) continue
-          this.signalDeduper.add(key)
-          scannedSignals.push(signal)
+          const rawSignals = Array.isArray(signalsData?.signals) ? signalsData.signals : []
+          
+          for (const sig of rawSignals) {
+            const signal = this.buildSignal(sig, assetClass)
+            if (!signal) continue
+            const symbol = signal.symbol || sig.symbol || sig.data?.symbol || "unknown"
+            const key = JSON.stringify({
+              symbol,
+              side: signal.side,
+              message: sig.message,
+              strategy_id: sig.strategy_id,
+            })
+            if (this.signalDeduper.has(key)) continue
+            this.signalDeduper.add(key)
+            scannedSignals.push(signal)
+          }
+          
+          // If we got signals or it's the last attempt, stop retrying
+          if (scannedSignals.length > 0 || attempt === maxRetries) {
+            break
+          }
+          
+          // Check if strategy is still running
+          try {
+            const status = await this.request("/health")
+            const activeStrategies = status?.activeStrategies || 0
+            if (activeStrategies === 0 && rawSignals.length === 0) {
+              // Strategy completed but no signals - that's valid, stop retrying
+              log(`Backtrader scan ${scanId} completed with no signals`)
+              break
+            }
+          } catch {
+            // Health check failed, continue with retry
+          }
+          
+          // Wait before next retry
+          await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt] || 5000))
         }
         
-        return { status: "online", signals: scannedSignals }
+        logEvent("ag_scan_complete", { 
+          scanId, 
+          symbolCount: symbols.length, 
+          signalCount: scannedSignals.length,
+          assetClass,
+        })
+        
+        return { status: "online", signals: scannedSignals, scanId, analyzed: symbols.length }
       default:
         throw new Error(`Unsupported command: ${type}`)
     }
@@ -1344,25 +1676,42 @@ async function writeEvents(db, botId, events) {
 async function writeSignals(db, botId, signals) {
   if (!signals || signals.length === 0) return
   const ref = db.collection("bots").doc(botId).collection("signals")
-  const batch = db.batch()
-  for (const signal of signals.slice(0, 50)) {
-    const docRef = ref.doc()
-    const symbol = resolveSignalSymbol(signal)
-    const signalTime = parseSignalTimestamp(signal)
-    batch.set(docRef, {
-      botId,
-      symbol: symbol || null,
-      side: signal.side || null,
-      strength: typeof signal.strength === "number" ? signal.strength : null,
-      message: signal.message || "",
-      data: signal.data || null,
-      runId: RUN_ID || null,
-      createdAt: signalTime
-        ? admin.firestore.Timestamp.fromDate(signalTime)
-        : admin.firestore.FieldValue.serverTimestamp(),
-    })
+  
+  // Firestore batch limit is 500 operations per batch
+  // Process ALL signals using multiple batches if needed
+  const BATCH_SIZE = 450 // Leave some margin below 500
+  const totalSignals = signals.length
+  let writtenCount = 0
+  
+  for (let i = 0; i < totalSignals; i += BATCH_SIZE) {
+    const chunk = signals.slice(i, i + BATCH_SIZE)
+    const batch = db.batch()
+    
+    for (const signal of chunk) {
+      const docRef = ref.doc()
+      const symbol = resolveSignalSymbol(signal)
+      const signalTime = parseSignalTimestamp(signal)
+      batch.set(docRef, {
+        botId,
+        symbol: symbol || null,
+        side: signal.side || null,
+        strength: typeof signal.strength === "number" ? signal.strength : null,
+        message: signal.message || "",
+        data: signal.data || null,
+        runId: RUN_ID || null,
+        createdAt: signalTime
+          ? admin.firestore.Timestamp.fromDate(signalTime)
+          : admin.firestore.FieldValue.serverTimestamp(),
+      })
+    }
+    
+    await batch.commit()
+    writtenCount += chunk.length
   }
-  await batch.commit()
+  
+  if (totalSignals > BATCH_SIZE) {
+    log(`Wrote ${writtenCount} signals in ${Math.ceil(totalSignals / BATCH_SIZE)} batches for ${botId}`)
+  }
 }
 
 async function applyUpdate(db, bot, update) {
@@ -1467,15 +1816,43 @@ function startPolling(db, bot, adapter) {
   const interval = Math.max(5, bot.pollIntervalSeconds || 10) * 1000
   let running = false
 
+  // Initialize bot health tracking
+  agentHealth.bots.set(bot.id, {
+    lastPollAt: null,
+    lastSignalAt: null,
+    consecutiveErrors: 0,
+    status: "starting",
+    engine: bot.engine,
+    pollIntervalSeconds: bot.pollIntervalSeconds || 300,
+  })
+
   const tick = async () => {
     if (running) return
     running = true
+    const botHealth = agentHealth.bots.get(bot.id)
     try {
       const update = await adapter.poll()
       await applyUpdate(db, bot, update)
+      
+      // Update health tracking
+      if (botHealth) {
+        botHealth.lastPollAt = Date.now()
+        botHealth.consecutiveErrors = 0
+        botHealth.status = update?.status || "online"
+        if (update?.signals?.length > 0) {
+          botHealth.lastSignalAt = Date.now()
+        }
+      }
     } catch (err) {
       log(`poll failed for ${bot.id}: ${String(err)}`)
       await markBotError(db, bot, err)
+      
+      // Update health tracking on error
+      if (botHealth) {
+        botHealth.consecutiveErrors = (botHealth.consecutiveErrors || 0) + 1
+        botHealth.status = "error"
+        botHealth.lastError = err.message
+      }
     } finally {
       running = false
     }
@@ -1518,6 +1895,7 @@ function startCommandListener(db, bot, adapter) {
       try {
         if (commandType === "scan" || commandType === "analyze") {
           let update = null
+          const botHealth = agentHealth.bots.get(bot.id)
           try {
             update = await adapter.executeCommand(commandType, payload)
           } catch (err) {
@@ -1539,6 +1917,17 @@ function startCommandListener(db, bot, adapter) {
             }
           }
           await applyUpdate(db, bot, update)
+          
+          // Update health tracking after successful scan
+          if (botHealth) {
+            botHealth.lastPollAt = Date.now()
+            botHealth.consecutiveErrors = 0
+            botHealth.status = update?.status || "online"
+            if (update?.signals?.length > 0) {
+              botHealth.lastSignalAt = Date.now()
+            }
+          }
+          
           await docRef.update({
             status: "completed",
             completedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1587,6 +1976,70 @@ function startCommandListener(db, bot, adapter) {
   })
 }
 
+/**
+ * Write agent health status to Firestore for pipeline visibility
+ */
+async function writeAgentHeartbeat(db) {
+  const now = Date.now()
+  const uptimeMs = now - agentHealth.startedAt
+  
+  // Build bot health summary
+  const botsHealth = {}
+  let healthyBots = 0
+  let errorBots = 0
+  
+  for (const [botId, health] of agentHealth.bots) {
+    const pollAgeMs = health.lastPollAt ? now - health.lastPollAt : null
+    // Use bot's poll interval + buffer to determine staleness
+    // Default to 5 minutes if pollInterval not available
+    const pollIntervalMs = (health.pollIntervalSeconds || 300) * 1000
+    const staleThresholdMs = pollIntervalMs + 120000 // poll interval + 2 min buffer
+    const isStale = pollAgeMs !== null && pollAgeMs > staleThresholdMs
+    
+    botsHealth[botId] = {
+      status: health.status,
+      engine: health.engine,
+      lastPollAt: health.lastPollAt ? new Date(health.lastPollAt).toISOString() : null,
+      lastSignalAt: health.lastSignalAt ? new Date(health.lastSignalAt).toISOString() : null,
+      pollAgeMs,
+      isStale,
+      consecutiveErrors: health.consecutiveErrors,
+      lastError: health.lastError || null,
+    }
+    
+    if (health.status === "error" || health.consecutiveErrors > 3 || isStale) {
+      errorBots++
+    } else {
+      healthyBots++
+    }
+  }
+  
+  const overallStatus = errorBots === 0 ? "ok" : healthyBots === 0 ? "error" : "degraded"
+  
+  const healthDoc = {
+    service: "relayorb_agent",
+    status: overallStatus,
+    startedAt: new Date(agentHealth.startedAt).toISOString(),
+    uptimeMs,
+    heartbeatAt: admin.firestore.FieldValue.serverTimestamp(),
+    runId: RUN_ID || null,
+    bots: botsHealth,
+    summary: {
+      total: agentHealth.bots.size,
+      healthy: healthyBots,
+      error: errorBots,
+    },
+  }
+  
+  try {
+    await db.doc("pipeline/relayorb_agent").set(healthDoc, { merge: true })
+    agentHealth.lastHeartbeatAt = now
+    logEvent("ag_heartbeat", { status: overallStatus, healthy: healthyBots, error: errorBots })
+  } catch (err) {
+    log(`heartbeat write failed: ${String(err)}`)
+  }
+}
+
 async function main() {
   const config = await loadConfig()
   const db = initFirestore(config.firestore?.projectId)
@@ -1597,7 +2050,7 @@ async function main() {
     buildPipelineEvent({
       stationId: "agent",
       eventType: "service_start",
-      edgeKey: "relayorb_agent->bot_engine:unknown",
+      edgeKey: "relayorb_agent->bot_engine:freqtrade",
       nodeIds: ["relayorb_agent"],
       status: "start",
       batchId: RUN_ID || undefined,
@@ -1618,6 +2071,14 @@ async function main() {
 
   await startEventListener(db, config.bots)
   startBatchPoller(db, config.bots)
+  
+  // Start heartbeat - writes health status to Firestore every 5 minutes
+  setInterval(() => {
+    writeAgentHeartbeat(db).catch((err) => log(`heartbeat error: ${String(err)}`))
+  }, HEARTBEAT_INTERVAL_MS)
+  
+  // Initial heartbeat
+  writeAgentHeartbeat(db).catch((err) => log(`initial heartbeat error: ${String(err)}`))
 }
 
 main().catch((err) => {

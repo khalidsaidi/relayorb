@@ -11,8 +11,8 @@ function resolveEnv(name: string, fallback: string) {
 }
 
 export default async function globalSetup() {
-  const target = process.env.RELAYORB_E2E_TARGET || "emulator"
-  if (target === "prod") {
+  const target = process.env.RELAYORB_E2E_TARGET || "prod"
+  if (target !== "emulator") {
     return
   }
   if (!process.env.FIRESTORE_EMULATOR_HOST) {

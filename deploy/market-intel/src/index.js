@@ -18,7 +18,7 @@ const config = {
   openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
   llmIntervalMinutes: parseInt(process.env.LLM_INTERVAL_MINUTES || "30", 10),
   newsLimit: parseInt(process.env.MARKETAUX_LIMIT || "40", 10),
-  newsSymbolLimit: parseInt(process.env.MARKETAUX_SYMBOL_LIMIT || "25", 10),
+  newsSymbolLimit: parseInt(process.env.MARKETAUX_SYMBOL_LIMIT || "35", 10),
   newsIntervalMinutes: parseInt(process.env.NEWS_INTERVAL_MINUTES || "30", 10),
   marketDataGatewayUrl: process.env.MARKET_DATA_GATEWAY_URL || "",
   redisUrl: process.env.REDIS_URL || "",
@@ -87,28 +87,37 @@ const UNIVERSE_MODES = new Set([
 ])
 const DEFAULT_UNIVERSE_MODE = "movers_plus_universe"
 const MARKET_SIGNAL_BOT_ID = "market-intel"
+// Score weights: increased consensus (bot signals) from 20% to 28% for stronger bot influence
+// Reduced momentum slightly to 45% to make room, keeping liquidity at 18% and news at 9%
 const BASE_SCORE_WEIGHTS = {
-  dip: { momentum: 50, consensus: 20, liquidity: 20, news: 10 },
-  scalp: { momentum: 50, consensus: 20, liquidity: 20, news: 10 },
+  dip: { momentum: 45, consensus: 28, liquidity: 18, news: 9 },
+  scalp: { momentum: 45, consensus: 28, liquidity: 18, news: 9 },
 }
+// Asset-specific weight tuning for optimal signal quality
 const SCORE_WEIGHTS_BY_ASSET = {
   stock: {
-    dip: { ...BASE_SCORE_WEIGHTS.dip },
-    scalp: { ...BASE_SCORE_WEIGHTS.scalp },
+    // Stocks: slightly higher liquidity weight due to market hours constraints
+    dip: { momentum: 42, consensus: 28, liquidity: 21, news: 9 },
+    scalp: { momentum: 42, consensus: 28, liquidity: 21, news: 9 },
   },
   crypto: {
-    dip: { ...BASE_SCORE_WEIGHTS.dip },
-    scalp: { ...BASE_SCORE_WEIGHTS.scalp },
+    // Crypto: higher momentum weight due to 24/7 volatility, lower liquidity
+    dip: { momentum: 48, consensus: 28, liquidity: 15, news: 9 },
+    scalp: { momentum: 48, consensus: 28, liquidity: 15, news: 9 },
   },
   forex: {
-    dip: { ...BASE_SCORE_WEIGHTS.dip },
-    scalp: { ...BASE_SCORE_WEIGHTS.scalp },
+    // Forex: balanced approach with slightly higher news weight for macro events
+    dip: { momentum: 44, consensus: 27, liquidity: 18, news: 11 },
+    scalp: { momentum: 44, consensus: 27, liquidity: 18, news: 11 },
   },
 }
+// Risk profiles adjust score component weights
+// Conservative: trust bots more, less momentum chasing
+// Aggressive: momentum focus, less reliance on consensus
 const RISK_WEIGHT_MULTIPLIERS = {
-  conservative: { momentum: 0.85, consensus: 1.15, liquidity: 1.15, news: 1.05 },
+  conservative: { momentum: 0.80, consensus: 1.25, liquidity: 1.15, news: 1.10 },
   balanced: { momentum: 1, consensus: 1, liquidity: 1, news: 1 },
-  aggressive: { momentum: 1.15, consensus: 0.9, liquidity: 0.85, news: 0.95 },
+  aggressive: { momentum: 1.20, consensus: 0.85, liquidity: 0.80, news: 0.90 },
 }
 
 let redis = null
@@ -849,8 +858,16 @@ function isTsxSymbol(symbol) {
 
 function normalizeSignalKey(raw) {
   if (!raw) return null
-  const normalized = normalizeSymbol(raw)
-  if (normalized && normalized.includes("/")) return normalized
+  let normalized = normalizeSymbol(raw)
+  if (normalized && normalized.includes("/")) {
+    // Normalize stablecoin quotes to USD for consistent matching
+    // USDT, USDC, BUSD etc. should match USD candidates
+    const [base, quote] = normalized.split("/")
+    if (quote === "USDT" || quote === "USDC" || quote === "BUSD" || quote === "DAI") {
+      normalized = `${base}/USD`
+    }
+    return normalized
+  }
   const ticker = normalizeTicker(raw)
   return ticker || normalized
 }
@@ -1428,14 +1445,45 @@ async function fetchCrypto(db, preferences = {}) {
   return { items: enriched, source: baseSource }
 }
 
+// Staleness thresholds for data sources
+const STALENESS_THRESHOLDS = {
+  prices: 180000,    // 3 minutes - price data should be fresh
+  signals: 3600000,  // 1 hour - bot signals can be slightly older
+  pipeline: 600000,  // 10 minutes - overall pipeline health
+}
+
+/**
+ * Check if price data is stale and log warning
+ */
+function checkPriceStaleness(updatedAt, source) {
+  if (!updatedAt) return { isStale: true, ageMs: null }
+  const ageMs = Date.now() - updatedAt.getTime()
+  const isStale = ageMs > STALENESS_THRESHOLDS.prices
+  if (isStale) {
+    console.warn("mi_stale_prices", {
+      source,
+      ageMs,
+      thresholdMs: STALENESS_THRESHOLDS.prices,
+      lastUpdatedAt: updatedAt.toISOString(),
+    })
+  }
+  return { isStale, ageMs }
+}
+
 async function readLivePrices(db) {
   if (redisReady) {
     const redisSnapshot = await readRedisLatestPrices()
-    if (redisSnapshot) return redisSnapshot
+    if (redisSnapshot) {
+      const staleness = checkPriceStaleness(
+        redisSnapshot.updatedAt ? new Date(redisSnapshot.updatedAt) : null,
+        "redis"
+      )
+      return { ...redisSnapshot, staleness }
+    }
   }
-  if (!db) return { items: [], updatedAt: null }
+  if (!db) return { items: [], updatedAt: null, staleness: { isStale: true, ageMs: null } }
   const snap = await db.doc("market/prices").get()
-  if (!snap.exists) return { items: [], updatedAt: null }
+  if (!snap.exists) return { items: [], updatedAt: null, staleness: { isStale: true, ageMs: null } }
   const data = snap.data() || {}
   if (config.pipelineEventsEnabled) {
     await publishPipelineEvent(
@@ -1453,7 +1501,8 @@ async function readLivePrices(db) {
   const items = Array.isArray(data.items) ? data.items : []
   const updatedAt =
     typeof data.updatedAt?.toDate === "function" ? data.updatedAt.toDate() : null
-  return { items, updatedAt, source: "firestore" }
+  const staleness = checkPriceStaleness(updatedAt, "firestore")
+  return { items, updatedAt, source: "firestore", staleness }
 }
 
 async function fetchLiveSnapshotMovers(db, options) {
@@ -1866,7 +1915,15 @@ async function fetchForex(db, preferences = {}) {
 function getAssetKey(assetClass, symbol) {
   if (!symbol) return null
   if (assetClass === "stock") return normalizeTicker(symbol)
-  return normalizeSymbol(symbol)
+  let normalized = normalizeSymbol(symbol)
+  // Normalize stablecoin quotes to USD for consistent matching
+  if (normalized && normalized.includes("/")) {
+    const [base, quote] = normalized.split("/")
+    if (quote === "USDT" || quote === "USDC" || quote === "BUSD" || quote === "DAI") {
+      normalized = `${base}/USD`
+    }
+  }
+  return normalized
 }
 
 function getCandidateKey(candidate) {
@@ -2691,11 +2748,33 @@ async function loadNewsData(db, candidates, controls, universe, runId, runConfig
   if (config.marketDataGatewayUrl && cryptoSymbols.length > 0) {
     console.log(`Fetching Marketaux news for ${cryptoSymbols.length} crypto symbols`)
     let cryptoNews = []
+    
+    // Fetch in smaller batches for better coverage (Marketaux returns limited results for large symbol lists)
+    const batchSize = 5
+    const symbolBatches = []
+    for (let i = 0; i < cryptoSymbols.length; i += batchSize) {
+      symbolBatches.push(cryptoSymbols.slice(i, i + batchSize))
+    }
+    
+    // Fetch up to 6 batches (30 symbols) for better coverage
+    const maxBatches = 6
+    const batchesToFetch = symbolBatches.slice(0, maxBatches)
+    console.log(`Fetching ${batchesToFetch.length} batches of crypto news (${batchesToFetch.flat().length} symbols)`)
+    
+    const batchPromises = batchesToFetch.map(batch => 
+      fetchMarketauxNews(batch, "cryptocurrency").catch(err => {
+        console.error(`Crypto news batch fetch failed:`, err.message)
+        return []
+      })
+    )
+    
     try {
-      cryptoNews = await fetchMarketauxNews(cryptoSymbols, "cryptocurrency")
+      const batchResults = await Promise.all(batchPromises)
+      cryptoNews = batchResults.flat()
     } catch (err) {
       console.error("Crypto news fetch failed:", err.message)
     }
+    
     const { items: cryptoItems } = buildNewsSummary(
       cryptoNews,
       [],
@@ -2901,7 +2980,7 @@ async function fetchBotSignals(db, botWeights = new Map()) {
     .collectionGroup("signals")
     .where("createdAt", ">=", cutoff)
     .orderBy("createdAt", "desc")
-    .limit(200)
+    .limit(800) // Increased from 200 to capture more bot signals across all bots
     .get()
 
   const map = new Map()
@@ -3170,6 +3249,7 @@ function scoreTrade(candidate, signalData, side, options = {}) {
   const sentimentRatio =
     typeof newsScore === "number" ? clamp((newsScore + 1) / 2, 0, 1) : 0
 
+  // Profile: "dip" = buying a falling asset, "scalp" = riding momentum
   const profile = side === "buy" && changeBase < 0 ? "dip" : "scalp"
   const weightSet = resolveScoreWeights(
     candidate.assetClass,
@@ -3177,21 +3257,47 @@ function scoreTrade(candidate, signalData, side, options = {}) {
     weightsOverride,
     riskProfile
   )
-  const directionalChange = side === "sell" ? -changeBase : changeBase
+  
+  // FIXED: Momentum should measure MAGNITUDE of price movement, not direction
+  // The side (buy/sell) already captures direction - momentum is about strength
+  // A 10% move is high momentum regardless of whether it's up or down
   let momentumBase = 0
   if (profile === "dip") {
+    // Dip buying: reward bigger drops (more discount = better entry)
     momentumBase = changeBase < 0 ? Math.abs(changeBase) : 0
   } else {
-    momentumBase = directionalChange > 0 ? directionalChange : 0
+    // Scalp (trend following): reward magnitude of move in the signal direction
+    // For buy signals on rising assets: changeBase > 0 is good
+    // For sell signals on rising assets: changeBase > 0 is ALSO good (profit taking)
+    // For sell signals on falling assets: changeBase < 0 is good (shorting)
+    if (side === "sell") {
+      // Sell signal: magnitude of movement matters - big moves = opportunity
+      momentumBase = Math.abs(changeBase)
+    } else {
+      // Buy signal (not dip): only reward upward momentum
+      momentumBase = changeBase > 0 ? changeBase : 0
+    }
   }
-  const momentumRatio =
-    volatilityScale > 0
-      ? clamp(momentumBase / volatilityScale, 0, config.momentumRatioMax)
-      : 0
-  const momentumStrength =
-    config.momentumRatioMax > 0
-      ? clamp(momentumRatio / config.momentumRatioMax, 0, 1)
-      : 0
+  // IMPROVED: Use sigmoid-based momentum scoring for better differentiation
+  // Instead of volatility-scaling (which normalizes out the signal), use:
+  // - Logarithmic scaling for large moves (so 30% move scores higher than 3%)
+  // - Asset-class specific thresholds
+  const momentumThresholds = {
+    crypto: { low: 1, mid: 5, high: 15 },   // Crypto is more volatile
+    stock: { low: 0.5, mid: 2, high: 5 },   // Stocks move less
+    forex: { low: 0.1, mid: 0.5, high: 1.5 }, // Forex even less
+  }
+  const thresholds = momentumThresholds[candidate.assetClass] || momentumThresholds.stock
+  
+  // Convert momentum to 0-1 range using smooth sigmoid-like curve
+  // This ensures: 0% -> 0, threshold.mid -> 0.5, threshold.high -> 0.85
+  let momentumStrength = 0
+  if (momentumBase > 0) {
+    const normalized = momentumBase / thresholds.mid
+    // Sigmoid: tanh gives smooth 0-1 curve, multiply by 1.2 to reach ~0.9 at high
+    momentumStrength = clamp(Math.tanh(normalized * 0.8), 0, 1)
+  }
+  
   const momentumScore = momentumStrength * (weightSet.momentum ?? 0)
   const consensusScore = consensusRatio * (weightSet.consensus ?? 0)
   const liquidityScore = volumeRatio * (weightSet.liquidity ?? 0)
@@ -3242,19 +3348,35 @@ function scoreTrade(candidate, signalData, side, options = {}) {
 
   score = clamp(score, 0, 100)
 
+  // Confidence scoring: measures how reliable the score is, not how good the trade is
+  // Higher confidence = more data points confirming the score
   const confidenceParts = [
-    shortBlend !== null ? 0.25 : 0,
-    longChange !== null ? 0.25 : 0,
-    !volatility.fallback ? 0.2 : 0,
-    signalData && (signalData.total > 0 || signalData.weightedTotal > 0) ? 0.2 : 0,
-    volumeRatio > 0 ? 0.1 : 0,
+    // Data availability (up to 0.3)
+    shortBlend !== null ? 0.1 : 0,
+    longChange !== null ? 0.1 : 0,
+    !volatility.fallback ? 0.1 : 0,
+    
+    // Signal strength (up to 0.35)
+    signalData && signalData.total >= 10 ? 0.2 : 
+      signalData && signalData.total >= 5 ? 0.15 :
+      signalData && signalData.total >= 2 ? 0.1 :
+      signalData && signalData.total >= 1 ? 0.05 : 0,
+    // Consensus: bots agreeing on direction
+    consensusRatio >= 0.7 ? 0.15 : consensusRatio >= 0.4 ? 0.1 : consensusRatio >= 0.2 ? 0.05 : 0,
+    
+    // Volume/liquidity confirmation (up to 0.15)
+    volumeRatio >= 0.7 ? 0.15 : volumeRatio >= 0.3 ? 0.1 : volumeRatio > 0 ? 0.05 : 0,
+    
+    // News sentiment (up to 0.1)
+    typeof newsScore === "number" && Math.abs(newsScore) >= 0.5 ? 0.1 : 
+      typeof newsScore === "number" && Math.abs(newsScore) >= 0.2 ? 0.05 : 0,
+    
+    // Momentum strength (up to 0.1)
+    momentumStrength >= 0.7 ? 0.1 : momentumStrength >= 0.3 ? 0.05 : 0,
   ]
   let confidenceScore = confidenceParts.reduce((sum, value) => sum + value, 0)
-  if (longResolved.fallback) confidenceScore *= 0.85
-  if (volatility.fallback) confidenceScore *= 0.9
-  if (confidence > 0) {
-    confidenceScore = Math.max(confidenceScore, confidence * 0.4)
-  }
+  if (longResolved.fallback) confidenceScore *= 0.9
+  if (volatility.fallback) confidenceScore *= 0.95
   confidenceScore = clamp(confidenceScore, 0, 1)
 
   return {
@@ -4213,7 +4335,9 @@ function buildCandidateBatch(candidates, limit) {
         change1m: candidate.change1m,
         change5m: candidate.change5m,
         change15m: candidate.change15m,
+        change1h: candidate.change1h,  // Added for momentum scoring
         change24h: candidate.change24h,
+        change7d: candidate.change7d,  // Added for momentum scoring
         volume: candidate.volume,
         volatility1m: candidate.volatility1m,
         volatility5m: candidate.volatility5m,
@@ -4244,6 +4368,10 @@ function countCandidates(items) {
   )
 }
 
+/**
+ * Dispatch scan requests to bots with priority-based symbol selection.
+ * Prioritizes symbols with high momentum but low signal coverage.
+ */
 async function dispatchSignalRequests(db, picks, controls) {
   const intervalMs = Math.max(config.signalRequestIntervalMinutes, 0) * 60 * 1000
   const metaRef = db.doc("market/orchestrator")
@@ -4255,30 +4383,69 @@ async function dispatchSignalRequests(db, picks, controls) {
     if (elapsed < intervalMs) return
   }
 
+  // Build symbol buckets with priority scores
   const symbolBuckets = {
-    crypto: new Set(),
-    stock: new Set(),
-    forex: new Set(),
+    crypto: new Map(), // symbol -> priority score
+    stock: new Map(),
+    forex: new Map(),
   }
 
+  // Calculate priority based on momentum and existing signal coverage
   picks.forEach((item) => {
     const assetClass = item?.assetClass
     if (!assetClass || !symbolBuckets[assetClass]) return
     const normalized =
       assetClass === "stock" ? normalizeTicker(item.symbol) : normalizeSymbol(item.symbol)
     if (!normalized) return
-    symbolBuckets[assetClass].add(normalized)
+    
+    // Priority factors:
+    // - High absolute momentum = high priority (market is moving)
+    // - Low signal count = high priority (need more data)
+    // - High score = high priority (promising opportunity)
+    const momentum = Math.abs(
+      parseNumber(item.momentum?.change5m) ?? 
+      parseNumber(item.momentum?.change15m) ?? 
+      parseNumber(item.momentum?.change1h) ?? 0
+    )
+    const signalCount = item.signals?.total ?? 0
+    const score = parseNumber(item.score) ?? 50
+    
+    // Lower signal count = higher priority (inverse)
+    const signalPriority = Math.max(0, 10 - signalCount)
+    const priority = (momentum * 2) + signalPriority + (score / 20)
+    
+    const existing = symbolBuckets[assetClass].get(normalized)
+    if (!existing || priority > existing) {
+      symbolBuckets[assetClass].set(normalized, priority)
+    }
+  })
+
+  // Sort symbols by priority and take top N for each asset class
+  const maxSymbolsPerAsset = 30
+  const sortedBuckets = {
+    crypto: new Set(),
+    stock: new Set(),
+    forex: new Set(),
+  }
+  
+  Object.entries(symbolBuckets).forEach(([assetClass, symbolMap]) => {
+    const sorted = Array.from(symbolMap.entries())
+      .sort((a, b) => b[1] - a[1]) // Sort by priority descending
+      .slice(0, maxSymbolsPerAsset)
+      .map(([symbol]) => symbol)
+    sorted.forEach(s => sortedBuckets[assetClass].add(s))
   })
 
   const symbols = uniqueList([
-    ...symbolBuckets.crypto,
-    ...symbolBuckets.stock,
-    ...symbolBuckets.forex,
+    ...sortedBuckets.crypto,
+    ...sortedBuckets.stock,
+    ...sortedBuckets.forex,
   ])
   if (symbols.length === 0) return
 
   const botsSnap = await db.collection("bots").get()
   const batch = db.batch()
+  let botCommandCount = 0
 
   const resolveBotAssetClasses = (botData = {}) => {
     const preferred = typeof botData?.desiredConfig?.assetClass === "string"
@@ -4289,12 +4456,15 @@ async function dispatchSignalRequests(db, picks, controls) {
       : []
     const engine = String(botData?.engine || "").toLowerCase()
     const defaults =
-      engine === "freqtrade" ? ["crypto"] : engine === "backtrader" ? ["stock"] : []
+      engine === "freqtrade" ? ["crypto"] : 
+      engine === "backtrader" ? ["stock", "forex", "crypto"] : 
+      engine === "oanda" ? ["forex"] :
+      engine === "alpaca" ? ["stock"] : []
     const combined = preferred.length > 0 ? preferred : capabilities.length > 0 ? capabilities : defaults
     return uniqueList(
       combined
         .map((asset) => String(asset || "").toLowerCase())
-        .filter((asset) => asset && symbolBuckets[asset])
+        .filter((asset) => asset && sortedBuckets[asset])
     )
   }
 
@@ -4302,11 +4472,21 @@ async function dispatchSignalRequests(db, picks, controls) {
     const botId = doc.id
     if (botId === MARKET_SIGNAL_BOT_ID) return
     const botData = doc.data() || {}
+    
+    // Skip offline bots
+    const status = String(botData?.status || "").toLowerCase()
+    if (status === "offline" || status === "error") return
+    
     const assetClasses = resolveBotAssetClasses(botData)
     const payloadSymbols = uniqueList(
-      assetClasses.flatMap((assetClass) => Array.from(symbolBuckets[assetClass] || []))
+      assetClasses.flatMap((assetClass) => Array.from(sortedBuckets[assetClass] || []))
     )
     if (payloadSymbols.length === 0) return
+    
+    // Limit symbols per bot to avoid overwhelming
+    const maxSymbolsPerBot = 25
+    const limitedSymbols = payloadSymbols.slice(0, maxSymbolsPerBot)
+    
     const commandRef = db.collection("bots").doc(botId).collection("commands").doc()
     batch.set(commandRef, {
       type: "scan",
@@ -4314,11 +4494,13 @@ async function dispatchSignalRequests(db, picks, controls) {
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       requestedBy: "market-intel",
       payload: {
-        symbols: payloadSymbols,
+        symbols: limitedSymbols,
         horizon: controls?.trendHorizon || "15m",
         assetClass: assetClasses.length === 1 ? assetClasses[0] : undefined,
+        priority: "normal",
       },
     })
+    botCommandCount++
   })
 
   batch.set(
@@ -4326,12 +4508,195 @@ async function dispatchSignalRequests(db, picks, controls) {
     {
       lastDispatchAt: admin.firestore.FieldValue.serverTimestamp(),
       symbolCount: symbols.length,
+      botCommandCount,
       symbols,
     },
     { merge: true }
   )
 
   await batch.commit()
+  console.log(`Dispatched scan commands to ${botCommandCount} bots for ${symbols.length} symbols`)
+}
+
+/**
+ * Auto paper trading: when bots are in "paper" mode, automatically
+ * execute high-confidence trades based on actionBoard signals.
+ * 
+ * For crypto: dispatches to Freqtrade (which handles paper via dry_run)
+ * For stocks/forex: uses Firestore-based paper wallet
+ */
+async function dispatchAutoPaperTrades(db, actionBoard) {
+  // Build price map from actionBoard items (they have prices embedded)
+  const priceMap = new Map()
+  const allItems = [
+    ...(actionBoard.buys || []),
+    ...(actionBoard.sells || []),
+  ]
+  allItems.forEach((item) => {
+    if (item.symbol && item.price) {
+      priceMap.set(item.symbol.toUpperCase(), item.price)
+    }
+  })
+
+  // Get bots in paper mode
+  const botsSnap = await db.collection("bots").get()
+  const paperBots = []
+  
+  botsSnap.docs.forEach((doc) => {
+    const botData = doc.data()
+    const mode = String(botData?.desiredConfig?.mode || "signal").toLowerCase()
+    if (mode === "paper") {
+      paperBots.push({
+        id: doc.id,
+        engine: botData.engine,
+        assetClass: botData.desiredConfig?.assetClass,
+        maxDailyLoss: botData.desiredConfig?.risk?.maxDailyLoss || 100,
+        maxPositionSize: botData.desiredConfig?.risk?.maxPositionSize || 0.25,
+      })
+    }
+  })
+
+  if (paperBots.length === 0) {
+    return // No bots in paper mode
+  }
+
+  // Get today's paper trade count to enforce limits
+  const today = new Date().toISOString().split("T")[0]
+  const paperMetaRef = db.doc("market/paper_trading_meta")
+  const paperMeta = (await paperMetaRef.get()).data() || {}
+  const todayStats = paperMeta[today] || { tradeCount: 0, totalValue: 0 }
+
+  // Limit: max 10 auto paper trades per day
+  const MAX_DAILY_AUTO_TRADES = 10
+  if (todayStats.tradeCount >= MAX_DAILY_AUTO_TRADES) {
+    console.log(`Auto paper trading limit reached for today (${todayStats.tradeCount}/${MAX_DAILY_AUTO_TRADES})`)
+    return
+  }
+
+  // Select high-confidence trades from actionBoard
+  // Only pick trades with score >= 70 and strong consensus
+  const highConfidenceTrades = []
+  
+  const buys = actionBoard.buys || []
+  const sells = actionBoard.sells || []
+  
+  for (const trade of [...buys, ...sells]) {
+    const score = parseNumber(trade.score) ?? 0
+    const signalConfidence = parseNumber(trade.signals?.avgConfidence) ?? 0
+    const signalCount = trade.signals?.total ?? 0
+    
+    // High confidence: score >= 70, multiple signals agreeing
+    if (score >= 70 && signalCount >= 2 && signalConfidence >= 0.6) {
+      const symbol = trade.symbol
+      const price = priceMap.get(symbol?.toUpperCase())
+      if (price && price > 0) {
+        highConfidenceTrades.push({
+          symbol,
+          assetClass: trade.assetClass,
+          side: trade.side || (buys.includes(trade) ? "buy" : "sell"),
+          score,
+          price,
+          signalCount,
+          signalConfidence,
+        })
+      }
+    }
+  }
+
+  if (highConfidenceTrades.length === 0) {
+    return // No high-confidence trades
+  }
+
+  // Sort by score and take top trades
+  highConfidenceTrades.sort((a, b) => b.score - a.score)
+  const tradesToExecute = highConfidenceTrades.slice(0, MAX_DAILY_AUTO_TRADES - todayStats.tradeCount)
+
+  console.log(`Auto paper trading: ${tradesToExecute.length} high-confidence trades to execute`)
+
+  const batch = db.batch()
+  let executedCount = 0
+
+  for (const trade of tradesToExecute) {
+    // Find appropriate bot for this asset class
+    const bot = paperBots.find((b) => {
+      if (trade.assetClass === "crypto") {
+        return b.engine === "freqtrade" || b.assetClass === "crypto"
+      }
+      return b.assetClass === trade.assetClass
+    })
+
+    if (!bot) {
+      continue // No bot available for this asset class
+    }
+
+    if (bot.engine === "freqtrade") {
+      // Dispatch trade command to Freqtrade
+      const commandRef = db.collection("bots").doc(bot.id).collection("commands").doc()
+      batch.set(commandRef, {
+        type: "execute_trade",
+        status: "queued",
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        requestedBy: "market-intel-auto-paper",
+        payload: {
+          pair: normalizePairForFreqtrade(trade.symbol),
+          side: trade.side,
+          price: trade.price,
+          amount: bot.maxPositionSize,
+          reason: `Auto paper: score=${trade.score}, signals=${trade.signalCount}`,
+        },
+      })
+      executedCount++
+    } else {
+      // Use Firestore paper wallet (for stocks/forex)
+      // This will be handled by the paper trading monitor
+      const paperTradeRef = db.collection("paper_trade_queue").doc()
+      batch.set(paperTradeRef, {
+        symbol: trade.symbol,
+        assetClass: trade.assetClass,
+        side: trade.side,
+        price: trade.price,
+        score: trade.score,
+        signalCount: trade.signalCount,
+        botId: bot.id,
+        status: "pending",
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        reason: `Auto paper: score=${trade.score}, signals=${trade.signalCount}`,
+      })
+      executedCount++
+    }
+  }
+
+  // Update daily stats
+  batch.set(paperMetaRef, {
+    [today]: {
+      tradeCount: todayStats.tradeCount + executedCount,
+      totalValue: todayStats.totalValue,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+  }, { merge: true })
+
+  if (executedCount > 0) {
+    await batch.commit()
+    console.log(`Auto paper trading: dispatched ${executedCount} trades`)
+  }
+}
+
+function normalizePairForFreqtrade(symbol) {
+  if (!symbol) return null
+  // Convert BTC/USD to BTC/USDT (Freqtrade typically uses USDT pairs)
+  let cleaned = String(symbol).toUpperCase().trim()
+  if (cleaned.endsWith("/USD")) {
+    cleaned = cleaned.replace("/USD", "/USDT")
+  }
+  if (!cleaned.includes("/")) {
+    // Try to split common patterns
+    if (cleaned.endsWith("USD")) {
+      cleaned = cleaned.slice(0, -3) + "/USDT"
+    } else if (cleaned.endsWith("USDT")) {
+      cleaned = cleaned.slice(0, -4) + "/USDT"
+    }
+  }
+  return cleaned
 }
 
 async function safeFetch(fetcher) {
@@ -4404,6 +4769,89 @@ function buildFetchStatus({ items, error, preferences, listKey, source }) {
     source,
     error: null,
   }
+}
+
+/**
+ * Aggregate health status from all pipeline services into a unified document
+ * This provides a single source of truth for pipeline health monitoring
+ */
+async function aggregatePipelineHealth(db, marketIntelHealth) {
+  const now = Date.now()
+  
+  // Read health status from other services
+  const [priceStreamerSnap, agentSnap] = await Promise.all([
+    db.doc("pipeline/price_streamer").get().catch(() => null),
+    db.doc("pipeline/relayorb_agent").get().catch(() => null),
+  ])
+  
+  const priceStreamer = priceStreamerSnap?.exists ? priceStreamerSnap.data() : null
+  const agent = agentSnap?.exists ? agentSnap.data() : null
+  
+  // Check staleness of each service
+  const checkServiceHealth = (data, serviceName) => {
+    if (!data) return { status: "unknown", isStale: true, lastSeen: null }
+    
+    const heartbeatAt = data.heartbeatAt?.toDate?.() || data.heartbeatAt
+    const lastSeen = heartbeatAt ? new Date(heartbeatAt).getTime() : null
+    const ageMs = lastSeen ? now - lastSeen : null
+    const isStale = ageMs === null || ageMs > STALENESS_THRESHOLDS.pipeline
+    
+    return {
+      status: isStale ? "stale" : data.status || "unknown",
+      isStale,
+      lastSeen: lastSeen ? new Date(lastSeen).toISOString() : null,
+      ageMs,
+      details: data,
+    }
+  }
+  
+  const services = {
+    market_intel: {
+      status: marketIntelHealth.status,
+      isStale: false,
+      lastSeen: new Date().toISOString(),
+      ageMs: 0,
+    },
+    price_streamer: checkServiceHealth(priceStreamer, "price_streamer"),
+    relayorb_agent: checkServiceHealth(agent, "relayorb_agent"),
+  }
+  
+  // Determine overall pipeline status
+  const statuses = Object.values(services).map(s => s.status)
+  const hasError = statuses.includes("error")
+  const hasStale = statuses.includes("stale") || statuses.includes("unknown")
+  const hasDegraded = statuses.includes("degraded")
+  
+  const overallStatus = hasError ? "error" 
+    : hasStale ? "stale"
+    : hasDegraded ? "degraded"
+    : "ok"
+  
+  const pipelineStatus = {
+    status: overallStatus,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    services,
+    summary: {
+      ok: statuses.filter(s => s === "ok").length,
+      degraded: statuses.filter(s => s === "degraded").length,
+      stale: statuses.filter(s => s === "stale" || s === "unknown").length,
+      error: statuses.filter(s => s === "error").length,
+    },
+    thresholds: {
+      priceStaleMs: STALENESS_THRESHOLDS.prices,
+      signalStaleMs: STALENESS_THRESHOLDS.signals,
+      pipelineStaleMs: STALENESS_THRESHOLDS.pipeline,
+    },
+  }
+  
+  await db.doc("pipeline/status").set(pipelineStatus, { merge: true })
+  
+  console.log("mi_pipeline_health", {
+    status: overallStatus,
+    services: Object.fromEntries(
+      Object.entries(services).map(([k, v]) => [k, v.status])
+    ),
+  })
 }
 
 async function run() {
@@ -5136,7 +5584,65 @@ async function run() {
 
   await emitMarketSignals(db, trendingByHorizon, controls)
 
-  console.log("mi_run_complete", { runId, count: items.length })
+  // Write pipeline health status for UI visibility
+  const endedAt = new Date()
+  const durationMs = endedAt.getTime() - startedAt.getTime()
+  const pipelineHealth = {
+    service: "market_intel",
+    status: fetchStatus.crypto.status === "ok" && fetchStatus.stock.status === "ok" && fetchStatus.forex.status === "ok"
+      ? "ok"
+      : "degraded",
+    runId,
+    startedAt: startedAt.toISOString(),
+    endedAt: endedAt.toISOString(),
+    durationMs,
+    heartbeatAt: admin.firestore.FieldValue.serverTimestamp(),
+    dataSources: {
+      crypto: {
+        status: fetchStatus.crypto.status,
+        count: fetchStatus.crypto.count,
+        source: fetchStatus.crypto.source,
+        error: fetchStatus.crypto.error || null,
+      },
+      stock: {
+        status: fetchStatus.stock.status,
+        count: fetchStatus.stock.count,
+        source: fetchStatus.stock.source,
+        error: fetchStatus.stock.error || null,
+      },
+      forex: {
+        status: fetchStatus.forex.status,
+        count: fetchStatus.forex.count,
+        source: fetchStatus.forex.source,
+        error: fetchStatus.forex.error || null,
+      },
+    },
+    signals: {
+      count: botSignals.size,
+      lookbackMinutes: config.signalLookbackMinutes,
+    },
+    output: {
+      hotTrades: analyzedItems.length,
+      trending: Object.keys(trendingByHorizon).length,
+      popular: popularItems.length,
+    },
+  }
+  
+  await db.doc("pipeline/market_intel").set(pipelineHealth, { merge: true }).catch((err) => {
+    console.error("Pipeline health write failed", err.message)
+  })
+
+  // Aggregate all service health into unified pipeline status
+  await aggregatePipelineHealth(db, pipelineHealth).catch((err) => {
+    console.error("Pipeline aggregation failed", err.message)
+  })
+
+  // Auto paper trading: dispatch high-confidence signals to execution bots
+  await dispatchAutoPaperTrades(db, analyzedActionBoard).catch((err) => {
+    console.error("Auto paper trade dispatch failed", err.message)
+  })
+
+  console.log("mi_run_complete", { runId, count: items.length, durationMs })
 
   if (redis) {
     await redis.quit().catch(() => {})
