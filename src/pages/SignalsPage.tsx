@@ -8,6 +8,7 @@ import {
 } from "firebase/firestore"
 import type { DocumentData, QuerySnapshot } from "firebase/firestore"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { db, firebaseEnabled } from "@/lib/firebase"
 import type { BotSignalDoc } from "@/lib/types"
@@ -41,6 +42,7 @@ function extractSignalSymbol(signal: BotSignalDoc) {
 export default function SignalsPage() {
   const [signals, setSignals] = useState<BotSignalDoc[]>([])
   const [loading, setLoading] = useState(() => firebaseEnabled && !!db)
+  const [assetFilter, setAssetFilter] = useState<"all" | "crypto" | "stock" | "forex">("all")
 
   const streamItems = useMemo(
     () =>
@@ -54,6 +56,16 @@ export default function SignalsPage() {
         .filter((entry) => entry.symbol),
     [signals]
   )
+
+  const filteredSignals = useMemo(() => {
+    if (assetFilter === "all") return signals
+    return signals.filter((signal) => {
+      const assetClass =
+        signal.evaluation?.assetClass ||
+        (typeof signal.data?.assetClass === "string" ? signal.data.assetClass : undefined)
+      return assetClass === assetFilter
+    })
+  }, [signals, assetFilter])
 
   useStreamSymbols("signals", {
     items: streamItems,
@@ -123,19 +135,44 @@ export default function SignalsPage() {
       <Card className="reveal" style={{ "--delay": "120ms" } as CSSProperties}>
         <CardHeader className="flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base">Signal Feed</CardTitle>
-          <Badge variant="outline">{signals.length}</Badge>
+          <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-1 rounded-full border border-border/60 bg-background/70 p-1">
+              {[
+                { value: "all", label: "All" },
+                { value: "crypto", label: "Crypto" },
+                { value: "stock", label: "Stocks" },
+                { value: "forex", label: "FX" },
+              ].map((filter) => (
+                <Button
+                  key={filter.value}
+                  type="button"
+                  size="sm"
+                  variant={assetFilter === filter.value ? "secondary" : "ghost"}
+                  className="h-7 rounded-full px-3 text-xs"
+                  onClick={() =>
+                    setAssetFilter(filter.value as "all" | "crypto" | "stock" | "forex")
+                  }
+                >
+                  {filter.label}
+                </Button>
+              ))}
+            </div>
+            <Badge variant="outline">{filteredSignals.length}</Badge>
+          </div>
         </CardHeader>
         <CardContent className="space-y-3">
           {!firebaseEnabled ? (
             <div className="text-sm opacity-70">Configure Firebase in <code>.env</code> to view signals.</div>
           ) : loading ? (
             <div className="text-sm opacity-70">Loading signals…</div>
-          ) : signals.length === 0 ? (
+          ) : filteredSignals.length === 0 ? (
             <div className="text-sm opacity-70">
-              No signals yet. Adapters should write to <code>bots/{'{botId}'}/signals</code>.
+              {signals.length === 0
+                ? <>No signals yet. Adapters should write to <code>bots/{'{botId}'}/signals</code>.</>
+                : `No ${assetFilter} signals found. Try a different filter.`}
             </div>
           ) : (
-            signals.map((signal) => (
+            filteredSignals.map((signal) => (
               <div key={signal.id} className="rounded-lg border border-border/60 bg-background/70 p-3">
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
                   <span className="font-mono">{signal.botId}</span>
