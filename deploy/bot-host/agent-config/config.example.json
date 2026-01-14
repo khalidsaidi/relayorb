@@ -4,36 +4,6 @@
   },
   "bots": [
     {
-      "id": "freqtrade-1",
-      "name": "Freqtrade Paper",
-      "engine": "freqtrade",
-      "pollIntervalSeconds": 10,
-      "desiredConfig": {
-        "mode": "signal",
-        "exchange": "kraken",
-        "timeframe": "5m",
-        "pairs": ["BTC/EUR", "ETH/EUR"],
-        "strategy": "mean-reversion-v1",
-        "risk": {
-          "maxPositionSize": 0.5,
-          "maxDailyLoss": 250
-        },
-        "advanced": {
-          "notes": "Freqtrade strategy overrides"
-        }
-      },
-      "capabilities": {
-        "exchanges": ["kraken", "coinbase", "kucoin", "bybit", "okx"],
-        "timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"],
-        "modes": ["signal", "paper", "live"]
-      },
-      "api": {
-        "baseUrl": "http://freqtrade:8080/api/v1",
-        "username": "Freqtrader",
-        "password": "CHANGE_ME"
-      }
-    },
-    {
       "id": "backtrader-stocks",
       "name": "Backtrader Stocks",
       "engine": "backtrader",

@@ -2394,41 +2394,9 @@ export default function DashboardPage() {
                       </div>
                     </div>
                     <div className="mt-4 space-y-2">
-                      <Label>Bot weights (0-5)</Label>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        <div className="space-y-1">
-                          <Label className="text-xs text-muted-foreground">Freqtrade</Label>
-                          <Input
-                            type="number"
-                            inputMode="numeric"
-                            min={BOT_WEIGHT_MIN}
-                            max={BOT_WEIGHT_MAX}
-                            step={0.1}
-                            value={botWeightFreqtrade}
-                            onChange={(event) => {
-                              const next = Number(event.target.value)
-                              if (Number.isFinite(next)) {
-                                setBotWeightFreqtrade(clampBotWeight(next))
-                              }
-                            }}
-                          />
-                          <input
-                            type="range"
-                            min={BOT_WEIGHT_MIN}
-                            max={BOT_WEIGHT_MAX}
-                            step={0.1}
-                            value={botWeightFreqtrade}
-                            onChange={(event) => {
-                              const next = Number(event.target.value)
-                              if (Number.isFinite(next)) {
-                                setBotWeightFreqtrade(clampBotWeight(next))
-                              }
-                            }}
-                            className="h-2 w-full cursor-pointer accent-[hsl(var(--primary))]"
-                          />
-                        </div>
-                        <div className="space-y-1">
-                          <Label className="text-xs text-muted-foreground">Backtrader</Label>
+                      <Label>Bot weight (0-5)</Label>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Backtrader</Label>
                           <Input
                             type="number"
                             inputMode="numeric"
@@ -2457,10 +2425,9 @@ export default function DashboardPage() {
                             }}
                             className="h-2 w-full cursor-pointer accent-[hsl(var(--primary))]"
                           />
-                        </div>
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        Weights multiply signal influence per engine.
+                        Weight multiplies signal influence.
                       </div>
                     </div>
                     <div className="mt-4 space-y-2">

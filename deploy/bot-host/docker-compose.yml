@@ -7,14 +7,11 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
       - RELAYORB_CONFIG_PATH=/config/config.json
       - NODE_ENV=production
-      - RELAYORB_FREQTRADE_CONFIG=/relayorb/freqtrade/user_data/config.json
       - REDIS_URL=${REDIS_URL:-redis://10.19.89.107:6379}
       - REDIS_PREFIX=${REDIS_PREFIX:-relayorb}
       - PIPELINE_EVENTS_ENABLED=${PIPELINE_EVENTS_ENABLED:-true}
       - PIPELINE_EVENTS_STREAM=${PIPELINE_EVENTS_STREAM:-relayorb:pipeline_events}
       - PIPELINE_EVENTS_RUN_ENV=${PIPELINE_EVENTS_RUN_ENV:-prod}
-      - REDIS_URL=${REDIS_URL:-}
-      - REDIS_PREFIX=${REDIS_PREFIX:-relayorb}
       - RELAYORB_EVENT_CHANNEL=${RELAYORB_EVENT_CHANNEL:-}
       - RELAYORB_EVENT_AUTO_SCAN=${RELAYORB_EVENT_AUTO_SCAN:-true}
       - RELAYORB_EVENT_BATCH_LIMIT=${RELAYORB_EVENT_BATCH_LIMIT:-25}
@@ -23,9 +20,7 @@ services:
     volumes:
       - ./agent-config/config.json:/config/config.json:ro
       - ./secrets/service-account.json:/secrets/service-account.json:ro
-      - ./freqtrade/user_data:/relayorb/freqtrade/user_data
     depends_on:
-      - freqtrade
       - backtrader
 
   relayorb-updater:
@@ -45,18 +40,6 @@ services:
       - ./:/host:ro
     depends_on:
       - relayorb-agent
-
-  freqtrade:
-    image: freqtradeorg/freqtrade:stable
-    restart: unless-stopped
-    volumes:
-      - ./freqtrade/user_data:/freqtrade/user_data
-    command: >
-      trade
-      --logfile /freqtrade/user_data/logs/freqtrade.log
-      --db-url sqlite:////freqtrade/user_data/tradesv3.sqlite
-      --config /freqtrade/user_data/config.json
-      --strategy SampleStrategy
 
   backtrader:
     build: ./backtrader

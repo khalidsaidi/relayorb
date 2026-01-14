@@ -12,7 +12,7 @@ Each adapter should:
 ## Expected Collections
 
 - `bots/{botId}`
-  - `engine` (freqtrade, backtrader, alpaca, oanda)
+  - `engine` (backtrader)
   - `status` (online/offline/error/idle)
   - `lastHeartbeat`
   - `desiredConfig` (mode/exchange/pairs/timeframe)

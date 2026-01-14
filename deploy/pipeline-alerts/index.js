@@ -58,6 +58,16 @@ const config = {
     "pipeline-alerts",
   ],
 
+  // Expected bots that should be running and generating signals
+  expectedBots: [
+    { id: "backtrader-crypto", engine: "backtrader", required: true },
+    { id: "backtrader-stocks", engine: "backtrader", required: true },
+    { id: "backtrader-forex", engine: "backtrader", required: true },
+  ],
+
+  // Zombie detection: bot is "online" but hasn't produced signals in this time
+  zombieThresholdMs: 60 * 60 * 1000, // 1 hour - if no signals in 1 hour while "online", it's a zombie
+
   // GCP region for Cloud Run (production is in us-west1)
   gcpRegion: process.env.GCP_REGION || "us-west1",
 }
@@ -377,28 +387,57 @@ async function runVerification() {
       addCheck("intel", "hot_trades_missing", "failed", "Hot trades document missing")
     }
 
-    // Check bot signals freshness
+    // Check bot signals freshness and zombie detection
     const botsSnap = await db.collection("bots").get()
+    const foundBotIds = new Set()
+
     for (const botDoc of botsSnap.docs) {
       const bot = botDoc.data()
-      // Skip market-intel pseudo-bot
+      foundBotIds.add(botDoc.id)
+
+      // Skip market-intel pseudo-bot (it's a pipeline, not a trading bot)
       if (bot.engine === "market-intel") continue
-      // Skip bots in "paper" mode - they execute trades, not generate signals
-      if (bot.desiredConfig?.mode === "paper") continue
-      
+
       const signalsSnap = await db.collection("bots").doc(botDoc.id).collection("signals")
         .orderBy("createdAt", "desc")
         .limit(1)
         .get()
-      
+
       if (!signalsSnap.empty) {
         const latestSignal = signalsSnap.docs[0].data()
         const signalAge = Date.now() - (latestSignal.createdAt?.toMillis?.() || 0)
-        
+
+        // Check for stale signals (warning after 30 min)
         if (signalAge > config.thresholds.signalFreshness) {
-          addCheck("signals", `${botDoc.id}_stale`, "warning", 
+          addCheck("signals", `${botDoc.id}_stale`, "warning",
             `${botDoc.id} signals are ${Math.round(signalAge / 60000)} minutes old`)
         }
+
+        // Zombie detection: bot is "online" but hasn't produced signals in a long time
+        const isOnline = bot.status === "online"
+        const heartbeatAge = Date.now() - (bot.lastHeartbeat?.toMillis?.() || 0)
+        const heartbeatFresh = heartbeatAge < config.thresholds.heartbeatFreshness
+
+        if (isOnline && heartbeatFresh && signalAge > config.zombieThresholdMs) {
+          addCheck("bots", `${botDoc.id}_zombie`, "failed",
+            `${botDoc.id} is zombie: online with fresh heartbeat but no signals for ${Math.round(signalAge / 60000)} minutes`,
+            { lastSignalAge: signalAge, lastHeartbeatAge: heartbeatAge, mode: bot.desiredConfig?.mode })
+        }
+      } else {
+        // Bot has never produced signals
+        if (bot.status === "online") {
+          addCheck("bots", `${botDoc.id}_no_signals`, "warning",
+            `${botDoc.id} is online but has never produced signals`)
+        }
+      }
+    }
+
+    // Check for expected bots that are missing
+    for (const expectedBot of config.expectedBots) {
+      if (!foundBotIds.has(expectedBot.id)) {
+        const severity = expectedBot.required ? "failed" : "warning"
+        addCheck("bots", `${expectedBot.id}_missing`, severity,
+          `Expected bot ${expectedBot.id} (${expectedBot.engine}) is not registered`)
       }
     }
 

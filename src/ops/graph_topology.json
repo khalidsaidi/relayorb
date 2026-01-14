@@ -16,8 +16,7 @@
     { "id": "new_batch", "label": "Redis Stream: new_batch", "type": "queue", "category": "queue", "lane": 5, "orderHint": 1, "x": 1100, "y": 440, "core": true },
     { "id": "refresh_service", "label": "Refresh Service", "type": "service", "category": "service", "lane": 5, "orderHint": 2, "x": 1100, "y": 540, "core": true },
     { "id": "relayorb_agent", "label": "RelayOrb Agent", "type": "service", "category": "bot", "lane": 6, "orderHint": 1, "x": 1100, "y": 640, "core": true },
-    { "id": "bot_engine:freqtrade", "label": "Freqtrade", "type": "bot", "category": "bot", "lane": 6, "orderHint": 2, "x": 1300, "y": 620, "core": false },
-    { "id": "bot_engine:backtrader", "label": "Backtrader", "type": "bot", "category": "bot", "lane": 6, "orderHint": 3, "x": 1300, "y": 700, "core": false },
+    { "id": "bot_engine:backtrader", "label": "Backtrader", "type": "bot", "category": "bot", "lane": 6, "orderHint": 2, "x": 1300, "y": 700, "core": false },
     { "id": "bot_signals", "label": "Bot Signals (Firestore)", "type": "processor", "category": "bot", "lane": 6, "orderHint": 5, "x": 1100, "y": 720, "core": true },
     { "id": "signal_evaluator", "label": "Signal Evaluator (Performance)", "type": "service", "category": "score", "lane": 7, "orderHint": 1, "x": 1100, "y": 840, "core": true },
     { "id": "signal_performance", "label": "Signal Performance Report", "type": "processor", "category": "score", "lane": 7, "orderHint": 2, "x": 1300, "y": 860, "core": false }
@@ -40,7 +39,6 @@
     { "id": "refresh_service->firestore", "from": "refresh_service", "to": "firestore", "kind": "write", "core": false },
     { "id": "refresh_service->signal_evaluator", "from": "refresh_service", "to": "signal_evaluator", "kind": "trigger", "core": true, "label": "trigger", "labelMode": "always" },
     { "id": "firestore->relayorb_agent", "from": "firestore", "to": "relayorb_agent", "kind": "read", "core": true },
-    { "id": "relayorb_agent->bot_engine:freqtrade", "from": "relayorb_agent", "to": "bot_engine:freqtrade", "kind": "call", "core": false, "label": "run" },
     { "id": "relayorb_agent->bot_engine:backtrader", "from": "relayorb_agent", "to": "bot_engine:backtrader", "kind": "call", "core": false, "label": "run" },
     { "id": "relayorb_agent->bot_signals", "from": "relayorb_agent", "to": "bot_signals", "kind": "write", "core": true, "label": "write signals" },
     { "id": "bot_signals->firestore", "from": "bot_signals", "to": "firestore", "kind": "write", "core": false },
@@ -61,7 +59,7 @@
     { "id": "services", "label": "Services", "nodeIds": ["price_streamer", "market_intel", "refresh_service", "relayorb_agent", "signal_evaluator", "market_data_gateway", "chart_proxy"] },
     { "id": "processors", "label": "Processors", "nodeIds": ["movers_15m", "candidates_merge", "score_compute", "bot_signals", "signal_performance"] },
     { "id": "providers", "label": "Providers", "nodeIds": ["provider:fmp", "provider:coingecko", "provider:marketaux"] },
-    { "id": "bots", "label": "Bots", "nodeIds": ["bot_engine:freqtrade", "bot_engine:backtrader"] },
+    { "id": "bots", "label": "Bots", "nodeIds": ["bot_engine:backtrader"] },
     { "id": "ui", "label": "UI", "nodeIds": ["ui"] }
   ]
 }
