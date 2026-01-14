@@ -14,6 +14,8 @@
 import admin from "firebase-admin"
 import sgMail from "@sendgrid/mail"
 import { Logging } from "@google-cloud/logging"
+import { JobsClient } from "@google-cloud/run"
+import { createClient } from "redis"
 
 // Configuration
 const config = {
@@ -23,7 +25,11 @@ const config = {
   // Note: For SendGrid, the from email must be verified as a Sender Identity
   // For new accounts, you need to verify at: https://app.sendgrid.com/settings/sender_auth
   fromEmail: process.env.ALERT_FROM_EMAIL || "alerts@relayorb.app",
-  
+
+  // Redis configuration for pipeline events
+  redisUrl: process.env.REDIS_URL || "",
+  pipelineEventsStream: process.env.PIPELINE_EVENTS_STREAM || "pipeline_events",
+
   // Thresholds
   thresholds: {
     signalFreshness: 30 * 60 * 1000,      // 30 minutes
@@ -33,10 +39,10 @@ const config = {
     errorCountThreshold: 5,               // Alert if more than N errors in lookback
     errorLookbackMinutes: 15,             // Check errors in last N minutes
   },
-  
+
   // Alert cooldown: don't send same alert within this period
   alertCooldownMs: 30 * 60 * 1000, // 30 minutes
-  
+
   // Services to monitor for errors
   monitoredServices: [
     "relayorb-market-data-gateway",
@@ -44,6 +50,16 @@ const config = {
     "relayorb-market-intel",
     "relayorb-signal-evaluator",
   ],
+
+  // Expected Cloud Run jobs that should be deployed (us-west1 production)
+  expectedJobs: [
+    "relayorb-market-intel",
+    "relayorb-signal-evaluator",
+    "pipeline-alerts",
+  ],
+
+  // GCP region for Cloud Run (production is in us-west1)
+  gcpRegion: process.env.GCP_REGION || "us-west1",
 }
 
 // Initialize Firebase
@@ -59,6 +75,16 @@ if (config.sendgridApiKey) {
 
 // Initialize Cloud Logging client
 const logging = new Logging({ projectId: config.gcpProjectId })
+
+// Initialize Cloud Run Jobs client
+const runJobsClient = new JobsClient()
+
+// Initialize Redis client for pipeline events
+let redisClient = null
+if (config.redisUrl) {
+  redisClient = createClient({ url: config.redisUrl })
+  redisClient.on("error", (err) => console.error("Redis client error:", err))
+}
 
 // ============================================================================
 // CLOUD LOGGING CHECKS
@@ -131,6 +157,128 @@ async function checkServiceErrors() {
   return errors
 }
 
+async function checkPipelineStreamErrors() {
+  if (!redisClient || !config.redisUrl) {
+    return []
+  }
+
+  const errors = []
+  const lookbackMs = config.thresholds.errorLookbackMinutes * 60 * 1000
+  const startTime = Date.now() - lookbackMs
+
+  try {
+    // Connect to Redis if not already connected
+    if (!redisClient.isOpen) {
+      await redisClient.connect()
+    }
+
+    // Read recent events from the stream
+    // Using XREVRANGE to get events in reverse order (newest first)
+    const streamKey = config.pipelineEventsStream
+    const count = 1000 // Check last 1000 events
+    const entries = await redisClient.xRevRange(streamKey, "+", "-", { COUNT: count })
+
+    // Group errors by station/event type
+    const errorGroups = new Map()
+
+    for (const entry of entries) {
+      try {
+        const payload = entry.message?.payload
+        if (!payload) continue
+
+        const event = JSON.parse(payload)
+
+        // Check if event is an error and within lookback window
+        if (event.severity === "error" && event.timestamp) {
+          const eventTime = new Date(event.timestamp).getTime()
+          if (eventTime < startTime) continue
+
+          // Create a grouping key based on event type and station
+          const stationId = event.stationId || "unknown"
+          const eventType = event.eventType || "unknown"
+          const groupKey = `${stationId}:${eventType}`
+
+          if (!errorGroups.has(groupKey)) {
+            errorGroups.set(groupKey, {
+              stationId,
+              eventType,
+              count: 0,
+              samples: [],
+            })
+          }
+
+          const group = errorGroups.get(groupKey)
+          group.count++
+
+          // Keep up to 3 sample error messages
+          if (group.samples.length < 3 && event.error?.message) {
+            group.samples.push({
+              message: event.error.message,
+              timestamp: event.timestamp,
+              meta: event.meta,
+            })
+          }
+        }
+      } catch (err) {
+        // Skip malformed event
+        console.error("Failed to parse pipeline event:", err.message)
+      }
+    }
+
+    // Convert error groups to array and add to results
+    for (const [groupKey, data] of errorGroups.entries()) {
+      errors.push({
+        source: "pipeline_stream",
+        groupKey,
+        stationId: data.stationId,
+        eventType: data.eventType,
+        errorCount: data.count,
+        samples: data.samples,
+      })
+    }
+  } catch (err) {
+    console.error("Failed to check pipeline stream:", err.message)
+  }
+
+  return errors
+}
+
+// ============================================================================
+// CLOUD RUN JOB DEPLOYMENT CHECKS
+// ============================================================================
+
+async function checkJobDeployments() {
+  const missingJobs = []
+
+  try {
+    // Get list of deployed Cloud Run jobs using API
+    const parent = `projects/${config.gcpProjectId}/locations/${config.gcpRegion}`
+    const [jobs] = await runJobsClient.listJobs({ parent })
+
+    // Extract job names from the full resource names
+    // Resource names are like: projects/PROJECT/locations/REGION/jobs/JOB_NAME
+    const deployedJobs = jobs.map(job => {
+      const parts = job.name.split("/")
+      return parts[parts.length - 1]
+    })
+
+    // Check each expected job
+    for (const expectedJob of config.expectedJobs) {
+      if (!deployedJobs.includes(expectedJob)) {
+        missingJobs.push(expectedJob)
+      }
+    }
+  } catch (err) {
+    console.error("Failed to check job deployments:", err.message)
+    return {
+      error: err.message,
+      missingJobs: [],
+    }
+  }
+
+  return { missingJobs, error: null }
+}
+
 // ============================================================================
 // VERIFICATION CHECKS
 // ============================================================================
@@ -183,6 +331,23 @@ async function runVerification() {
             `${name.replace(/_/g, " ")} last seen ${Math.round(service.ageMs / 60000)} min ago`)
         }
       }
+    }
+
+    // Check Cloud Run job deployments
+    console.log("Checking Cloud Run job deployments...")
+    const jobDeploymentCheck = await checkJobDeployments()
+
+    if (jobDeploymentCheck.error) {
+      addCheck("deployments", "job_deployment_check_failed", "warning",
+        `Failed to verify job deployments: ${jobDeploymentCheck.error}`)
+    } else if (jobDeploymentCheck.missingJobs.length > 0) {
+      for (const missingJob of jobDeploymentCheck.missingJobs) {
+        addCheck("deployments", `${missingJob}_not_deployed`, "failed",
+          `Cloud Run job "${missingJob}" is not deployed in region ${config.gcpRegion}`)
+      }
+    } else {
+      addCheck("deployments", "all_jobs_deployed", "passed",
+        `All ${config.expectedJobs.length} expected Cloud Run jobs are deployed`)
     }
 
     // Check prices
@@ -240,13 +405,13 @@ async function runVerification() {
     // Check Cloud Run service logs for errors
     console.log("Checking service logs for errors...")
     const serviceErrors = await checkServiceErrors()
-    
+
     for (const serviceError of serviceErrors) {
       if (serviceError.errorCount >= config.thresholds.errorCountThreshold) {
         // Determine severity based on error patterns
         const hasHttpErrors = serviceError.patterns.some(p => p.httpStatus >= 500)
         const topPattern = serviceError.patterns[0]
-        
+
         const severity = hasHttpErrors ? "failed" : "warning"
         const message = `${serviceError.service} has ${serviceError.errorCount} errors in last ${config.thresholds.errorLookbackMinutes}min`
         const details = {
@@ -254,8 +419,26 @@ async function runVerification() {
           topError: topPattern?.sample?.slice(0, 200),
           patterns: serviceError.patterns.map(p => `${p.pattern} (${p.count}x)`).join("; "),
         }
-        
+
         addCheck("logs", `${serviceError.service}_errors`, severity, message, details)
+      }
+    }
+
+    // Check Redis pipeline stream for error events
+    console.log("Checking pipeline stream for error events...")
+    const pipelineErrors = await checkPipelineStreamErrors()
+
+    for (const pipelineError of pipelineErrors) {
+      if (pipelineError.errorCount >= config.thresholds.errorCountThreshold) {
+        const topSample = pipelineError.samples[0]
+        const message = `Pipeline ${pipelineError.stationId} (${pipelineError.eventType}) has ${pipelineError.errorCount} errors in last ${config.thresholds.errorLookbackMinutes}min`
+        const details = {
+          errorCount: pipelineError.errorCount,
+          topError: topSample?.message?.slice(0, 200),
+          samples: pipelineError.samples.map(s => `${s.message} (${s.timestamp})`).join("; "),
+        }
+
+        addCheck("pipeline_stream", pipelineError.groupKey, "failed", message, details)
       }
     }
 
@@ -468,11 +651,20 @@ async function main() {
   } else {
     console.log("Pipeline healthy, no alerts to send")
   }
-  
+
+  // Clean up Redis connection
+  if (redisClient && redisClient.isOpen) {
+    await redisClient.quit().catch(err => console.error("Failed to close Redis:", err.message))
+  }
+
   console.log("Pipeline alerts check complete")
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("Pipeline alerts failed:", err)
+  // Clean up Redis connection on error
+  if (redisClient && redisClient.isOpen) {
+    await redisClient.quit().catch(e => console.error("Failed to close Redis:", e.message))
+  }
   process.exit(1)
 })

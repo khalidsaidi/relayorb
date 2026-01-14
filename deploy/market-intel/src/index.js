@@ -1334,19 +1334,21 @@ async function fetchCrypto(db, preferences = {}) {
       if (key) liveMap.set(key, item)
     })
 
-  const payload = await fetchGatewayJson("/v1/coingecko/markets", {
-    vs_currency: "usd",
-    order: "volume_desc",
-    per_page: String(config.cryptoLimit),
-    page: "1",
-    price_change_percentage: "1h,24h,7d",
+  const payload = await fetchGatewayJson("/v1/fmp/crypto", {
+    limit: String(config.cryptoLimit),
   })
   const data = Array.isArray(payload?.data) ? payload.data : []
   const baseSource = payload?.source || "gateway"
 
   const baseItems = data
     .map((item, index) => {
-      const symbol = `${String(item.symbol || "").toUpperCase()}/USDT`
+      // FMP crypto symbols are like "BTCUSD", normalize to "BTC/USD"
+      const rawSymbol = String(item.symbol || "")
+      let symbol = rawSymbol
+      if (rawSymbol.endsWith("USD") && rawSymbol.length > 3) {
+        const base = rawSymbol.slice(0, -3)
+        symbol = `${base}/USD`
+      }
       const normalized = normalizeSymbol(symbol)
       const watchlisted = normalized ? watchlistSet.has(normalized) : false
       const live = normalized ? liveMap.get(normalized) : null
@@ -1356,21 +1358,19 @@ async function fetchCrypto(db, preferences = {}) {
         assetClass: "crypto",
         symbol,
         name: item.name || symbol,
-        exchange: "COINBASE",
-        price: typeof live?.price === "number" ? live.price : parseNumber(item.current_price),
-        change1h: parseNumber(item.price_change_percentage_1h_in_currency),
-        change24h: parseNumber(item.price_change_percentage_24h_in_currency),
-        change7d: parseNumber(item.price_change_percentage_7d_in_currency),
+        exchange: item.exchange || "CRYPTO",
+        price: typeof live?.price === "number" ? live.price : parseNumber(item.price),
+        change24h: parseNumber(item.changePercentage),
         change1m: parseNumber(live?.change1m),
         change5m: parseNumber(live?.change5m),
         volatility1m: parseNumber(live?.volatility1m),
         volatility5m: parseNumber(live?.volatility5m),
         spreadPct: parseNumber(live?.spreadPct),
-        volume: parseNumber(item.total_volume),
+        volume: parseNumber(item.volume),
         liquidityRank: index + 1,
         watchlisted,
         origins,
-        source: "coingecko",
+        source: "fmp",
       }
     })
     .filter((item) => {

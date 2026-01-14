@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react"
 import {
-  collectionGroup,
+  collection,
   limit,
   onSnapshot,
   orderBy,
   query,
 } from "firebase/firestore"
-import type { DocumentData, QuerySnapshot } from "firebase/firestore"
+import type { DocumentData, QuerySnapshot, Unsubscribe } from "firebase/firestore"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -78,51 +78,57 @@ export default function SignalsPage() {
     }
 
     const activeDb = db
-    let didFallback = false
-    let unsubscribe = () => {}
+    const unsubscribes: Unsubscribe[] = []
+    // Track signals per bot for merging
+    const signalsByBot: Record<string, BotSignalDoc[]> = {}
 
-    const handleSnapshot = (snap: QuerySnapshot<DocumentData>) => {
-      const nextSignals = snap.docs.map((doc) => {
-        const data = doc.data() as Omit<BotSignalDoc, "id" | "botId">
-        const botId = doc.ref.parent.parent?.id ?? "unknown"
-        return { id: doc.id, botId, ...data }
-      })
-      nextSignals.sort((a, b) => {
+    // Bots to query - fetch signals from each to ensure balanced representation
+    const botConfigs = [
+      { botId: "backtrader-crypto", perBot: 15 },
+      { botId: "backtrader-stocks", perBot: 15 },
+      { botId: "backtrader-forex", perBot: 15 },
+      { botId: "market-intel", perBot: 5 },
+    ]
+
+    const mergeAndUpdate = () => {
+      const allSignals = Object.values(signalsByBot).flat()
+      allSignals.sort((a, b) => {
         const aTime = a.createdAt?.toMillis?.() ?? 0
         const bTime = b.createdAt?.toMillis?.() ?? 0
         return bTime - aTime
       })
-      setSignals(nextSignals.slice(0, 30))
+      setSignals(allSignals.slice(0, 50))
       setLoading(false)
     }
 
-    const subscribe = (ordered: boolean) => {
-      const baseRef = collectionGroup(activeDb, "signals")
-      const ref = ordered
-        ? query(baseRef, orderBy("createdAt", "desc"), limit(30))
-        : query(baseRef, limit(50))
-      unsubscribe = onSnapshot(
+    for (const { botId, perBot } of botConfigs) {
+      const ref = query(
+        collection(activeDb, "bots", botId, "signals"),
+        orderBy("createdAt", "desc"),
+        limit(perBot)
+      )
+      const unsub = onSnapshot(
         ref,
-        handleSnapshot,
+        (snap: QuerySnapshot<DocumentData>) => {
+          signalsByBot[botId] = snap.docs.map((doc) => {
+            const data = doc.data() as Omit<BotSignalDoc, "id" | "botId">
+            return { id: doc.id, botId, ...data }
+          })
+          mergeAndUpdate()
+        },
         (error) => {
-          const code =
-            typeof error === "object" && error && "code" in error
-              ? String(error.code)
-              : ""
-          if (ordered && code === "failed-precondition" && !didFallback) {
-            didFallback = true
-            unsubscribe()
-            subscribe(false)
-            return
-          }
-          console.error("Signals listener error", error)
+          console.error(`Signals listener error for ${botId}`, error)
           setLoading(false)
         }
       )
+      unsubscribes.push(unsub)
     }
 
-    subscribe(true)
-    return () => unsubscribe()
+    return () => {
+      for (const unsub of unsubscribes) {
+        unsub()
+      }
+    }
   }, [])
 
   return (

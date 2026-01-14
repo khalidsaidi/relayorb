@@ -9,7 +9,6 @@ const config = {
   fmpBaseUrl: process.env.FMP_BASE_URL || "https://financialmodelingprep.com",
   fmpStableBaseUrl:
     process.env.FMP_STABLE_BASE_URL || "https://financialmodelingprep.com/stable",
-  coingeckoBaseUrl: process.env.COINGECKO_BASE_URL || "https://api.coingecko.com/api/v3",
   marketauxBaseUrl: process.env.MARKETAUX_BASE_URL || "https://api.marketaux.com/v1/news/all",
   cacheDefaultMs: parseInt(process.env.MDG_CACHE_TTL_MS || "15000", 10),
   cacheCandlesMs: parseInt(process.env.MDG_CANDLES_TTL_MS || "60000", 10),
@@ -260,30 +259,62 @@ function chunkList(items, size) {
   return chunks
 }
 
-async function fetchJson(url, options) {
+async function fetchJson(url, options = {}) {
   logEvent("mdg_request", { url: sanitizeUrl(url) })
-  const res = await fetch(url, options)
-  if (!res.ok) {
-    const body = await res.text()
-    if (res.status === 429) {
-      logEvent("mdg_rate_limited", { url: sanitizeUrl(url), status: res.status })
+
+  // Add 15s timeout to prevent hanging requests
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 15000)
+
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal })
+    clearTimeout(timeoutId)
+
+    if (!res.ok) {
+      const body = await res.text()
+      if (res.status === 429) {
+        logEvent("mdg_rate_limited", { url: sanitizeUrl(url), status: res.status })
+        console.error(`Rate limit exceeded (429): ${sanitizeUrl(url)}`)
+      }
+      throw new Error(`Request failed ${res.status}: ${body.slice(0, 200)}`)
     }
-    throw new Error(`Request failed ${res.status}: ${body.slice(0, 200)}`)
+    return res.json()
+  } catch (err) {
+    clearTimeout(timeoutId)
+    if (err.name === 'AbortError') {
+      throw new Error(`Request timed out after 15s: ${sanitizeUrl(url)}`)
+    }
+    throw err
   }
-  return res.json()
 }
 
-async function fetchText(url, options) {
+async function fetchText(url, options = {}) {
   logEvent("mdg_request", { url: sanitizeUrl(url) })
-  const res = await fetch(url, options)
-  if (!res.ok) {
-    const body = await res.text()
-    if (res.status === 429) {
-      logEvent("mdg_rate_limited", { url: sanitizeUrl(url), status: res.status })
+
+  // Add 15s timeout to prevent hanging requests
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 15000)
+
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal })
+    clearTimeout(timeoutId)
+
+    if (!res.ok) {
+      const body = await res.text()
+      if (res.status === 429) {
+        logEvent("mdg_rate_limited", { url: sanitizeUrl(url), status: res.status })
+        console.error(`Rate limit exceeded (429): ${sanitizeUrl(url)}`)
+      }
+      throw new Error(`Request failed ${res.status}: ${body.slice(0, 200)}`)
     }
-    throw new Error(`Request failed ${res.status}: ${body.slice(0, 200)}`)
+    return res.text()
+  } catch (err) {
+    clearTimeout(timeoutId)
+    if (err.name === 'AbortError') {
+      throw new Error(`Request timed out after 15s: ${sanitizeUrl(url)}`)
+    }
+    throw err
   }
-  return res.text()
 }
 
 async function initPipelineRedis() {
@@ -650,8 +681,7 @@ async function handleFmpCandles(req, res, params) {
   }
 
   const startedAt = Date.now()
-  const url = new URL(`${config.fmpStableBaseUrl}/historical-chart/${fmpInterval}`)
-  url.searchParams.set("symbol", normalized)
+  const url = new URL(`${config.fmpBaseUrl}/historical-chart/${fmpInterval}/${normalized}`)
   url.searchParams.set("apikey", config.fmpKey)
   let data = []
   try {
@@ -818,25 +848,26 @@ async function handleFmpStockList(req, res) {
   })
 }
 
-async function handleCoingeckoMarkets(req, res, params) {
-  const vsCurrency = params.get("vs_currency") || "usd"
-  const order = params.get("order") || "volume_desc"
-  const perPage = clamp(parseInt(params.get("per_page") || "50", 10), 1, 250)
-  const page = clamp(parseInt(params.get("page") || "1", 10), 1, 100)
-  const priceChange = params.get("price_change_percentage") || "1h,24h,7d"
+async function handleFmpCrypto(req, res, params) {
+  if (!config.fmpKey) {
+    respondJson(res, 500, { error: "FMP API key is not configured" })
+    return
+  }
 
-  const cacheKey = `coingecko:markets:${vsCurrency}:${order}:${perPage}:${page}:${priceChange}`
+  const limit = clamp(parseInt(params.get("limit") || "50", 10), 1, 250)
+
+  const cacheKey = `fmp:crypto:markets:${limit}`
   const cached = getCached(cacheKey)
   if (cached) {
     respondJson(res, 200, cached)
     await emitProviderEvent({
-      stationId: "provider:coingecko",
+      stationId: "provider:fmp",
       status: "end",
       meta: {
-        providerId: "coingecko",
-        endpointName: "markets",
+        providerId: "fmp",
+        endpointName: "crypto_markets",
         cacheHit: true,
-        paramsHash: hashParams({ vsCurrency, order, perPage, page, priceChange }),
+        paramsHash: hashParams({ limit }),
         httpStatus: 200,
       },
     })
@@ -844,42 +875,78 @@ async function handleCoingeckoMarkets(req, res, params) {
   }
 
   const startedAt = Date.now()
-  const url = new URL(`${config.coingeckoBaseUrl}/coins/markets`)
-  url.searchParams.set("vs_currency", vsCurrency)
-  url.searchParams.set("order", order)
-  url.searchParams.set("per_page", String(perPage))
-  url.searchParams.set("page", String(page))
-  url.searchParams.set("price_change_percentage", priceChange)
-  let data = null
-  try {
-    data = await fetchJson(url.toString())
-  } catch (err) {
+
+  // Top crypto symbols to fetch (batch endpoint requires paid tier)
+  // Using individual /stable/quote endpoint for each symbol
+  const topCryptoSymbols = [
+    "BTCUSD", "ETHUSD", "USDTUSD", "BNBUSD", "SOLUSD",
+    "XRPUSD", "USDCUSD", "ADAUSD", "DOGUSD", "TRXUSD",
+    "AVAXUSD", "TONUSD", "LINKUSD", "SHIBUSD", "WBTCUSD",
+    "DOTUSD", "BCHUSD", "NEARCUSD", "MATICUSD", "LTCUSD",
+    "DAITUSD", "UNIUSD", "ICPUSD", "APTUSD", "ETCUSD",
+    "FILUSD", "RENDERUSD", "STXUSD", "ATOMUSD", "ARBUSD",
+    "XLMUSD", "ALGOUSD", "GRTUSD", "SANDUSD", "MANAUSD",
+    "AAVEUSD", "FTMUSD", "MKRUSD", "SNXUSD", "COMPUSD",
+    "SUSHIUSD", "ZECUSD", "YFIUSD", "ENJUSD", "CHZUSD",
+    "BATCUSD", "1INCHUSD", "ZRXUSD", "RVNUSD", "QTUMUSD"
+  ].slice(0, limit)
+
+  const data = []
+  const errors = []
+
+  // Fetch quotes for each symbol
+  for (const symbol of topCryptoSymbols) {
+    try {
+      const url = new URL(`${config.fmpStableBaseUrl}/quote`)
+      url.searchParams.set("symbol", symbol)
+      url.searchParams.set("apikey", config.fmpKey)
+
+      const result = await fetchJson(url.toString())
+      if (Array.isArray(result) && result.length > 0) {
+        data.push(result[0])
+      }
+    } catch (err) {
+      errors.push({ symbol, error: err.message })
+      // Continue fetching other symbols
+      continue
+    }
+  }
+
+  if (data.length === 0) {
     await emitProviderEvent({
-      stationId: "provider:coingecko",
+      stationId: "provider:fmp",
       status: "error",
       startMs: startedAt,
       meta: {
-        providerId: "coingecko",
-        endpointName: "markets",
-        paramsHash: hashParams({ vsCurrency, order, perPage, page, priceChange }),
+        providerId: "fmp",
+        endpointName: "crypto_markets",
+        paramsHash: hashParams({ limit }),
       },
-      error: { message: err?.message ? String(err.message) : "Request failed" },
+      error: { message: "No crypto data fetched", errors },
     })
-    throw err
+    respondJson(res, 502, { error: "Failed to fetch crypto data", errors })
+    return
   }
-  const payload = { data, source: "coingecko" }
+
+  // Sort by volume descending
+  const sorted = data
+    .filter(item => item && item.symbol && item.volume > 0)
+    .sort((a, b) => (b.volume || 0) - (a.volume || 0))
+
+  const payload = { data: sorted, source: "fmp" }
   setCached(cacheKey, payload, config.cacheMarketsMs)
   respondJson(res, 200, payload)
   await emitProviderEvent({
-    stationId: "provider:coingecko",
+    stationId: "provider:fmp",
     status: "end",
     startMs: startedAt,
     meta: {
-      providerId: "coingecko",
-      endpointName: "markets",
-      paramsHash: hashParams({ vsCurrency, order, perPage, page, priceChange }),
+      providerId: "fmp",
+      endpointName: "crypto_markets",
+      paramsHash: hashParams({ limit }),
       httpStatus: 200,
-      count: Array.isArray(data) ? data.length : undefined,
+      count: sorted.length,
+      errors: errors.length > 0 ? errors.slice(0, 3) : undefined,
     },
   })
 }
@@ -993,12 +1060,6 @@ async function requestHandler(req, res) {
       })
       return
     }
-    if (path === "/ping/coingecko") {
-      const pingUrl = new URL(`${config.coingeckoBaseUrl}/ping`)
-      const data = await fetchJson(pingUrl.toString())
-      respondJson(res, 200, { ok: true, source: "coingecko", status: data?.gecko_says || null })
-      return
-    }
     if (path === "/ping/marketaux") {
       if (!config.marketauxKey) {
         respondJson(res, 503, { ok: false, error: "Marketaux key not configured." })
@@ -1030,8 +1091,8 @@ async function requestHandler(req, res) {
       await handleFmpStockList(req, res)
       return
     }
-    if (path === "/v1/coingecko/markets") {
-      await handleCoingeckoMarkets(req, res, params)
+    if (path === "/v1/fmp/crypto") {
+      await handleFmpCrypto(req, res, params)
       return
     }
     if (path === "/v1/marketaux/news") {

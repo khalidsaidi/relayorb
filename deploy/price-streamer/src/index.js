@@ -821,17 +821,17 @@ async function fetchStockMovers() {
   
   const discoveredSymbols = new Set()
   const endpoints = [
-    { path: "/stable/stock_market/gainers", name: "gainers" },
-    { path: "/stable/stock_market/losers", name: "losers" },
-    { path: "/stable/stock_market/actives", name: "actives" },
+    { path: "/v1/fmp/stock-gainers", name: "gainers" },
+    { path: "/v1/fmp/stock-losers", name: "losers" },
+    { path: "/v1/fmp/stock-actives", name: "actives" },
   ]
-  
+
   for (const { path, name } of endpoints) {
     try {
       trackApiCall()
-      const url = new URL(`https://financialmodelingprep.com${path}`)
-      url.searchParams.set("apikey", config.fmpKey)
-      const data = await fetchJson(url.toString())
+      const url = new URL(path, config.marketDataGatewayUrl)
+      const response = await fetchJson(url.toString())
+      const data = response?.data || []
       
       if (!Array.isArray(data)) continue
       
@@ -855,6 +855,56 @@ async function fetchStockMovers() {
   })
   
   return Array.from(discoveredSymbols)
+}
+
+async function fetchMarketIntelMovers() {
+  try {
+    const moversSnap = await db.doc("market/movers").get()
+    if (!moversSnap.exists) {
+      console.log("ps_intel_movers_skip", { reason: "document_not_found" })
+      return []
+    }
+
+    const moversData = moversSnap.data()
+    const usMarket = moversData.markets?.us
+
+    if (!usMarket) {
+      console.log("ps_intel_movers_skip", { reason: "no_us_market_data" })
+      return []
+    }
+
+    // Combine gainers, losers, and actives - use Set to deduplicate
+    const symbolSet = new Set()
+
+    // Top 10 gainers
+    const gainers = usMarket.gainers || []
+    gainers.slice(0, 10).forEach(item => {
+      if (item?.symbol) symbolSet.add(item.symbol)
+    })
+
+    // Top 10 actives (by volume)
+    const actives = usMarket.actives || []
+    actives.slice(0, 10).forEach(item => {
+      if (item?.symbol) symbolSet.add(item.symbol)
+    })
+
+    const symbols = Array.from(symbolSet)
+
+    if (symbols.length === 0) {
+      console.log("ps_intel_movers_skip", { reason: "no_stock_movers" })
+      return []
+    }
+
+    console.log("ps_intel_movers", {
+      found: symbols.length,
+      symbols: symbols.slice(0, 5).join(",") + (symbols.length > 5 ? "..." : "")
+    })
+
+    return symbols
+  } catch (err) {
+    console.error("Failed to fetch market-intel movers:", err.message)
+    return []
+  }
 }
 
 function normalizeSnapshotForex(item) {
@@ -1257,11 +1307,21 @@ async function refreshWatchlist() {
       const discoveredStocks = await fetchStockMovers()
       if (discoveredStocks.length > 0) {
         addSymbols(discoveredStocks, "stock")
-        console.log("ps_discovery_added", { 
+        console.log("ps_discovery_added", {
           count: discoveredStocks.length,
-          stocksTotal: next.stock.size 
+          stocksTotal: next.stock.size
         })
       }
+    }
+
+    // Also add movers from market-intel pipeline
+    const intelMovers = await fetchMarketIntelMovers()
+    if (intelMovers.length > 0) {
+      addSymbols(intelMovers, "stock")
+      console.log("ps_intel_movers_added", {
+        count: intelMovers.length,
+        stocksTotal: next.stock.size
+      })
     }
 
     const nextHash = buildWatchHash(next)
