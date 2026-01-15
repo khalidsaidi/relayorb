@@ -551,7 +551,7 @@ function normalizeSnapshotStock(item, exchangeHint = null) {
     parseNumber(item.avgVolume) ??
     parseNumber(item.volumeAvg)
   const change24h = parsePercent(
-    item.changesPercentage ?? item.changePercentage ?? item.changePercent ?? item.change
+    item.change24h ?? item.changesPercentage ?? item.changePercentage ?? item.changePercent ?? item.change
   )
   const change1m = parseNumber(item.change1m)
   const change5m = parseNumber(item.change5m)
@@ -602,7 +602,7 @@ function normalizeSnapshotForex(item) {
   if (typeof price !== "number") return null
   const volume = parseNumber(item.volume)
   const change24h = parsePercent(
-    item.changesPercentage ?? item.changePercentage ?? item.changePercent ?? item.change
+    item.change24h ?? item.changesPercentage ?? item.changePercentage ?? item.changePercent ?? item.change
   )
   const change1m = parseNumber(item.change1m)
   const change5m = parseNumber(item.change5m)

@@ -614,6 +614,7 @@ async function fetchFmpQuote(symbol, assetClass = "stock") {
         bid: parseNumber(data.bid),
         ask: parseNumber(data.ask),
         volume: parseNumber(data.volume),
+        change24h: parseNumber(data.changePercent),
         source: "gateway",
       }
     } catch (err) {
@@ -642,7 +643,8 @@ async function fetchFmpQuote(symbol, assetClass = "stock") {
       parseNumber(entry.close) ??
       (bid !== undefined && ask !== undefined ? (bid + ask) / 2 : bid ?? ask)
     if (typeof price !== "number") return null
-    return { symbol, price, bid, ask, volume, source: "fmp" }
+    const change24h = parseNumber(entry.changesPercentage) ?? parseNumber(entry.changePercentage)
+    return { symbol, price, bid, ask, volume, change24h, source: "fmp" }
   } catch (err) {
     const message = err?.message ? String(err.message) : "Unknown error"
     if (message.includes("429") || message.includes("Limit Reach")) {
@@ -739,6 +741,7 @@ async function fetchExtendedHoursQuote(symbol) {
       bid,
       ask,
       volume: parseNumber(entry.volume),
+      change24h: parseNumber(entry.changesPercentage) ?? parseNumber(entry.changePercentage),
       source: "fmp_extended",
     }
   } catch (err) {
@@ -1010,6 +1013,7 @@ function updatePrice(assetClass, symbol, price, source, extra = {}) {
   if (typeof extra.bid === "number") next.bid = extra.bid
   if (typeof extra.ask === "number") next.ask = extra.ask
   if (typeof extra.volume === "number") next.volume = extra.volume
+  if (typeof extra.change24h === "number") next.change24h = extra.change24h
 
   const historyUpdated = recordPriceHistory(key, next.price)
   const changed =
@@ -1381,6 +1385,7 @@ async function pollCryptoPrices() {
         bid: quote.bid,
         ask: quote.ask,
         volume: quote.volume,
+        change24h: quote.change24h,
       })
     })
     
@@ -1441,6 +1446,7 @@ async function pollStockPrices() {
         bid: quote.bid,
         ask: quote.ask,
         volume: quote.volume,
+        change24h: quote.change24h,
       })
     })
     
@@ -1496,6 +1502,7 @@ async function pollForexPrices() {
         bid: quote.bid,
         ask: quote.ask,
         volume: quote.volume,
+        change24h: quote.change24h,
       })
     })
     

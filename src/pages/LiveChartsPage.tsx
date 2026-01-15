@@ -3,9 +3,27 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { formatAssetPrice } from "@/lib/format"
-import { useFmpChart, useFmpQuote, useFmpSymbolSearch } from "@/features/market/use-fmp-data"
-import { FmpCandleChart } from "@/components/charts/FmpCandleChart"
+import { formatAssetPrice, formatNumber } from "@/lib/format"
+import {
+  useFmpChart,
+  useFmpQuote,
+  useFmpSymbolSearch,
+  useFmpProfile,
+  useFmpNews,
+  useFmpPriceTarget,
+  useFmpRating,
+} from "@/features/market/use-fmp-data"
+import { useSymbolSignals } from "@/features/market/use-symbol-signals"
+import { FmpCandleChart, type SignalMarker } from "@/components/charts/FmpCandleChart"
+import {
+  TrendingUp,
+  TrendingDown,
+  Target,
+  BarChart3,
+  Newspaper,
+  Activity,
+  ExternalLink,
+} from "lucide-react"
 
 type IntervalOption = "1m-tv" | "5m" | "15m" | "30m" | "1h" | "eod"
 
@@ -16,11 +34,37 @@ function normalizeSymbol(symbol: string, assetClass: string) {
   return trimmed.replace(/[/-]/g, "")
 }
 
+function StatCard({
+  label,
+  value,
+  subValue,
+  icon: Icon,
+  color = "text-muted-foreground",
+}: {
+  label: string
+  value: string | number | undefined
+  subValue?: string
+  icon?: React.ComponentType<{ className?: string }>
+  color?: string
+}) {
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-muted/30 border border-border/40">
+      {Icon && <Icon className={`h-4 w-4 ${color}`} />}
+      <div className="flex flex-col">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span>
+        <span className="text-sm font-medium">{value ?? "—"}</span>
+        {subValue && <span className="text-[10px] text-muted-foreground">{subValue}</span>}
+      </div>
+    </div>
+  )
+}
+
 export default function LiveChartsPage() {
   const [symbolInput, setSymbolInput] = useState("AAPL")
   const [assetClass, setAssetClass] = useState<"stock" | "crypto" | "forex">("stock")
   const [activeSymbol, setActiveSymbol] = useState("AAPL")
   const [interval, setInterval] = useState<IntervalOption>("5m")
+  const [showIndicators, setShowIndicators] = useState(true)
   const defaultSymbols = useMemo(
     () => ({
       stock: "AAPL",
@@ -37,6 +81,7 @@ export default function LiveChartsPage() {
   const searchQuery = symbolInput.trim()
   const { results: symbolMatches } = useFmpSymbolSearch(searchQuery, assetClass)
 
+  // Core data
   const { quote } = useFmpQuote(normalizedSymbol)
   const fmpInterval =
     interval === "1m-tv"
@@ -57,6 +102,26 @@ export default function LiveChartsPage() {
     assetClass
   )
 
+  // Enhanced data
+  const { profile } = useFmpProfile(assetClass === "stock" ? normalizedSymbol : undefined)
+  const { news } = useFmpNews(normalizedSymbol, 5)
+  const { priceTarget } = useFmpPriceTarget(
+    assetClass === "stock" ? normalizedSymbol : undefined
+  )
+  const { rating } = useFmpRating(assetClass === "stock" ? normalizedSymbol : undefined)
+  const { signals: rawSignals } = useSymbolSignals(normalizedSymbol, 20)
+
+  // Convert signals to chart markers
+  const signalMarkers: SignalMarker[] = useMemo(() => {
+    return rawSignals
+      .filter((s) => s.side === "buy" || s.side === "sell")
+      .map((s) => ({
+        time: s.createdAt.getTime(),
+        side: s.side as "buy" | "sell",
+        label: s.botId.substring(0, 8),
+      }))
+  }, [rawSignals])
+
   const tvUrl = useMemo(() => {
     if (!normalizedSymbol) return ""
     const params = new URLSearchParams({
@@ -75,17 +140,21 @@ export default function LiveChartsPage() {
     (quote?.price && quote?.open ? ((quote.price - quote.open) / quote.open) * 100 : undefined)
   const quoteUpdated = quote?.timestamp ? new Date(quote.timestamp).toLocaleTimeString() : null
   const barUpdated = latest?.time ? new Date(latest.time).toLocaleTimeString() : null
-  const barLabel =
-    interval === "1m-tv" ? "5m bar" : interval === "eod" ? "EOD bar" : `${interval} bar`
+
+  // Parse 52-week range from profile
+  const range52w = profile?.range?.split("-").map((s) => parseFloat(s.trim()))
+  const low52w = range52w?.[0]
+  const high52w = range52w?.[1]
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
+      {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Charts</div>
           <h1 className="text-3xl font-bold tracking-tight">Live Charts</h1>
           <p className="text-sm text-muted-foreground">
-            Explore symbols with real-time quotes and intraday history from FMP.
+            Real-time quotes, technicals, signals, and news
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -118,6 +187,8 @@ export default function LiveChartsPage() {
           </Button>
         </div>
       </div>
+
+      {/* Symbol search results */}
       {symbolMatches.length > 0 && (
         <div className="w-full max-w-xl rounded-lg border border-border/60 bg-background/95 p-2 shadow-sm">
           <div className="text-xs uppercase text-muted-foreground px-1 pb-1">Matches</div>
@@ -141,95 +212,322 @@ export default function LiveChartsPage() {
         </div>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            <span>
-              {normalizedSymbol}
-              <span className="ml-2 text-xs uppercase text-muted-foreground">
-                {assetClass}
-              </span>
-            </span>
-            <div className="flex items-center gap-3 text-sm">
-              <div className="text-2xl font-semibold">
-                {quote?.price !== undefined
-                  ? formatAssetPrice(quote.price, assetClass)
-                  : "—"}
+      {/* Main content grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        {/* Chart card - spans 3 columns */}
+        <Card className="lg:col-span-3">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-xl font-bold">{normalizedSymbol}</span>
+                <span className="text-xs uppercase text-muted-foreground bg-muted/50 px-2 py-0.5 rounded">
+                  {assetClass}
+                </span>
+                {profile?.companyName && (
+                  <span className="text-sm text-muted-foreground hidden sm:inline">
+                    {profile.companyName}
+                  </span>
+                )}
               </div>
-              <div
-                className={
-                  changePct !== undefined && changePct >= 0
-                    ? "text-emerald-600 font-medium"
-                    : "text-rose-600 font-medium"
+              <div className="flex items-center gap-3 text-sm">
+                <div className="text-2xl font-semibold">
+                  {quote?.price !== undefined
+                    ? formatAssetPrice(quote.price, assetClass)
+                    : "—"}
+                </div>
+                <div
+                  className={`flex items-center gap-1 font-medium ${
+                    changePct !== undefined && changePct >= 0
+                      ? "text-emerald-600"
+                      : "text-rose-600"
+                  }`}
+                >
+                  {changePct !== undefined && changePct >= 0 ? (
+                    <TrendingUp className="h-4 w-4" />
+                  ) : (
+                    <TrendingDown className="h-4 w-4" />
+                  )}
+                  {changePct !== undefined
+                    ? `${changePct >= 0 ? "+" : ""}${changePct.toFixed(2)}%`
+                    : ""}
+                </div>
+              </div>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {/* Key stats row */}
+            <div className="flex flex-wrap gap-2">
+              <StatCard
+                label="Day High"
+                value={quote?.dayHigh ? formatAssetPrice(quote.dayHigh, assetClass) : undefined}
+                icon={TrendingUp}
+                color="text-emerald-600"
+              />
+              <StatCard
+                label="Day Low"
+                value={quote?.dayLow ? formatAssetPrice(quote.dayLow, assetClass) : undefined}
+                icon={TrendingDown}
+                color="text-rose-600"
+              />
+              <StatCard
+                label="Prev Close"
+                value={
+                  quote?.previousClose
+                    ? formatAssetPrice(quote.previousClose, assetClass)
+                    : undefined
                 }
-              >
-                {changePct !== undefined ? `${changePct >= 0 ? "+" : ""}${changePct.toFixed(2)}%` : ""}
-              </div>
-              <div className="flex flex-col text-xs text-muted-foreground">
+              />
+              <StatCard
+                label="Volume"
+                value={quote?.volume ? formatNumber(quote.volume) : undefined}
+                icon={BarChart3}
+              />
+              {assetClass === "stock" && (
+                <>
+                  <StatCard
+                    label="52W Range"
+                    value={
+                      low52w && high52w
+                        ? `$${low52w.toFixed(0)} - $${high52w.toFixed(0)}`
+                        : undefined
+                    }
+                  />
+                  {priceTarget?.targetConsensus && (
+                    <StatCard
+                      label="PT Consensus"
+                      value={`$${priceTarget.targetConsensus.toFixed(2)}`}
+                      subValue={
+                        priceTarget.targetLow && priceTarget.targetHigh
+                          ? `$${priceTarget.targetLow.toFixed(0)}-$${priceTarget.targetHigh.toFixed(0)}`
+                          : undefined
+                      }
+                      icon={Target}
+                      color="text-blue-500"
+                    />
+                  )}
+                  {rating?.ratingRecommendation && (
+                    <StatCard
+                      label="Rating"
+                      value={rating.ratingRecommendation}
+                      subValue={`Score: ${rating.ratingScore || "—"}`}
+                      icon={Activity}
+                      color={
+                        rating.ratingRecommendation?.toLowerCase().includes("buy")
+                          ? "text-emerald-600"
+                          : rating.ratingRecommendation?.toLowerCase().includes("sell")
+                            ? "text-rose-600"
+                            : "text-amber-600"
+                      }
+                    />
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Indicator toggle */}
+            <div className="flex items-center gap-4 text-xs">
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showIndicators}
+                  onChange={(e) => setShowIndicators(e.target.checked)}
+                  className="rounded border-border"
+                />
+                <span className="text-muted-foreground">Show SMA/EMA/RSI</span>
+              </label>
+              {signalMarkers.length > 0 && (
+                <span className="text-muted-foreground">
+                  {signalMarkers.length} bot signal{signalMarkers.length !== 1 ? "s" : ""} on
+                  chart
+                </span>
+              )}
+              <div className="flex-1" />
+              <div className="text-muted-foreground">
                 {quoteUpdated ? <span>Quote {quoteUpdated}</span> : null}
-                {barUpdated ? <span>Last {barLabel} {barUpdated}</span> : null}
+                {barUpdated ? <span className="ml-2">Bar {barUpdated}</span> : null}
               </div>
             </div>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Tabs value={interval} onValueChange={(v) => setInterval(v as IntervalOption)}>
-            <TabsList className="flex flex-wrap justify-start gap-2">
-              <TabsTrigger value="1m-tv">1m (TradingView)</TabsTrigger>
-              <TabsTrigger value="5m">5m</TabsTrigger>
-              <TabsTrigger value="15m">15m</TabsTrigger>
-              <TabsTrigger value="30m">30m</TabsTrigger>
-              <TabsTrigger value="1h">1h</TabsTrigger>
-              <TabsTrigger value="eod">EOD</TabsTrigger>
-            </TabsList>
-            <TabsContent value="1m-tv" className="m-0">
-              {tvUrl ? (
-                <iframe
-                  src={tvUrl}
-                  className="h-[440px] w-full border-0 rounded-lg"
-                  title={`TradingView chart for ${normalizedSymbol}`}
-                  allow="clipboard-write"
-                  loading="lazy"
-                />
+
+            {/* Chart tabs */}
+            <Tabs value={interval} onValueChange={(v) => setInterval(v as IntervalOption)}>
+              <TabsList className="flex flex-wrap justify-start gap-2">
+                <TabsTrigger value="1m-tv">1m (TV)</TabsTrigger>
+                <TabsTrigger value="5m">5m</TabsTrigger>
+                <TabsTrigger value="15m">15m</TabsTrigger>
+                <TabsTrigger value="30m">30m</TabsTrigger>
+                <TabsTrigger value="1h">1h</TabsTrigger>
+                <TabsTrigger value="eod">EOD</TabsTrigger>
+              </TabsList>
+              <TabsContent value="1m-tv" className="m-0">
+                {tvUrl ? (
+                  <iframe
+                    src={tvUrl}
+                    className="h-[440px] w-full border-0 rounded-lg"
+                    title={`TradingView chart for ${normalizedSymbol}`}
+                    allow="clipboard-write"
+                    loading="lazy"
+                  />
+                ) : (
+                  <div className="flex h-[360px] items-center justify-center text-muted-foreground">
+                    No chart data
+                  </div>
+                )}
+              </TabsContent>
+              {["5m", "15m", "30m", "1h", "eod"].map((iv) => (
+                <TabsContent key={iv} value={iv} className="m-0">
+                  <FmpCandleChart
+                    bars={bars}
+                    signals={signalMarkers}
+                    showSma={showIndicators}
+                    showEma={showIndicators}
+                    showRsi={showIndicators}
+                    height={480}
+                    data-testid="fmp-chart-live"
+                  />
+                  {chartError && (
+                    <div className="mt-2 text-xs text-rose-600">{chartError}</div>
+                  )}
+                </TabsContent>
+              ))}
+            </Tabs>
+          </CardContent>
+        </Card>
+
+        {/* Side panel - news & signals */}
+        <div className="space-y-4">
+          {/* News card */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Newspaper className="h-4 w-4" />
+                Recent News
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {news.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No recent news</p>
               ) : (
-                <div className="flex h-[360px] items-center justify-center text-muted-foreground">
-                  No chart data
+                <div className="space-y-3">
+                  {news.slice(0, 5).map((item, i) => (
+                    <a
+                      key={i}
+                      href={item.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block group"
+                    >
+                      <div className="text-xs font-medium group-hover:text-blue-500 line-clamp-2">
+                        {item.title}
+                        <ExternalLink className="inline h-3 w-3 ml-1 opacity-0 group-hover:opacity-100" />
+                      </div>
+                      <div className="text-[10px] text-muted-foreground mt-0.5">
+                        {item.site} &middot;{" "}
+                        {item.publishedDate
+                          ? new Date(item.publishedDate).toLocaleDateString()
+                          : ""}
+                      </div>
+                    </a>
+                  ))}
                 </div>
               )}
-            </TabsContent>
-            <TabsContent value="5m" className="m-0">
-              <FmpCandleChart bars={bars} data-testid="fmp-chart-live" />
-              {chartError ? (
-                <div className="mt-2 text-xs text-rose-600">{chartError}</div>
-              ) : null}
-            </TabsContent>
-            <TabsContent value="15m" className="m-0">
-              <FmpCandleChart bars={bars} data-testid="fmp-chart-live" />
-              {chartError ? (
-                <div className="mt-2 text-xs text-rose-600">{chartError}</div>
-              ) : null}
-            </TabsContent>
-            <TabsContent value="30m" className="m-0">
-              <FmpCandleChart bars={bars} data-testid="fmp-chart-live" />
-              {chartError ? (
-                <div className="mt-2 text-xs text-rose-600">{chartError}</div>
-              ) : null}
-            </TabsContent>
-            <TabsContent value="1h" className="m-0">
-              <FmpCandleChart bars={bars} data-testid="fmp-chart-live" />
-              {chartError ? (
-                <div className="mt-2 text-xs text-rose-600">{chartError}</div>
-              ) : null}
-            </TabsContent>
-            <TabsContent value="eod" className="m-0">
-              <FmpCandleChart bars={bars} data-testid="fmp-chart-live" />
-              {chartError ? (
-                <div className="mt-2 text-xs text-rose-600">{chartError}</div>
-              ) : null}
-            </TabsContent>
-          </Tabs>
-        </CardContent>
-      </Card>
+            </CardContent>
+          </Card>
+
+          {/* Bot signals card */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Activity className="h-4 w-4" />
+                Bot Signals
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {rawSignals.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No recent signals for this symbol</p>
+              ) : (
+                <div className="space-y-2">
+                  {rawSignals.slice(0, 8).map((signal) => (
+                    <div
+                      key={signal.id}
+                      className="flex items-center justify-between text-xs py-1 border-b border-border/40 last:border-0"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                            signal.side === "buy"
+                              ? "bg-emerald-500/20 text-emerald-600"
+                              : signal.side === "sell"
+                                ? "bg-rose-500/20 text-rose-600"
+                                : "bg-slate-500/20 text-slate-600"
+                          }`}
+                        >
+                          {signal.side.toUpperCase()}
+                        </span>
+                        <span className="text-muted-foreground">{signal.botId.substring(0, 12)}</span>
+                      </div>
+                      <span className="text-muted-foreground">
+                        {signal.createdAt.toLocaleDateString()}{" "}
+                        {signal.createdAt.toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Company info for stocks */}
+          {assetClass === "stock" && profile && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Company Info</CardTitle>
+              </CardHeader>
+              <CardContent className="text-xs space-y-1">
+                {profile.sector && (
+                  <div>
+                    <span className="text-muted-foreground">Sector:</span> {profile.sector}
+                  </div>
+                )}
+                {profile.industry && (
+                  <div>
+                    <span className="text-muted-foreground">Industry:</span> {profile.industry}
+                  </div>
+                )}
+                {profile.mktCap && (
+                  <div>
+                    <span className="text-muted-foreground">Mkt Cap:</span>{" "}
+                    ${formatNumber(profile.mktCap)}
+                  </div>
+                )}
+                {profile.beta && (
+                  <div>
+                    <span className="text-muted-foreground">Beta:</span> {profile.beta.toFixed(2)}
+                  </div>
+                )}
+                {profile.volAvg && (
+                  <div>
+                    <span className="text-muted-foreground">Avg Vol:</span>{" "}
+                    {formatNumber(profile.volAvg)}
+                  </div>
+                )}
+                {profile.website && (
+                  <a
+                    href={profile.website}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-500 hover:underline flex items-center gap-1"
+                  >
+                    Website <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

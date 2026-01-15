@@ -37,20 +37,44 @@ const US_MARKET_HOLIDAYS = new Set([
   "2026-12-25", // Christmas
 ])
 
-function getEasternTime(): { 
+function getEasternTime(): {
   date: Date
   dayOfWeek: number
   minuteOfDay: number
-  dateString: string 
+  dateString: string
 } {
   const now = new Date()
-  const etString = now.toLocaleString("en-US", { timeZone: "America/New_York" })
-  const etDate = new Date(etString)
+
+  // Use formatToParts to get ET components without timezone parsing ambiguity
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    weekday: 'short',
+    hour12: false
+  })
+
+  const parts = formatter.formatToParts(now)
+  const get = (type: string) => parts.find(p => p.type === type)?.value || ''
+
+  const hour = parseInt(get('hour'), 10)
+  const minute = parseInt(get('minute'), 10)
+  const year = get('year')
+  const month = get('month')
+  const day = get('day')
+
+  // Map weekday name to day number
+  const weekdayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
+  const dayOfWeek = weekdayMap[get('weekday')] ?? 0
+
   return {
-    date: etDate,
-    dayOfWeek: etDate.getDay(),
-    minuteOfDay: etDate.getHours() * 60 + etDate.getMinutes(),
-    dateString: etDate.toISOString().split("T")[0],
+    date: now,
+    dayOfWeek,
+    minuteOfDay: hour * 60 + minute,
+    dateString: `${year}-${month}-${day}`,
   }
 }
 

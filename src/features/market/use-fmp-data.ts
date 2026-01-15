@@ -384,3 +384,314 @@ export function useFmpSymbolSearch(query: string, assetClass?: string) {
 
   return { results, loading, error }
 }
+
+// ============================================================
+// Technical Indicators
+// ============================================================
+
+type IndicatorType = "sma" | "ema" | "rsi" | "adx" | "williams"
+
+export type IndicatorDataPoint = {
+  date: string
+  open?: number
+  high?: number
+  low?: number
+  close?: number
+  volume?: number
+  sma?: number
+  ema?: number
+  rsi?: number
+  adx?: number
+  williams?: number
+}
+
+export function useFmpIndicator(
+  symbol?: string,
+  indicator: IndicatorType = "sma",
+  period = 20,
+  timeframe: "5min" | "15min" | "30min" | "1hour" | "1day" = "5min",
+  limit = 100
+) {
+  const [data, setData] = useState<IndicatorDataPoint[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!symbol) return
+    if (!FMP_API_KEY) {
+      setError("FMP API key missing")
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+
+    async function load() {
+      try {
+        const normalized = normalizeFmpSymbol(symbol!)
+        const url = buildUrl(
+          `technical-indicators/${indicator}?symbol=${encodeURIComponent(normalized)}&periodLength=${period}&timeframe=${timeframe}`
+        )
+        const resp = await fetch(url)
+        if (!resp.ok) throw new Error(`Indicator fetch failed: ${resp.status}`)
+        const json = await resp.json()
+        if (cancelled) return
+        const items = Array.isArray(json) ? json.slice(0, limit) : []
+        setData(items)
+        setError(null)
+      } catch (err) {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : "Indicator fetch failed")
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    load()
+    return () => { cancelled = true }
+  }, [symbol, indicator, period, timeframe, limit])
+
+  return { data, loading, error }
+}
+
+// ============================================================
+// Company Profile
+// ============================================================
+
+export type CompanyProfile = {
+  symbol: string
+  companyName?: string
+  exchange?: string
+  industry?: string
+  sector?: string
+  mktCap?: number
+  price?: number
+  beta?: number
+  volAvg?: number
+  lastDiv?: number
+  range?: string // "52w low - 52w high"
+  changes?: number
+  currency?: string
+  cik?: string
+  isin?: string
+  cusip?: string
+  description?: string
+  ceo?: string
+  website?: string
+  image?: string
+  ipoDate?: string
+  dcfDiff?: number
+  dcf?: number
+  isEtf?: boolean
+  isActivelyTrading?: boolean
+  isFund?: boolean
+  isAdr?: boolean
+}
+
+export function useFmpProfile(symbol?: string) {
+  const [profile, setProfile] = useState<CompanyProfile | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!symbol) return
+    if (!FMP_API_KEY) {
+      setError("FMP API key missing")
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+
+    async function load() {
+      try {
+        const normalized = normalizeFmpSymbol(symbol!)
+        const url = buildUrl(`profile?symbol=${encodeURIComponent(normalized)}`)
+        const resp = await fetch(url)
+        if (!resp.ok) throw new Error(`Profile fetch failed: ${resp.status}`)
+        const json = await resp.json()
+        if (cancelled) return
+        const data = Array.isArray(json) ? json[0] : null
+        setProfile(data)
+        setError(null)
+      } catch (err) {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : "Profile fetch failed")
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    load()
+    return () => { cancelled = true }
+  }, [symbol])
+
+  return { profile, loading, error }
+}
+
+// ============================================================
+// Stock News
+// ============================================================
+
+export type StockNewsItem = {
+  symbol?: string
+  publishedDate?: string
+  title?: string
+  image?: string
+  site?: string
+  text?: string
+  url?: string
+}
+
+export function useFmpNews(symbol?: string, limit = 10) {
+  const [news, setNews] = useState<StockNewsItem[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!symbol) return
+    if (!FMP_API_KEY) {
+      setError("FMP API key missing")
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+
+    async function load() {
+      try {
+        const normalized = normalizeFmpSymbol(symbol!)
+        const url = buildUrl(`stock-news?symbols=${encodeURIComponent(normalized)}&limit=${limit}`)
+        const resp = await fetch(url)
+        if (!resp.ok) throw new Error(`News fetch failed: ${resp.status}`)
+        const json = await resp.json()
+        if (cancelled) return
+        setNews(Array.isArray(json) ? json : [])
+        setError(null)
+      } catch (err) {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : "News fetch failed")
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    load()
+    return () => { cancelled = true }
+  }, [symbol, limit])
+
+  return { news, loading, error }
+}
+
+// ============================================================
+// Price Target
+// ============================================================
+
+export type PriceTarget = {
+  symbol?: string
+  targetHigh?: number
+  targetLow?: number
+  targetConsensus?: number
+  targetMedian?: number
+}
+
+export function useFmpPriceTarget(symbol?: string) {
+  const [priceTarget, setPriceTarget] = useState<PriceTarget | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!symbol) return
+    if (!FMP_API_KEY) {
+      setError("FMP API key missing")
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+
+    async function load() {
+      try {
+        const normalized = normalizeFmpSymbol(symbol!)
+        const url = buildUrl(`price-target-consensus?symbol=${encodeURIComponent(normalized)}`)
+        const resp = await fetch(url)
+        if (!resp.ok) throw new Error(`Price target fetch failed: ${resp.status}`)
+        const json = await resp.json()
+        if (cancelled) return
+        const data = Array.isArray(json) ? json[0] : null
+        setPriceTarget(data)
+        setError(null)
+      } catch (err) {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : "Price target fetch failed")
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    load()
+    return () => { cancelled = true }
+  }, [symbol])
+
+  return { priceTarget, loading, error }
+}
+
+// ============================================================
+// Analyst Ratings
+// ============================================================
+
+export type AnalystRating = {
+  symbol?: string
+  date?: string
+  rating?: string
+  ratingScore?: number
+  ratingRecommendation?: string
+  ratingDetailsDCFScore?: number
+  ratingDetailsDCFRecommendation?: string
+  ratingDetailsROEScore?: number
+  ratingDetailsROERecommendation?: string
+  ratingDetailsROAScore?: number
+  ratingDetailsROARecommendation?: string
+  ratingDetailsDEScore?: number
+  ratingDetailsDERecommendation?: string
+  ratingDetailsPEScore?: number
+  ratingDetailsPERecommendation?: string
+  ratingDetailsPBScore?: number
+  ratingDetailsPBRecommendation?: string
+}
+
+export function useFmpRating(symbol?: string) {
+  const [rating, setRating] = useState<AnalystRating | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!symbol) return
+    if (!FMP_API_KEY) {
+      setError("FMP API key missing")
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+
+    async function load() {
+      try {
+        const normalized = normalizeFmpSymbol(symbol!)
+        const url = buildUrl(`rating?symbol=${encodeURIComponent(normalized)}`)
+        const resp = await fetch(url)
+        if (!resp.ok) throw new Error(`Rating fetch failed: ${resp.status}`)
+        const json = await resp.json()
+        if (cancelled) return
+        const data = Array.isArray(json) ? json[0] : null
+        setRating(data)
+        setError(null)
+      } catch (err) {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : "Rating fetch failed")
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    load()
+    return () => { cancelled = true }
+  }, [symbol])
+
+  return { rating, loading, error }
+}

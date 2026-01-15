@@ -4,8 +4,6 @@ import process from "node:process"
 import crypto from "node:crypto"
 import admin from "firebase-admin"
 import { createClient } from "redis"
-import AlpacaAdapter from "../adapters/alpaca/adapter.js"
-import OandaAdapter from "../adapters/oanda/adapter.js"
 
 const CONFIG_ENV = "RELAYORB_CONFIG_PATH"
 const DEFAULT_CONFIG = "config.json"
@@ -1317,6 +1315,7 @@ class BacktraderAdapter {
       side,
       strength: typeof sig.strength === "number" ? sig.strength : 0.65,
       message: sig.message || `${side} signal for ${symbol}`,
+      assetClass: sig.assetClass || fallbackAssetClass,
       data: {
         pair: symbol,
         symbol: symbol,
@@ -1619,10 +1618,6 @@ function createAdapter(bot) {
   switch (bot.engine) {
     case "freqtrade":
       return new FreqtradeAdapter(bot)
-    case "alpaca":
-      return new AlpacaAdapter(bot)
-    case "oanda":
-      return new OandaAdapter(bot)
     case "backtrader":
       return new BacktraderAdapter(bot)
     default:
@@ -1695,6 +1690,7 @@ async function writeSignals(db, botId, signals) {
         botId,
         symbol: symbol || null,
         side: signal.side || null,
+        assetClass: signal.assetClass || null,
         strength: typeof signal.strength === "number" ? signal.strength : null,
         message: signal.message || "",
         data: signal.data || null,
