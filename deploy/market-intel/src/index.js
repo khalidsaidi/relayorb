@@ -19,7 +19,7 @@ const config = {
   llmIntervalMinutes: parseInt(process.env.LLM_INTERVAL_MINUTES || "30", 10),
   newsLimit: parseInt(process.env.MARKETAUX_LIMIT || "40", 10),
   newsSymbolLimit: parseInt(process.env.MARKETAUX_SYMBOL_LIMIT || "35", 10),
-  newsIntervalMinutes: parseInt(process.env.NEWS_INTERVAL_MINUTES || "30", 10),
+  newsIntervalMinutes: parseInt(process.env.NEWS_INTERVAL_MINUTES || "60", 10),
   marketDataGatewayUrl: process.env.MARKET_DATA_GATEWAY_URL || "",
   redisUrl: process.env.REDIS_URL || "",
   redisPrefix: process.env.REDIS_PREFIX || "relayorb",
@@ -2543,6 +2543,73 @@ async function fetchMarketauxNews(symbols, entityTypes) {
   }
 }
 
+async function fetchAnalystConsensus(symbol) {
+  if (!config.marketDataGatewayUrl || !symbol) return null
+  try {
+    const data = await fetchGatewayJson("/v1/fmp/grades-consensus", { symbol })
+    return data?.consensus || null
+  } catch (err) {
+    console.error(`Analyst consensus fetch failed for ${symbol}:`, err.message)
+    return null
+  }
+}
+
+async function loadAnalystConsensusData(stockSymbols) {
+  if (!config.marketDataGatewayUrl || !stockSymbols || stockSymbols.length === 0) {
+    return new Map()
+  }
+
+  // Fetch analyst consensus for top stock symbols (limit to avoid too many calls)
+  const limit = Math.min(stockSymbols.length, 30)
+  const symbolsToFetch = stockSymbols.slice(0, limit)
+
+  console.log(`Fetching analyst consensus for ${symbolsToFetch.length} stocks`)
+
+  const results = await Promise.all(
+    symbolsToFetch.map(async (symbol) => {
+      const consensus = await fetchAnalystConsensus(symbol)
+      return { symbol, consensus }
+    })
+  )
+
+  const consensusMap = new Map()
+  results.forEach(({ symbol, consensus }) => {
+    if (consensus) {
+      consensusMap.set(symbol.toUpperCase(), consensus)
+    }
+  })
+
+  console.log(`Loaded analyst consensus for ${consensusMap.size} stocks`)
+  return consensusMap
+}
+
+function calcAnalystBoost(symbol, side, consensusMap) {
+  if (!consensusMap || !symbol) return 0
+  const consensus = consensusMap.get(symbol.toUpperCase())
+  if (!consensus) return 0
+
+  // Map consensus to boost: align with trade direction
+  // strongBuy/buy -> boost buy signals, penalize sell signals
+  // strongSell/sell -> boost sell signals, penalize buy signals
+  const consensusLower = String(consensus.consensus || consensus).toLowerCase()
+
+  if (side === "buy") {
+    if (consensusLower === "strong buy") return 4
+    if (consensusLower === "buy") return 2
+    if (consensusLower === "hold") return 0
+    if (consensusLower === "sell") return -2
+    if (consensusLower === "strong sell") return -4
+  } else if (side === "sell") {
+    if (consensusLower === "strong sell") return 4
+    if (consensusLower === "sell") return 2
+    if (consensusLower === "hold") return 0
+    if (consensusLower === "buy") return -2
+    if (consensusLower === "strong buy") return -4
+  }
+
+  return 0
+}
+
 function buildNewsSummary(articles, stockSymbols, cryptoBaseMap) {
   const stockSet = new Set(stockSymbols.map((symbol) => normalizeTicker(symbol)))
   const buckets = new Map()
@@ -2756,8 +2823,8 @@ async function loadNewsData(db, candidates, controls, universe, runId, runConfig
       symbolBatches.push(cryptoSymbols.slice(i, i + batchSize))
     }
     
-    // Fetch up to 6 batches (30 symbols) for better coverage
-    const maxBatches = 6
+    // Fetch up to 3 batches (15 symbols) to reduce API calls while maintaining coverage
+    const maxBatches = 3
     const batchesToFetch = symbolBatches.slice(0, maxBatches)
     console.log(`Fetching ${batchesToFetch.length} batches of crypto news (${batchesToFetch.flat().length} symbols)`)
     
@@ -3177,6 +3244,7 @@ function formatScoreComponents(components) {
     liquidity: round(components.liquidity),
     news: round(components.news),
     universe: round(components.universe),
+    analyst: round(components.analyst),
     penalties: compactObject({
       spread: round(penalties.spread),
       liquidity: round(penalties.liquidity),
@@ -3306,12 +3374,17 @@ function scoreTrade(candidate, signalData, side, options = {}) {
     typeof candidate.universeBoost === "number" ? candidate.universeBoost : 0
   const primaryBoost = candidate.primary ? config.primaryScoreBoost : 0
   const universeScore = universeBoost + primaryBoost
+  // Analyst consensus boost for stocks (from FMP grades-consensus)
+  const analystBoost = candidate.assetClass === "stock" && options.analystConsensusMap
+    ? calcAnalystBoost(candidate.symbol, side, options.analystConsensusMap)
+    : 0
   let score =
     momentumScore +
     consensusScore +
     liquidityScore +
     newsSentimentScore +
-    universeScore
+    universeScore +
+    analystBoost
   const sentimentPenalty = profile === "dip" && sentimentRatio < 0.35 ? 5 : 0
 
   let liquidityPenalty = 0
@@ -3389,6 +3462,7 @@ function scoreTrade(candidate, signalData, side, options = {}) {
       liquidity: liquidityScore,
       news: newsSentimentScore,
       universe: universeScore,
+      analyst: analystBoost,
       penalties: {
         spread: spreadPenalty ? -spreadPenalty : 0,
         liquidity: liquidityPenalty ? -liquidityPenalty : 0,
@@ -3806,6 +3880,7 @@ function buildHotTrades(candidates, signalMap, scoreOptions, newsScoreMap = null
       signalWeight: scoreOptions?.signalWeight,
       horizon: scoreOptions?.horizon || "15m",
       newsScore: newsSentiment,
+      analystConsensusMap: scoreOptions?.analystConsensusMap,
     })
     const scoreComponents = formatScoreComponents(scoreDetail.components)
 
@@ -4018,6 +4093,9 @@ function buildScoreBreakdown(components, totalScore) {
   }
   if (typeof components.universe === "number") {
     parts.push(`universe ${formatNumber(components.universe, 1)}`)
+  }
+  if (typeof components.analyst === "number" && components.analyst !== 0) {
+    parts.push(`analyst ${formatNumber(components.analyst, 1)}`)
   }
   const penalties = components.penalties || {}
   if (typeof penalties.spread === "number" && penalties.spread !== 0) {
@@ -5101,11 +5179,17 @@ async function run() {
     items: candidateBatch,
   })
   const newsData = await loadNewsData(db, candidates, controls, universe, runId, runConfig)
+  // Load analyst consensus for stock candidates (uses FMP grades-consensus)
+  const stockSymbols = candidates
+    .filter(c => c.assetClass === "stock")
+    .map(c => c.symbol)
+  const analystConsensusMap = await loadAnalystConsensusData(stockSymbols)
   const scoreOptions = {
     weights: controls.trendWeights,
     signalWeight,
     horizon: "15m",
     riskProfile: controls.riskProfile,
+    analystConsensusMap,
   }
   const hotTrades = buildHotTrades(candidates, botSignals, scoreOptions, newsData.scoreMap)
   const scoreSummary = hotTrades.reduce(

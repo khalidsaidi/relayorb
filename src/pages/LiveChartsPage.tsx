@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState, useCallback } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -23,6 +23,8 @@ import {
   Newspaper,
   Activity,
   ExternalLink,
+  Maximize2,
+  X,
 } from "lucide-react"
 
 type IntervalOption = "1m-tv" | "5m" | "15m" | "30m" | "1h" | "eod"
@@ -65,6 +67,29 @@ export default function LiveChartsPage() {
   const [activeSymbol, setActiveSymbol] = useState("AAPL")
   const [interval, setInterval] = useState<IntervalOption>("5m")
   const [showIndicators, setShowIndicators] = useState(true)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  // Handle Escape key to exit fullscreen
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isFullscreen) {
+        setIsFullscreen(false)
+      }
+    }
+    if (isFullscreen) {
+      document.addEventListener("keydown", handleKeyDown)
+      document.body.style.overflow = "hidden"
+    }
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown)
+      document.body.style.overflow = ""
+    }
+  }, [isFullscreen])
+
+  const toggleFullscreen = useCallback(() => {
+    setIsFullscreen((prev) => !prev)
+  }, [])
+
   const defaultSymbols = useMemo(
     () => ({
       stock: "AAPL",
@@ -104,7 +129,7 @@ export default function LiveChartsPage() {
 
   // Enhanced data
   const { profile } = useFmpProfile(assetClass === "stock" ? normalizedSymbol : undefined)
-  const { news } = useFmpNews(normalizedSymbol, 5)
+  const { news, error: newsError } = useFmpNews(normalizedSymbol, 5)
   const { priceTarget } = useFmpPriceTarget(
     assetClass === "stock" ? normalizedSymbol : undefined
   )
@@ -324,7 +349,7 @@ export default function LiveChartsPage() {
               )}
             </div>
 
-            {/* Indicator toggle */}
+            {/* Indicator toggle and fullscreen */}
             <div className="flex items-center gap-4 text-xs">
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <input
@@ -346,6 +371,15 @@ export default function LiveChartsPage() {
                 {quoteUpdated ? <span>Quote {quoteUpdated}</span> : null}
                 {barUpdated ? <span className="ml-2">Bar {barUpdated}</span> : null}
               </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={toggleFullscreen}
+                className="h-7 px-2 gap-1"
+              >
+                <Maximize2 className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Fullscreen</span>
+              </Button>
             </div>
 
             {/* Chart tabs */}
@@ -404,7 +438,9 @@ export default function LiveChartsPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {news.length === 0 ? (
+              {newsError ? (
+                <p className="text-xs text-destructive">Error: {newsError}</p>
+              ) : news.length === 0 ? (
                 <p className="text-xs text-muted-foreground">No recent news</p>
               ) : (
                 <div className="space-y-3">
@@ -528,6 +564,146 @@ export default function LiveChartsPage() {
           )}
         </div>
       </div>
+
+      {/* Fullscreen overlay */}
+      {isFullscreen && (
+        <div className="fixed inset-0 z-50 bg-background flex flex-col">
+          {/* Fullscreen header */}
+          <div className="flex items-center justify-between px-4 py-2 border-b border-border/40 bg-card">
+            <div className="flex items-center gap-3">
+              <span className="text-xl font-bold">{normalizedSymbol}</span>
+              <span className="text-xs uppercase text-muted-foreground bg-muted/50 px-2 py-0.5 rounded">
+                {assetClass}
+              </span>
+              {quote?.price !== undefined && (
+                <span className="text-lg font-semibold">
+                  {formatAssetPrice(quote.price, assetClass)}
+                </span>
+              )}
+              {changePct !== undefined && (
+                <span
+                  className={`flex items-center gap-1 text-sm font-medium ${
+                    changePct >= 0 ? "text-emerald-600" : "text-rose-600"
+                  }`}
+                >
+                  {changePct >= 0 ? (
+                    <TrendingUp className="h-4 w-4" />
+                  ) : (
+                    <TrendingDown className="h-4 w-4" />
+                  )}
+                  {changePct >= 0 ? "+" : ""}
+                  {changePct.toFixed(2)}%
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <Tabs
+                value={interval}
+                onValueChange={(v) => setInterval(v as IntervalOption)}
+                className="hidden sm:block"
+              >
+                <TabsList className="h-8">
+                  <TabsTrigger value="5m" className="h-7 px-2 text-xs">
+                    5m
+                  </TabsTrigger>
+                  <TabsTrigger value="15m" className="h-7 px-2 text-xs">
+                    15m
+                  </TabsTrigger>
+                  <TabsTrigger value="30m" className="h-7 px-2 text-xs">
+                    30m
+                  </TabsTrigger>
+                  <TabsTrigger value="1h" className="h-7 px-2 text-xs">
+                    1h
+                  </TabsTrigger>
+                  <TabsTrigger value="eod" className="h-7 px-2 text-xs">
+                    EOD
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+              <label className="flex items-center gap-1.5 cursor-pointer text-xs">
+                <input
+                  type="checkbox"
+                  checked={showIndicators}
+                  onChange={(e) => setShowIndicators(e.target.checked)}
+                  className="rounded border-border"
+                />
+                <span className="text-muted-foreground hidden sm:inline">Indicators</span>
+              </label>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={toggleFullscreen}
+                className="h-8 w-8 p-0"
+              >
+                <X className="h-5 w-5" />
+              </Button>
+            </div>
+          </div>
+
+          {/* Fullscreen chart */}
+          <div className="flex-1 p-2">
+            {interval === "1m-tv" && tvUrl ? (
+              <iframe
+                src={tvUrl}
+                className="h-full w-full border-0 rounded-lg"
+                title={`TradingView chart for ${normalizedSymbol}`}
+                allow="clipboard-write"
+                loading="lazy"
+              />
+            ) : (
+              <FmpCandleChart
+                bars={bars}
+                signals={signalMarkers}
+                showSma={showIndicators}
+                showEma={showIndicators}
+                showRsi={showIndicators}
+                height={window.innerHeight - 80}
+                data-testid="fmp-chart-fullscreen"
+              />
+            )}
+          </div>
+
+          {/* Fullscreen footer with key stats */}
+          <div className="flex items-center gap-4 px-4 py-2 border-t border-border/40 bg-card text-xs overflow-x-auto">
+            {quote?.dayHigh && (
+              <div className="flex items-center gap-1">
+                <span className="text-muted-foreground">High:</span>
+                <span className="text-emerald-600 font-medium">
+                  {formatAssetPrice(quote.dayHigh, assetClass)}
+                </span>
+              </div>
+            )}
+            {quote?.dayLow && (
+              <div className="flex items-center gap-1">
+                <span className="text-muted-foreground">Low:</span>
+                <span className="text-rose-600 font-medium">
+                  {formatAssetPrice(quote.dayLow, assetClass)}
+                </span>
+              </div>
+            )}
+            {quote?.previousClose && (
+              <div className="flex items-center gap-1">
+                <span className="text-muted-foreground">Prev:</span>
+                <span>{formatAssetPrice(quote.previousClose, assetClass)}</span>
+              </div>
+            )}
+            {quote?.volume && (
+              <div className="flex items-center gap-1">
+                <span className="text-muted-foreground">Vol:</span>
+                <span>{formatNumber(quote.volume)}</span>
+              </div>
+            )}
+            {signalMarkers.length > 0 && (
+              <div className="flex items-center gap-1">
+                <Activity className="h-3 w-3 text-blue-500" />
+                <span>{signalMarkers.length} signals</span>
+              </div>
+            )}
+            <div className="flex-1" />
+            <span className="text-muted-foreground">Press ESC to exit</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

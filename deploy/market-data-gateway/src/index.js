@@ -1108,7 +1108,8 @@ async function handleFmpNews(req, res, params) {
   }
 
   const startedAt = Date.now()
-  const url = new URL(`${config.fmpStableBaseUrl}/stock-news`)
+  // Use /stable/news/stock endpoint (not /stable/stock-news)
+  const url = new URL(`${config.fmpStableBaseUrl}/news/stock`)
   if (symbol) url.searchParams.set("symbols", symbol)
   url.searchParams.set("limit", String(limit))
   url.searchParams.set("apikey", config.fmpKey)
@@ -1249,6 +1250,62 @@ async function handleFmpAnalystRatings(req, res, params) {
     meta: {
       providerId: "fmp",
       endpointName: "rating",
+      paramsHash: hashParams({ symbol }),
+      httpStatus: 200,
+    },
+  })
+}
+
+async function handleFmpGradesConsensus(req, res, params) {
+  if (!config.fmpKey) {
+    respondJson(res, 500, { error: "FMP_API_KEY is not configured" })
+    return
+  }
+
+  const symbol = (params.get("symbol") || "").toUpperCase().replace(/[/-]/g, "")
+  if (!symbol) {
+    respondJson(res, 400, { error: "Missing symbol" })
+    return
+  }
+
+  const cacheKey = `fmp:grades-consensus:${symbol}`
+  const cached = getCached(cacheKey)
+  if (cached) {
+    respondJson(res, 200, cached)
+    return
+  }
+
+  const startedAt = Date.now()
+  const url = new URL(`${config.fmpStableBaseUrl}/grades-consensus`)
+  url.searchParams.set("symbol", symbol)
+  url.searchParams.set("apikey", config.fmpKey)
+
+  let data = null
+  try {
+    data = await fetchJson(url.toString())
+  } catch (err) {
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "error",
+      startMs: startedAt,
+      meta: { providerId: "fmp", endpointName: "grades-consensus", paramsHash: hashParams({ symbol }) },
+      error: { message: err?.message ? String(err.message) : "Request failed" },
+    })
+    throw err
+  }
+
+  const consensus = Array.isArray(data) ? data[0] : null
+  // Cache for 6 hours since analyst grades don't change frequently
+  const payload = { symbol, consensus, source: "fmp" }
+  setCached(cacheKey, payload, 6 * 60 * 60 * 1000)
+  respondJson(res, 200, payload)
+  await emitProviderEvent({
+    stationId: "provider:fmp",
+    status: "end",
+    startMs: startedAt,
+    meta: {
+      providerId: "fmp",
+      endpointName: "grades-consensus",
       paramsHash: hashParams({ symbol }),
       httpStatus: 200,
     },
@@ -1417,6 +1474,10 @@ async function requestHandler(req, res) {
     }
     if (path === "/v1/fmp/ratings") {
       await handleFmpAnalystRatings(req, res, params)
+      return
+    }
+    if (path === "/v1/fmp/grades-consensus") {
+      await handleFmpGradesConsensus(req, res, params)
       return
     }
     if (path === "/v1/marketaux/news") {

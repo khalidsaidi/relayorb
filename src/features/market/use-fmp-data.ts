@@ -558,7 +558,8 @@ export function useFmpNews(symbol?: string, limit = 10) {
     async function load() {
       try {
         const normalized = normalizeFmpSymbol(symbol!)
-        const url = buildUrl(`stock-news?symbols=${encodeURIComponent(normalized)}&limit=${limit}`)
+        // FMP stable API uses /news/stock path (not /stock-news)
+        const url = buildUrl(`news/stock?symbols=${encodeURIComponent(normalized)}&limit=${limit}`)
         const resp = await fetch(url)
         if (!resp.ok) throw new Error(`News fetch failed: ${resp.status}`)
         const json = await resp.json()
