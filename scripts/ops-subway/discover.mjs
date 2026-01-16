@@ -297,10 +297,6 @@ async function main() {
   if (fmpKey || fmpBase) {
     providers.push({ id: "fmp", enabled: Boolean(fmpKey), host: safeHost(fmpBase) })
   }
-  const cgBase = resolveEnv("COINGECKO_BASE_URL", envFile)
-  if (cgBase) {
-    providers.push({ id: "coingecko", enabled: true, host: safeHost(cgBase) })
-  }
   const marketauxKey = resolveEnv("MARKETAUX_API_KEY", envFile)
   const marketauxBase = resolveEnv("MARKETAUX_BASE_URL", envFile)
   if (marketauxKey || marketauxBase) {

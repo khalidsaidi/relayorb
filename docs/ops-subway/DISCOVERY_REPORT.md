@@ -406,7 +406,6 @@ Stream info: unavailable
 ## Providers
 Detected providers:
 - fmp (enabled=yes, host=financialmodelingprep.com)
-- coingecko (enabled=yes, host=api.coingecko.com)
 - marketaux (enabled=yes, host=api.marketaux.com)
 
 ## Discovery Blockers

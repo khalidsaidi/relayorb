@@ -624,19 +624,6 @@ async function checkBotConfiguration() {
         addCheck("config", `${botId}_engine`, "failed", `${botId} missing engine field`)
       }
       
-      // Check API configuration for bots that need it
-      if (bot.engine === "freqtrade") {
-        if (!bot.api?.baseUrl) {
-          addCheck("config", `${botId}_baseUrl`, "warning", `${botId} missing api.baseUrl`)
-        }
-        if (!bot.api?.username || !bot.api?.password) {
-          addCheck("config", `${botId}_credentials`, "failed", 
-            `${botId} missing API credentials - authentication will fail`)
-        } else {
-          addCheck("config", `${botId}_credentials`, "passed", `${botId} has API credentials`)
-        }
-      }
-      
       if (bot.engine === "backtrader") {
         if (!bot.api?.baseUrl) {
           addCheck("config", `${botId}_baseUrl`, "warning", 

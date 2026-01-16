@@ -191,7 +191,7 @@ Signals from all bots are aggregated by symbol (limit: 800 signals):
   recentCount: 3,        // Signals in last 30 minutes
   recentWeight: 2.8,     // Recent weighted sum
   latestAt: Timestamp,   // Most recent signal time
-  bots: Set(['freqtrade-1', 'backtrader-stocks', 'market-intel'])
+  bots: Set(['backtrader-stocks', 'market-intel'])
 }
 ```
 

@@ -4,15 +4,12 @@ This stack runs the real bots plus the RelayOrb agent on a single host. The UI s
 
 ## Layout
 - `agent-config/` RelayOrb agent config (bots + API creds)
-- `freqtrade/` Freqtrade config and data
 - `secrets/` Firebase service account JSON (never commit)
 
 ## One-time setup
 1) Copy the sample configs:
 ```bash
 cp agent-config/config.example.json agent-config/config.json
-mkdir -p freqtrade/user_data
-cp freqtrade/user_data/config.example.json freqtrade/user_data/config.json
 ```
 
 2) Place your Firebase service account JSON here:

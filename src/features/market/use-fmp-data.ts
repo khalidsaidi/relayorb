@@ -2,8 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { parse } from "date-fns"
 import { fromZonedTime } from "date-fns-tz"
 
-const FMP_BASE = "https://financialmodelingprep.com/stable"
-const FMP_API_KEY = import.meta.env.VITE_FMP_API_KEY || ""
+const GATEWAY_BASE = (import.meta.env.VITE_MARKET_DATA_GATEWAY_URL || "").replace(/\/+$/, "")
 
 type FmpInterval = "5min" | "15min" | "30min" | "1hour" | "eod"
 
@@ -35,8 +34,11 @@ function normalizeFmpSymbol(symbol: string) {
 }
 
 function buildUrl(path: string) {
-  const apiKeyParam = FMP_API_KEY ? `apikey=${FMP_API_KEY}` : ""
-  return `${FMP_BASE}/${path}${path.includes("?") ? "&" : "?"}${apiKeyParam}`
+  if (!GATEWAY_BASE) {
+    throw new Error("Market data gateway URL missing (set VITE_MARKET_DATA_GATEWAY_URL)")
+  }
+  const normalized = path.startsWith("/") ? path : `/${path}`
+  return `${GATEWAY_BASE}${normalized}`
 }
 
 type RawBar = {
@@ -115,8 +117,8 @@ export function useFmpQuote(symbol?: string) {
 
   useEffect(() => {
     if (!symbol) return
-    if (!FMP_API_KEY) {
-      setError("FMP API key missing (set VITE_FMP_API_KEY)")
+    if (!GATEWAY_BASE) {
+      setError("Market data gateway URL missing (set VITE_MARKET_DATA_GATEWAY_URL)")
       return
     }
     const resolvedSymbol = symbol
@@ -125,15 +127,16 @@ export function useFmpQuote(symbol?: string) {
     async function load() {
       try {
         const normalized = normalizeFmpSymbol(resolvedSymbol)
-        const url = buildUrl(`quote?symbol=${encodeURIComponent(normalized)}`)
+        const url = buildUrl(`/v1/fmp/quote?symbol=${encodeURIComponent(normalized)}`)
         const resp = await fetch(url)
         if (!resp.ok) {
           const text = await resp.text()
           throw new Error(`Quote fetch failed (${resp.status}): ${text || resp.statusText}`)
         }
-        const data = await resp.json()
-        const payload = Array.isArray(data) ? data[0] : null
-        if (!payload) throw new Error("No quote data")
+        const payload = await resp.json()
+        if (!payload || typeof payload !== "object" || typeof payload.price !== "number") {
+          throw new Error("No quote data")
+        }
         if (cancelled) return
         setQuote({
           symbol: payload.symbol || normalized,
@@ -177,8 +180,8 @@ export function useFmpChart(
 
   useEffect(() => {
     if (!symbol) return
-    if (!FMP_API_KEY) {
-      setError("FMP API key missing (set VITE_FMP_API_KEY)")
+    if (!GATEWAY_BASE) {
+      setError("Market data gateway URL missing (set VITE_MARKET_DATA_GATEWAY_URL)")
       return
     }
     const resolvedSymbol = symbol
@@ -189,10 +192,11 @@ export function useFmpChart(
     async function load() {
       try {
         const normalized = normalizeFmpSymbol(resolvedSymbol)
-        const path =
-          interval === "eod"
-            ? `historical-price-eod/full?symbol=${encodeURIComponent(normalized)}&limit=${limit}`
-            : `historical-chart/${interval}?symbol=${encodeURIComponent(normalized)}&limit=${limit}`
+        const intervalParam = interval === "eod" ? "1day" : interval
+        const assetParam = assetClass ? `&assetClass=${encodeURIComponent(assetClass)}` : ""
+        const path = `/v1/fmp/candles?symbol=${encodeURIComponent(normalized)}&interval=${encodeURIComponent(
+          intervalParam
+        )}&limit=${limit}${assetParam}`
         const url = buildUrl(path)
         const resp = await fetch(url)
         if (!resp.ok) {
@@ -200,6 +204,12 @@ export function useFmpChart(
           throw new Error(`Chart fetch failed (${resp.status}): ${text || resp.statusText}`)
         }
         const data = await resp.json()
+        if (Array.isArray(data?.candles)) {
+          if (cancelled) return
+          setBars(data.candles)
+          setError(null)
+          return
+        }
         if (!Array.isArray(data)) {
           throw new Error(typeof data?.error === "string" ? data.error : "Chart fetch failed")
         }
@@ -297,8 +307,8 @@ export function useFmpSymbolSearch(query: string, assetClass?: string) {
       setLoading(false)
       return
     }
-    if (!FMP_API_KEY) {
-      setError("FMP API key missing (set VITE_FMP_API_KEY)")
+    if (!GATEWAY_BASE) {
+      setError("Market data gateway URL missing (set VITE_MARKET_DATA_GATEWAY_URL)")
       setLoading(false)
       return
     }
@@ -310,26 +320,34 @@ export function useFmpSymbolSearch(query: string, assetClass?: string) {
         const nameNeedle = normalizeSearchQuery(trimmed)
         const [symbolRowsResult, nameRowsResult] = await Promise.allSettled([
           (async () => {
-            const url = buildUrl(`search-symbol?query=${encodeURIComponent(symbolNeedle)}`)
+            const url = buildUrl(`/v1/fmp/search-symbol?query=${encodeURIComponent(symbolNeedle)}`)
             const resp = await fetch(url)
             if (!resp.ok) {
               const text = await resp.text()
               throw new Error(`Symbol search failed (${resp.status}): ${text || resp.statusText}`)
             }
-            const data = (await resp.json()) as unknown
-            if (!Array.isArray(data)) throw new Error("Unexpected symbol search payload")
-            return data as RawSearchRow[]
+            const payload = (await resp.json()) as unknown
+            const data = Array.isArray((payload as any)?.data)
+              ? ((payload as any).data as RawSearchRow[])
+              : Array.isArray(payload)
+                ? (payload as RawSearchRow[])
+                : []
+            return data
           })(),
           (async () => {
-            const url = buildUrl(`search-name?query=${encodeURIComponent(trimmed)}`)
+            const url = buildUrl(`/v1/fmp/search-name?query=${encodeURIComponent(trimmed)}`)
             const resp = await fetch(url)
             if (!resp.ok) {
               const text = await resp.text()
               throw new Error(`Name search failed (${resp.status}): ${text || resp.statusText}`)
             }
-            const data = (await resp.json()) as unknown
-            if (!Array.isArray(data)) throw new Error("Unexpected name search payload")
-            return data as RawSearchRow[]
+            const payload = (await resp.json()) as unknown
+            const data = Array.isArray((payload as any)?.data)
+              ? ((payload as any).data as RawSearchRow[])
+              : Array.isArray(payload)
+                ? (payload as RawSearchRow[])
+                : []
+            return data
           })(),
         ])
         const mergedRows: RawSearchRow[] = []
@@ -418,8 +436,8 @@ export function useFmpIndicator(
 
   useEffect(() => {
     if (!symbol) return
-    if (!FMP_API_KEY) {
-      setError("FMP API key missing")
+    if (!GATEWAY_BASE) {
+      setError("Market data gateway URL missing")
       return
     }
     let cancelled = false
@@ -429,13 +447,15 @@ export function useFmpIndicator(
       try {
         const normalized = normalizeFmpSymbol(symbol!)
         const url = buildUrl(
-          `technical-indicators/${indicator}?symbol=${encodeURIComponent(normalized)}&periodLength=${period}&timeframe=${timeframe}`
+          `/v1/fmp/indicators?symbol=${encodeURIComponent(normalized)}&indicator=${encodeURIComponent(
+            indicator
+          )}&period=${period}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`
         )
         const resp = await fetch(url)
         if (!resp.ok) throw new Error(`Indicator fetch failed: ${resp.status}`)
-        const json = await resp.json()
+        const payload = await resp.json()
         if (cancelled) return
-        const items = Array.isArray(json) ? json.slice(0, limit) : []
+        const items = Array.isArray(payload?.data) ? payload.data : []
         setData(items)
         setError(null)
       } catch (err) {
@@ -494,8 +514,8 @@ export function useFmpProfile(symbol?: string) {
 
   useEffect(() => {
     if (!symbol) return
-    if (!FMP_API_KEY) {
-      setError("FMP API key missing")
+    if (!GATEWAY_BASE) {
+      setError("Market data gateway URL missing")
       return
     }
     let cancelled = false
@@ -504,13 +524,12 @@ export function useFmpProfile(symbol?: string) {
     async function load() {
       try {
         const normalized = normalizeFmpSymbol(symbol!)
-        const url = buildUrl(`profile?symbol=${encodeURIComponent(normalized)}`)
+        const url = buildUrl(`/v1/fmp/profile?symbol=${encodeURIComponent(normalized)}`)
         const resp = await fetch(url)
         if (!resp.ok) throw new Error(`Profile fetch failed: ${resp.status}`)
-        const json = await resp.json()
+        const payload = await resp.json()
         if (cancelled) return
-        const data = Array.isArray(json) ? json[0] : null
-        setProfile(data)
+        setProfile(payload?.profile || null)
         setError(null)
       } catch (err) {
         if (cancelled) return
@@ -548,8 +567,8 @@ export function useFmpNews(symbol?: string, limit = 10) {
 
   useEffect(() => {
     if (!symbol) return
-    if (!FMP_API_KEY) {
-      setError("FMP API key missing")
+    if (!GATEWAY_BASE) {
+      setError("Market data gateway URL missing")
       return
     }
     let cancelled = false
@@ -558,13 +577,14 @@ export function useFmpNews(symbol?: string, limit = 10) {
     async function load() {
       try {
         const normalized = normalizeFmpSymbol(symbol!)
-        // FMP stable API uses /news/stock path (not /stock-news)
-        const url = buildUrl(`news/stock?symbols=${encodeURIComponent(normalized)}&limit=${limit}`)
+        const url = buildUrl(
+          `/v1/fmp/news?symbol=${encodeURIComponent(normalized)}&limit=${limit}`
+        )
         const resp = await fetch(url)
         if (!resp.ok) throw new Error(`News fetch failed: ${resp.status}`)
-        const json = await resp.json()
+        const payload = await resp.json()
         if (cancelled) return
-        setNews(Array.isArray(json) ? json : [])
+        setNews(Array.isArray(payload?.data) ? payload.data : [])
         setError(null)
       } catch (err) {
         if (cancelled) return
@@ -600,8 +620,8 @@ export function useFmpPriceTarget(symbol?: string) {
 
   useEffect(() => {
     if (!symbol) return
-    if (!FMP_API_KEY) {
-      setError("FMP API key missing")
+    if (!GATEWAY_BASE) {
+      setError("Market data gateway URL missing")
       return
     }
     let cancelled = false
@@ -610,13 +630,12 @@ export function useFmpPriceTarget(symbol?: string) {
     async function load() {
       try {
         const normalized = normalizeFmpSymbol(symbol!)
-        const url = buildUrl(`price-target-consensus?symbol=${encodeURIComponent(normalized)}`)
+        const url = buildUrl(`/v1/fmp/price-target?symbol=${encodeURIComponent(normalized)}`)
         const resp = await fetch(url)
         if (!resp.ok) throw new Error(`Price target fetch failed: ${resp.status}`)
-        const json = await resp.json()
+        const payload = await resp.json()
         if (cancelled) return
-        const data = Array.isArray(json) ? json[0] : null
-        setPriceTarget(data)
+        setPriceTarget(payload?.priceTarget || null)
         setError(null)
       } catch (err) {
         if (cancelled) return
@@ -664,8 +683,8 @@ export function useFmpRating(symbol?: string) {
 
   useEffect(() => {
     if (!symbol) return
-    if (!FMP_API_KEY) {
-      setError("FMP API key missing")
+    if (!GATEWAY_BASE) {
+      setError("Market data gateway URL missing")
       return
     }
     let cancelled = false
@@ -674,13 +693,13 @@ export function useFmpRating(symbol?: string) {
     async function load() {
       try {
         const normalized = normalizeFmpSymbol(symbol!)
-        const url = buildUrl(`rating?symbol=${encodeURIComponent(normalized)}`)
+        const url = buildUrl(`/v1/fmp/ratings-snapshot?symbol=${encodeURIComponent(normalized)}`)
         const resp = await fetch(url)
         if (!resp.ok) throw new Error(`Rating fetch failed: ${resp.status}`)
-        const json = await resp.json()
+        const payload = await resp.json()
         if (cancelled) return
-        const data = Array.isArray(json) ? json[0] : null
-        setRating(data)
+        const snapshot = payload?.rating || (Array.isArray(payload?.data) ? payload.data[0] : null)
+        setRating(snapshot || null)
         setError(null)
       } catch (err) {
         if (cancelled) return

@@ -253,7 +253,7 @@ async function main() {
   let providerCount = 0
   if (await providerPanel.count()) {
     const providerCards = providerPanel.locator("..").locator("..").locator("div").filter({
-      hasText: /fmp|coingecko|marketaux/i,
+    hasText: /fmp|marketaux/i,
     })
     providerCount = await providerCards.count()
   }

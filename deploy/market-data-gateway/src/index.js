@@ -15,12 +15,15 @@ const config = {
   cacheMarketsMs: parseInt(process.env.MDG_MARKETS_TTL_MS || "60000", 10),
   cacheNewsMs: parseInt(process.env.MDG_NEWS_TTL_MS || "120000", 10),
   cacheStockListMs: parseInt(process.env.MDG_STOCK_LIST_TTL_MS || "21600000", 10),
+  cryptoQuoteConcurrency: parseInt(process.env.MDG_CRYPTO_QUOTE_CONCURRENCY || "6", 10),
   redisUrl: process.env.REDIS_URL || "",
   redisPrefix: process.env.REDIS_PREFIX || "relayorb",
   pipelineEventsEnabled: process.env.PIPELINE_EVENTS_ENABLED !== "false",
   pipelineEventsStream: process.env.PIPELINE_EVENTS_STREAM || "",
   pipelineEventsMaxlen: parseInt(process.env.PIPELINE_EVENTS_MAXLEN || "20000", 10),
   pipelineEventsRunEnv: process.env.PIPELINE_EVENTS_RUN_ENV || "prod",
+  corsOrigin: process.env.MDG_CORS_ORIGIN || "*",
+  corsAllowHeaders: process.env.MDG_CORS_HEADERS || "Content-Type",
 }
 
 const cache = new Map()
@@ -29,6 +32,13 @@ let pipelineRedisReady = false
 
 function logEvent(event, data = {}) {
   console.log(JSON.stringify({ event, ...data }))
+}
+
+function applyCorsHeaders(res) {
+  res.setHeader("Access-Control-Allow-Origin", config.corsOrigin)
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
+  res.setHeader("Access-Control-Allow-Headers", config.corsAllowHeaders)
+  res.setHeader("Access-Control-Max-Age", "86400")
 }
 
 function getCached(key) {
@@ -186,10 +196,12 @@ function mapIntervalToFmp(interval) {
     "5min": "5min",
     "15min": "15min",
     "30min": "30min",
+    "1hour": "1hour",
     "1h": "1hour",
     "4h": "4hour",
     "1day": "1day",
     "1week": "1week",
+    "eod": "1day",
   }
   return mapping[interval] || "15min"
 }
@@ -262,12 +274,13 @@ function chunkList(items, size) {
 async function fetchJson(url, options = {}) {
   logEvent("mdg_request", { url: sanitizeUrl(url) })
 
-  // Add 15s timeout to prevent hanging requests
+  const { timeoutMs = 15000, ...fetchOptions } = options
+  // Add timeout to prevent hanging requests
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 15000)
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
-    const res = await fetch(url, { ...options, signal: controller.signal })
+    const res = await fetch(url, { ...fetchOptions, signal: controller.signal })
     clearTimeout(timeoutId)
 
     if (!res.ok) {
@@ -281,11 +294,26 @@ async function fetchJson(url, options = {}) {
     return res.json()
   } catch (err) {
     clearTimeout(timeoutId)
-    if (err.name === 'AbortError') {
-      throw new Error(`Request timed out after 15s: ${sanitizeUrl(url)}`)
+    if (err.name === "AbortError") {
+      throw new Error(`Request timed out after ${timeoutMs}ms: ${sanitizeUrl(url)}`)
     }
     throw err
   }
+}
+
+async function fetchJsonWithRetry(url, options = {}, attempts = 2, backoffMs = 500) {
+  let lastErr
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await fetchJson(url, options)
+    } catch (err) {
+      lastErr = err
+      if (i < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, backoffMs * (i + 1)))
+      }
+    }
+  }
+  throw lastErr
 }
 
 async function fetchText(url, options = {}) {
@@ -409,7 +437,7 @@ function respondJson(res, status, payload) {
   res.writeHead(status, {
     "content-type": "application/json",
     "cache-control": "no-store",
-    "access-control-allow-origin": "*",
+    "access-control-allow-origin": config.corsOrigin,
   })
   res.end(JSON.stringify(payload))
 }
@@ -442,6 +470,22 @@ function buildFmpQuotePayload(entry, symbol, assetClass) {
     name: entry.name || entry.companyName || symbol,
     source: "fmp",
   }
+}
+
+async function fetchFmpQuoteCached(symbol, assetClass) {
+  const cacheKey = `fmp:quote:${assetClass}:${symbol}`
+  const cached = getCached(cacheKey)
+  if (cached) return { payload: cached, cacheHit: true }
+
+  const url = new URL(`${config.fmpStableBaseUrl}/quote`)
+  url.searchParams.set("symbol", symbol)
+  url.searchParams.set("apikey", config.fmpKey)
+  const data = await fetchJson(url.toString())
+  const entry = Array.isArray(data) ? data[0] : data
+  const payload = buildFmpQuotePayload(entry, symbol, assetClass)
+  if (!payload) return { payload: null, cacheHit: false }
+  setCached(cacheKey, payload, config.cacheDefaultMs)
+  return { payload, cacheHit: false }
 }
 
 async function handleFmpQuote(req, res, params) {
@@ -849,6 +893,145 @@ async function handleFmpStockList(req, res) {
   })
 }
 
+async function handleFmpMoverList(req, res, params, endpointName) {
+  if (!config.fmpKey) {
+    respondJson(res, 500, { error: "FMP API key is not configured" })
+    return
+  }
+
+  const limit = clamp(parseInt(params.get("limit") || "100", 10), 1, 250)
+  const cacheKey = `fmp:movers:${endpointName}:${limit}`
+  const cached = getCached(cacheKey)
+  if (cached) {
+    respondJson(res, 200, cached)
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "end",
+      meta: {
+        providerId: "fmp",
+        endpointName,
+        cacheHit: true,
+        paramsHash: hashParams({ limit }),
+        httpStatus: 200,
+      },
+    })
+    return
+  }
+
+  const startedAt = Date.now()
+  const url = new URL(`${config.fmpStableBaseUrl}/${endpointName}`)
+  url.searchParams.set("limit", String(limit))
+  url.searchParams.set("apikey", config.fmpKey)
+
+  let data = null
+  try {
+    data = await fetchJsonWithRetry(url.toString(), { timeoutMs: 12000 }, 2, 750)
+  } catch (err) {
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "error",
+      startMs: startedAt,
+      meta: {
+        providerId: "fmp",
+        endpointName,
+        paramsHash: hashParams({ limit }),
+      },
+      error: { message: err?.message ? String(err.message) : "Request failed" },
+    })
+    throw err
+  }
+
+  const items = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []
+  const payload = { data: items, source: "fmp", endpoint: endpointName }
+  setCached(cacheKey, payload, config.cacheMarketsMs)
+  respondJson(res, 200, payload)
+  await emitProviderEvent({
+    stationId: "provider:fmp",
+    status: "end",
+    startMs: startedAt,
+    meta: {
+      providerId: "fmp",
+      endpointName,
+      paramsHash: hashParams({ limit }),
+      httpStatus: 200,
+      count: items.length,
+    },
+  })
+}
+
+async function handleFmpSearch(req, res, params, endpointName) {
+  if (!config.fmpKey) {
+    respondJson(res, 500, { error: "FMP API key is not configured" })
+    return
+  }
+
+  const query = params.get("query") || ""
+  if (!query) {
+    respondJson(res, 400, { error: "Missing query" })
+    return
+  }
+
+  const limit = clamp(parseInt(params.get("limit") || "50", 10), 1, 100)
+  const cacheKey = `fmp:search:${endpointName}:${query}:${limit}`
+  const cached = getCached(cacheKey)
+  if (cached) {
+    respondJson(res, 200, cached)
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "end",
+      meta: {
+        providerId: "fmp",
+        endpointName,
+        cacheHit: true,
+        paramsHash: hashParams({ query, limit }),
+        httpStatus: 200,
+      },
+    })
+    return
+  }
+
+  const startedAt = Date.now()
+  const url = new URL(`${config.fmpStableBaseUrl}/${endpointName}`)
+  url.searchParams.set("query", query)
+  url.searchParams.set("limit", String(limit))
+  url.searchParams.set("apikey", config.fmpKey)
+
+  let data = null
+  try {
+    data = await fetchJson(url.toString())
+  } catch (err) {
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "error",
+      startMs: startedAt,
+      meta: {
+        providerId: "fmp",
+        endpointName,
+        paramsHash: hashParams({ query, limit }),
+      },
+      error: { message: err?.message ? String(err.message) : "Request failed" },
+    })
+    throw err
+  }
+
+  const items = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : []
+  const payload = { data: items, source: "fmp", endpoint: endpointName }
+  setCached(cacheKey, payload, config.cacheMarketsMs)
+  respondJson(res, 200, payload)
+  await emitProviderEvent({
+    stationId: "provider:fmp",
+    status: "end",
+    startMs: startedAt,
+    meta: {
+      providerId: "fmp",
+      endpointName,
+      paramsHash: hashParams({ query, limit }),
+      httpStatus: 200,
+      count: items.length,
+    },
+  })
+}
+
 async function handleFmpCrypto(req, res, params) {
   if (!config.fmpKey) {
     respondJson(res, 500, { error: "FMP API key is not configured" })
@@ -877,8 +1060,7 @@ async function handleFmpCrypto(req, res, params) {
 
   const startedAt = Date.now()
 
-  // Top crypto symbols to fetch (batch endpoint requires paid tier)
-  // Using individual /stable/quote endpoint for each symbol
+  // Top crypto symbols to fetch. Fetch quotes individually (stable/quote is single-symbol for crypto).
   const topCryptoSymbols = [
     "BTCUSD", "ETHUSD", "USDTUSD", "BNBUSD", "SOLUSD",
     "XRPUSD", "USDCUSD", "ADAUSD", "DOGUSD", "TRXUSD",
@@ -894,23 +1076,28 @@ async function handleFmpCrypto(req, res, params) {
 
   const data = []
   const errors = []
+  let cacheHits = 0
 
-  // Fetch quotes for each symbol
-  for (const symbol of topCryptoSymbols) {
-    try {
-      const url = new URL(`${config.fmpStableBaseUrl}/quote`)
-      url.searchParams.set("symbol", symbol)
-      url.searchParams.set("apikey", config.fmpKey)
-
-      const result = await fetchJson(url.toString())
-      if (Array.isArray(result) && result.length > 0) {
-        data.push(result[0])
+  const concurrency = clamp(config.cryptoQuoteConcurrency, 1, 20)
+  for (let i = 0; i < topCryptoSymbols.length; i += concurrency) {
+    const batch = topCryptoSymbols.slice(i, i + concurrency)
+    const settled = await Promise.allSettled(
+      batch.map((symbol) => fetchFmpQuoteCached(symbol, "crypto"))
+    )
+    settled.forEach((result, index) => {
+      if (result.status === "fulfilled") {
+        const payload = result.value?.payload
+        if (payload) {
+          if (result.value.cacheHit) cacheHits += 1
+          data.push(payload)
+          return
+        }
+        errors.push({ symbol: batch[index], error: "Empty quote response" })
+        return
       }
-    } catch (err) {
-      errors.push({ symbol, error: err.message })
-      // Continue fetching other symbols
-      continue
-    }
+      const message = result.reason?.message ? String(result.reason.message) : "Request failed"
+      errors.push({ symbol: batch[index], error: message })
+    })
   }
 
   if (data.length === 0) {
@@ -923,7 +1110,7 @@ async function handleFmpCrypto(req, res, params) {
         endpointName: "crypto_markets",
         paramsHash: hashParams({ limit }),
       },
-      error: { message: "No crypto data fetched", errors },
+      error: { message: "No crypto data fetched", errors: errors.slice(0, 3) },
     })
     respondJson(res, 502, { error: "Failed to fetch crypto data", errors })
     return
@@ -934,7 +1121,16 @@ async function handleFmpCrypto(req, res, params) {
     .filter(item => item && item.symbol && item.volume > 0)
     .sort((a, b) => (b.volume || 0) - (a.volume || 0))
 
-  const payload = { data: sorted, source: "fmp" }
+  const payload = {
+    data: sorted.map((item) => ({
+      symbol: item.symbol,
+      name: item.name,
+      price: item.price,
+      changePercentage: item.changePercent,
+      volume: item.volume,
+    })),
+    source: "fmp",
+  }
   setCached(cacheKey, payload, config.cacheMarketsMs)
   respondJson(res, 200, payload)
   await emitProviderEvent({
@@ -947,6 +1143,7 @@ async function handleFmpCrypto(req, res, params) {
       paramsHash: hashParams({ limit }),
       httpStatus: 200,
       count: sorted.length,
+      cacheHits,
       errors: errors.length > 0 ? errors.slice(0, 3) : undefined,
     },
   })
@@ -1221,7 +1418,7 @@ async function handleFmpAnalystRatings(req, res, params) {
   }
 
   const startedAt = Date.now()
-  const url = new URL(`${config.fmpStableBaseUrl}/rating`)
+  const url = new URL(`${config.fmpStableBaseUrl}/ratings-snapshot`)
   url.searchParams.set("symbol", symbol)
   url.searchParams.set("apikey", config.fmpKey)
 
@@ -1233,14 +1430,14 @@ async function handleFmpAnalystRatings(req, res, params) {
       stationId: "provider:fmp",
       status: "error",
       startMs: startedAt,
-      meta: { providerId: "fmp", endpointName: "rating", paramsHash: hashParams({ symbol }) },
+      meta: { providerId: "fmp", endpointName: "ratings-snapshot", paramsHash: hashParams({ symbol }) },
       error: { message: err?.message ? String(err.message) : "Request failed" },
     })
     throw err
   }
 
   const rating = Array.isArray(data) ? data[0] : null
-  const payload = { symbol, rating, source: "fmp" }
+  const payload = { symbol, rating, source: "fmp", endpoint: "ratings-snapshot" }
   setCached(cacheKey, payload, config.cacheMarketsMs * 5)
   respondJson(res, 200, payload)
   await emitProviderEvent({
@@ -1249,9 +1446,177 @@ async function handleFmpAnalystRatings(req, res, params) {
     startMs: startedAt,
     meta: {
       providerId: "fmp",
-      endpointName: "rating",
+      endpointName: "ratings-snapshot",
       paramsHash: hashParams({ symbol }),
       httpStatus: 200,
+    },
+  })
+}
+
+async function handleFmpRatingsHistorical(req, res, params) {
+  if (!config.fmpKey) {
+    respondJson(res, 500, { error: "FMP_API_KEY is not configured" })
+    return
+  }
+
+  const symbol = (params.get("symbol") || "").toUpperCase().replace(/[/-]/g, "")
+  if (!symbol) {
+    respondJson(res, 400, { error: "Missing symbol" })
+    return
+  }
+
+  const cacheKey = `fmp:ratings-historical:${symbol}`
+  const cached = getCached(cacheKey)
+  if (cached) {
+    respondJson(res, 200, cached)
+    return
+  }
+
+  const startedAt = Date.now()
+  const url = new URL(`${config.fmpStableBaseUrl}/ratings-historical`)
+  url.searchParams.set("symbol", symbol)
+  url.searchParams.set("apikey", config.fmpKey)
+
+  let data = null
+  try {
+    data = await fetchJson(url.toString())
+  } catch (err) {
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "error",
+      startMs: startedAt,
+      meta: { providerId: "fmp", endpointName: "ratings-historical", paramsHash: hashParams({ symbol }) },
+      error: { message: err?.message ? String(err.message) : "Request failed" },
+    })
+    throw err
+  }
+
+  const items = Array.isArray(data) ? data : []
+  const payload = { symbol, ratings: items, source: "fmp" }
+  setCached(cacheKey, payload, config.cacheMarketsMs * 10)
+  respondJson(res, 200, payload)
+  await emitProviderEvent({
+    stationId: "provider:fmp",
+    status: "end",
+    startMs: startedAt,
+    meta: {
+      providerId: "fmp",
+      endpointName: "ratings-historical",
+      paramsHash: hashParams({ symbol }),
+      httpStatus: 200,
+      count: items.length,
+    },
+  })
+}
+
+async function handleFmpGrades(req, res, params) {
+  if (!config.fmpKey) {
+    respondJson(res, 500, { error: "FMP_API_KEY is not configured" })
+    return
+  }
+
+  const symbol = (params.get("symbol") || "").toUpperCase().replace(/[/-]/g, "")
+  if (!symbol) {
+    respondJson(res, 400, { error: "Missing symbol" })
+    return
+  }
+
+  const cacheKey = `fmp:grades:${symbol}`
+  const cached = getCached(cacheKey)
+  if (cached) {
+    respondJson(res, 200, cached)
+    return
+  }
+
+  const startedAt = Date.now()
+  const url = new URL(`${config.fmpStableBaseUrl}/grades`)
+  url.searchParams.set("symbol", symbol)
+  url.searchParams.set("apikey", config.fmpKey)
+
+  let data = null
+  try {
+    data = await fetchJson(url.toString())
+  } catch (err) {
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "error",
+      startMs: startedAt,
+      meta: { providerId: "fmp", endpointName: "grades", paramsHash: hashParams({ symbol }) },
+      error: { message: err?.message ? String(err.message) : "Request failed" },
+    })
+    throw err
+  }
+
+  const items = Array.isArray(data) ? data : []
+  const payload = { symbol, grades: items, source: "fmp" }
+  setCached(cacheKey, payload, config.cacheMarketsMs * 10)
+  respondJson(res, 200, payload)
+  await emitProviderEvent({
+    stationId: "provider:fmp",
+    status: "end",
+    startMs: startedAt,
+    meta: {
+      providerId: "fmp",
+      endpointName: "grades",
+      paramsHash: hashParams({ symbol }),
+      httpStatus: 200,
+      count: items.length,
+    },
+  })
+}
+
+async function handleFmpGradesHistorical(req, res, params) {
+  if (!config.fmpKey) {
+    respondJson(res, 500, { error: "FMP_API_KEY is not configured" })
+    return
+  }
+
+  const symbol = (params.get("symbol") || "").toUpperCase().replace(/[/-]/g, "")
+  if (!symbol) {
+    respondJson(res, 400, { error: "Missing symbol" })
+    return
+  }
+
+  const cacheKey = `fmp:grades-historical:${symbol}`
+  const cached = getCached(cacheKey)
+  if (cached) {
+    respondJson(res, 200, cached)
+    return
+  }
+
+  const startedAt = Date.now()
+  const url = new URL(`${config.fmpStableBaseUrl}/grades-historical`)
+  url.searchParams.set("symbol", symbol)
+  url.searchParams.set("apikey", config.fmpKey)
+
+  let data = null
+  try {
+    data = await fetchJson(url.toString())
+  } catch (err) {
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "error",
+      startMs: startedAt,
+      meta: { providerId: "fmp", endpointName: "grades-historical", paramsHash: hashParams({ symbol }) },
+      error: { message: err?.message ? String(err.message) : "Request failed" },
+    })
+    throw err
+  }
+
+  const items = Array.isArray(data) ? data : []
+  const payload = { symbol, grades: items, source: "fmp" }
+  setCached(cacheKey, payload, config.cacheMarketsMs * 10)
+  respondJson(res, 200, payload)
+  await emitProviderEvent({
+    stationId: "provider:fmp",
+    status: "end",
+    startMs: startedAt,
+    meta: {
+      providerId: "fmp",
+      endpointName: "grades-historical",
+      paramsHash: hashParams({ symbol }),
+      httpStatus: 200,
+      count: items.length,
     },
   })
 }
@@ -1391,6 +1756,13 @@ async function handleMarketauxNews(req, res, params) {
 
 async function requestHandler(req, res) {
   try {
+    applyCorsHeaders(res)
+    if (req.method === "OPTIONS") {
+      res.statusCode = 204
+      res.end()
+      return
+    }
+
     const url = new URL(req.url || "/", "http://localhost")
     const path = url.pathname
     if (path === "/" || path === "/healthz" || path === "/readyz") {
@@ -1448,6 +1820,26 @@ async function requestHandler(req, res) {
       await handleFmpCandles(req, res, params)
       return
     }
+    if (path === "/v1/fmp/biggest-gainers") {
+      await handleFmpMoverList(req, res, params, "biggest-gainers")
+      return
+    }
+    if (path === "/v1/fmp/biggest-losers") {
+      await handleFmpMoverList(req, res, params, "biggest-losers")
+      return
+    }
+    if (path === "/v1/fmp/most-actives") {
+      await handleFmpMoverList(req, res, params, "most-actives")
+      return
+    }
+    if (path === "/v1/fmp/search-symbol") {
+      await handleFmpSearch(req, res, params, "search-symbol")
+      return
+    }
+    if (path === "/v1/fmp/search-name") {
+      await handleFmpSearch(req, res, params, "search-name")
+      return
+    }
     if (path === "/v1/fmp/stock-list") {
       await handleFmpStockList(req, res)
       return
@@ -1474,6 +1866,22 @@ async function requestHandler(req, res) {
     }
     if (path === "/v1/fmp/ratings") {
       await handleFmpAnalystRatings(req, res, params)
+      return
+    }
+    if (path === "/v1/fmp/ratings-snapshot") {
+      await handleFmpAnalystRatings(req, res, params)
+      return
+    }
+    if (path === "/v1/fmp/ratings-historical") {
+      await handleFmpRatingsHistorical(req, res, params)
+      return
+    }
+    if (path === "/v1/fmp/grades") {
+      await handleFmpGrades(req, res, params)
+      return
+    }
+    if (path === "/v1/fmp/grades-historical") {
+      await handleFmpGradesHistorical(req, res, params)
       return
     }
     if (path === "/v1/fmp/grades-consensus") {

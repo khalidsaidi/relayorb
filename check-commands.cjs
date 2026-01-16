@@ -10,7 +10,7 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 
 async function checkCommands() {
-    const botId = 'freqtrade-1';
+    const botId = process.env.BOT_ID || 'backtrader-stocks';
     console.log(`--- Commands for Bot ${botId} ---`);
     try {
         const snapshot = await db.collection('bots').doc(botId).collection('commands').orderBy('createdAt', 'desc').limit(5).get();

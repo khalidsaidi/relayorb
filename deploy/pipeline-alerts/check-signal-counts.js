@@ -2,7 +2,7 @@ import admin from 'firebase-admin';
 admin.initializeApp({ projectId: 'relayorb' });
 const db = admin.firestore();
 
-const bots = ['backtrader-stocks', 'backtrader-forex', 'backtrader-crypto', 'freqtrade-1', 'market-intel'];
+const bots = ['backtrader-stocks', 'backtrader-forex', 'backtrader-crypto', 'market-intel'];
 
 console.log('=== SIGNAL COUNTS PER BOT ===');
 for (const botId of bots) {

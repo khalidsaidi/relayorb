@@ -278,7 +278,6 @@ export default function DashboardPage() {
   const [trendNewsWeight, setTrendNewsWeight] = useState(
     DEFAULT_TREND_WEIGHTS.news
   )
-  const [botWeightFreqtrade, setBotWeightFreqtrade] = useState(1)
   const [botWeightBacktrader, setBotWeightBacktrader] = useState(1)
   const [chartOpen, setChartOpen] = useState(false)
   const [chartAsset, setChartAsset] = useState<MarketHotTrade | null>(null)
@@ -475,19 +474,12 @@ export default function DashboardPage() {
       setTrendSignalsWeight(weightSignals)
       setTrendNewsWeight(weightNews)
       const botWeights = data.botWeights || {}
-      const freqtradeWeight =
-        typeof botWeights["engine:freqtrade"] === "number"
-          ? botWeights["engine:freqtrade"]
-          : typeof botWeights.freqtrade === "number"
-            ? botWeights.freqtrade
-            : 1
       const backtraderWeight =
         typeof botWeights["engine:backtrader"] === "number"
           ? botWeights["engine:backtrader"]
           : typeof botWeights.backtrader === "number"
             ? botWeights.backtrader
             : 1
-      setBotWeightFreqtrade(clampBotWeight(freqtradeWeight))
       setBotWeightBacktrader(clampBotWeight(backtraderWeight))
       const parsedAutoTuneInterval = Number(data.autoTuneIntervalHours)
       setAutoTuneEnabled(data.autoTuneEnabled !== false)
@@ -1810,7 +1802,6 @@ export default function DashboardPage() {
           news: trendNewsWeight,
         },
         botWeights: {
-          "engine:freqtrade": clampBotWeight(botWeightFreqtrade),
           "engine:backtrader": clampBotWeight(botWeightBacktrader),
         },
         autoTuneEnabled,

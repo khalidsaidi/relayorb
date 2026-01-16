@@ -46,15 +46,6 @@ export default async function globalSetup() {
   const now = Timestamp.now()
   const bots = [
     {
-      id: "freqtrade-1",
-      name: "Freqtrade Paper",
-      engine: "freqtrade",
-      status: "online",
-      lastHeartbeat: now,
-      summary: { positions: 1, orders: 2, pnl: 12.34 },
-      state: { mode: "dry_run" },
-    },
-    {
       id: "backtrader-stocks",
       name: "Backtrader Stocks",
       engine: "backtrader",
@@ -90,13 +81,5 @@ export default async function globalSetup() {
       return botsRef.doc(bot.id).set(data)
     })
   )
-
-  await botsRef.doc("freqtrade-1").collection("events").doc("seed-1").set({
-    type: "system",
-    severity: "info",
-    message: "Freqtrade connected",
-    createdAt: now,
-    data: { source: "seed" },
-  })
 
 }

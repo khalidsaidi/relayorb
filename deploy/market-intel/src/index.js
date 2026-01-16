@@ -1360,7 +1360,7 @@ async function fetchCrypto(db, preferences = {}) {
         name: item.name || symbol,
         exchange: item.exchange || "CRYPTO",
         price: typeof live?.price === "number" ? live.price : parseNumber(item.price),
-        change24h: parseNumber(item.changePercentage),
+        change24h: parseNumber(item.changePercentage ?? item.changePercent ?? item.changesPercentage),
         change1m: parseNumber(live?.change1m),
         change5m: parseNumber(live?.change5m),
         volatility1m: parseNumber(live?.volatility1m),
@@ -4534,7 +4534,6 @@ async function dispatchSignalRequests(db, picks, controls) {
       : []
     const engine = String(botData?.engine || "").toLowerCase()
     const defaults =
-      engine === "freqtrade" ? ["crypto"] : 
       engine === "backtrader" ? ["stock", "forex", "crypto"] : 
       engine === "oanda" ? ["forex"] :
       engine === "alpaca" ? ["stock"] : []
@@ -4697,9 +4696,6 @@ async function dispatchAutoPaperTrades(db, actionBoard) {
   for (const trade of tradesToExecute) {
     // Find appropriate bot for this asset class
     const bot = paperBots.find((b) => {
-      if (trade.assetClass === "crypto") {
-        return b.engine === "freqtrade" || b.assetClass === "crypto"
-      }
       return b.assetClass === trade.assetClass
     })
 
@@ -4707,41 +4703,22 @@ async function dispatchAutoPaperTrades(db, actionBoard) {
       continue // No bot available for this asset class
     }
 
-    if (bot.engine === "freqtrade") {
-      // Dispatch trade command to Freqtrade
-      const commandRef = db.collection("bots").doc(bot.id).collection("commands").doc()
-      batch.set(commandRef, {
-        type: "execute_trade",
-        status: "queued",
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        requestedBy: "market-intel-auto-paper",
-        payload: {
-          pair: normalizePairForFreqtrade(trade.symbol),
-          side: trade.side,
-          price: trade.price,
-          amount: bot.maxPositionSize,
-          reason: `Auto paper: score=${trade.score}, signals=${trade.signalCount}`,
-        },
-      })
-      executedCount++
-    } else {
-      // Use Firestore paper wallet (for stocks/forex)
-      // This will be handled by the paper trading monitor
-      const paperTradeRef = db.collection("paper_trade_queue").doc()
-      batch.set(paperTradeRef, {
-        symbol: trade.symbol,
-        assetClass: trade.assetClass,
-        side: trade.side,
-        price: trade.price,
-        score: trade.score,
-        signalCount: trade.signalCount,
-        botId: bot.id,
-        status: "pending",
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        reason: `Auto paper: score=${trade.score}, signals=${trade.signalCount}`,
-      })
-      executedCount++
-    }
+    // Use Firestore paper wallet (all asset classes)
+    // This will be handled by the paper trading monitor
+    const paperTradeRef = db.collection("paper_trade_queue").doc()
+    batch.set(paperTradeRef, {
+      symbol: trade.symbol,
+      assetClass: trade.assetClass,
+      side: trade.side,
+      price: trade.price,
+      score: trade.score,
+      signalCount: trade.signalCount,
+      botId: bot.id,
+      status: "pending",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      reason: `Auto paper: score=${trade.score}, signals=${trade.signalCount}`,
+    })
+    executedCount++
   }
 
   // Update daily stats
@@ -4757,24 +4734,6 @@ async function dispatchAutoPaperTrades(db, actionBoard) {
     await batch.commit()
     console.log(`Auto paper trading: dispatched ${executedCount} trades`)
   }
-}
-
-function normalizePairForFreqtrade(symbol) {
-  if (!symbol) return null
-  // Convert BTC/USD to BTC/USDT (Freqtrade typically uses USDT pairs)
-  let cleaned = String(symbol).toUpperCase().trim()
-  if (cleaned.endsWith("/USD")) {
-    cleaned = cleaned.replace("/USD", "/USDT")
-  }
-  if (!cleaned.includes("/")) {
-    // Try to split common patterns
-    if (cleaned.endsWith("USD")) {
-      cleaned = cleaned.slice(0, -3) + "/USDT"
-    } else if (cleaned.endsWith("USDT")) {
-      cleaned = cleaned.slice(0, -4) + "/USDT"
-    }
-  }
-  return cleaned
 }
 
 async function safeFetch(fetcher) {

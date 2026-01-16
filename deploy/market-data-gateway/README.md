@@ -23,10 +23,24 @@ Set `MARKET_DATA_GATEWAY_URL` in other services to point at this service.
 
 - `GET /healthz` / `GET /readyz`
 - `GET /ping/fmp`
-- `GET /ping/coingecko`
 - `GET /ping/marketaux`
 - `GET /v1/fmp/quote?symbol=...&assetClass=stock|forex|crypto`
+- `GET /v1/fmp/quotes?symbols=...&assetClass=stock|forex|crypto`
 - `GET /v1/fmp/candles?symbol=...&assetClass=stock|forex|crypto&interval=15min&limit=120`
 - `GET /v1/fmp/stock-list`
-- `GET /v1/coingecko/markets?vs_currency=usd&order=volume_desc&per_page=50&page=1&price_change_percentage=1h,24h,7d`
+- `GET /v1/fmp/biggest-gainers?limit=100`
+- `GET /v1/fmp/biggest-losers?limit=100`
+- `GET /v1/fmp/most-actives?limit=100`
+- `GET /v1/fmp/search-symbol?query=...`
+- `GET /v1/fmp/search-name?query=...`
+- `GET /v1/fmp/crypto?limit=50`
+- `GET /v1/fmp/indicators?symbol=...&indicator=rsi&period=20&timeframe=15min&limit=100`
+- `GET /v1/fmp/profile?symbol=...`
+- `GET /v1/fmp/news?symbol=...&limit=20`
+- `GET /v1/fmp/price-target?symbol=...`
+- `GET /v1/fmp/ratings-snapshot?symbol=...`
+- `GET /v1/fmp/ratings-historical?symbol=...`
+- `GET /v1/fmp/grades?symbol=...`
+- `GET /v1/fmp/grades-historical?symbol=...`
+- `GET /v1/fmp/grades-consensus?symbol=...`
 - `GET /v1/marketaux/news?symbols=AAPL,TSLA&entity_types=equity&limit=20`

@@ -802,7 +802,7 @@ async function fetchStockQuotesWithExtendedHours(symbols) {
 }
 
 /**
- * Fetch FMP gainers/losers/actives endpoints (only returns data during market hours)
+ * Fetch FMP biggest-gainers/losers/most-actives endpoints (only returns data during market hours)
  * Returns top 10 from each category for a total of up to 30 discovery symbols
  */
 async function fetchStockMovers() {
@@ -824,9 +824,9 @@ async function fetchStockMovers() {
   
   const discoveredSymbols = new Set()
   const endpoints = [
-    { path: "/v1/fmp/stock-gainers", name: "gainers" },
-    { path: "/v1/fmp/stock-losers", name: "losers" },
-    { path: "/v1/fmp/stock-actives", name: "actives" },
+    { path: "/v1/fmp/biggest-gainers", name: "gainers" },
+    { path: "/v1/fmp/biggest-losers", name: "losers" },
+    { path: "/v1/fmp/most-actives", name: "actives" },
   ]
 
   for (const { path, name } of endpoints) {

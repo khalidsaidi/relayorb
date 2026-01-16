@@ -18,7 +18,7 @@ The brain of the platform that:
   - Momentum analysis (15m, 1h, 24h, 7d changes)
   - Volume anomalies
   - News sentiment
-  - Bot signals from Freqtrade + Backtrader
+  - Bot signals from Backtrader
 - Uses OpenAI to explain WHY assets are trending
 - Tracks prediction accuracy over multiple horizons
 - Self-improves through auto-tuning with AI assistance
@@ -41,11 +41,10 @@ Writes to `market/prices` for live UI updates and paper trading.
 
 ### 3. Technical Analysis Engines (Bots)
 **Location:** `deploy/bot-host/`  
-**Components:** Freqtrade (crypto), Backtrader (stocks/FX)
+**Components:** Backtrader (stocks/FX/crypto)
 
 Provides bot signals for scoring:
-- Freqtrade for crypto strategies and indicators
-- Backtrader for stock/FX strategies and indicators
+- Backtrader strategies and indicators across asset classes
 - Feeds signals to Market Intel for enhanced scoring
 
 **Why keep both:**
@@ -101,7 +100,6 @@ graph TD
   MDG --> CG[CoinGecko]
   MDG --> MX[Marketaux]
 
-  AG --> FT[Freqtrade]
   AG --> BT[Backtrader]
   UI --> TV[TradingView]
 ```
@@ -145,8 +143,7 @@ Firestore remains the latest-state store for UI and configs.
 
 ### Bot Host (VM or Local)
 - **Docker Compose:** Orchestrates services
-- **Freqtrade:** Crypto technical analysis
-- **Backtrader:** Stock/FX technical analysis
+- **Backtrader:** Multi-asset technical analysis
 - **RelayOrb Agent:** Syncs bot data to Firestore
 
 ## Configuration
@@ -170,7 +167,7 @@ Firestore remains the latest-state store for UI and configs.
 
 ### Simplified Stack
 - **Single database:** Firestore only
-- **Lean bot layer:** Freqtrade + Backtrader only
+- **Lean bot layer:** Backtrader only
 - **Clear data flow:** Snapshots → scoring → Firestore
 
 ### Benefits

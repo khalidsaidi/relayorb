@@ -63,7 +63,7 @@ Defined in `src/ops/graph_topology.json`. Core nodes include:
 - Services: `price_streamer`, `market_intel`, `refresh_service`, `relayorb_agent`, `signal_evaluator`, `market_data_gateway`, `chart_proxy`, `ui`
 - Processors: `movers_15m`, `candidates_merge`, `score_compute` (candidate ranking in market-intel), `bot_signals`, `signal_performance`
 - Providers: `provider:fmp`, `provider:marketaux`, plus dynamic `provider:*` nodes (fallback `provider:unknown`)
-- Bots: `bot_engine:freqtrade`, `bot_engine:backtrader`, plus dynamic `bot_engine:*` nodes (fallback `bot_engine:unknown`)
+- Bots: `bot_engine:backtrader`, plus dynamic `bot_engine:*` nodes (fallback `bot_engine:unknown`)
 
 Dynamic nodes are added at runtime based on events.
 

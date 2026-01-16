@@ -114,28 +114,6 @@ export default function BotDetailPage() {
   const [riskMaxDailyLoss, setRiskMaxDailyLoss] = useState("")
   const [riskMaxOpenOrders, setRiskMaxOpenOrders] = useState("")
   const [riskMaxLeverage, setRiskMaxLeverage] = useState("")
-  const [ftStakeCurrency, setFtStakeCurrency] = useState("")
-  const [ftStakeAmount, setFtStakeAmount] = useState("")
-  const [ftMaxOpenTrades, setFtMaxOpenTrades] = useState("")
-  const [ftStoploss, setFtStoploss] = useState("")
-  const [ftTrailingEnabled, setFtTrailingEnabled] = useState(false)
-  const [ftTrailingPositive, setFtTrailingPositive] = useState("")
-  const [ftTrailingOffset, setFtTrailingOffset] = useState("")
-  const [ftEntryOrderType, setFtEntryOrderType] = useState("limit")
-  const [ftExitOrderType, setFtExitOrderType] = useState("limit")
-  const [ftStoplossOnExchange, setFtStoplossOnExchange] = useState(false)
-  const [ftCooldownEnabled, setFtCooldownEnabled] = useState(false)
-  const [ftCooldownCandles, setFtCooldownCandles] = useState("")
-  const [ftDrawdownEnabled, setFtDrawdownEnabled] = useState(false)
-  const [ftDrawdownLookback, setFtDrawdownLookback] = useState("")
-  const [ftDrawdownTradeLimit, setFtDrawdownTradeLimit] = useState("")
-  const [ftDrawdownStopDuration, setFtDrawdownStopDuration] = useState("")
-  const [ftDrawdownMax, setFtDrawdownMax] = useState("")
-  const [ftStoplossGuardEnabled, setFtStoplossGuardEnabled] = useState(false)
-  const [ftStoplossGuardLookback, setFtStoplossGuardLookback] = useState("")
-  const [ftStoplossGuardTradeLimit, setFtStoplossGuardTradeLimit] = useState("")
-  const [ftStoplossGuardStopDuration, setFtStoplossGuardStopDuration] = useState("")
-  const [ftStoplossGuardOnlyPerPair, setFtStoplossGuardOnlyPerPair] = useState(false)
   const [advancedConfigText, setAdvancedConfigText] = useState("")
   const [advancedConfigError, setAdvancedConfigError] = useState<string | null>(null)
   const [baselineAdvanced, setBaselineAdvanced] = useState<Record<string, unknown> | null>(null)
@@ -235,115 +213,37 @@ export default function BotDetailPage() {
   const wizardConfig = useMemo(() => {
     const pairs = parsePairs(pairsInput)
     const pairsSlash = pairs.map((pair) => normalizePair(pair, "/"))
-    if (bot?.engine === "freqtrade") {
-      const config: Record<string, unknown> = {}
-      if (exchangeTrimmed || pairsSlash.length > 0) {
-        const exchangeConfig: Record<string, unknown> = {}
-        if (exchangeTrimmed) exchangeConfig.name = exchangeTrimmed.toLowerCase()
-        if (pairsSlash.length > 0) exchangeConfig.pair_whitelist = pairsSlash
-        config.exchange = exchangeConfig
-      }
-      if (timeframeTrimmed) config.timeframe = timeframeTrimmed
-      if (strategyTrimmed) config.strategy = strategyTrimmed
-      if (ftStakeCurrency) config.stake_currency = ftStakeCurrency
-      const riskMaxOpen = parseOptionalNumber(riskMaxOpenOrders)
-      const riskMaxPosition = parseOptionalNumber(riskMaxPositionSize)
-      const maxOpenTrades =
-        parseOptionalNumber(ftMaxOpenTrades) ?? riskMaxOpen
-      const stakeAmount =
-        parseOptionalNumber(ftStakeAmount) ?? riskMaxPosition
-      if (maxOpenTrades !== undefined) config.max_open_trades = maxOpenTrades
-      if (stakeAmount !== undefined) config.stake_amount = stakeAmount
-      const stoploss = parseOptionalNumber(ftStoploss)
-      if (stoploss !== undefined) config.stoploss = stoploss
-      config.trailing_stop = ftTrailingEnabled
-      if (ftTrailingEnabled) {
-        const trailingPositive = parseOptionalNumber(ftTrailingPositive)
-        const trailingOffset = parseOptionalNumber(ftTrailingOffset)
-        if (trailingPositive !== undefined) {
-          config.trailing_stop_positive = trailingPositive
-        }
-        if (trailingOffset !== undefined) {
-          config.trailing_stop_positive_offset = trailingOffset
-        }
-      }
-      const orderTypes: Record<string, unknown> = {}
-      if (ftEntryOrderType) orderTypes.entry = ftEntryOrderType
-      if (ftExitOrderType) orderTypes.exit = ftExitOrderType
-      orderTypes.stoploss_on_exchange = ftStoplossOnExchange
-      if (Object.keys(orderTypes).length > 0) {
-        config.order_types = orderTypes
-      }
-
-      const protections: Array<Record<string, unknown>> = []
-      if (ftCooldownEnabled) {
-        const cooldownCandles = parseOptionalNumber(ftCooldownCandles) ?? 5
-        protections.push({
-          method: "CooldownPeriod",
-          stop_duration_candles: cooldownCandles,
-        })
-      }
-      if (ftDrawdownEnabled) {
-        const lookback = parseOptionalNumber(ftDrawdownLookback) ?? 1440
-        const tradeLimit = parseOptionalNumber(ftDrawdownTradeLimit) ?? 1
-        const stopDuration = parseOptionalNumber(ftDrawdownStopDuration) ?? 60
-        const maxDrawdown = parseOptionalNumber(ftDrawdownMax) ?? 0.2
-        protections.push({
-          method: "MaxDrawdown",
-          lookback_period_candles: lookback,
-          trade_limit: tradeLimit,
-          stop_duration_candles: stopDuration,
-          max_allowed_drawdown: maxDrawdown,
-        })
-      }
-      if (ftStoplossGuardEnabled) {
-        const lookback = parseOptionalNumber(ftStoplossGuardLookback) ?? 20
-        const tradeLimit = parseOptionalNumber(ftStoplossGuardTradeLimit) ?? 1
-        const stopDuration = parseOptionalNumber(ftStoplossGuardStopDuration) ?? 10
-        protections.push({
-          method: "StoplossGuard",
-          lookback_period_candles: lookback,
-          trade_limit: tradeLimit,
-          stop_duration_candles: stopDuration,
-          only_per_pair: ftStoplossGuardOnlyPerPair,
-        })
-      }
-      if (protections.length > 0) {
-        config.protections = protections
-      }
-      return Object.keys(config).length > 0 ? config : null
+    const config: Record<string, unknown> = {}
+    if (exchangeTrimmed || pairsSlash.length > 0) {
+      const exchangeConfig: Record<string, unknown> = {}
+      if (exchangeTrimmed) exchangeConfig.name = exchangeTrimmed.toLowerCase()
+      if (pairsSlash.length > 0) exchangeConfig.pair_whitelist = pairsSlash
+      config.exchange = exchangeConfig
     }
-    return null
+    if (timeframeTrimmed) config.timeframe = timeframeTrimmed
+    if (strategyTrimmed) config.strategy = strategyTrimmed
+
+    const risk: Record<string, unknown> = {}
+    const riskMaxOpen = parseOptionalNumber(riskMaxOpenOrders)
+    const riskMaxPosition = parseOptionalNumber(riskMaxPositionSize)
+    const riskMaxDaily = parseOptionalNumber(riskMaxDailyLoss)
+    const riskMaxLev = parseOptionalNumber(riskMaxLeverage)
+    if (riskMaxOpen !== undefined) risk.maxOpenOrders = riskMaxOpen
+    if (riskMaxPosition !== undefined) risk.maxPositionSize = riskMaxPosition
+    if (riskMaxDaily !== undefined) risk.maxDailyLoss = riskMaxDaily
+    if (riskMaxLev !== undefined) risk.maxLeverage = riskMaxLev
+    if (Object.keys(risk).length > 0) config.risk = risk
+
+    return Object.keys(config).length > 0 ? config : null
   }, [
-    bot?.engine,
     exchangeTrimmed,
     pairsInput,
     timeframeTrimmed,
     strategyTrimmed,
     riskMaxOpenOrders,
     riskMaxPositionSize,
-    ftStakeCurrency,
-    ftStakeAmount,
-    ftMaxOpenTrades,
-    ftStoploss,
-    ftTrailingEnabled,
-    ftTrailingPositive,
-    ftTrailingOffset,
-    ftEntryOrderType,
-    ftExitOrderType,
-    ftStoplossOnExchange,
-    ftCooldownEnabled,
-    ftCooldownCandles,
-    ftDrawdownEnabled,
-    ftDrawdownLookback,
-    ftDrawdownTradeLimit,
-    ftDrawdownStopDuration,
-    ftDrawdownMax,
-    ftStoplossGuardEnabled,
-    ftStoplossGuardLookback,
-    ftStoplossGuardTradeLimit,
-    ftStoplossGuardStopDuration,
-    ftStoplossGuardOnlyPerPair,
+    riskMaxDailyLoss,
+    riskMaxLeverage,
   ])
 
   const wizardConfigText = useMemo(
@@ -496,125 +396,6 @@ export default function BotDetailPage() {
 
     setBaselineAdvanced(advanced ? { ...advanced } : null)
 
-    if (bot.engine === "freqtrade") {
-      setFtStakeCurrency("")
-      setFtStakeAmount("")
-      setFtMaxOpenTrades("")
-      setFtStoploss("")
-      setFtTrailingEnabled(false)
-      setFtTrailingPositive("")
-      setFtTrailingOffset("")
-      setFtEntryOrderType("limit")
-      setFtExitOrderType("limit")
-      setFtStoplossOnExchange(false)
-      setFtCooldownEnabled(false)
-      setFtCooldownCandles("")
-      setFtDrawdownEnabled(false)
-      setFtDrawdownLookback("")
-      setFtDrawdownTradeLimit("")
-      setFtDrawdownStopDuration("")
-      setFtDrawdownMax("")
-      setFtStoplossGuardEnabled(false)
-      setFtStoplossGuardLookback("")
-      setFtStoplossGuardTradeLimit("")
-      setFtStoplossGuardStopDuration("")
-      setFtStoplossGuardOnlyPerPair(false)
-    }
-
-    if (advanced) {
-      if (bot.engine === "freqtrade") {
-        const exchangeConfig = advanced.exchange as Record<string, unknown> | undefined
-        if (exchangeConfig?.name) fallbackExchange = String(exchangeConfig.name)
-        if (Array.isArray(exchangeConfig?.pair_whitelist)) {
-          fallbackPairs = exchangeConfig.pair_whitelist.map((pair) =>
-            normalizePair(String(pair), "/")
-          )
-        }
-        if (advanced.timeframe) fallbackTimeframe = String(advanced.timeframe)
-        if (advanced.strategy) fallbackStrategy = String(advanced.strategy)
-        if (advanced.stake_currency) {
-          setFtStakeCurrency(String(advanced.stake_currency))
-        }
-        if (advanced.stake_amount !== undefined) {
-          setFtStakeAmount(String(advanced.stake_amount))
-        }
-        if (advanced.max_open_trades !== undefined) {
-          setFtMaxOpenTrades(String(advanced.max_open_trades))
-        }
-        if (advanced.stoploss !== undefined) {
-          setFtStoploss(String(advanced.stoploss))
-        }
-        if (advanced.trailing_stop !== undefined) {
-          setFtTrailingEnabled(Boolean(advanced.trailing_stop))
-        }
-        if (advanced.trailing_stop_positive !== undefined) {
-          setFtTrailingPositive(String(advanced.trailing_stop_positive))
-        }
-        if (advanced.trailing_stop_positive_offset !== undefined) {
-          setFtTrailingOffset(String(advanced.trailing_stop_positive_offset))
-        }
-        const orderTypes = advanced.order_types as Record<string, unknown> | undefined
-        if (orderTypes?.entry) {
-          setFtEntryOrderType(String(orderTypes.entry))
-        }
-        if (orderTypes?.exit) {
-          setFtExitOrderType(String(orderTypes.exit))
-        }
-        if (orderTypes?.stoploss_on_exchange !== undefined) {
-          setFtStoplossOnExchange(Boolean(orderTypes.stoploss_on_exchange))
-        }
-        const protections = Array.isArray(advanced.protections)
-          ? advanced.protections
-          : []
-        const cooldown = protections.find(
-          (item: Record<string, unknown>) => item?.method === "CooldownPeriod"
-        ) as Record<string, unknown> | undefined
-        if (cooldown) {
-          setFtCooldownEnabled(true)
-          if (cooldown.stop_duration_candles !== undefined) {
-            setFtCooldownCandles(String(cooldown.stop_duration_candles))
-          }
-        }
-        const maxDrawdown = protections.find(
-          (item: Record<string, unknown>) => item?.method === "MaxDrawdown"
-        ) as Record<string, unknown> | undefined
-        if (maxDrawdown) {
-          setFtDrawdownEnabled(true)
-          if (maxDrawdown.lookback_period_candles !== undefined) {
-            setFtDrawdownLookback(String(maxDrawdown.lookback_period_candles))
-          }
-          if (maxDrawdown.trade_limit !== undefined) {
-            setFtDrawdownTradeLimit(String(maxDrawdown.trade_limit))
-          }
-          if (maxDrawdown.stop_duration_candles !== undefined) {
-            setFtDrawdownStopDuration(String(maxDrawdown.stop_duration_candles))
-          }
-          if (maxDrawdown.max_allowed_drawdown !== undefined) {
-            setFtDrawdownMax(String(maxDrawdown.max_allowed_drawdown))
-          }
-        }
-        const stoplossGuard = protections.find(
-          (item: Record<string, unknown>) => item?.method === "StoplossGuard"
-        ) as Record<string, unknown> | undefined
-        if (stoplossGuard) {
-          setFtStoplossGuardEnabled(true)
-          if (stoplossGuard.lookback_period_candles !== undefined) {
-            setFtStoplossGuardLookback(String(stoplossGuard.lookback_period_candles))
-          }
-          if (stoplossGuard.trade_limit !== undefined) {
-            setFtStoplossGuardTradeLimit(String(stoplossGuard.trade_limit))
-          }
-          if (stoplossGuard.stop_duration_candles !== undefined) {
-            setFtStoplossGuardStopDuration(String(stoplossGuard.stop_duration_candles))
-          }
-          if (stoplossGuard.only_per_pair !== undefined) {
-            setFtStoplossGuardOnlyPerPair(Boolean(stoplossGuard.only_per_pair))
-          }
-        }
-      }
-
-    }
-
     const exchangeValue = desired?.exchange || fallbackExchange
     const timeframeValue = desired?.timeframe || fallbackTimeframe
     const strategyValue = desired?.strategy || fallbackStrategy
@@ -631,30 +412,6 @@ export default function BotDetailPage() {
     setRiskMaxOpenOrders(desired?.risk?.maxOpenOrders?.toString() ?? "")
     setRiskMaxLeverage(desired?.risk?.maxLeverage?.toString() ?? "")
     setAdvancedConfigText(desired?.advanced ? JSON.stringify(desired.advanced, null, 2) : "")
-    if (bot.engine !== "freqtrade") {
-      setFtStakeCurrency("")
-      setFtStakeAmount("")
-      setFtMaxOpenTrades("")
-      setFtStoploss("")
-      setFtTrailingEnabled(false)
-      setFtTrailingPositive("")
-      setFtTrailingOffset("")
-      setFtEntryOrderType("limit")
-      setFtExitOrderType("limit")
-      setFtStoplossOnExchange(false)
-      setFtCooldownEnabled(false)
-      setFtCooldownCandles("")
-      setFtDrawdownEnabled(false)
-      setFtDrawdownLookback("")
-      setFtDrawdownTradeLimit("")
-      setFtDrawdownStopDuration("")
-      setFtDrawdownMax("")
-      setFtStoplossGuardEnabled(false)
-      setFtStoplossGuardLookback("")
-      setFtStoplossGuardTradeLimit("")
-      setFtStoplossGuardStopDuration("")
-      setFtStoplossGuardOnlyPerPair(false)
-    }
     setAdvancedConfigError(null)
     setConfigDirty(false)
   }, [bot, desiredConfigKey])
@@ -745,7 +502,7 @@ export default function BotDetailPage() {
   function applyRecommendation(trade: MarketHotTrade) {
     if (!trade?.symbol) return
     const pairSlash = normalizePair(trade.symbol, "/")
-    const defaultStrategy = bot?.engine === "freqtrade" ? "SampleStrategy" : "default"
+    const defaultStrategy = "default"
     const nextStrategy = strategyTrimmed || defaultStrategy
     const nextExchange = trade.exchange || exchangeTrimmed
     const nextTimeframe = trade.timeframe || timeframeTrimmed || "1m"
@@ -767,24 +524,6 @@ export default function BotDetailPage() {
       configCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
     }, 0)
 
-    if (bot?.engine === "freqtrade") {
-      setAdvancedConfigText(
-        JSON.stringify(
-          {
-            exchange: {
-              name: nextExchange || "kraken",
-              pair_whitelist: [pairSlash],
-            },
-            timeframe: nextTimeframe,
-            dry_run: mode !== "live",
-            strategy: nextStrategy,
-          },
-          null,
-          2
-        )
-      )
-      return
-    }
     setAdvancedConfigText(engineConfigTemplate)
   }
 
@@ -1622,7 +1361,7 @@ export default function BotDetailPage() {
                       setStrategy(event.target.value)
                       setConfigDirty(true)
                     }}
-                    placeholder={bot?.engine === "freqtrade" ? "SampleStrategy" : "default"}
+                    placeholder="default"
                   />
                   {strategyOptions.length > 0 && (
                     <datalist id="strategy-options">

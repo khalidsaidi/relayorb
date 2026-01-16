@@ -342,10 +342,6 @@ async function main() {
   if (fmpKey || fmpBase) {
     providers.push({ id: "fmp", enabled: Boolean(fmpKey), host: safeHost(fmpBase) })
   }
-  const cgBase = resolveEnv("COINGECKO_BASE_URL", envFile)
-  if (cgBase) {
-    providers.push({ id: "coingecko", enabled: true, host: safeHost(cgBase) })
-  }
   const marketauxKey = resolveEnv("MARKETAUX_API_KEY", envFile)
   const marketauxBase = resolveEnv("MARKETAUX_BASE_URL", envFile)
   if (marketauxKey || marketauxBase) {
@@ -353,7 +349,7 @@ async function main() {
   }
 
   if (providers.length === 0) {
-    blockers.push("Provider discovery requires MDG/provider env vars (FMP_API_KEY, MARKETAUX_API_KEY, COINGECKO_BASE_URL, etc.).")
+    blockers.push("Provider discovery requires MDG/provider env vars (FMP_API_KEY, MARKETAUX_API_KEY, etc.).")
   }
 
   const providerSummary = [

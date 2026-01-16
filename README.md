@@ -73,3 +73,10 @@ The Dashboard includes a "Refresh now" button to trigger the market-intel and
 signal-evaluator jobs on demand. Deploy the refresh service and set:
 
 - `VITE_REFRESH_URL` → Cloud Run URL from `deploy/refresh-service`.
+
+## Client Market Data
+
+The UI uses the Market Data Gateway for charts, quotes, and search (no direct vendor calls).
+Set:
+
+- `VITE_MARKET_DATA_GATEWAY_URL` → Cloud Run URL from `deploy/market-data-gateway`.

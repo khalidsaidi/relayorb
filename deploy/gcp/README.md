@@ -29,7 +29,6 @@ chmod +x ~/bootstrap.sh
 ```bash
 cd /opt/relayorb/deploy/bot-host
 cp agent-config/config.example.json agent-config/config.json
-cp freqtrade/config.example.json freqtrade/config.json
 
 # Copy the Firebase service account JSON into:
 #   /opt/relayorb/deploy/bot-host/secrets/service-account.json

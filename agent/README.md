@@ -17,7 +17,7 @@ cp config.example.json config.json
 
 Key fields:
 - `bots[].id`: Firestore bot document ID.
-- `bots[].engine`: `freqtrade | backtrader | alpaca | oanda`.
+- `bots[].engine`: `backtrader | alpaca | oanda`.
 - `bots[].api.baseUrl`: Bot API base URL.
 - `bots[].api.username/password`: Auth credentials where required.
 - `bots[].desiredConfig`: Seed trading universe config (mode, exchange, pairs, timeframe).
@@ -30,9 +30,6 @@ Key fields:
 The agent uses Firebase Admin credentials. Provide one of:
 - `GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json`, or
 - Run on GCP with an attached service account that has Firestore access.
-
-Optional config sync env vars:
-- `RELAYORB_FREQTRADE_CONFIG` path to `config.json`
 
 Event-triggered scans (optional):
 - `REDIS_URL` to subscribe to market-intel batch events.

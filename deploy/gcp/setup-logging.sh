@@ -28,11 +28,6 @@ logging:
       include_paths:
         - /opt/relayorb/logs/agent.log
       
-    freqtrade:
-      type: files
-      include_paths:
-        - /opt/relayorb/deploy/bot-host/freqtrade/user_data/logs/*.log
-      
     backtrader:
       type: files
       include_paths:
@@ -69,10 +64,6 @@ logging:
           - parse_json
           - add_labels
       
-      freqtrade_pipeline:
-        receivers:
-          - freqtrade
-          
       backtrader_pipeline:
         receivers:
           - backtrader

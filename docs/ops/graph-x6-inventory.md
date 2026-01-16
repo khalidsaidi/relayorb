@@ -4,10 +4,9 @@ Source of truth
 - Topology: `src/ops/graph_topology.json`
 - Live events: `src/features/ops/use-pipeline-events.ts` (SSE stream from `${VITE_REFRESH_URL}/ops/events?tail=300`)
 
-Nodes currently defined (23)
+Nodes currently defined (22)
 - provider:fmp (FMP)
 - provider:marketaux (Marketaux)
-- provider:coingecko (CoinGecko)
 - provider:unknown (Provider (Other))
 - market_data_gateway (Market Data Gateway)
 - chart_proxy (Chart Proxy)
@@ -22,7 +21,6 @@ Nodes currently defined (23)
 - new_batch (Redis Stream: new_batch)
 - refresh_service (Refresh Service)
 - relayorb_agent (RelayOrb Agent)
-- bot_engine:freqtrade (Freqtrade)
 - bot_engine:backtrader (Backtrader)
 - bot_engine:unknown (Bot Engine (Other))
 - bot_signals (Bot Signals (Firestore))
@@ -33,7 +31,7 @@ Dynamic nodes from event stream (added when seen)
 - provider:* (from stationId/edgeKey/meta.provider)
 - bot_engine:* (from stationId/edgeKey/meta.engine)
 
-Edges currently defined (33)
+Edges currently defined (32)
 - call: 10
 - write: 8
 - read: 7

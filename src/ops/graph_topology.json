@@ -2,7 +2,6 @@
   "nodes": [
     { "id": "provider:fmp", "label": "FMP", "type": "provider", "category": "provider", "lane": 0, "orderHint": 1, "x": 80, "y": 260, "core": false },
     { "id": "provider:marketaux", "label": "Marketaux", "type": "provider", "category": "provider", "lane": 0, "orderHint": 2, "x": 80, "y": 360, "core": false },
-    { "id": "provider:coingecko", "label": "CoinGecko", "type": "provider", "category": "provider", "lane": 0, "orderHint": 3, "x": 80, "y": 460, "core": false },
     { "id": "market_data_gateway", "label": "Market Data Gateway", "type": "service", "category": "gateway", "lane": 1, "orderHint": 1, "x": 260, "y": 360, "core": false },
     { "id": "chart_proxy", "label": "Chart Proxy", "type": "service", "category": "chart", "lane": 2, "orderHint": 2, "x": 260, "y": 520, "core": false },
     { "id": "price_streamer", "label": "Price Streamer", "type": "service", "category": "service", "lane": 2, "orderHint": 1, "x": 500, "y": 300, "core": true },
@@ -51,14 +50,13 @@
     { "id": "market_intel->market_data_gateway", "from": "market_intel", "to": "market_data_gateway", "kind": "call", "core": false, "label": "call" },
     { "id": "signal_evaluator->market_data_gateway", "from": "signal_evaluator", "to": "market_data_gateway", "kind": "call", "core": false, "label": "call" },
     { "id": "market_data_gateway->provider:fmp", "from": "market_data_gateway", "to": "provider:fmp", "kind": "call", "core": false },
-    { "id": "market_data_gateway->provider:coingecko", "from": "market_data_gateway", "to": "provider:coingecko", "kind": "call", "core": false },
     { "id": "market_data_gateway->provider:marketaux", "from": "market_data_gateway", "to": "provider:marketaux", "kind": "call", "core": false }
   ],
   "nodeGroups": [
     { "id": "stores", "label": "Stores", "nodeIds": ["redis", "firestore"] },
     { "id": "services", "label": "Services", "nodeIds": ["price_streamer", "market_intel", "refresh_service", "relayorb_agent", "signal_evaluator", "market_data_gateway", "chart_proxy"] },
     { "id": "processors", "label": "Processors", "nodeIds": ["movers_15m", "candidates_merge", "score_compute", "bot_signals", "signal_performance"] },
-    { "id": "providers", "label": "Providers", "nodeIds": ["provider:fmp", "provider:coingecko", "provider:marketaux"] },
+    { "id": "providers", "label": "Providers", "nodeIds": ["provider:fmp", "provider:marketaux"] },
     { "id": "bots", "label": "Bots", "nodeIds": ["bot_engine:backtrader"] },
     { "id": "ui", "label": "UI", "nodeIds": ["ui"] }
   ]

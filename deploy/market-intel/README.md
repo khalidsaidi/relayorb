@@ -37,7 +37,6 @@ Use `market/controls` to tune cadence without redeploys:
 Example `botWeights`:
 ```json
 {
-  "engine:freqtrade": 1.2,
   "engine:backtrader": 0.8,
   "backtrader-forex": 0.7
 }

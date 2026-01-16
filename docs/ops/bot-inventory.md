@@ -60,43 +60,6 @@ Sampled bots:
     }
     ```
     
-- freqtrade-1
-  - sample:
-    
-    ```json
-    {
-      "engine": "<string>",
-      "name": "<string>",
-      "id": "<string>",
-      "summary": {
-        "positions": "<number>"
-      },
-      "desiredConfig": {
-        "mode": "<string>",
-        "strategy": "<string>",
-        "timeframe": "<string>",
-        "advanced": "<map>",
-        "exchange": "<string>",
-        "risk": "<map>",
-        "pairs": "array(len=2)"
-      },
-      "desiredConfigUpdatedAt": "<timestamp>",
-      "capabilities": {
-        "modes": "array(len=3)",
-        "timeframes": "array(len=6)",
-        "exchanges": "array(len=5)"
-      },
-      "state": {
-        "balance": "<map>",
-        "health": "<map>",
-        "openTrades": "<map>"
-      },
-      "status": "<string>",
-      "lastHeartbeat": "<timestamp>",
-      "updatedAt": "<timestamp>"
-    }
-    ```
-    
 - market-intel
   - sample:
     

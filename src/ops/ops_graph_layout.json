@@ -2,7 +2,6 @@
   "laneByNodeId": {
     "provider:fmp": 0,
     "provider:marketaux": 0,
-    "provider:coingecko": 0,
     "market_data_gateway": 1,
     "chart_proxy": 1,
     "price_streamer": 2,
@@ -25,7 +24,6 @@
   "pinnedOrder": {
     "provider:fmp": 1,
     "provider:marketaux": 2,
-    "provider:coingecko": 3,
     "market_data_gateway": 1,
     "chart_proxy": 2,
     "price_streamer": 1,
