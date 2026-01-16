@@ -143,8 +143,8 @@ def health():
 
 @app.route('/status', methods=['GET'])
 def status():
-    """Get status - legacy bot API compatibility"""
-    # Return array format for legacy compatibility
+    """Get status - RelayOrb agent compatibility"""
+    # Return array format for agent compatibility
     return jsonify([])
 
 
@@ -175,7 +175,7 @@ def signals():
 
 @app.route('/balance', methods=['GET'])
 def balance():
-    """Get balance information - legacy bot API compatibility"""
+    """Get balance information - RelayOrb agent compatibility"""
     return jsonify({
         "currency": "USD",
         "value": 10000.0,
@@ -185,7 +185,7 @@ def balance():
 
 @app.route('/logs', methods=['GET'])
 def logs():
-    """Get recent logs - legacy bot API compatibility"""
+    """Get recent logs - RelayOrb agent compatibility"""
     logs_list = []
     for sid, status in strategy_status.items():
         logs_list.append({
