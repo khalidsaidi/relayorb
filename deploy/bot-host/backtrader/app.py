@@ -141,13 +141,6 @@ def health():
     })
 
 
-@app.route('/status', methods=['GET'])
-def status():
-    """Get status - RelayOrb agent compatibility"""
-    # Return array format for agent compatibility
-    return jsonify([])
-
-
 @app.route('/signals', methods=['GET'])
 def signals():
     """Get signals from all strategies"""

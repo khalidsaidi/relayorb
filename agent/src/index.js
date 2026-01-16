@@ -42,6 +42,25 @@ const PIPELINE_EVENTS_SAMPLE_RATE = parseFloat(
   process.env.PIPELINE_EVENTS_SAMPLE_RATE || "0.15"
 )
 const PIPELINE_EVENTS_RUN_ENV = process.env.PIPELINE_EVENTS_RUN_ENV || "prod"
+const AGENT_ID =
+  process.env.RELAYORB_AGENT_ID ||
+  RUN_ID ||
+  process.env.HOSTNAME ||
+  "relayorb-agent"
+const BOT_PRUNE_INTERVAL_MS = parseInt(
+  process.env.RELAYORB_BOT_PRUNE_INTERVAL_MS || "600000",
+  10
+)
+const RESERVED_BOT_IDS = new Set(
+  ["market-intel"]
+    .concat(
+      (process.env.RELAYORB_BOT_RESERVED_IDS || "")
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean)
+    )
+    .filter(Boolean)
+)
 
 // Structured JSON logging for Cloud Logging
 const STRUCTURED_LOGGING = process.env.STRUCTURED_LOGGING === "true"
@@ -1114,6 +1133,8 @@ async function ensureBotDoc(db, bot) {
     id: bot.id,
     name: bot.name || bot.id,
     engine: bot.engine,
+    managedBy: "relayorb-agent",
+    agentId: AGENT_ID,
     status: "unknown",
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }
@@ -1194,6 +1215,8 @@ async function applyUpdate(db, bot, update) {
   const patch = {
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     lastHeartbeat: admin.firestore.FieldValue.serverTimestamp(),
+    managedBy: "relayorb-agent",
+    agentId: AGENT_ID,
   }
   if (update?.status) patch.status = update.status
   if (update?.summary) patch.summary = update.summary
@@ -1280,6 +1303,8 @@ async function markBotError(db, bot, err) {
       status: "error",
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       lastHeartbeat: admin.firestore.FieldValue.serverTimestamp(),
+      managedBy: "relayorb-agent",
+      agentId: AGENT_ID,
       state: {
         error: message,
       },
@@ -1516,12 +1541,67 @@ async function writeAgentHeartbeat(db) {
   }
 }
 
+async function deleteCollectionBatch(query, batchSize = 400) {
+  const snapshot = await query.limit(batchSize).get()
+  if (snapshot.empty) return 0
+  const batch = query.firestore.batch()
+  snapshot.docs.forEach((doc) => batch.delete(doc.ref))
+  await batch.commit()
+  return snapshot.size
+}
+
+async function deleteDocumentRecursive(db, docRef) {
+  if (typeof db.recursiveDelete === "function") {
+    await db.recursiveDelete(docRef)
+    return
+  }
+  const subcollections = await docRef.listCollections()
+  for (const col of subcollections) {
+    let deleted = 0
+    do {
+      deleted = await deleteCollectionBatch(col, 400)
+    } while (deleted > 0)
+  }
+  await docRef.delete()
+}
+
+async function pruneOrphanBots(db, config) {
+  const activeBotIds = new Set(
+    Array.isArray(config?.bots)
+      ? config.bots.map((bot) => String(bot.id || "").trim()).filter(Boolean)
+      : []
+  )
+  RESERVED_BOT_IDS.forEach((id) => activeBotIds.add(id))
+
+  const snapshot = await db.collection("bots").get()
+  const deletions = []
+
+  snapshot.docs.forEach((docSnap) => {
+    const botId = docSnap.id
+    if (activeBotIds.has(botId)) return
+    const data = docSnap.data() || {}
+    if (data.engine === "market-intel") return
+    if (data.managedBy && data.managedBy !== "relayorb-agent") return
+    deletions.push(botId)
+  })
+
+  if (deletions.length === 0) return
+
+  log(`pruning ${deletions.length} bot docs not in config`)
+  for (const botId of deletions) {
+    const docRef = db.collection("bots").doc(botId)
+    await deleteDocumentRecursive(db, docRef)
+    log(`pruned bot doc ${botId}`)
+  }
+}
+
 async function main() {
   const config = await loadConfig()
   const db = initFirestore(config.firestore?.projectId)
   await initPipelineRedis()
 
   logEvent("ag_run_start", { botCount: config.bots.length })
+  await pruneOrphanBots(db, config)
   await publishPipelineEvent(
     buildPipelineEvent({
       stationId: "agent",
@@ -1552,6 +1632,12 @@ async function main() {
   setInterval(() => {
     writeAgentHeartbeat(db).catch((err) => log(`heartbeat error: ${String(err)}`))
   }, HEARTBEAT_INTERVAL_MS)
+
+  if (BOT_PRUNE_INTERVAL_MS > 0) {
+    setInterval(() => {
+      pruneOrphanBots(db, config).catch((err) => log(`bot prune error: ${String(err)}`))
+    }, BOT_PRUNE_INTERVAL_MS)
+  }
   
   // Initial heartbeat
   writeAgentHeartbeat(db).catch((err) => log(`initial heartbeat error: ${String(err)}`))
