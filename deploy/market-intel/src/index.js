@@ -4599,7 +4599,7 @@ async function dispatchSignalRequests(db, picks, controls) {
  * Auto paper trading: when bots are in "paper" mode, automatically
  * execute high-confidence trades based on actionBoard signals.
  * 
- * For crypto: dispatches to Freqtrade (which handles paper via dry_run)
+ * For crypto: dispatches to Backtrader (paper trading enforced upstream)
  * For stocks/forex: uses Firestore-based paper wallet
  */
 async function dispatchAutoPaperTrades(db, actionBoard) {

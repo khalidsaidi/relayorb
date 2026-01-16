@@ -7,7 +7,6 @@ import { createClient } from "redis"
 
 const CONFIG_ENV = "RELAYORB_CONFIG_PATH"
 const DEFAULT_CONFIG = "config.json"
-const FREQTRADE_CONFIG_PATH = process.env.RELAYORB_FREQTRADE_CONFIG || ""
 const REDIS_URL = process.env.REDIS_URL || ""
 const REDIS_PREFIX = process.env.REDIS_PREFIX || "relayorb"
 const EVENT_CHANNEL =

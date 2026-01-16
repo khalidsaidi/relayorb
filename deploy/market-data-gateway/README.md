@@ -1,6 +1,6 @@
 # Market Data Gateway
 
-Single entry point for market data vendor calls (FMP, CoinGecko, Marketaux).
+Single entry point for market data vendor calls (FMP, Marketaux).
 
 Set `MARKET_DATA_GATEWAY_URL` in other services to point at this service.
 
@@ -10,13 +10,13 @@ Set `MARKET_DATA_GATEWAY_URL` in other services to point at this service.
 - `MARKETAUX_API_KEY` (required for `/v1/marketaux/news`)
 - `FMP_BASE_URL` (optional)
 - `FMP_STABLE_BASE_URL` (optional)
-- `COINGECKO_BASE_URL` (optional)
 - `MARKETAUX_BASE_URL` (optional)
 - `MDG_CACHE_TTL_MS` (default: 15000)
 - `MDG_CANDLES_TTL_MS` (default: 60000)
 - `MDG_MARKETS_TTL_MS` (default: 60000)
 - `MDG_NEWS_TTL_MS` (default: 120000)
 - `MDG_STOCK_LIST_TTL_MS` (default: 21600000)
+- `MDG_CRYPTO_QUOTE_CONCURRENCY` (default: 6)
 - `PORT` (default: 8080)
 
 ## Endpoints

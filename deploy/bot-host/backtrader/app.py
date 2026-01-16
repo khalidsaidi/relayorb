@@ -1,6 +1,6 @@
 """
 Backtrader REST API Service
-Runs on the VM alongside Freqtrade
+Runs on the bot host VM
 """
 
 from flask import Flask, jsonify, request
@@ -143,8 +143,8 @@ def health():
 
 @app.route('/status', methods=['GET'])
 def status():
-    """Get status - matches Freqtrade API"""
-    # Return array format like Freqtrade
+    """Get status - legacy bot API compatibility"""
+    # Return array format for legacy compatibility
     return jsonify([])
 
 
@@ -175,7 +175,7 @@ def signals():
 
 @app.route('/balance', methods=['GET'])
 def balance():
-    """Get balance information - matches Freqtrade API"""
+    """Get balance information - legacy bot API compatibility"""
     return jsonify({
         "currency": "USD",
         "value": 10000.0,
@@ -185,7 +185,7 @@ def balance():
 
 @app.route('/logs', methods=['GET'])
 def logs():
-    """Get recent logs - matches Freqtrade API"""
+    """Get recent logs - legacy bot API compatibility"""
     logs_list = []
     for sid, status in strategy_status.items():
         logs_list.append({

@@ -409,7 +409,6 @@ export default function DashboardPage() {
         setTrendVolumeWeight(DEFAULT_TREND_WEIGHTS.volume)
         setTrendSignalsWeight(DEFAULT_TREND_WEIGHTS.signals)
         setTrendNewsWeight(DEFAULT_TREND_WEIGHTS.news)
-        setBotWeightFreqtrade(1)
         setBotWeightBacktrader(1)
         setAutoTuneEnabled(true)
         setAutoTuneWithAI(true)

@@ -22,7 +22,7 @@
 │                    1. DATA COLLECTION                           │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  Crypto (CoinGecko via gateway) → Top trending list            │
+│  Crypto (FMP via market-data-gateway) → Top trending list      │
 │  FMP (via market-data-gateway) → Stock/Forex quotes + candles  │
 │  Price Streamer → Redis hot store (latest + snapshot window)   │
 │  Price Streamer → Firestore market/prices (UI live tags)       │
@@ -33,7 +33,7 @@
 │                    2. BOT SIGNAL AGGREGATION                    │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  Fetch signals from all bots (Freqtrade, Backtrader, OANDA)   │
+│  Fetch signals from all bots (Backtrader + broker adapters)    │
 │  Signal limit: 800 (increased from 200)                        │
 │  Lookback: Last 360 minutes (6 hours)                          │
 │                                                                  │
@@ -44,8 +44,8 @@
 │    - Track recency (newer = better, exponential decay)         │
 │                                                                  │
 │  Bot adapters provide signals via:                             │
-│    - Freqtrade: logs, open trades, dataframe analysis          │
-│    - Backtrader: multi-indicator strategy (RSI, MACD, BB, etc)│
+│    - Backtrader: multi-indicator strategy (RSI, MACD, BB, etc) │
+│    - Broker adapters (Alpaca/OANDA) when configured            │
 │    - Active scan commands dispatched for top candidates        │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
@@ -203,7 +203,7 @@ Weights auto-tune based on prediction accuracy every 24 hours.
 
 ## Bot Integration
 
-### Backtrader (Stocks, Forex)
+### Backtrader (Stocks, Forex, Crypto)
 
 Multi-indicator strategy combining:
 - **RSI** (14 period): Oversold < 30, Overbought > 70
@@ -219,15 +219,6 @@ Asset-class specific parameters:
 - **Crypto**: Faster periods, wider bands for volatility
 - **Forex**: Tighter RSI thresholds, longer signal gaps
 - **Stock**: Balanced default parameters
-
-### Freqtrade (Crypto)
-
-Signals extracted from:
-1. **Log analysis**: Trade entry/exit messages
-2. **Open trades**: Active positions as buy signals
-3. **Dataframe analysis**: Strategy indicators (enter_long/exit_long columns)
-
-Active scanning via `/dataframe` endpoint when available.
 
 ### Agent Orchestration
 
@@ -307,7 +298,7 @@ All formulas and data flow have been verified against actual code execution:
 
 2. **Bot Integration**: Enhanced 2026-01-13
    - ✅ Backtrader: Multi-indicator strategy (RSI, MACD, BB, Stoch, SMA, Volume)
-   - ✅ Freqtrade: Active scanning via dataframe analysis
+   - ✅ Backtrader: Active scanning via on-demand strategy runs
    - ✅ Agent: Improved retry logic with exponential backoff
    - ✅ Priority-based scan dispatch (high momentum + low signals = priority)
 

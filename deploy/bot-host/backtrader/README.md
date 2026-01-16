@@ -1,6 +1,6 @@
 # Backtrader Service
 
-REST API wrapper for Backtrader trading framework. Runs on the VM alongside Freqtrade.
+REST API wrapper for Backtrader trading framework. Runs on the bot host VM.
 
 ## Features
 

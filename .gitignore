@@ -30,6 +30,7 @@ deploy/bot-host/jesse/*
 !deploy/bot-host/jesse/.env.example
 playwright-report/
 test-results/
+e2e_report_*.md
 
 # Editor directories and files
 .vscode/*

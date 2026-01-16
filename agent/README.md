@@ -62,5 +62,4 @@ The agent passes payloads through to the underlying bot APIs.
 Use the `configure` command type (from the UI) to apply the current desired config.
 Adapters that cannot apply config return a note and keep the desired config stored in Firestore.
 
-When config sync env vars are set, the agent will also translate and write bot-specific config files:
-- Freqtrade: updates the JSON config and reloads it
+When config sync env vars are set, the agent can translate and write bot-specific config files for adapters that support it.

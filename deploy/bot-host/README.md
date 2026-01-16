@@ -43,7 +43,7 @@ The bot host pulls a prebuilt agent image from `gcr.io/relayorb/relayorb-agent`.
 agent container only). The `relayorb-updater` service watches for these commands.
 
 ## Notes
-- Freqtrade runs in dry-run mode by default. Add exchange keys only when ready.
+- Backtrader runs in paper mode by default. Add broker keys only when ready.
 - The UI stores the trading universe in Firestore. Use the "Apply Config" action to trigger adapters; some bots still require manual config updates.
-- The agent can write config files directly when mounted: Freqtrade `user_data/config.json`.
+- The agent can write config files directly when mounted if an adapter supports local config sync.
 - No ports are exposed publicly by default. Use SSH port-forwarding if you need to reach APIs.

@@ -3,7 +3,7 @@
 This worker pulls market data on a schedule, merges it with bot signals, and writes ranked `market/hotTrades`, `market/trending`, and `market/popular` docs into Firestore.
 
 ## Data sources
-- Crypto: FMP quotes/candles + CoinGecko (via market-data-gateway)
+- Crypto: FMP quotes/candles (via market-data-gateway)
 - Stocks/TSX/FX: Live price snapshots from Redis (price-streamer), with Firestore fallback
 - News/Sentiment: Marketaux (via market-data-gateway, optional)
 

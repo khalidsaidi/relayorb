@@ -11,7 +11,7 @@ RelayOrb is a multi-asset market intelligence platform that provides trading sig
 
 The brain of the platform that:
 - Fetches real-time data for ALL asset classes:
-  - **Crypto:** CoinGecko movers + FMP intraday deltas (via market-data-gateway)
+  - **Crypto:** FMP quotes + movers (via market-data-gateway)
   - **Stocks/TSX/FX:** Live price snapshots from `market/prices` (price streamer via market-data-gateway)
   - **News/Sentiment:** Marketaux (via market-data-gateway, optional)
 - Generates trading signals based on:
@@ -97,7 +97,6 @@ graph TD
   CP[Chart Proxy] --> MDG
 
   MDG --> FMP[FMP]
-  MDG --> CG[CoinGecko]
   MDG --> MX[Marketaux]
 
   AG --> BT[Backtrader]
