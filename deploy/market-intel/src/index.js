@@ -1345,7 +1345,7 @@ async function fetchCrypto(db, preferences = {}) {
       // FMP crypto symbols are like "BTCUSD", normalize to "BTC/USD"
       const rawSymbol = String(item.symbol || "")
       let symbol = rawSymbol
-      if (rawSymbol.endsWith("USD") && rawSymbol.length > 3) {
+      if (!rawSymbol.includes("/") && rawSymbol.endsWith("USD") && rawSymbol.length > 3) {
         const base = rawSymbol.slice(0, -3)
         symbol = `${base}/USD`
       }
