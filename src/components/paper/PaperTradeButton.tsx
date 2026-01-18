@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button"
 import { PlayCircle } from "lucide-react"
 import { PaperTradeDialog } from "./PaperTradeDialog"
 import type { MarketHotTrade } from "@/lib/types"
+import { useTranslation } from "react-i18next"
 
 interface PaperTradeButtonProps {
     trade: MarketHotTrade
@@ -20,6 +21,7 @@ export function PaperTradeButton({
     children
 }: PaperTradeButtonProps) {
     const [open, setOpen] = useState(false)
+    const { t } = useTranslation()
 
     // Ensure side is valid, default to 'buy' if missing
     const side = trade.side === "sell" ? "sell" : "buy"
@@ -34,12 +36,12 @@ export function PaperTradeButton({
                     e.stopPropagation() // Prevent parent row click if any
                     setOpen(true)
                 }}
-                title={`Paper Trade: ${side.toUpperCase()} ${trade.symbol}`}
+                title={t("paper.tradeTitle", { side: side.toUpperCase(), symbol: trade.symbol })}
             >
                 {children ? children : (
                     <>
                         <PlayCircle className="h-4 w-4" />
-                        <span className="sr-only">Paper Trade</span>
+                        <span className="sr-only">{t("paper.tradeButton")}</span>
                     </>
                 )}
             </Button>

@@ -11,6 +11,7 @@ import type { MarketHotTrade } from "@/lib/types"
 import { formatAssetPrice } from "@/lib/format"
 import { useFmpChart, useFmpQuote } from "@/features/market/use-fmp-data"
 import { FmpCandleChart } from "@/components/charts/FmpCandleChart"
+import { useTranslation } from "react-i18next"
 
 type AssetChartModalProps = {
   open: boolean
@@ -98,6 +99,7 @@ function normalizeSymbolForTradingView(
 }
 
 export function AssetChartModal({ open, onOpenChange, asset }: AssetChartModalProps) {
+  const { t } = useTranslation()
   const [interval, setInterval] = useState<"1m-tv" | "5m" | "15m" | "30m" | "1h" | "eod">("5m")
   const tvInterval = interval === "1m-tv"
   const fmpInterval =
@@ -154,6 +156,8 @@ export function AssetChartModal({ open, onOpenChange, asset }: AssetChartModalPr
   if (!asset) return null
 
   const displaySymbol = asset.symbol
+  const assetLabel = t(`market.asset.${asset.assetClass}`)
+  const sideLabel = asset.side ? t(`trade.side.${asset.side}`) : t("common.na")
   const changePct =
     quote?.changePercentage ??
     (quote?.price && quote?.open ? ((quote.price - quote.open) / quote.open) * 100 : undefined)
@@ -163,17 +167,17 @@ export function AssetChartModal({ open, onOpenChange, asset }: AssetChartModalPr
       <DialogContent className="max-w-6xl h-[90vh] max-h-[90vh] flex flex-col p-4 gap-4" showCloseButton={true}>
         <DialogHeader className="flex-shrink-0">
           <DialogTitle>
-            {displaySymbol} Chart - {asset.assetClass.toUpperCase()}
+            {t("charts.chartTitle", { symbol: displaySymbol, assetClass: assetLabel })}
           </DialogTitle>
           <DialogDescription className="sr-only">
-            Interactive TradingView price chart for {displaySymbol}
+            {t("charts.tradingViewDescription", { symbol: displaySymbol })}
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-4 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-sm">
             <div className="flex items-baseline gap-2">
-              <span className="text-xs uppercase text-muted-foreground">Last</span>
+              <span className="text-xs uppercase text-muted-foreground">{t("charts.last")}</span>
               <span className="text-2xl font-semibold">
                 {quote?.price !== undefined
                   ? formatAssetPrice(quote.price, asset.assetClass)
@@ -181,7 +185,7 @@ export function AssetChartModal({ open, onOpenChange, asset }: AssetChartModalPr
               </span>
             </div>
             <div className="flex items-baseline gap-2">
-              <span className="text-xs uppercase text-muted-foreground">24h</span>
+              <span className="text-xs uppercase text-muted-foreground">{t("charts.twentyFourHour")}</span>
               <span
                 className={
                   changePct !== undefined && changePct >= 0
@@ -198,25 +202,25 @@ export function AssetChartModal({ open, onOpenChange, asset }: AssetChartModalPr
             </div>
             {quote?.volume !== undefined ? (
               <div className="flex items-baseline gap-2 text-muted-foreground">
-                <span className="text-xs uppercase">Vol</span>
+                <span className="text-xs uppercase">{t("charts.volume")}</span>
                 <span className="font-medium">{quote.volume.toLocaleString()}</span>
               </div>
             ) : null}
             {latest ? (
               <div className="text-xs text-muted-foreground">
-                Updated {new Date(latest.time).toLocaleTimeString()}
+                {t("charts.updatedAt", { time: new Date(latest.time).toLocaleTimeString() })}
               </div>
             ) : null}
           </div>
 
           <Tabs value={interval} onValueChange={(v) => setInterval(v as typeof interval)} className="flex flex-col gap-3">
             <TabsList className="w-full justify-start gap-2 overflow-x-auto">
-              <TabsTrigger value="1m-tv">1m (TradingView)</TabsTrigger>
-              <TabsTrigger value="5m">5m</TabsTrigger>
-              <TabsTrigger value="15m">15m</TabsTrigger>
-              <TabsTrigger value="30m">30m</TabsTrigger>
-              <TabsTrigger value="1h">1h</TabsTrigger>
-              <TabsTrigger value="eod">EOD</TabsTrigger>
+              <TabsTrigger value="1m-tv">{t("charts.oneMinuteTv")}</TabsTrigger>
+              <TabsTrigger value="5m">{t("charts.timeframes.m5")}</TabsTrigger>
+              <TabsTrigger value="15m">{t("charts.timeframes.m15")}</TabsTrigger>
+              <TabsTrigger value="30m">{t("charts.timeframes.m30")}</TabsTrigger>
+              <TabsTrigger value="1h">{t("charts.timeframes.h1")}</TabsTrigger>
+              <TabsTrigger value="eod">{t("charts.eod")}</TabsTrigger>
             </TabsList>
 
             <TabsContent value="1m-tv" className="m-0">
@@ -225,13 +229,13 @@ export function AssetChartModal({ open, onOpenChange, asset }: AssetChartModalPr
                   <iframe
                     src={chartUrl}
                     className="w-full h-[420px] border-0"
-                    title={`TradingView chart for ${displaySymbol}`}
+                    title={t("charts.tradingViewTitle", { symbol: displaySymbol })}
                     allow="clipboard-write"
                     loading="lazy"
                   />
                 ) : (
                   <div className="flex h-[320px] items-center justify-center text-muted-foreground">
-                    No chart data available
+                    {t("charts.noChartData")}
                   </div>
                 )}
               </div>
@@ -262,33 +266,33 @@ export function AssetChartModal({ open, onOpenChange, asset }: AssetChartModalPr
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm flex-shrink-0 bg-muted/30 rounded-lg p-4">
           <div>
-            <div className="text-muted-foreground mb-1">Current Price</div>
+            <div className="text-muted-foreground mb-1">{t("charts.currentPrice")}</div>
             <div className="font-semibold text-lg">
               {Number.isFinite(asset.price)
                 ? formatAssetPrice(asset.price, asset.assetClass)
-                : "—"}
+                : t("common.na")}
             </div>
           </div>
           <div>
-            <div className="text-muted-foreground mb-1">24h Change</div>
+            <div className="text-muted-foreground mb-1">{t("charts.twentyFourHourChange")}</div>
             <div
               className={`font-semibold text-lg ${asset.momentum?.change24h && asset.momentum.change24h >= 0 ? "text-green-600" : "text-red-600"}`}
             >
               {asset.momentum?.change24h
                 ? `${asset.momentum.change24h >= 0 ? "+" : ""}${asset.momentum.change24h.toFixed(2)}%`
-                : "—"}
+                : t("common.na")}
             </div>
           </div>
           <div>
-            <div className="text-muted-foreground mb-1">Score</div>
-            <div className="font-semibold text-lg">{asset.score?.toFixed(1) ?? "—"}</div>
+            <div className="text-muted-foreground mb-1">{t("charts.score")}</div>
+            <div className="font-semibold text-lg">{asset.score?.toFixed(1) ?? t("common.na")}</div>
           </div>
           <div>
-            <div className="text-muted-foreground mb-1">Side</div>
+            <div className="text-muted-foreground mb-1">{t("charts.side")}</div>
             <div
               className={`font-semibold text-lg uppercase ${asset.side?.toUpperCase() === "BUY" ? "text-green-600" : asset.side?.toUpperCase() === "SELL" ? "text-red-600" : ""}`}
             >
-              {asset.side ?? "—"}
+              {sideLabel}
             </div>
           </div>
         </div>

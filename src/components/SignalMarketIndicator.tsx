@@ -6,12 +6,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import type { BotSignalDoc } from "@/lib/types"
+import { useTranslation } from "react-i18next"
 
 type SignalMarketIndicatorProps = {
   signal: BotSignalDoc
 }
 
 export function SignalMarketIndicator({ signal }: SignalMarketIndicatorProps) {
+  const { t } = useTranslation()
   const assetClass = signal.evaluation?.assetClass
   const marketOpenAtSignal = signal.evaluation?.horizons?.["1h"]?.marketOpenAtSignal
 
@@ -25,7 +27,7 @@ export function SignalMarketIndicator({ signal }: SignalMarketIndicatorProps) {
     return null
   }
 
-  const assetLabel = assetClass === "stock" ? "Stock" : "Forex"
+  const assetLabel = assetClass === "stock" ? t("market.asset.stock") : t("market.asset.forex")
 
   return (
     <TooltipProvider>
@@ -33,14 +35,14 @@ export function SignalMarketIndicator({ signal }: SignalMarketIndicatorProps) {
         <TooltipTrigger asChild>
           <div className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5">
             <Clock className="h-3 w-3 text-amber-700" />
-            <span className="text-xs text-amber-700">Closed</span>
+            <span className="text-xs text-amber-700">{t("market.status.closed")}</span>
           </div>
         </TooltipTrigger>
         <TooltipContent>
           <p className="text-xs">
-            Signal created when {assetLabel.toLowerCase()} market was closed
+            {t("signals.closedMarketNotice", { asset: assetLabel.toLowerCase() })}
             <br />
-            Evaluation adjusted to next market open
+            {t("signals.closedMarketAdjusted")}
           </p>
         </TooltipContent>
       </Tooltip>

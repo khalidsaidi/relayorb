@@ -6,6 +6,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { useTranslation } from "react-i18next"
 import {
   useMarketStatus,
   formatTimeUntil,
@@ -41,15 +42,24 @@ export function MarketStatusBadge({
   const marketStatus = useMarketStatus()
   const status = marketStatus[assetClass]
   const colorClass = getMarketStatusColor(status.status)
+  const { t } = useTranslation()
+  const assetLabel = t(`market.asset.${assetClass}`)
+  const timeLabels = {
+    now: t("common.now"),
+    hourShort: t("common.hourShort"),
+    minuteShort: t("common.minuteShort"),
+  }
 
   const tooltipContent = (
     <div className="space-y-1 text-xs">
-      <div className="font-medium capitalize">{assetClass} Market</div>
+      <div className="font-medium capitalize">
+        {assetLabel} {t("market.market")}
+      </div>
       <div className="text-muted-foreground">{status.label}</div>
       {status.timeUntilChange && (
         <div className="text-muted-foreground">
-          {status.status === "open" ? "Closes in " : "Opens in "}
-          {formatTimeUntil(status.timeUntilChange)}
+          {status.status === "open" ? t("market.closesIn") : t("market.opensIn")}
+          {formatTimeUntil(status.timeUntilChange, timeLabels)}
         </div>
       )}
     </div>
@@ -83,8 +93,15 @@ export function MarketStatusIndicator({
 }: {
   assetClass?: "stock" | "crypto" | "forex"
 }) {
+  const { t } = useTranslation()
   const marketStatus = useMarketStatus()
   const status = marketStatus[assetClass]
+  const assetLabel = t(`market.asset.${assetClass}`)
+  const timeLabels = {
+    now: t("common.now"),
+    hourShort: t("common.hourShort"),
+    minuteShort: t("common.minuteShort"),
+  }
 
   const dotColor =
     status.status === "open"
@@ -107,11 +124,11 @@ export function MarketStatusIndicator({
           </span>
         </TooltipTrigger>
         <TooltipContent side="bottom">
-          <span className="capitalize">{assetClass}</span>: {status.label}
+          <span className="capitalize">{assetLabel}</span>: {status.label}
           {status.timeUntilChange && (
             <span className="text-muted-foreground">
               {" "}
-              ({formatTimeUntil(status.timeUntilChange)})
+              ({formatTimeUntil(status.timeUntilChange, timeLabels)})
             </span>
           )}
         </TooltipContent>

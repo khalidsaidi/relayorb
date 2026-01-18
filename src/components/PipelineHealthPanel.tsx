@@ -24,6 +24,7 @@ import {
   type ServiceHealth,
   type PipelineHealthStatus,
 } from "@/features/ops/use-pipeline-health"
+import { useTranslation } from "react-i18next"
 
 function StatusIcon({ status, size = "md" }: { status: PipelineHealthStatus["status"]; size?: "sm" | "md" | "lg" }) {
   const sizeClass = size === "lg" ? "h-6 w-6" : size === "md" ? "h-5 w-5" : "h-4 w-4"
@@ -56,9 +57,23 @@ function ServiceIcon({ name }: { name: string }) {
 }
 
 function ServiceCard({ name, health }: { name: string; health: ServiceHealth }) {
-  const displayName = name
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase())
+  const { t } = useTranslation()
+  const statusLabels = {
+    ok: t("pipeline.status.ok"),
+    degraded: t("pipeline.status.degraded"),
+    stale: t("pipeline.status.stale"),
+    error: t("pipeline.status.error"),
+    unknown: t("pipeline.status.unknown"),
+  }
+  const ageLabels = {
+    never: t("common.never"),
+    justNow: t("common.justNow"),
+    secondsAgo: t("common.secondsAgo"),
+    minutesAgo: t("common.minutesAgo"),
+    hoursAgo: t("common.hoursAgo"),
+  }
+  const displayName = t(`pipeline.service.${name}`)
+  const statusLabel = statusLabels[health.status] ?? health.status
 
   return (
     <div className="flex items-start gap-3 rounded-lg border bg-card/50 p-3">
@@ -73,20 +88,20 @@ function ServiceCard({ name, health }: { name: string; health: ServiceHealth }) 
             className={`text-xs ${getStatusBgColor(health.status)}`}
           >
             <StatusIcon status={health.status} size="sm" />
-            <span className="ml-1 capitalize">{health.status}</span>
+            <span className="ml-1 capitalize">{statusLabel}</span>
           </Badge>
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
           {health.lastSeen ? (
-            <>Last seen: {formatAge(health.ageMs)}</>
+            <>{t("pipeline.lastSeen", { age: formatAge(health.ageMs, ageLabels) })}</>
           ) : (
-            <>No heartbeat received</>
+            <>{t("pipeline.noHeartbeat")}</>
           )}
         </div>
         {health.isStale && health.status !== "unknown" && (
           <div className="mt-1 text-xs text-amber-600 flex items-center gap-1">
             <AlertCircle className="h-3 w-3" />
-            Data may be stale
+            {t("pipeline.status.stale")}
           </div>
         )}
       </div>
@@ -102,6 +117,14 @@ type PipelineHealthPanelProps = {
 export function PipelineHealthPanel({ defaultExpanded = true, showTitle = true }: PipelineHealthPanelProps) {
   const { health, loading, error, documentExists } = usePipelineHealth()
   const [isOpen, setIsOpen] = useState(defaultExpanded)
+  const { t } = useTranslation()
+  const statusLabels = {
+    ok: t("pipeline.status.ok"),
+    degraded: t("pipeline.status.degraded"),
+    stale: t("pipeline.status.stale"),
+    error: t("pipeline.status.error"),
+    unknown: t("pipeline.status.unknown"),
+  }
 
   if (loading) {
     return (
@@ -110,14 +133,14 @@ export function PipelineHealthPanel({ defaultExpanded = true, showTitle = true }
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
               <Activity className="h-4 w-4 animate-pulse" />
-              Pipeline Health
+              {t("pipeline.title")}
             </CardTitle>
           </CardHeader>
         )}
         <CardContent>
           <div className="flex items-center gap-2 text-muted-foreground">
             <Activity className="h-4 w-4 animate-pulse" />
-            Loading health status...
+            {t("pipeline.loading")}
           </div>
         </CardContent>
       </Card>
@@ -132,25 +155,36 @@ export function PipelineHealthPanel({ defaultExpanded = true, showTitle = true }
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
               <AlertCircle className="h-4 w-4 text-amber-500" />
-              Pipeline Health - Deployment Required
+              {t("pipeline.deploymentRequiredTitle")}
             </CardTitle>
           </CardHeader>
         )}
         <CardContent>
           <div className="space-y-3">
             <div className="text-amber-700 text-sm">
-              Health monitoring code has been added but services need redeployment.
+              {t("pipeline.deploymentRequiredBody")}
             </div>
             <div className="text-xs text-muted-foreground space-y-1">
-              <div>The following services need to be rebuilt and deployed:</div>
+              <div>{t("pipeline.deploymentRequiredListTitle")}</div>
               <ul className="list-disc list-inside ml-2 space-y-0.5">
-                <li><code className="text-xs bg-muted px-1 rounded">deploy/market-intel</code> → Cloud Run Job</li>
-                <li><code className="text-xs bg-muted px-1 rounded">deploy/price-streamer</code> → Cloud Run Service</li>
-                <li><code className="text-xs bg-muted px-1 rounded">agent</code> → GCP VM (docker compose)</li>
+                <li>
+                  <code className="text-xs bg-muted px-1 rounded">deploy/market-intel</code>{" "}
+                  {t("pipeline.deploymentTargetJob")}
+                </li>
+                <li>
+                  <code className="text-xs bg-muted px-1 rounded">deploy/price-streamer</code>{" "}
+                  {t("pipeline.deploymentTargetService")}
+                </li>
+                <li>
+                  <code className="text-xs bg-muted px-1 rounded">agent</code>{" "}
+                  {t("pipeline.deploymentTargetVm")}
+                </li>
               </ul>
             </div>
             <div className="text-xs text-muted-foreground pt-2 border-t border-amber-500/20">
-              See <code className="bg-muted px-1 rounded">deploy/market-intel/README.md</code> for deployment commands.
+              {t("pipeline.deploymentDocsPrefix")}{" "}
+              <code className="bg-muted px-1 rounded">deploy/market-intel/README.md</code>{" "}
+              {t("pipeline.deploymentDocsSuffix")}
             </div>
           </div>
         </CardContent>
@@ -165,7 +199,7 @@ export function PipelineHealthPanel({ defaultExpanded = true, showTitle = true }
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
               <XCircle className="h-4 w-4 text-rose-500" />
-              Pipeline Health
+              {t("pipeline.title")}
             </CardTitle>
           </CardHeader>
         )}
@@ -183,17 +217,22 @@ export function PipelineHealthPanel({ defaultExpanded = true, showTitle = true }
           <div className="flex items-center justify-between">
             <CardTitle className="text-base flex items-center gap-2">
               <StatusIcon status={health.status} size="md" />
-              {showTitle ? "Pipeline Health" : getStatusLabel(health.status)}
+              {showTitle ? t("pipeline.title") : getStatusLabel(health.status, statusLabels)}
             </CardTitle>
             <div className="flex items-center gap-2">
               <Badge
                 variant="outline"
                 className={getStatusBgColor(health.status)}
               >
-                {getStatusLabel(health.status)}
+                {getStatusLabel(health.status, statusLabels)}
               </Badge>
               <CollapsibleTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={isOpen ? "Collapse" : "Expand"}>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  aria-label={isOpen ? t("common.collapse") : t("common.expand")}
+                >
                   {isOpen ? (
                     <ChevronUp className="h-4 w-4" />
                   ) : (
@@ -205,7 +244,10 @@ export function PipelineHealthPanel({ defaultExpanded = true, showTitle = true }
           </div>
           {!isOpen && (
             <div className="text-xs text-muted-foreground mt-1">
-              {health.summary.ok} healthy, {health.summary.degraded + health.summary.stale + health.summary.error} issues
+              {t("pipeline.summaryCollapsed", {
+                healthy: health.summary.ok,
+                issues: health.summary.degraded + health.summary.stale + health.summary.error,
+              })}
             </div>
           )}
         </CardHeader>
@@ -216,19 +258,19 @@ export function PipelineHealthPanel({ defaultExpanded = true, showTitle = true }
               <div className="grid grid-cols-4 gap-2 text-center text-xs">
                 <div className="rounded-md bg-emerald-500/10 p-2">
                   <div className="font-semibold text-emerald-700">{health.summary.ok}</div>
-                  <div className="text-muted-foreground">Healthy</div>
+                  <div className="text-muted-foreground">{t("pipeline.status.ok")}</div>
                 </div>
                 <div className="rounded-md bg-amber-500/10 p-2">
                   <div className="font-semibold text-amber-700">{health.summary.degraded}</div>
-                  <div className="text-muted-foreground">Degraded</div>
+                  <div className="text-muted-foreground">{t("pipeline.status.degraded")}</div>
                 </div>
                 <div className="rounded-md bg-amber-500/10 p-2">
                   <div className="font-semibold text-amber-600">{health.summary.stale}</div>
-                  <div className="text-muted-foreground">Stale</div>
+                  <div className="text-muted-foreground">{t("pipeline.status.stale")}</div>
                 </div>
                 <div className="rounded-md bg-rose-500/10 p-2">
                   <div className="font-semibold text-rose-700">{health.summary.error}</div>
-                  <div className="text-muted-foreground">Error</div>
+                  <div className="text-muted-foreground">{t("pipeline.status.error")}</div>
                 </div>
               </div>
 
@@ -242,7 +284,7 @@ export function PipelineHealthPanel({ defaultExpanded = true, showTitle = true }
               {/* Last Update */}
               {health.updatedAt && (
                 <div className="text-xs text-muted-foreground text-center pt-2 border-t">
-                  Last aggregated: {health.updatedAt.toLocaleString()}
+                  {t("pipeline.lastAggregated", { time: health.updatedAt.toLocaleString() })}
                 </div>
               )}
             </div>

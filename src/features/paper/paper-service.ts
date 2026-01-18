@@ -11,6 +11,7 @@ import {
 import type { FieldValue, Timestamp } from "firebase/firestore"
 import { db } from "@/lib/firebase"
 import type { PaperPosition, PaperTransaction, PaperWallet } from "@/lib/types"
+import { getE2eDisableFirestoreWrites } from "@/lib/e2e-overrides"
 
 const DEFAULT_STARTING_BALANCE = 100000
 
@@ -64,6 +65,9 @@ export async function executePaperTrade(
         takeProfit?: number
     }
 ) {
+    if (getE2eDisableFirestoreWrites()) {
+        return
+    }
     if (!db) throw new Error("Database not initialized")
 
     const walletRef = doc(db, "users", userId, "paper", "wallet")

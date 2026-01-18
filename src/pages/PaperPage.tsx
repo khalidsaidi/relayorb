@@ -26,10 +26,19 @@ import {
 import type { PaperWallet, PaperPosition, PaperTransaction } from "@/lib/types"
 
 import { toast } from "sonner"
+import { useTranslation } from "react-i18next"
 
 export default function PaperPage() {
     const { user } = useAuth()
     const { prices } = useMarketPrices()
+    const { t } = useTranslation()
+    const assetLabelMap: Record<PaperPosition["assetClass"], string> = {
+        stock: t("assets.stock"),
+        crypto: t("assets.crypto"),
+        forex: t("assets.fx"),
+    }
+    const getAssetLabel = (assetClass?: string | null) =>
+        assetClass ? assetLabelMap[assetClass as PaperPosition["assetClass"]] ?? assetClass : t("common.unknown")
     const [wallet, setWallet] = useState<PaperWallet | null>(null)
     const [positions, setPositions] = useState<PaperPosition[]>([])
     const [transactions, setTransactions] = useState<PaperTransaction[]>([])
@@ -75,7 +84,7 @@ export default function PaperPage() {
             // Fetch current prices to get the exit price
             const priceSnap = await getDoc(doc(db, "market", "prices"))
             if (!priceSnap.exists()) {
-                toast.error("Live prices temporarily unavailable. Please try again in 5 minutes.")
+                toast.error(t("paper.livePricesUnavailable"))
                 return
             }
 
@@ -84,7 +93,7 @@ export default function PaperPage() {
             const exitPrice = priceItem ? priceItem.price : null
 
             if (!exitPrice) {
-                toast.error(`Could not find current price for ${pos.symbol}. Close manually via Trade Now.`)
+                toast.error(t("paper.priceMissing", { symbol: pos.symbol }))
                 return
             }
 
@@ -97,16 +106,16 @@ export default function PaperPage() {
                 quantity: pos.quantity
             })
 
-            toast.success(`Closed ${pos.symbol} at ${formatCurrency(exitPrice)}`)
+            toast.success(t("paper.closedPosition", { symbol: pos.symbol, price: formatCurrency(exitPrice) }))
         } catch (e: unknown) {
             console.error("Close failed:", e)
-            const message = e instanceof Error ? e.message : "Failed to close position"
+            const message = e instanceof Error ? e.message : t("paper.closeFailed")
             toast.error(message)
         }
     }
 
-    if (loading) return <div className="p-8 text-center text-muted-foreground">Loading your portfolio...</div>
-    if (!wallet) return <div className="p-8 text-center">No paper wallet found. Place a trade to get started.</div>
+    if (loading) return <div className="p-8 text-center text-muted-foreground">{t("paper.loadingPortfolio")}</div>
+    if (!wallet) return <div className="p-8 text-center">{t("paper.noWallet")}</div>
 
     const startBalance = 100000
     const totalPnL = wallet.balance - startBalance
@@ -116,12 +125,12 @@ export default function PaperPage() {
         <div className="space-y-6">
             <header className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
-                    <h1 className="text-3xl font-bold tracking-tight">Paper Portfolio</h1>
-                    <p className="text-muted-foreground">Manage your simulated assets and trade history.</p>
+                    <h1 className="text-3xl font-bold tracking-tight">{t("paper.portfolioTitle")}</h1>
+                    <p className="text-muted-foreground">{t("paper.portfolioSubtitle")}</p>
                 </div>
                 <div className="flex items-center gap-3">
                     <Badge variant="outline" className="px-3 py-1 bg-blue-500/5 text-blue-600 border-blue-500/20">
-                        SIMULATED ACCOUNT
+                        {t("paper.simulatedAccount")}
                     </Badge>
                 </div>
             </header>
@@ -129,17 +138,17 @@ export default function PaperPage() {
             <div className="grid gap-4 md:grid-cols-3">
                 <Card>
                     <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-                        <CardTitle className="text-sm font-medium">Buying Power</CardTitle>
+                        <CardTitle className="text-sm font-medium">{t("paper.buyingPower")}</CardTitle>
                         <Wallet className="w-4 h-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
                         <div className="text-2xl font-bold">{formatCurrency(wallet.balance)}</div>
-                        <p className="text-xs text-muted-foreground">Available for trades</p>
+                        <p className="text-xs text-muted-foreground">{t("paper.availableForTrades")}</p>
                     </CardContent>
                 </Card>
                 <Card>
                     <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-                        <CardTitle className="text-sm font-medium">Total PnL</CardTitle>
+                        <CardTitle className="text-sm font-medium">{t("paper.totalPnl")}</CardTitle>
                         <BarChart3 className="w-4 h-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
@@ -147,52 +156,56 @@ export default function PaperPage() {
                             {totalPnL >= 0 ? "+" : ""}{formatCurrency(totalPnL)}
                         </div>
                         <p className={["text-xs font-medium", totalPnL >= 0 ? "text-emerald-600" : "text-rose-600"].join(" ")}>
-                            {pnlPercent.toFixed(2)}% overall return
+                            {t("paper.overallReturn", { percent: pnlPercent.toFixed(2) })}
                         </p>
                     </CardContent>
                 </Card>
                 <Card>
                     <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-                        <CardTitle className="text-sm font-medium">Active Positions</CardTitle>
+                        <CardTitle className="text-sm font-medium">{t("paper.activePositions")}</CardTitle>
                         <History className="w-4 h-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
                         <div className="text-2xl font-bold">{positions.length}</div>
-                        <p className="text-xs text-muted-foreground">Diversified across {new Set(positions.map(p => p.assetClass)).size} asset classes</p>
+                        <p className="text-xs text-muted-foreground">
+                            {t("paper.diversifiedAcross", {
+                                count: new Set(positions.map(p => p.assetClass)).size,
+                            })}
+                        </p>
                     </CardContent>
                 </Card>
             </div>
 
             <Tabs defaultValue="positions" className="space-y-4">
                 <TabsList>
-                    <TabsTrigger value="positions">Active Positions</TabsTrigger>
-                    <TabsTrigger value="history">History</TabsTrigger>
+                    <TabsTrigger value="positions">{t("paper.tabs.positions")}</TabsTrigger>
+                    <TabsTrigger value="history">{t("paper.tabs.history")}</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="positions" className="space-y-4">
                     <Card>
                         <CardHeader>
-                            <CardTitle>Open Positions</CardTitle>
+                            <CardTitle>{t("paper.openPositions")}</CardTitle>
                         </CardHeader>
                         <CardContent>
                             <Table>
                                 <TableHeader>
                                     <TableRow>
-                                        <TableHead>Symbol</TableHead>
-                                        <TableHead>Asset Class</TableHead>
-                                        <TableHead className="text-right">Quantity</TableHead>
-                                        <TableHead className="text-right">Avg. Entry</TableHead>
-                                        <TableHead className="text-right">Current Price</TableHead>
-                                        <TableHead className="text-right">Unrealized PnL</TableHead>
-                                        <TableHead className="text-right">SL / TP</TableHead>
-                                        <TableHead className="text-right">Actions</TableHead>
+                                        <TableHead>{t("paper.table.symbol")}</TableHead>
+                                        <TableHead>{t("paper.table.assetClass")}</TableHead>
+                                        <TableHead className="text-right">{t("paper.table.quantity")}</TableHead>
+                                        <TableHead className="text-right">{t("paper.table.avgEntry")}</TableHead>
+                                        <TableHead className="text-right">{t("paper.table.currentPrice")}</TableHead>
+                                        <TableHead className="text-right">{t("paper.table.unrealizedPnl")}</TableHead>
+                                        <TableHead className="text-right">{t("paper.table.slTp")}</TableHead>
+                                        <TableHead className="text-right">{t("paper.table.actions")}</TableHead>
                                     </TableRow>
                                 </TableHeader>
                                 <TableBody>
                                     {positions.length === 0 ? (
                                         <TableRow>
                                             <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
-                                                No active positions.
+                                                {t("paper.noActivePositions")}
                                             </TableCell>
                                         </TableRow>
                                     ) : (
@@ -200,17 +213,17 @@ export default function PaperPage() {
                                             <TableRow key={pos.symbol}>
                                                 <TableCell className="font-semibold">{pos.symbol}</TableCell>
                                                 <TableCell>
-                                                    <Badge variant="secondary" className="capitalize">{pos.assetClass}</Badge>
+                                                    <Badge variant="secondary">{getAssetLabel(pos.assetClass)}</Badge>
                                                 </TableCell>
                                                 <TableCell className="text-right">{pos.quantity.toFixed(4)}</TableCell>
                                                 <TableCell className="text-right">{formatCurrency(pos.avgEntryPrice)}</TableCell>
                                                 <TableCell className="text-right font-medium">
-                                                    {prices[pos.symbol] ? formatCurrency(prices[pos.symbol]) : "--"}
+                                                    {prices[pos.symbol] ? formatCurrency(prices[pos.symbol]) : t("common.na")}
                                                 </TableCell>
                                                 <TableCell className="text-right">
                                                     {(() => {
                                                         const current = prices[pos.symbol]
-                                                        if (!current) return "--"
+                                                        if (!current) return t("common.na")
                                                         const pnl = (current - pos.avgEntryPrice) * pos.quantity
                                                         const pnlPct = ((current - pos.avgEntryPrice) / pos.avgEntryPrice) * 100
                                                         return (
@@ -222,14 +235,20 @@ export default function PaperPage() {
                                                     })()}
                                                 </TableCell>
                                                 <TableCell className="text-right text-xs">
-                                                    {pos.stopLoss ? <div className="text-rose-600">SL: {formatCurrency(pos.stopLoss)}</div> : null}
-                                                    {pos.takeProfit ? <div className="text-emerald-600">TP: {formatCurrency(pos.takeProfit)}</div> : null}
-                                                    {!pos.stopLoss && !pos.takeProfit && "--"}
+                                                    {pos.stopLoss ? <div className="text-rose-600">{t("paper.sl")}: {formatCurrency(pos.stopLoss)}</div> : null}
+                                                    {pos.takeProfit ? <div className="text-emerald-600">{t("paper.tp")}: {formatCurrency(pos.takeProfit)}</div> : null}
+                                                    {!pos.stopLoss && !pos.takeProfit && t("common.na")}
                                                 </TableCell>
                                                 <TableCell className="text-right">
-                                                    <Button variant="ghost" size="sm" className="text-rose-600 hover:text-rose-700 hover:bg-rose-50" title="Sell all at current market price" onClick={() => handleClosePosition(pos)}>
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        className="text-rose-600 hover:text-rose-700 hover:bg-rose-50"
+                                                        title={t("paper.sellAllTitle")}
+                                                        onClick={() => handleClosePosition(pos)}
+                                                    >
                                                         <XCircle className="w-4 h-4 mr-1" />
-                                                        Close Position
+                                                        {t("paper.closePosition")}
                                                     </Button>
                                                 </TableCell>
                                             </TableRow>
@@ -244,25 +263,25 @@ export default function PaperPage() {
                 <TabsContent value="history">
                     <Card>
                         <CardHeader>
-                            <CardTitle>Trade History</CardTitle>
+                            <CardTitle>{t("paper.tradeHistory")}</CardTitle>
                         </CardHeader>
                         <CardContent>
                             <Table>
                                 <TableHeader>
                                     <TableRow>
-                                        <TableHead>Time</TableHead>
-                                        <TableHead>Symbol</TableHead>
-                                        <TableHead>Side</TableHead>
-                                        <TableHead className="text-right">Amount</TableHead>
-                                        <TableHead className="text-right">Price</TableHead>
-                                        <TableHead className="text-right">Total</TableHead>
+                                        <TableHead>{t("paper.history.time")}</TableHead>
+                                        <TableHead>{t("paper.history.symbol")}</TableHead>
+                                        <TableHead>{t("paper.history.side")}</TableHead>
+                                        <TableHead className="text-right">{t("paper.history.amount")}</TableHead>
+                                        <TableHead className="text-right">{t("paper.history.price")}</TableHead>
+                                        <TableHead className="text-right">{t("paper.history.total")}</TableHead>
                                     </TableRow>
                                 </TableHeader>
                                 <TableBody>
                                     {transactions.length === 0 ? (
                                         <TableRow>
                                             <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
-                                                No transactions found.
+                                                {t("paper.noTransactions")}
                                             </TableCell>
                                         </TableRow>
                                     ) : (
@@ -274,7 +293,7 @@ export default function PaperPage() {
                                                 <TableCell className="font-medium">{tx.symbol}</TableCell>
                                                 <TableCell>
                                                     <Badge className={tx.side === 'buy' ? 'bg-emerald-500/10 text-emerald-700' : 'bg-rose-500/10 text-rose-700'}>
-                                                        {tx.side.toUpperCase()}
+                                                        {t(`trade.side.${tx.side}`)}
                                                     </Badge>
                                                 </TableCell>
                                                 <TableCell className="text-right">{tx.amount.toFixed(4)}</TableCell>

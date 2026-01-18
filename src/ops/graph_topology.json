@@ -10,6 +10,8 @@
     { "id": "movers_15m", "label": "Movers 15m", "type": "processor", "category": "compute", "lane": 4, "orderHint": 2, "x": 900, "y": 480, "core": true },
     { "id": "candidates_merge", "label": "Candidates Merge", "type": "processor", "category": "compute", "lane": 4, "orderHint": 3, "x": 900, "y": 600, "core": true },
     { "id": "score_compute", "label": "Candidate Ranking (MI)", "type": "processor", "category": "score", "lane": 4, "orderHint": 4, "x": 900, "y": 720, "core": true },
+    { "id": "swing_overnight", "label": "Swing Overnight", "type": "processor", "category": "compute", "lane": 4, "orderHint": 5, "x": 900, "y": 840, "core": false },
+    { "id": "prebreakout", "label": "Pre-Breakout Watch", "type": "processor", "category": "compute", "lane": 4, "orderHint": 6, "x": 900, "y": 960, "core": false },
     { "id": "firestore", "label": "Firestore", "type": "store", "category": "store", "lane": 8, "orderHint": 1, "x": 1100, "y": 760, "core": true },
     { "id": "ui", "label": "UI", "type": "ui", "category": "ui", "lane": 9, "orderHint": 1, "x": 1300, "y": 760, "core": true },
     { "id": "new_batch", "label": "Redis Stream: new_batch", "type": "queue", "category": "queue", "lane": 5, "orderHint": 1, "x": 1100, "y": 440, "core": true },
@@ -29,6 +31,10 @@
     { "id": "market_intel->movers_15m", "from": "market_intel", "to": "movers_15m", "kind": "event", "core": true, "label": "compute", "labelMode": "always" },
     { "id": "movers_15m->candidates_merge", "from": "movers_15m", "to": "candidates_merge", "kind": "event", "core": true, "label": "merge", "labelMode": "always" },
     { "id": "candidates_merge->score_compute", "from": "candidates_merge", "to": "score_compute", "kind": "event", "core": true, "label": "rank" },
+    { "id": "market_intel->swing_overnight", "from": "market_intel", "to": "swing_overnight", "kind": "event", "core": false, "label": "swing", "labelMode": "always" },
+    { "id": "swing_overnight->firestore", "from": "swing_overnight", "to": "firestore", "kind": "write", "core": false, "label": "write swing", "labelMode": "always" },
+    { "id": "market_intel->prebreakout", "from": "market_intel", "to": "prebreakout", "kind": "event", "core": false, "label": "prebreakout", "labelMode": "always" },
+    { "id": "prebreakout->firestore", "from": "prebreakout", "to": "firestore", "kind": "write", "core": false, "label": "write watch", "labelMode": "always" },
     { "id": "candidates_merge->firestore", "from": "candidates_merge", "to": "firestore", "kind": "write", "core": true, "label": "write batch" },
     { "id": "score_compute->firestore", "from": "score_compute", "to": "firestore", "kind": "write", "core": true, "label": "write scores" },
     { "id": "market_intel->new_batch", "from": "market_intel", "to": "new_batch", "kind": "event", "core": true, "label": "publish", "labelMode": "always" },
@@ -55,7 +61,7 @@
   "nodeGroups": [
     { "id": "stores", "label": "Stores", "nodeIds": ["redis", "firestore"] },
     { "id": "services", "label": "Services", "nodeIds": ["price_streamer", "market_intel", "refresh_service", "relayorb_agent", "signal_evaluator", "market_data_gateway", "chart_proxy"] },
-    { "id": "processors", "label": "Processors", "nodeIds": ["movers_15m", "candidates_merge", "score_compute", "bot_signals", "signal_performance"] },
+    { "id": "processors", "label": "Processors", "nodeIds": ["movers_15m", "candidates_merge", "score_compute", "swing_overnight", "prebreakout", "bot_signals", "signal_performance"] },
     { "id": "providers", "label": "Providers", "nodeIds": ["provider:fmp", "provider:marketaux"] },
     { "id": "bots", "label": "Bots", "nodeIds": ["bot_engine:backtrader"] },
     { "id": "ui", "label": "UI", "nodeIds": ["ui"] }

@@ -1,4 +1,6 @@
 import { useMemo } from "react"
+import { useTranslation } from "react-i18next"
+import type { TFunction } from "i18next"
 
 export type MarketSessionStatus = "open" | "pre" | "after" | "closed"
 
@@ -78,7 +80,7 @@ function getEasternTime(): {
   }
 }
 
-function getStockMarketStatus(): MarketAssetStatus {
+function getStockMarketStatus(t: TFunction): MarketAssetStatus {
   const et = getEasternTime()
   const isWeekend = et.dayOfWeek === 0 || et.dayOfWeek === 6
   const isHoliday = US_MARKET_HOLIDAYS.has(et.dateString)
@@ -87,7 +89,7 @@ function getStockMarketStatus(): MarketAssetStatus {
     return { 
       status: "closed", 
       isOpen: false, 
-      label: isHoliday ? "Holiday" : "Weekend",
+      label: isHoliday ? t("market.status.holiday") : t("market.status.weekend"),
       nextChange: null,
       timeUntilChange: null,
     }
@@ -100,7 +102,7 @@ function getStockMarketStatus(): MarketAssetStatus {
     return { 
       status: "closed", 
       isOpen: false, 
-      label: "Closed",
+      label: t("market.status.closed"),
       nextChange: null,
       timeUntilChange: (preMarketStart - minute) * 60 * 1000,
     }
@@ -109,7 +111,7 @@ function getStockMarketStatus(): MarketAssetStatus {
     return { 
       status: "pre", 
       isOpen: false, 
-      label: "Pre-Market",
+      label: t("market.status.preMarket"),
       nextChange: null,
       timeUntilChange: (regularStart - minute) * 60 * 1000,
     }
@@ -118,7 +120,7 @@ function getStockMarketStatus(): MarketAssetStatus {
     return { 
       status: "open", 
       isOpen: true, 
-      label: "Market Open",
+      label: t("market.status.marketOpen"),
       nextChange: null,
       timeUntilChange: (regularEnd - minute) * 60 * 1000,
     }
@@ -127,7 +129,7 @@ function getStockMarketStatus(): MarketAssetStatus {
     return { 
       status: "after", 
       isOpen: false, 
-      label: "After-Hours",
+      label: t("market.status.afterHours"),
       nextChange: null,
       timeUntilChange: (afterHoursEnd - minute) * 60 * 1000,
     }
@@ -135,22 +137,22 @@ function getStockMarketStatus(): MarketAssetStatus {
   return { 
     status: "closed", 
     isOpen: false, 
-    label: "Closed",
+    label: t("market.status.closed"),
     nextChange: null,
     timeUntilChange: null,
   }
 }
 
-function getForexMarketStatus(): MarketAssetStatus {
+function getForexMarketStatus(t: TFunction): MarketAssetStatus {
   const et = getEasternTime()
   const isWeekend = et.dayOfWeek === 0 || et.dayOfWeek === 6
   const isFridayAfter5pm = et.dayOfWeek === 5 && et.minuteOfDay >= 17 * 60
   const isSundayBefore5pm = et.dayOfWeek === 0 && et.minuteOfDay < 17 * 60
   
   if ((isWeekend && et.dayOfWeek !== 0) || isFridayAfter5pm || isSundayBefore5pm) {
-    return { status: "closed", isOpen: false, label: "Closed", nextChange: null, timeUntilChange: null }
+    return { status: "closed", isOpen: false, label: t("market.status.closed"), nextChange: null, timeUntilChange: null }
   }
-  return { status: "open", isOpen: true, label: "Open", nextChange: null, timeUntilChange: null }
+  return { status: "open", isOpen: true, label: t("market.status.open"), nextChange: null, timeUntilChange: null }
 }
 
 /**
@@ -158,27 +160,35 @@ function getForexMarketStatus(): MarketAssetStatus {
  * Recalculates on each render (call this in components that need real-time status)
  */
 export function useMarketStatus(): MarketStatus {
+  const { t } = useTranslation()
   return useMemo(() => ({
-    stock: getStockMarketStatus(),
-    crypto: { status: "open" as const, isOpen: true, label: "24/7", nextChange: null, timeUntilChange: null },
-    forex: getForexMarketStatus(),
-  }), [])
+    stock: getStockMarketStatus(t),
+    crypto: { status: "open" as const, isOpen: true, label: t("market.status.alwaysOn"), nextChange: null, timeUntilChange: null },
+    forex: getForexMarketStatus(t),
+  }), [t])
 }
 
 /**
  * Format time until market change in human-readable form
  */
-export function formatTimeUntil(ms: number | null): string {
+export function formatTimeUntil(
+  ms: number | null,
+  labels: { now: string; hourShort: string; minuteShort: string } = {
+    now: "now",
+    hourShort: "h",
+    minuteShort: "m",
+  }
+): string {
   if (ms === null) return ""
-  if (ms < 0) return "now"
+  if (ms < 0) return labels.now
   
   const hours = Math.floor(ms / (60 * 60 * 1000))
   const minutes = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000))
   
   if (hours > 0) {
-    return `${hours}h ${minutes}m`
+    return `${hours}${labels.hourShort} ${minutes}${labels.minuteShort}`
   }
-  return `${minutes}m`
+  return `${minutes}${labels.minuteShort}`
 }
 
 /**

@@ -22,6 +22,8 @@ import type {
   BotSignalDoc,
   MarketHotTrade,
   MarketHotTradesDoc,
+  MarketSwingOvernightDoc,
+  MarketPrebreakoutDoc,
   MarketPopularDoc,
   MarketControlsDoc,
   MarketUniverseDoc,
@@ -62,6 +64,13 @@ import { AssetChartModal } from "@/components/charts/AssetChartModal"
 import { usePaperAutomation } from "@/features/paper/use-paper-monitor"
 import { PipelineHealthBadge } from "@/components/PipelineHealthBadge"
 import { copyAiPrompt } from "@/features/ai/ai-prompt"
+import { findAnalysisNoteKind, getAnalysisNoteKind, localizeAnalysis } from "@/lib/analysis-localize"
+import {
+  getE2eDisableFirestoreWrites,
+  getE2ePrebreakoutOverride,
+  getE2eSwingOvernightOverride,
+} from "@/lib/e2e-overrides"
+import { useTranslation } from "react-i18next"
 
 function signalBadgeVariant(side?: string) {
   switch (side) {
@@ -196,25 +205,17 @@ const DEFAULT_TREND_WEIGHTS: Required<TrendWeights> = {
   consensus: 0,
   news: 10,
 }
-const RISK_OPTIONS: { value: RiskProfile; label: string }[] = [
-  { value: "conservative", label: "Conservative" },
-  { value: "balanced", label: "Balanced" },
-  { value: "aggressive", label: "Aggressive" },
-]
-const ASSET_FOCUS_OPTIONS: { value: AssetClass; label: string }[] = [
-  { value: "crypto", label: "Crypto" },
-  { value: "stock", label: "Stocks" },
-  { value: "forex", label: "FX" },
-]
+const RISK_OPTIONS: RiskProfile[] = ["conservative", "balanced", "aggressive"]
+const ASSET_FOCUS_OPTIONS: AssetClass[] = ["crypto", "stock", "forex"]
 const DEFAULT_UNIVERSE_MODE: MarketUniverseMode = "movers_plus_universe"
-const UNIVERSE_MODE_OPTIONS: { value: MarketUniverseMode; label: string }[] = [
-  { value: "movers_plus_universe", label: "Movers + universe" },
-  { value: "weighted_union", label: "Movers + universe (boosted)" },
-  { value: "movers_only", label: "Movers only" },
-  { value: "universe_only", label: "Universe only" },
-  { value: "movers_filtered_by_universe", label: "Movers filtered by universe" },
+const UNIVERSE_MODE_OPTIONS: MarketUniverseMode[] = [
+  "movers_plus_universe",
+  "weighted_union",
+  "movers_only",
+  "universe_only",
+  "movers_filtered_by_universe",
 ]
-const UNIVERSE_MODE_SET = new Set(UNIVERSE_MODE_OPTIONS.map((option) => option.value))
+const UNIVERSE_MODE_SET = new Set(UNIVERSE_MODE_OPTIONS)
 const BOT_WEIGHT_MIN = 0
 const BOT_WEIGHT_MAX = 5
 
@@ -230,6 +231,7 @@ function resolveUniverseMode(value?: string | null): MarketUniverseMode {
 
 export default function DashboardPage() {
   const { user } = useAuth()
+  const { t, i18n } = useTranslation()
   const { prices, livePrices } = useMarketPrices()
 
   const [bots, setBots] = useState<BotDoc[]>([])
@@ -237,6 +239,12 @@ export default function DashboardPage() {
   const [signals, setSignals] = useState<BotSignalDoc[]>([])
   const [hotTrades, setHotTrades] = useState<MarketHotTrade[]>([])
   const [hotTradesUpdatedAt, setHotTradesUpdatedAt] = useState<MarketHotTradesDoc["updatedAt"]>()
+  const [swingOvernight, setSwingOvernight] = useState<MarketHotTrade[]>([])
+  const [swingOvernightUpdatedAt, setSwingOvernightUpdatedAt] =
+    useState<MarketSwingOvernightDoc["updatedAt"]>()
+  const [prebreakout, setPrebreakout] = useState<MarketHotTrade[]>([])
+  const [prebreakoutUpdatedAt, setPrebreakoutUpdatedAt] =
+    useState<MarketPrebreakoutDoc["updatedAt"]>()
   const [trending, setTrending] = useState<MarketTrendingDoc | null>(null)
   const [trendingUpdatedAt, setTrendingUpdatedAt] = useState<MarketTrendingDoc["updatedAt"]>()
   const [popular, setPopular] = useState<MarketPopularDoc | null>(null)
@@ -264,6 +272,10 @@ export default function DashboardPage() {
   const [llmEnabled, setLlmEnabled] = useState(true)
   const [newsIntervalMinutes, setNewsIntervalMinutes] = useState(30)
   const [newsEnabled, setNewsEnabled] = useState(true)
+  const [swingOvernightEnabled, setSwingOvernightEnabled] = useState(false)
+  const [swingOvernightAutoPaperEnabled, setSwingOvernightAutoPaperEnabled] = useState(false)
+  const [prebreakoutEnabled, setPrebreakoutEnabled] = useState(false)
+  const [prebreakoutAutoPaperEnabled, setPrebreakoutAutoPaperEnabled] = useState(false)
   const [dipHorizon, setDipHorizon] = useState<DipHorizon>("24h")
   const [trendHorizon, setTrendHorizon] = useState<TrendHorizon>("15m")
   const [trendMomentumWeight, setTrendMomentumWeight] = useState(
@@ -308,6 +320,8 @@ export default function DashboardPage() {
   const [loadingEvents, setLoadingEvents] = useState(true)
   const [loadingSignals, setLoadingSignals] = useState(true)
   const [loadingHotTrades, setLoadingHotTrades] = useState(true)
+  const [loadingSwingOvernight, setLoadingSwingOvernight] = useState(true)
+  const [loadingPrebreakout, setLoadingPrebreakout] = useState(true)
   const [loadingTrending, setLoadingTrending] = useState(true)
   const [loadingPerformance, setLoadingPerformance] = useState(true)
   const [startingBots, setStartingBots] = useState(false)
@@ -403,6 +417,10 @@ export default function DashboardPage() {
         setLlmEnabled(true)
         setNewsIntervalMinutes(30)
         setNewsEnabled(true)
+        setSwingOvernightEnabled(false)
+        setSwingOvernightAutoPaperEnabled(false)
+        setPrebreakoutEnabled(false)
+        setPrebreakoutAutoPaperEnabled(false)
         setDipHorizon("24h")
         setTrendHorizon("15m")
         setTrendMomentumWeight(DEFAULT_TREND_WEIGHTS.momentum)
@@ -438,6 +456,10 @@ export default function DashboardPage() {
         setNewsIntervalMinutes(30)
       }
       setNewsEnabled(data.enableNews !== false)
+      setSwingOvernightEnabled(data.swingOvernightEnabled === true)
+      setSwingOvernightAutoPaperEnabled(data.swingOvernightAutoPaperEnabled === true)
+      setPrebreakoutEnabled(data.prebreakoutEnabled === true)
+      setPrebreakoutAutoPaperEnabled(data.prebreakoutAutoPaperEnabled === true)
       const nextHorizon =
         data.dipHorizon && DIP_HORIZON_OPTIONS.includes(data.dipHorizon)
           ? data.dipHorizon
@@ -493,13 +515,13 @@ export default function DashboardPage() {
       }
       setAutoTuneLastAt(data.autoTuneLastAt)
       setAutoTuneNotes(typeof data.autoTuneNotes === "string" ? data.autoTuneNotes : "")
-      const nextRisk = RISK_OPTIONS.some((option) => option.value === data.riskProfile)
+      const nextRisk = RISK_OPTIONS.includes(data.riskProfile as RiskProfile)
         ? (data.riskProfile as RiskProfile)
         : "balanced"
       setRiskProfile(nextRisk)
       const focus = Array.isArray(data.assetFocus)
         ? data.assetFocus.filter((item): item is AssetClass =>
-          ASSET_FOCUS_OPTIONS.some((option) => option.value === item)
+          ASSET_FOCUS_OPTIONS.includes(item)
         )
         : []
       const nextFocus: AssetClass[] =
@@ -536,6 +558,62 @@ export default function DashboardPage() {
       setHotTrades(data.items ?? [])
       setHotTradesUpdatedAt(data.updatedAt)
       setLoadingHotTrades(false)
+    })
+  }, [])
+
+  useEffect(() => {
+    const e2eOverride = getE2eSwingOvernightOverride()
+    if (e2eOverride) {
+      setSwingOvernight(e2eOverride.items ?? [])
+      setSwingOvernightUpdatedAt(e2eOverride.updatedAt)
+      setLoadingSwingOvernight(false)
+      return
+    }
+    if (!firebaseEnabled || !db) {
+      setLoadingSwingOvernight(false)
+      return
+    }
+
+    const ref = doc(db, "market", "swingOvernight")
+    return onSnapshot(ref, (snap) => {
+      if (!snap.exists()) {
+        setSwingOvernight([])
+        setSwingOvernightUpdatedAt(undefined)
+        setLoadingSwingOvernight(false)
+        return
+      }
+      const data = snap.data() as MarketSwingOvernightDoc
+      setSwingOvernight(data.items ?? [])
+      setSwingOvernightUpdatedAt(data.updatedAt)
+      setLoadingSwingOvernight(false)
+    })
+  }, [])
+
+  useEffect(() => {
+    const e2eOverride = getE2ePrebreakoutOverride()
+    if (e2eOverride) {
+      setPrebreakout(e2eOverride.items ?? [])
+      setPrebreakoutUpdatedAt(e2eOverride.updatedAt)
+      setLoadingPrebreakout(false)
+      return
+    }
+    if (!firebaseEnabled || !db) {
+      setLoadingPrebreakout(false)
+      return
+    }
+
+    const ref = doc(db, "market", "prebreakout")
+    return onSnapshot(ref, (snap) => {
+      if (!snap.exists()) {
+        setPrebreakout([])
+        setPrebreakoutUpdatedAt(undefined)
+        setLoadingPrebreakout(false)
+        return
+      }
+      const data = snap.data() as MarketPrebreakoutDoc
+      setPrebreakout(data.items ?? [])
+      setPrebreakoutUpdatedAt(data.updatedAt)
+      setLoadingPrebreakout(false)
     })
   }, [])
 
@@ -791,6 +869,49 @@ export default function DashboardPage() {
   }, [quickAssetInput, quickAssetClass])
 
 
+  const naLabel = t("common.na")
+  const unknownLabel = t("common.unknown")
+  const assetLabelMap = useMemo(
+    () => ({
+      crypto: t("assets.crypto"),
+      stock: t("assets.stocks"),
+      forex: t("assets.fx"),
+    }),
+    [t]
+  )
+  const assetLabelShortMap = useMemo(
+    () => ({
+      crypto: t("assets.crypto"),
+      stock: t("assets.stock"),
+      forex: t("assets.fx"),
+    }),
+    [t]
+  )
+  const riskLabelMap = useMemo(
+    () => ({
+      conservative: t("dashboard.risk.conservative"),
+      balanced: t("dashboard.risk.balanced"),
+      aggressive: t("dashboard.risk.aggressive"),
+    }),
+    [t]
+  )
+  const universeModeLabelMap = useMemo(
+    () => ({
+      movers_plus_universe: t("dashboard.universe.mode.moversPlusUniverse"),
+      weighted_union: t("dashboard.universe.mode.moversPlusUniverseBoosted"),
+      movers_only: t("dashboard.universe.mode.moversOnly"),
+      universe_only: t("dashboard.universe.mode.universeOnly"),
+      movers_filtered_by_universe: t("dashboard.universe.mode.moversFilteredByUniverse"),
+    }),
+    [t]
+  )
+
+  const getAssetLabel = (assetClass?: string | null, variant: "short" | "long" = "long") => {
+    if (!assetClass) return unknownLabel
+    const map = variant === "short" ? assetLabelShortMap : assetLabelMap
+    return map[assetClass as AssetClass] ?? assetClass
+  }
+
   const statusCounts = useMemo(() => {
     const counts: Record<string, number> = {
       online: 0,
@@ -813,10 +934,10 @@ export default function DashboardPage() {
   const totalBots = bots.length
   const assetFocusLabel = useMemo(() => {
     const labels = ASSET_FOCUS_OPTIONS.filter((option) =>
-      assetFocus.includes(option.value)
-    ).map((option) => option.label)
-    return labels.length > 0 ? labels.join(" + ") : "All"
-  }, [assetFocus])
+      assetFocus.includes(option)
+    ).map((option) => assetLabelMap[option])
+    return labels.length > 0 ? labels.join(" + ") : t("assets.allShort")
+  }, [assetFocus, assetLabelMap, t])
 
   const offlineBots = useMemo(
     () =>
@@ -829,12 +950,12 @@ export default function DashboardPage() {
 
   async function startOfflineBots() {
     if (!firebaseEnabled || !db) {
-      toast.error("Firebase not configured")
+      toast.error(t("tradeNow.firebaseNotConfigured"))
       return
     }
     const activeDb = db
     if (offlineBots.length === 0) {
-      toast.message("All bots are already running")
+      toast.message(t("dashboard.toasts.allBotsRunning"))
       return
     }
 
@@ -846,13 +967,13 @@ export default function DashboardPage() {
             type: "start",
             status: "queued",
             createdAt: serverTimestamp(),
-            requestedBy: user?.email ?? "unknown",
+            requestedBy: user?.email ?? unknownLabel,
           })
         )
       )
-      toast.success(`Queued start for ${offlineBots.length} bots`)
+      toast.success(t("dashboard.toasts.startQueued", { count: offlineBots.length }))
     } catch {
-      toast.error("Failed to start bots")
+      toast.error(t("dashboard.toasts.startFailed"))
     } finally {
       setStartingBots(false)
     }
@@ -860,15 +981,15 @@ export default function DashboardPage() {
 
   async function triggerRefresh() {
     if (!firebaseEnabled || !db) {
-      toast.error("Firebase not configured")
+      toast.error(t("tradeNow.firebaseNotConfigured"))
       return
     }
     if (!refreshEndpoint) {
-      toast.error("Refresh service not configured")
+      toast.error(t("tradeNow.refreshNotConfigured"))
       return
     }
     if (!user) {
-      toast.error("You must be signed in")
+      toast.error(t("tradeNow.mustBeSignedIn"))
       return
     }
 
@@ -885,18 +1006,20 @@ export default function DashboardPage() {
       })
       const payload = await response.json().catch(() => null)
       if (!response.ok) {
-        throw new Error(payload?.error || `Refresh failed (${response.status})`)
+        throw new Error(
+          payload?.error || t("tradeNow.refreshFailed", { status: response.status })
+        )
       }
       const jobNames = Array.isArray(payload?.jobs)
         ? payload.jobs.map((job: { job?: string }) => job.job).filter(Boolean)
         : []
       toast.success(
         jobNames.length > 0
-          ? `Refresh started: ${jobNames.join(", ")}`
-          : "Refresh started"
+          ? t("tradeNow.refreshStartedWithJobs", { jobs: jobNames.join(", ") })
+          : t("tradeNow.refreshStarted")
       )
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Refresh failed")
+      toast.error(err instanceof Error ? err.message : t("tradeNow.refreshFailedGeneric"))
     } finally {
       setRefreshingJobs(false)
     }
@@ -911,19 +1034,19 @@ export default function DashboardPage() {
   }
 
   function formatChange(value?: number) {
-    if (value === undefined || value === null) return "—"
+    if (value === undefined || value === null) return naLabel
     const sign = value >= 0 ? "+" : ""
     return `${sign}${value.toFixed(2)}%`
   }
 
   function formatSentiment(value?: number) {
-    if (value === undefined || value === null || Number.isNaN(value)) return "—"
+    if (value === undefined || value === null || Number.isNaN(value)) return naLabel
     const sign = value >= 0 ? "+" : ""
     return `${sign}${value.toFixed(2)}`
   }
 
   function formatPercent(value?: number) {
-    if (value === undefined || value === null || Number.isNaN(value)) return "—"
+    if (value === undefined || value === null || Number.isNaN(value)) return naLabel
     const sign = value >= 0 ? "+" : ""
     return `${sign}${value.toFixed(2)}%`
   }
@@ -991,46 +1114,50 @@ export default function DashboardPage() {
     return (
       <div className="space-y-3">
         {!firebaseEnabled ? (
-          <div className="text-sm opacity-70">Connect Firebase to load accuracy data.</div>
+          <div className="text-sm opacity-70">{t("dashboard.performance.firebaseHint")}</div>
         ) : loadingPerformance ? (
-          <div className="text-sm opacity-70">Loading performance...</div>
+          <div className="text-sm opacity-70">{t("dashboard.performance.loading")}</div>
         ) : !stats ? (
           <div className="text-sm opacity-70">
             {signalPerformance?.overall &&
               Object.keys(signalPerformance.overall).length > 0
-              ? "Only shorter horizons have results. 24h/7d appear once signals age."
-              : "No evaluations yet. Run the signal evaluator worker to populate accuracy data."}
+              ? t("dashboard.performance.shortHorizonOnly")
+              : t("dashboard.performance.empty")}
           </div>
         ) : (
           <>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-lg border border-border/60 bg-background/70 p-3">
-                <div className="text-xs text-muted-foreground">Accuracy</div>
+                <div className="text-xs text-muted-foreground">
+                  {t("dashboard.performance.accuracy")}
+                </div>
                 <div className="mt-1 text-2xl font-semibold">
-                  {stats.hitRate !== undefined ? `${stats.hitRate.toFixed(1)}%` : "—"}
+                  {stats.hitRate !== undefined ? `${stats.hitRate.toFixed(1)}%` : naLabel}
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  {stats.count ?? 0} signals scored
+                  {t("dashboard.performance.signalsScored", { count: stats.count ?? 0 })}
                 </div>
               </div>
               <div className="rounded-lg border border-border/60 bg-background/70 p-3">
-                <div className="text-xs text-muted-foreground">Avg return</div>
+                <div className="text-xs text-muted-foreground">
+                  {t("dashboard.performance.avgReturn")}
+                </div>
                 <div className="mt-1 text-2xl font-semibold">
                   {formatPercent(stats.avgReturn)}
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  Horizon {horizon}
+                  {t("dashboard.performance.horizon", { horizon })}
                 </div>
               </div>
             </div>
 
             <div className="space-y-2">
               <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                Best performing bots
+                {t("dashboard.performance.bestBots")}
               </div>
               {topBots.length === 0 ? (
                 <div className="text-sm opacity-70">
-                  Not enough scored signals yet to rank bots.
+                  {t("dashboard.performance.bestBotsEmpty")}
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -1041,8 +1168,8 @@ export default function DashboardPage() {
                     >
                       <div className="font-mono">{bot.botId}</div>
                       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span>{bot.count} signals</span>
-                        <span>{bot.hitRate.toFixed(1)}% hit</span>
+                        <span>{t("dashboard.labels.signalsCount", { count: bot.count })}</span>
+                        <span>{t("dashboard.performance.hitRate", { value: bot.hitRate.toFixed(1) })}</span>
                         <span>{formatPercent(bot.avgReturn)}</span>
                       </div>
                     </div>
@@ -1053,21 +1180,14 @@ export default function DashboardPage() {
 
             <div className="space-y-2">
               <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                Accuracy by asset
+                {t("dashboard.performance.accuracyByAsset")}
               </div>
               {assetStats.length === 0 ? (
-                <div className="text-sm opacity-70">No asset breakdown yet.</div>
+                <div className="text-sm opacity-70">{t("dashboard.performance.assetsEmpty")}</div>
               ) : (
                 <div className="grid gap-2 sm:grid-cols-3">
                   {assetStats.map((asset) => {
-                    const label =
-                      asset.assetClass === "crypto"
-                        ? "Crypto"
-                        : asset.assetClass === "stock"
-                          ? "Stocks"
-                          : asset.assetClass === "forex"
-                            ? "FX"
-                            : asset.assetClass
+                    const label = getAssetLabel(asset.assetClass)
                     return (
                       <div
                         key={asset.assetClass}
@@ -1078,7 +1198,10 @@ export default function DashboardPage() {
                           {asset.hitRate.toFixed(1)}%
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          {asset.count} signals • {formatPercent(asset.avgReturn)}
+                          {t("dashboard.performance.assetLine", {
+                            count: asset.count,
+                            value: formatPercent(asset.avgReturn),
+                          })}
                         </div>
                       </div>
                     )
@@ -1090,10 +1213,10 @@ export default function DashboardPage() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                  Best symbols
+                  {t("dashboard.performance.bestSymbols")}
                 </div>
                 {topSymbols.length === 0 ? (
-                  <div className="text-sm opacity-70">No symbol ranking yet.</div>
+                  <div className="text-sm opacity-70">{t("dashboard.performance.symbolsEmpty")}</div>
                 ) : (
                   <div className="space-y-2">
                     {topSymbols.map((symbol) => (
@@ -1104,13 +1227,13 @@ export default function DashboardPage() {
                         <div className="min-w-0">
                           <div className="font-mono truncate">{symbol.symbol}</div>
                           <div className="text-xs text-muted-foreground">
-                            {symbol.assetClass ?? "unknown"}
+                            {getAssetLabel(symbol.assetClass)}
                           </div>
                         </div>
                         <div className="text-right text-xs text-muted-foreground">
-                          <div>{symbol.hitRate.toFixed(1)}% hit</div>
+                          <div>{t("dashboard.performance.hitRate", { value: symbol.hitRate.toFixed(1) })}</div>
                           <div>{formatPercent(symbol.avgReturn)}</div>
-                          <div>{symbol.count} signals</div>
+                          <div>{t("dashboard.labels.signalsCount", { count: symbol.count })}</div>
                         </div>
                       </div>
                     ))}
@@ -1120,10 +1243,10 @@ export default function DashboardPage() {
 
               <div className="space-y-2">
                 <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                  Needs attention
+                  {t("dashboard.performance.needsAttention")}
                 </div>
                 {bottomSymbols.length === 0 ? (
-                  <div className="text-sm opacity-70">No symbol ranking yet.</div>
+                  <div className="text-sm opacity-70">{t("dashboard.performance.symbolsEmpty")}</div>
                 ) : (
                   <div className="space-y-2">
                     {bottomSymbols.map((symbol) => (
@@ -1134,13 +1257,13 @@ export default function DashboardPage() {
                         <div className="min-w-0">
                           <div className="font-mono truncate">{symbol.symbol}</div>
                           <div className="text-xs text-muted-foreground">
-                            {symbol.assetClass ?? "unknown"}
+                            {getAssetLabel(symbol.assetClass)}
                           </div>
                         </div>
                         <div className="text-right text-xs text-muted-foreground">
-                          <div>{symbol.hitRate.toFixed(1)}% hit</div>
+                          <div>{t("dashboard.performance.hitRate", { value: symbol.hitRate.toFixed(1) })}</div>
                           <div>{formatPercent(symbol.avgReturn)}</div>
-                          <div>{symbol.count} signals</div>
+                          <div>{t("dashboard.labels.signalsCount", { count: symbol.count })}</div>
                         </div>
                       </div>
                     ))}
@@ -1576,11 +1699,13 @@ export default function DashboardPage() {
   const streamItems = useMemo(
     () => [
       ...hotTrades,
+      ...swingOvernight,
+      ...prebreakout,
       ...(popular?.items ?? []),
       ...trendingItems,
       ...performanceItems,
     ],
-    [hotTrades, popular?.items, trendingItems, performanceItems]
+    [hotTrades, swingOvernight, prebreakout, popular?.items, trendingItems, performanceItems]
   )
 
   useStreamSymbols("dashboard", {
@@ -1643,9 +1768,22 @@ export default function DashboardPage() {
     () => hotTrades.filter((trade) => assetFocusSet.has(trade.assetClass)),
     [hotTrades, assetFocusSet]
   )
+  const swingOvernightItems = useMemo(
+    () => swingOvernight.filter((trade) => trade.assetClass === "stock"),
+    [swingOvernight]
+  )
+  const prebreakoutItems = useMemo(
+    () => prebreakout.filter((trade) => trade.assetClass === "stock"),
+    [prebreakout]
+  )
+
+  const paperMonitorItems = useMemo(
+    () => [...hotTrades, ...swingOvernight, ...prebreakout],
+    [hotTrades, swingOvernight, prebreakout]
+  )
 
   // Monitor paper positions for stop loss / take profit
-  usePaperAutomation(user?.uid, hotTrades)
+  usePaperAutomation(user?.uid, paperMonitorItems)
 
 
   const trendFocusSet = useMemo(() => new Set(trendAssetFocus), [trendAssetFocus])
@@ -1762,13 +1900,18 @@ export default function DashboardPage() {
 
   async function savePreferences() {
     if (!firebaseEnabled || !db) {
-      toast.error("Firebase not configured")
+      toast.error(t("tradeNow.firebaseNotConfigured"))
       return
     }
 
     const activeDb = db
     setPreferencesSaving(true)
     try {
+      if (getE2eDisableFirestoreWrites()) {
+        toast.success(t("dashboard.toasts.preferencesSaved"))
+        setUniverseOpen(false)
+        return
+      }
       const resolvedAssetFocus: AssetClass[] =
         assetFocus.length > 0 ? assetFocus : ["crypto", "stock", "forex"]
       const payload: MarketUniverseDoc = {
@@ -1792,6 +1935,10 @@ export default function DashboardPage() {
         enableLLM: llmEnabled,
         newsIntervalMinutes,
         enableNews: newsEnabled,
+        swingOvernightEnabled,
+        swingOvernightAutoPaperEnabled,
+        prebreakoutEnabled,
+        prebreakoutAutoPaperEnabled,
         dipHorizon,
         trendHorizon,
         trendWeights: {
@@ -1820,10 +1967,10 @@ export default function DashboardPage() {
         setDoc(doc(activeDb, "market", "universe"), payload, { merge: true }),
         setDoc(doc(activeDb, "market", "controls"), controls, { merge: true }),
       ])
-      toast.success("Preferences saved")
+      toast.success(t("dashboard.toasts.preferencesSaved"))
       setUniverseOpen(false)
     } catch {
-      toast.error("Failed to save preferences")
+      toast.error(t("dashboard.toasts.preferencesSaveFailed"))
     } finally {
       setPreferencesSaving(false)
     }
@@ -1831,7 +1978,7 @@ export default function DashboardPage() {
 
   async function addTradeToUniverse(trade: { assetClass: AssetClass; symbol?: string | null }) {
     if (!firebaseEnabled || !db) {
-      toast.error("Firebase not configured")
+      toast.error(t("tradeNow.firebaseNotConfigured"))
       return
     }
     if (!trade.symbol) return
@@ -1889,19 +2036,19 @@ export default function DashboardPage() {
 
     try {
       await setDoc(doc(activeDb, "market", "universe"), payload, { merge: true })
-      toast.success("Added to universe")
+      toast.success(t("dashboard.toasts.universeAdded"))
     } catch {
       setUniverse(prevUniverse)
       setCryptoSelection(prevCrypto)
       setStockSelection(prevStocks)
       setForexSelection(prevForex)
-      toast.error("Failed to update universe")
+      toast.error(t("dashboard.toasts.universeUpdateFailed"))
     }
   }
 
   async function addTradeToPrimary(trade: MarketHotTrade) {
     if (!firebaseEnabled || !db) {
-      toast.error("Firebase not configured")
+      toast.error(t("tradeNow.firebaseNotConfigured"))
       return
     }
     if (!trade.symbol) return
@@ -1993,7 +2140,7 @@ export default function DashboardPage() {
         setDoc(doc(activeDb, "market", "universe"), universePayload, { merge: true }),
         setDoc(doc(activeDb, "market", "controls"), controlsPayload, { merge: true }),
       ])
-      toast.success("Added to primary picks")
+      toast.success(t("dashboard.toasts.primaryAdded"))
     } catch {
       setUniverse(prevUniverse)
       setCryptoSelection(prevCrypto)
@@ -2002,7 +2149,7 @@ export default function DashboardPage() {
       setPrimaryCryptoSelection(prevPrimaryCrypto)
       setPrimaryStockSelection(prevPrimaryStocks)
       setPrimaryForexSelection(prevPrimaryForex)
-      toast.error("Failed to update primary picks")
+      toast.error(t("dashboard.toasts.primaryUpdateFailed"))
     }
   }
 
@@ -2036,11 +2183,11 @@ export default function DashboardPage() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-2">
           <div className="text-xs uppercase tracking-[0.35em] text-muted-foreground">
-            Market Radar
+            {t("dashboard.header.kicker")}
           </div>
-          <div className="text-2xl font-semibold">Trade Opportunities</div>
+          <div className="text-2xl font-semibold">{t("dashboard.header.title")}</div>
           <div className="text-sm text-muted-foreground">
-            Spot high-probability dips and momentum shifts across your universe.
+            {t("dashboard.header.subtitle")}
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-4">
             <PipelineHealthBadge showLabel />
@@ -2051,31 +2198,33 @@ export default function DashboardPage() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={() => setUniverseOpen(true)}>
-            Manage assets
+            {t("dashboard.actions.manageAssets")}
           </Button>
           <Button
             variant="secondary"
             onClick={triggerRefresh}
             disabled={!firebaseEnabled || refreshingJobs || !refreshEndpoint}
-            title={refreshEndpoint ? "Run market jobs now" : "Set VITE_REFRESH_URL to enable"}
+            title={
+              refreshEndpoint ? t("tradeNow.refreshTitle") : t("tradeNow.refreshDisabledTitle")
+            }
           >
-            {refreshingJobs ? "Refreshing..." : "Refresh now"}
+            {refreshingJobs ? t("tradeNow.refreshing") : t("tradeNow.refreshNow")}
           </Button>
           <Button
             variant="outline"
             onClick={startOfflineBots}
             disabled={!firebaseEnabled || startingBots}
           >
-            {startingBots ? "Starting bots..." : "Start offline bots"}
+            {startingBots ? t("dashboard.actions.startingBots") : t("dashboard.actions.startOfflineBots")}
           </Button>
-          <Badge variant="outline">{totalBots} bots tracked</Badge>
+          <Badge variant="outline">{t("dashboard.badges.botsTracked", { count: totalBots })}</Badge>
         </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-border/60 bg-background/70 px-4 py-3 text-xs">
-        <Badge variant="outline">Horizon {dipHorizon}</Badge>
-        <Badge variant="outline">Risk {riskProfile}</Badge>
-        <Badge variant="outline">Focus {assetFocusLabel}</Badge>
+        <Badge variant="outline">{t("dashboard.badges.horizon", { value: dipHorizon })}</Badge>
+        <Badge variant="outline">{t("dashboard.badges.risk", { value: riskLabelMap[riskProfile] })}</Badge>
+        <Badge variant="outline">{t("dashboard.badges.focus", { value: assetFocusLabel })}</Badge>
       </div>
 
 
@@ -2083,18 +2232,18 @@ export default function DashboardPage() {
       <Dialog open={universeOpen} onOpenChange={setUniverseOpen}>
         <DialogContent className="w-[min(96vw,1100px)] sm:max-w-5xl">
           <DialogHeader>
-            <DialogTitle>Asset Universe</DialogTitle>
+            <DialogTitle>{t("dashboard.universe.title")}</DialogTitle>
             <DialogDescription>
-              Pick assets to track. Use popular lists, trending picks, or search to add.
+              {t("dashboard.universe.description")}
             </DialogDescription>
           </DialogHeader>
 
           <div className="max-h-[70vh] overflow-y-auto pr-1">
             <Tabs defaultValue="dip" className="space-y-4">
               <TabsList className="grid w-full grid-cols-3">
-                <TabsTrigger value="dip">Dip & AI</TabsTrigger>
-                <TabsTrigger value="universe">Universe</TabsTrigger>
-                <TabsTrigger value="primary">Primary</TabsTrigger>
+                <TabsTrigger value="dip">{t("dashboard.universe.tabs.dipAi")}</TabsTrigger>
+                <TabsTrigger value="universe">{t("dashboard.universe.tabs.universe")}</TabsTrigger>
+                <TabsTrigger value="primary">{t("dashboard.universe.tabs.primary")}</TabsTrigger>
               </TabsList>
 
               <TabsContent value="dip" className="space-y-4">
@@ -2102,9 +2251,9 @@ export default function DashboardPage() {
                   <div className="rounded-lg border border-border/60 bg-muted/30 p-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
-                        <div className="text-sm font-medium">AI cadence</div>
+                        <div className="text-sm font-medium">{t("dashboard.dip.aiCadence")}</div>
                         <div className="text-xs text-muted-foreground">
-                          LLM summaries refresh on this schedule.
+                          {t("dashboard.dip.aiCadenceDescription")}
                         </div>
                       </div>
                       <Button
@@ -2114,11 +2263,11 @@ export default function DashboardPage() {
                         onClick={() => setLlmEnabled((prev) => !prev)}
                         aria-pressed={llmEnabled}
                       >
-                        {llmEnabled ? "LLM on" : "LLM off"}
+                        {llmEnabled ? t("dashboard.dip.llmOn") : t("dashboard.dip.llmOff")}
                       </Button>
                     </div>
                     <div className="mt-3 space-y-2">
-                      <Label>LLM interval</Label>
+                      <Label>{t("dashboard.dip.llmInterval")}</Label>
                       <div className="flex flex-wrap gap-2">
                         {LLM_INTERVAL_OPTIONS.map((option) => (
                           <Button
@@ -2138,9 +2287,9 @@ export default function DashboardPage() {
                   <div className="rounded-lg border border-border/60 bg-muted/30 p-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
-                        <div className="text-sm font-medium">News cadence</div>
+                        <div className="text-sm font-medium">{t("dashboard.dip.newsCadence")}</div>
                         <div className="text-xs text-muted-foreground">
-                          Marketaux headlines refresh on this schedule.
+                          {t("dashboard.dip.newsCadenceDescription")}
                         </div>
                       </div>
                       <Button
@@ -2150,11 +2299,11 @@ export default function DashboardPage() {
                         onClick={() => setNewsEnabled((prev) => !prev)}
                         aria-pressed={newsEnabled}
                       >
-                        {newsEnabled ? "News on" : "News off"}
+                        {newsEnabled ? t("dashboard.dip.newsOn") : t("dashboard.dip.newsOff")}
                       </Button>
                     </div>
                     <div className="mt-3 space-y-2">
-                      <Label>News interval</Label>
+                      <Label>{t("dashboard.dip.newsInterval")}</Label>
                       <div className="flex flex-wrap gap-2">
                         {NEWS_INTERVAL_OPTIONS.map((option) => (
                           <Button
@@ -2171,14 +2320,94 @@ export default function DashboardPage() {
                     </div>
                   </div>
 
+                  <div className="rounded-lg border border-border/60 bg-muted/30 p-4 md:col-span-2">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium">{t("dashboard.swing.title")}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {t("dashboard.swing.description")}
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant={swingOvernightEnabled ? "secondary" : "outline"}
+                        size="sm"
+                        onClick={() => setSwingOvernightEnabled((prev) => !prev)}
+                        aria-pressed={swingOvernightEnabled}
+                      >
+                        {swingOvernightEnabled
+                          ? t("dashboard.swing.enabledOn")
+                          : t("dashboard.swing.enabledOff")}
+                      </Button>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                      <div className="text-xs text-muted-foreground">
+                        {t("dashboard.swing.autoPaperDescription")}
+                      </div>
+                      <Button
+                        type="button"
+                        variant={swingOvernightAutoPaperEnabled ? "secondary" : "outline"}
+                        size="sm"
+                        onClick={() => setSwingOvernightAutoPaperEnabled((prev) => !prev)}
+                        aria-pressed={swingOvernightAutoPaperEnabled}
+                        disabled={!swingOvernightEnabled}
+                      >
+                        {swingOvernightAutoPaperEnabled
+                          ? t("dashboard.swing.autoPaperOn")
+                          : t("dashboard.swing.autoPaperOff")}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-border/60 bg-muted/30 p-4 md:col-span-2">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium">
+                          {t("dashboard.prebreakoutControls.title")}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {t("dashboard.prebreakoutControls.description")}
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant={prebreakoutEnabled ? "secondary" : "outline"}
+                        size="sm"
+                        onClick={() => setPrebreakoutEnabled((prev) => !prev)}
+                        aria-pressed={prebreakoutEnabled}
+                      >
+                        {prebreakoutEnabled
+                          ? t("dashboard.prebreakoutControls.enabledOn")
+                          : t("dashboard.prebreakoutControls.enabledOff")}
+                      </Button>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                      <div className="text-xs text-muted-foreground">
+                        {t("dashboard.prebreakoutControls.autoPaperDescription")}
+                      </div>
+                      <Button
+                        type="button"
+                        variant={prebreakoutAutoPaperEnabled ? "secondary" : "outline"}
+                        size="sm"
+                        onClick={() => setPrebreakoutAutoPaperEnabled((prev) => !prev)}
+                        aria-pressed={prebreakoutAutoPaperEnabled}
+                        disabled={!prebreakoutEnabled}
+                      >
+                        {prebreakoutAutoPaperEnabled
+                          ? t("dashboard.prebreakoutControls.autoPaperOn")
+                          : t("dashboard.prebreakoutControls.autoPaperOff")}
+                      </Button>
+                    </div>
+                  </div>
+
                   <div className="rounded-lg border border-border/60 bg-muted/30 p-4">
-                    <div className="text-sm font-medium">Dip tuning</div>
+                    <div className="text-sm font-medium">{t("dashboard.dip.tuningTitle")}</div>
                     <div className="text-xs text-muted-foreground">
-                      Adjust the dip horizon, risk filter, and asset focus.
+                      {t("dashboard.dip.tuningDescription")}
                     </div>
                     <div className="mt-3 grid gap-3 md:grid-cols-2">
                       <div className="space-y-2">
-                        <Label>Dip horizon</Label>
+                        <Label>{t("dashboard.dip.horizonLabel")}</Label>
                         <div className="flex flex-wrap gap-2">
                           {DIP_HORIZON_OPTIONS.map((option) => (
                             <Button
@@ -2194,34 +2423,34 @@ export default function DashboardPage() {
                         </div>
                       </div>
                       <div className="space-y-2">
-                        <Label>Risk profile</Label>
+                        <Label>{t("dashboard.dip.riskLabel")}</Label>
                         <div className="flex flex-wrap gap-2">
                           {RISK_OPTIONS.map((option) => (
                             <Button
-                              key={option.value}
+                              key={option}
                               type="button"
-                              variant={riskProfile === option.value ? "secondary" : "outline"}
+                              variant={riskProfile === option ? "secondary" : "outline"}
                               size="sm"
-                              onClick={() => setRiskProfile(option.value)}
+                              onClick={() => setRiskProfile(option)}
                             >
-                              {option.label}
+                              {riskLabelMap[option]}
                             </Button>
                           ))}
                         </div>
                       </div>
                     </div>
                     <div className="mt-4 space-y-2">
-                      <Label>Asset focus</Label>
+                      <Label>{t("dashboard.dip.assetFocusLabel")}</Label>
                       <div className="flex flex-wrap gap-2">
                         {ASSET_FOCUS_OPTIONS.map((option) => (
                           <Button
-                            key={option.value}
+                            key={option}
                             type="button"
-                            variant={assetFocus.includes(option.value) ? "secondary" : "outline"}
+                            variant={assetFocus.includes(option) ? "secondary" : "outline"}
                             size="sm"
-                            onClick={() => toggleAssetFocus(option.value)}
+                            onClick={() => toggleAssetFocus(option)}
                           >
-                            {option.label}
+                            {assetLabelMap[option]}
                           </Button>
                         ))}
                       </div>
@@ -2229,13 +2458,13 @@ export default function DashboardPage() {
                   </div>
 
                   <div className="rounded-lg border border-border/60 bg-muted/30 p-4 md:col-span-2">
-                    <div className="text-sm font-medium">Score weighting</div>
+                    <div className="text-sm font-medium">{t("dashboard.dip.scoreWeightingTitle")}</div>
                     <div className="text-xs text-muted-foreground">
-                      Tune the mix used across hot trades and trending lists.
+                      {t("dashboard.dip.scoreWeightingDescription")}
                     </div>
                     <div className="mt-3 grid gap-3 md:grid-cols-2">
                       <div className="space-y-2">
-                        <Label>Trend horizon</Label>
+                        <Label>{t("dashboard.dip.trendHorizonLabel")}</Label>
                         <div className="flex flex-wrap gap-2">
                           {TREND_HORIZON_OPTIONS.map((option) => (
                             <Button
@@ -2251,10 +2480,12 @@ export default function DashboardPage() {
                         </div>
                       </div>
                       <div className="space-y-2">
-                        <Label>Weights (0-100)</Label>
+                        <Label>{t("dashboard.dip.weightsLabel")}</Label>
                         <div className="grid gap-2 sm:grid-cols-4">
                           <div className="space-y-1">
-                            <Label className="text-xs text-muted-foreground">Momentum</Label>
+                            <Label className="text-xs text-muted-foreground">
+                              {t("dashboard.dip.weights.momentum")}
+                            </Label>
                             <Input
                               type="number"
                               inputMode="numeric"
@@ -2284,7 +2515,9 @@ export default function DashboardPage() {
                             />
                           </div>
                           <div className="space-y-1">
-                            <Label className="text-xs text-muted-foreground">Liquidity</Label>
+                            <Label className="text-xs text-muted-foreground">
+                              {t("dashboard.dip.weights.liquidity")}
+                            </Label>
                             <Input
                               type="number"
                               inputMode="numeric"
@@ -2314,7 +2547,9 @@ export default function DashboardPage() {
                             />
                           </div>
                           <div className="space-y-1">
-                            <Label className="text-xs text-muted-foreground">Bot consensus</Label>
+                            <Label className="text-xs text-muted-foreground">
+                              {t("dashboard.dip.weights.botConsensus")}
+                            </Label>
                             <Input
                               type="number"
                               inputMode="numeric"
@@ -2344,7 +2579,9 @@ export default function DashboardPage() {
                             />
                           </div>
                           <div className="space-y-1">
-                            <Label className="text-xs text-muted-foreground">News</Label>
+                            <Label className="text-xs text-muted-foreground">
+                              {t("dashboard.dip.weights.news")}
+                            </Label>
                             <Input
                               type="number"
                               inputMode="numeric"
@@ -2375,18 +2612,22 @@ export default function DashboardPage() {
                           </div>
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          Total weight{" "}
-                          {trendMomentumWeight +
-                            trendVolumeWeight +
-                            trendSignalsWeight +
-                            trendNewsWeight}
+                          {t("dashboard.dip.totalWeight", {
+                            value:
+                              trendMomentumWeight +
+                              trendVolumeWeight +
+                              trendSignalsWeight +
+                              trendNewsWeight,
+                          })}
                         </div>
                       </div>
                     </div>
                     <div className="mt-4 space-y-2">
-                      <Label>Bot weight (0-5)</Label>
+                      <Label>{t("dashboard.dip.botWeightLabel")}</Label>
                       <div className="space-y-1">
-                        <Label className="text-xs text-muted-foreground">Backtrader</Label>
+                        <Label className="text-xs text-muted-foreground">
+                          {t("dashboard.dip.botWeightBacktrader")}
+                        </Label>
                           <Input
                             type="number"
                             inputMode="numeric"
@@ -2417,11 +2658,11 @@ export default function DashboardPage() {
                           />
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        Weight multiplies signal influence.
+                        {t("dashboard.dip.botWeightDescription")}
                       </div>
                     </div>
                     <div className="mt-4 space-y-2">
-                      <Label>Auto-tune weights</Label>
+                      <Label>{t("dashboard.dip.autoTuneLabel")}</Label>
                       <div className="flex flex-wrap items-center gap-2">
                         <Button
                           type="button"
@@ -2430,10 +2671,12 @@ export default function DashboardPage() {
                           onClick={() => setAutoTuneEnabled((prev) => !prev)}
                           aria-pressed={autoTuneEnabled}
                         >
-                          {autoTuneEnabled ? "Auto-tune on" : "Auto-tune off"}
+                          {autoTuneEnabled
+                            ? t("dashboard.dip.autoTuneOn")
+                            : t("dashboard.dip.autoTuneOff")}
                         </Button>
                         <span className="text-xs text-muted-foreground">
-                          Adjusts weights from recent accuracy with optional AI nudging.
+                          {t("dashboard.dip.autoTuneDescription")}
                         </span>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
@@ -2445,10 +2688,12 @@ export default function DashboardPage() {
                           disabled={!autoTuneEnabled}
                           aria-pressed={autoTuneWithAI}
                         >
-                          {autoTuneWithAI ? "AI assist on" : "AI assist off"}
+                          {autoTuneWithAI
+                            ? t("dashboard.dip.autoTuneAiOn")
+                            : t("dashboard.dip.autoTuneAiOff")}
                         </Button>
                         <span className="text-xs text-muted-foreground">
-                          Keeps changes small and logged.
+                          {t("dashboard.dip.autoTuneAiDescription")}
                         </span>
                       </div>
                       <div className="flex flex-wrap gap-2">
@@ -2469,7 +2714,9 @@ export default function DashboardPage() {
                       </div>
                       {autoTuneLastAt ? (
                         <div className="text-xs text-muted-foreground">
-                          Last tuned {formatRelativeTimestamp(autoTuneLastAt)}.
+                          {t("dashboard.dip.lastTuned", {
+                            time: formatRelativeTimestamp(autoTuneLastAt),
+                          })}
                         </div>
                       ) : null}
                       {autoTuneNotes ? (
@@ -2482,21 +2729,21 @@ export default function DashboardPage() {
 
               <TabsContent value="universe" className="space-y-4">
                 <div className="text-xs text-muted-foreground">
-                  Add assets from the curated lists or search by symbol. Use Add to save picks.
+                  {t("dashboard.universe.addAssetsHint")}
                 </div>
                 <Tabs defaultValue="crypto" className="space-y-4">
                   <TabsList className="grid w-full grid-cols-3">
-                    <TabsTrigger value="crypto">Crypto</TabsTrigger>
-                    <TabsTrigger value="stocks">Stocks</TabsTrigger>
-                    <TabsTrigger value="fx">FX</TabsTrigger>
+                    <TabsTrigger value="crypto">{assetLabelMap.crypto}</TabsTrigger>
+                    <TabsTrigger value="stocks">{assetLabelMap.stock}</TabsTrigger>
+                    <TabsTrigger value="fx">{assetLabelMap.forex}</TabsTrigger>
                   </TabsList>
 
                   <TabsContent value="crypto" className="space-y-3">
                     <div className="flex items-center justify-between gap-2">
                       <div>
-                        <div className="text-sm font-medium">Crypto pairs</div>
+                        <div className="text-sm font-medium">{t("dashboard.universe.crypto.title")}</div>
                         <div className="text-xs text-muted-foreground">
-                          Track the pairs you want to scan.
+                          {t("dashboard.universe.crypto.subtitle")}
                         </div>
                       </div>
                       <Select
@@ -2505,11 +2752,11 @@ export default function DashboardPage() {
                           setCryptoMode(resolveUniverseMode(event.target.value))
                         }
                         className="w-[220px]"
-                        aria-label="Crypto universe mode"
+                        aria-label={t("dashboard.universe.crypto.ariaLabel")}
                       >
                         {UNIVERSE_MODE_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
+                          <option key={option} value={option}>
+                            {universeModeLabelMap[option]}
                           </option>
                         ))}
                       </Select>
@@ -2534,7 +2781,7 @@ export default function DashboardPage() {
                     {trendingCrypto.length > 0 && (
                       <div className="space-y-2">
                         <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                          Trending now
+                          {t("dashboard.universe.trendingNow")}
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {trendingCrypto.map((symbol) => (
@@ -2559,7 +2806,7 @@ export default function DashboardPage() {
                       <div className="space-y-3">
                         <div className="space-y-2">
                           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                            Add custom pair
+                            {t("dashboard.universe.addCustomPair")}
                           </div>
                           <div className="flex flex-wrap items-center gap-2">
                             <Input
@@ -2572,7 +2819,7 @@ export default function DashboardPage() {
                                   addCustomCrypto()
                                 }
                               }}
-                              placeholder="Search or add (e.g. BTC/USDT)"
+                              placeholder={t("dashboard.universe.crypto.searchPlaceholder")}
                             />
                             <Button
                               type="button"
@@ -2581,7 +2828,7 @@ export default function DashboardPage() {
                               onClick={addCustomCrypto}
                               disabled={!canAddCrypto}
                             >
-                              Add
+                              {t("common.add")}
                             </Button>
                             {cryptoSearch && (
                               <Button
@@ -2590,23 +2837,29 @@ export default function DashboardPage() {
                                 size="sm"
                                 onClick={() => setCryptoSearch("")}
                               >
-                                Clear
+                                {t("common.clear")}
                               </Button>
                             )}
                           </div>
                           {canAddCrypto && (
                             <div className="text-xs text-muted-foreground">
-                              Add {normalizedCryptoSearch} to your universe.
+                              {t("dashboard.universe.addToUniverse", {
+                                symbol: normalizedCryptoSearch,
+                              })}
                             </div>
                           )}
                         </div>
                         <div className="space-y-2">
                           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                            {cryptoSearch ? "Search results" : "More picks"}
+                            {cryptoSearch
+                              ? t("dashboard.universe.searchResults")
+                              : t("dashboard.universe.morePicks")}
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {filteredCryptoOptions.length === 0 ? (
-                              <span className="text-xs text-muted-foreground">No matches</span>
+                              <span className="text-xs text-muted-foreground">
+                                {t("dashboard.universe.noMatches")}
+                              </span>
                             ) : (
                               filteredCryptoOptions.map((symbol) => (
                                 <Button
@@ -2629,12 +2882,12 @@ export default function DashboardPage() {
                       </div>
                       <div className="space-y-2">
                         <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                          Your picks
+                          {t("dashboard.universe.yourPicks")}
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {cryptoSelection.length === 0 ? (
                             <span className="text-xs text-muted-foreground">
-                              No pairs selected yet.
+                              {t("dashboard.universe.noPairsSelected")}
                             </span>
                           ) : (
                             cryptoSelection.map((symbol) => (
@@ -2660,9 +2913,9 @@ export default function DashboardPage() {
                   <TabsContent value="stocks" className="space-y-3">
                     <div className="flex items-center justify-between gap-2">
                       <div>
-                        <div className="text-sm font-medium">Stock tickers</div>
+                        <div className="text-sm font-medium">{t("dashboard.universe.stocks.title")}</div>
                         <div className="text-xs text-muted-foreground">
-                          Focus on the equities you want covered.
+                          {t("dashboard.universe.stocks.subtitle")}
                         </div>
                       </div>
                       <Select
@@ -2671,11 +2924,11 @@ export default function DashboardPage() {
                           setStockMode(resolveUniverseMode(event.target.value))
                         }
                         className="w-[220px]"
-                        aria-label="Stock universe mode"
+                        aria-label={t("dashboard.universe.stocks.ariaLabel")}
                       >
                         {UNIVERSE_MODE_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
+                          <option key={option} value={option}>
+                            {universeModeLabelMap[option]}
                           </option>
                         ))}
                       </Select>
@@ -2700,7 +2953,7 @@ export default function DashboardPage() {
                     {trendingStocks.length > 0 && (
                       <div className="space-y-2">
                         <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                          Trending now
+                          {t("dashboard.universe.trendingNow")}
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {trendingStocks.map((symbol) => (
@@ -2725,7 +2978,7 @@ export default function DashboardPage() {
                       <div className="space-y-3">
                         <div className="space-y-2">
                           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                            Add custom ticker
+                            {t("dashboard.universe.addCustomTicker")}
                           </div>
                           <div className="flex flex-wrap items-center gap-2">
                             <Input
@@ -2738,7 +2991,7 @@ export default function DashboardPage() {
                                   addCustomStock()
                                 }
                               }}
-                              placeholder="Search or add (e.g. AAPL)"
+                              placeholder={t("dashboard.universe.stocks.searchPlaceholder")}
                             />
                             <Button
                               type="button"
@@ -2747,7 +3000,7 @@ export default function DashboardPage() {
                               onClick={addCustomStock}
                               disabled={!canAddStock}
                             >
-                              Add
+                              {t("common.add")}
                             </Button>
                             {stockSearch && (
                               <Button
@@ -2756,34 +3009,42 @@ export default function DashboardPage() {
                                 size="sm"
                                 onClick={() => setStockSearch("")}
                               >
-                                Clear
+                                {t("common.clear")}
                               </Button>
                             )}
                           </div>
                           {canAddStock && (
                             <div className="text-xs text-muted-foreground">
-                              Add {normalizedStockSearch} to your universe.
+                              {t("dashboard.universe.addToUniverse", {
+                                symbol: normalizedStockSearch,
+                              })}
                             </div>
                           )}
                           {stockSearch && (
                             <div className="text-xs text-muted-foreground">
                               {stockSearch.length < 2
-                                ? "Type 2+ letters to search the cached global ticker list."
+                                ? t("dashboard.universe.stocks.searchHint")
                                 : stockSymbolLoading
-                                  ? "Searching cached global tickers..."
+                                  ? t("dashboard.universe.stocks.searching")
                                   : stockSymbolMatches.length > 0
-                                    ? `Showing ${stockSymbolMatches.length} cached matches.`
-                                    : "No cached matches found."}
+                                    ? t("dashboard.universe.stocks.matches", {
+                                        count: stockSymbolMatches.length,
+                                      })
+                                    : t("dashboard.universe.stocks.noMatches")}
                             </div>
                           )}
                         </div>
                         <div className="space-y-2">
                           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                            {stockSearch ? "Search results" : "More picks"}
+                            {stockSearch
+                              ? t("dashboard.universe.searchResults")
+                              : t("dashboard.universe.morePicks")}
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {filteredStockOptions.length === 0 ? (
-                              <span className="text-xs text-muted-foreground">No matches</span>
+                              <span className="text-xs text-muted-foreground">
+                                {t("dashboard.universe.noMatches")}
+                              </span>
                             ) : (
                               filteredStockOptions.map((symbol) => (
                                 <Button
@@ -2806,12 +3067,12 @@ export default function DashboardPage() {
                       </div>
                       <div className="space-y-2">
                         <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                          Your picks
+                          {t("dashboard.universe.yourPicks")}
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {stockSelection.length === 0 ? (
                             <span className="text-xs text-muted-foreground">
-                              No tickers selected yet.
+                              {t("dashboard.universe.noTickersSelected")}
                             </span>
                           ) : (
                             stockSelection.map((symbol) => (
@@ -2833,16 +3094,16 @@ export default function DashboardPage() {
                       </div>
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      Keep the stock list focused to reduce gateway load.
+                      {t("dashboard.universe.stocks.focusedHint")}
                     </div>
                   </TabsContent>
 
                   <TabsContent value="fx" className="space-y-3">
                     <div className="flex items-center justify-between gap-2">
                       <div>
-                        <div className="text-sm font-medium">FX pairs</div>
+                        <div className="text-sm font-medium">{t("dashboard.universe.fx.title")}</div>
                         <div className="text-xs text-muted-foreground">
-                          Select the currency pairs you trade.
+                          {t("dashboard.universe.fx.subtitle")}
                         </div>
                       </div>
                       <Select
@@ -2851,11 +3112,11 @@ export default function DashboardPage() {
                           setForexMode(resolveUniverseMode(event.target.value))
                         }
                         className="w-[220px]"
-                        aria-label="FX universe mode"
+                        aria-label={t("dashboard.universe.fx.ariaLabel")}
                       >
                         {UNIVERSE_MODE_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
+                          <option key={option} value={option}>
+                            {universeModeLabelMap[option]}
                           </option>
                         ))}
                       </Select>
@@ -2880,7 +3141,7 @@ export default function DashboardPage() {
                     {trendingFx.length > 0 && (
                       <div className="space-y-2">
                         <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                          Trending now
+                          {t("dashboard.universe.trendingNow")}
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {trendingFx.map((symbol) => (
@@ -2905,7 +3166,7 @@ export default function DashboardPage() {
                       <div className="space-y-3">
                         <div className="space-y-2">
                           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                            Add custom pair
+                            {t("dashboard.universe.addCustomPair")}
                           </div>
                           <div className="flex flex-wrap items-center gap-2">
                             <Input
@@ -2918,7 +3179,7 @@ export default function DashboardPage() {
                                   addCustomForex()
                                 }
                               }}
-                              placeholder="Search or add (e.g. EUR/USD)"
+                              placeholder={t("dashboard.universe.fx.searchPlaceholder")}
                             />
                             <Button
                               type="button"
@@ -2927,7 +3188,7 @@ export default function DashboardPage() {
                               onClick={addCustomForex}
                               disabled={!canAddForex}
                             >
-                              Add
+                              {t("common.add")}
                             </Button>
                             {forexSearch && (
                               <Button
@@ -2936,23 +3197,29 @@ export default function DashboardPage() {
                                 size="sm"
                                 onClick={() => setForexSearch("")}
                               >
-                                Clear
+                                {t("common.clear")}
                               </Button>
                             )}
                           </div>
                           {canAddForex && (
                             <div className="text-xs text-muted-foreground">
-                              Add {normalizedForexSearch} to your universe.
+                              {t("dashboard.universe.addToUniverse", {
+                                symbol: normalizedForexSearch,
+                              })}
                             </div>
                           )}
                         </div>
                         <div className="space-y-2">
                           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                            {forexSearch ? "Search results" : "More picks"}
+                            {forexSearch
+                              ? t("dashboard.universe.searchResults")
+                              : t("dashboard.universe.morePicks")}
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {filteredForexOptions.length === 0 ? (
-                              <span className="text-xs text-muted-foreground">No matches</span>
+                              <span className="text-xs text-muted-foreground">
+                                {t("dashboard.universe.noMatches")}
+                              </span>
                             ) : (
                               filteredForexOptions.map((symbol) => (
                                 <Button
@@ -2975,12 +3242,12 @@ export default function DashboardPage() {
                       </div>
                       <div className="space-y-2">
                         <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                          Your picks
+                          {t("dashboard.universe.yourPicks")}
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {forexSelection.length === 0 ? (
                             <span className="text-xs text-muted-foreground">
-                              No pairs selected yet.
+                              {t("dashboard.universe.noPairsSelected")}
                             </span>
                           ) : (
                             forexSelection.map((symbol) => (
@@ -3007,35 +3274,39 @@ export default function DashboardPage() {
 
               <TabsContent value="primary" className="space-y-4">
                 <div className="rounded-lg border border-border/60 bg-muted/30 p-4">
-                  <div className="text-sm font-medium">Primary picks</div>
+                  <div className="text-sm font-medium">{t("dashboard.primary.title")}</div>
                   <div className="text-xs text-muted-foreground">
-                    These assets get extra weight in dip scoring and summaries.
+                    {t("dashboard.primary.subtitle")}
                   </div>
                 </div>
                 <Tabs defaultValue="crypto" className="space-y-4">
                   <TabsList className="grid w-full grid-cols-3">
-                    <TabsTrigger value="crypto">Crypto</TabsTrigger>
-                    <TabsTrigger value="stocks">Stocks</TabsTrigger>
-                    <TabsTrigger value="fx">FX</TabsTrigger>
+                    <TabsTrigger value="crypto">{assetLabelMap.crypto}</TabsTrigger>
+                    <TabsTrigger value="stocks">{assetLabelMap.stock}</TabsTrigger>
+                    <TabsTrigger value="fx">{assetLabelMap.forex}</TabsTrigger>
                   </TabsList>
 
                   <TabsContent value="crypto" className="space-y-3">
                     <div className="rounded-lg border border-border/60 bg-background/70 p-4">
                       <div className="flex items-center justify-between gap-2">
-                        <div className="text-sm font-medium">Primary crypto picks</div>
+                        <div className="text-sm font-medium">
+                          {t("dashboard.primary.crypto.title")}
+                        </div>
                         <span className="text-xs text-muted-foreground">
-                          {primaryCryptoSelection.length} selected
+                          {t("dashboard.primary.selected", {
+                            count: primaryCryptoSelection.length,
+                          })}
                         </span>
                       </div>
                       <div className="mt-3 grid gap-3 md:grid-cols-2">
                         <div className="space-y-2">
                           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                            Your picks
+                            {t("dashboard.universe.yourPicks")}
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {primaryCryptoSelection.length === 0 ? (
                               <span className="text-xs text-muted-foreground">
-                                Pick your top crypto focus assets.
+                                {t("dashboard.primary.crypto.empty")}
                               </span>
                             ) : (
                               primaryCryptoSelection.map((symbol) => (
@@ -3059,12 +3330,12 @@ export default function DashboardPage() {
                         </div>
                         <div className="space-y-2">
                           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                            Suggested
+                            {t("dashboard.primary.suggested")}
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {primaryCryptoOptions.length === 0 ? (
                               <span className="text-xs text-muted-foreground">
-                                No popular picks available yet.
+                                {t("dashboard.primary.noPopular")}
                               </span>
                             ) : (
                               primaryCryptoOptions.map((symbol) => (
@@ -3088,20 +3359,24 @@ export default function DashboardPage() {
                   <TabsContent value="stocks" className="space-y-3">
                     <div className="rounded-lg border border-border/60 bg-background/70 p-4">
                       <div className="flex items-center justify-between gap-2">
-                        <div className="text-sm font-medium">Primary stock picks</div>
+                        <div className="text-sm font-medium">
+                          {t("dashboard.primary.stocks.title")}
+                        </div>
                         <span className="text-xs text-muted-foreground">
-                          {primaryStockSelection.length} selected
+                          {t("dashboard.primary.selected", {
+                            count: primaryStockSelection.length,
+                          })}
                         </span>
                       </div>
                       <div className="mt-3 grid gap-3 md:grid-cols-2">
                         <div className="space-y-2">
                           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                            Your picks
+                            {t("dashboard.universe.yourPicks")}
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {primaryStockSelection.length === 0 ? (
                               <span className="text-xs text-muted-foreground">
-                                Choose your top tickers.
+                                {t("dashboard.primary.stocks.empty")}
                               </span>
                             ) : (
                               primaryStockSelection.map((symbol) => (
@@ -3125,12 +3400,12 @@ export default function DashboardPage() {
                         </div>
                         <div className="space-y-2">
                           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                            Suggested
+                            {t("dashboard.primary.suggested")}
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {primaryStockOptions.length === 0 ? (
                               <span className="text-xs text-muted-foreground">
-                                No popular picks available yet.
+                                {t("dashboard.primary.noPopular")}
                               </span>
                             ) : (
                               primaryStockOptions.map((symbol) => (
@@ -3154,20 +3429,24 @@ export default function DashboardPage() {
                   <TabsContent value="fx" className="space-y-3">
                     <div className="rounded-lg border border-border/60 bg-background/70 p-4">
                       <div className="flex items-center justify-between gap-2">
-                        <div className="text-sm font-medium">Primary FX picks</div>
+                        <div className="text-sm font-medium">
+                          {t("dashboard.primary.fx.title")}
+                        </div>
                         <span className="text-xs text-muted-foreground">
-                          {primaryForexSelection.length} selected
+                          {t("dashboard.primary.selected", {
+                            count: primaryForexSelection.length,
+                          })}
                         </span>
                       </div>
                       <div className="mt-3 grid gap-3 md:grid-cols-2">
                         <div className="space-y-2">
                           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                            Your picks
+                            {t("dashboard.universe.yourPicks")}
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {primaryForexSelection.length === 0 ? (
                               <span className="text-xs text-muted-foreground">
-                                Select your top FX pairs.
+                                {t("dashboard.primary.fx.empty")}
                               </span>
                             ) : (
                               primaryForexSelection.map((symbol) => (
@@ -3191,12 +3470,12 @@ export default function DashboardPage() {
                         </div>
                         <div className="space-y-2">
                           <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                            Suggested
+                            {t("dashboard.primary.suggested")}
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {primaryForexOptions.length === 0 ? (
                               <span className="text-xs text-muted-foreground">
-                                No popular picks available yet.
+                                {t("dashboard.primary.noPopular")}
                               </span>
                             ) : (
                               primaryForexOptions.map((symbol) => (
@@ -3223,10 +3502,12 @@ export default function DashboardPage() {
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setUniverseOpen(false)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button onClick={savePreferences} disabled={preferencesSaving}>
-              {preferencesSaving ? "Saving..." : "Save Preferences"}
+              {preferencesSaving
+                ? t("dashboard.actions.savingPreferences")
+                : t("dashboard.actions.savePreferences")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -3234,8 +3515,8 @@ export default function DashboardPage() {
 
       <Tabs defaultValue="opportunities" className="space-y-4">
         <TabsList>
-          <TabsTrigger value="opportunities">Opportunities</TabsTrigger>
-          <TabsTrigger value="advanced">Advanced</TabsTrigger>
+          <TabsTrigger value="opportunities">{t("dashboard.tabs.opportunities")}</TabsTrigger>
+          <TabsTrigger value="advanced">{t("dashboard.tabs.advanced")}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="opportunities" className="space-y-4">
@@ -3245,30 +3526,35 @@ export default function DashboardPage() {
                 <Card className="reveal" style={{ "--delay": "140ms" } as CSSProperties}>
                   <CardHeader className="flex-row items-center justify-between space-y-0">
                     <div>
-                      <CardTitle className="text-base">Dip Radar</CardTitle>
+                      <CardTitle className="text-base">{t("dashboard.dipRadar.title")}</CardTitle>
                       <div className="text-xs text-muted-foreground">
-                        Horizon {dipHorizon} • {riskProfile} risk • {assetFocusLabel}
+                        {t("dashboard.dipRadar.subtitle", {
+                          horizon: dipHorizon,
+                          risk: riskLabelMap[riskProfile],
+                          focus: assetFocusLabel,
+                        })}
                       </div>
                     </div>
-                    <Badge variant="outline">{displayDipIdeas.length} picks</Badge>
+                    <Badge variant="outline">
+                      {t("dashboard.dipRadar.picks", { count: displayDipIdeas.length })}
+                    </Badge>
                   </CardHeader>
                   <CardContent className="space-y-3">
                     {!firebaseEnabled ? (
                       <div className="text-sm opacity-70">
-                        Connect Firebase to load market intel.
+                        {t("dashboard.states.connectFirebaseMarketIntel")}
                       </div>
                     ) : loadingHotTrades ? (
-                      <div className="text-sm opacity-70">Scanning for dips...</div>
+                      <div className="text-sm opacity-70">{t("dashboard.dipRadar.loading")}</div>
                     ) : displayDipIdeas.length === 0 ? (
                       <div className="text-sm opacity-70">
-                        No dip opportunities yet. Adjust horizon or risk to widen the scan.
+                        {t("dashboard.dipRadar.empty")}
                       </div>
                     ) : (
                       <div className="space-y-3">
                         {dipDisplayMode === "closest" && (
                           <div className="text-xs text-muted-foreground">
-                            No strict dips found. Showing the closest opportunities to your
-                            horizon.
+                            {t("dashboard.dipRadar.closestHint")}
                           </div>
                         )}
                         {displayDipIdeas.map((trade) => {
@@ -3282,10 +3568,10 @@ export default function DashboardPage() {
                                 <div className="flex flex-wrap items-center gap-2">
                                   <div className="text-sm font-semibold">{trade.symbol}</div>
                                   <Badge variant="outline" className="uppercase">
-                                    {trade.assetClass}
+                                    {getAssetLabel(trade.assetClass, "short")}
                                   </Badge>
                                   {isPrimaryTrade(trade) && (
-                                    <Badge variant="secondary">Primary</Badge>
+                                    <Badge variant="secondary">{t("dashboard.badges.primary")}</Badge>
                                   )}
                                   <div className="ml-auto flex items-center gap-1">
                                     <Button
@@ -3296,7 +3582,7 @@ export default function DashboardPage() {
                                         setBreakdownAsset(trade)
                                         setBreakdownOpen(true)
                                       }}
-                                      title="Score breakdown"
+                                      title={t("tradeNow.scoreBreakdown")}
                                     >
                                       <InfoIcon className="h-4 w-4" />
                                     </Button>
@@ -3308,7 +3594,7 @@ export default function DashboardPage() {
                                         setChartAsset(trade)
                                         setChartOpen(true)
                                       }}
-                                      title="View Chart"
+                                      title={t("tradeNow.viewChart")}
                                     >
                                       <BarChart3 className="h-4 w-4" />
                                     </Button>
@@ -3322,24 +3608,45 @@ export default function DashboardPage() {
                                     })()}
                                   </span>
                                   {livePrices[trade.symbol] && (
-                                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
+                                    <span
+                                      className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"
+                                      title={t("tradeNow.livePrice")}
+                                    ></span>
                                   )}
                                   <span>·</span>
-                                  {trade.name || trade.assetClass} · {dipHorizon} move:{" "}
-                                  {horizonChange === null ? "--" : formatChange(horizonChange)}
+                                  {trade.name || getAssetLabel(trade.assetClass)} · {dipHorizon}{" "}
+                                  {t("dashboard.dipRadar.moveLabel")}:{" "}
+                                  {horizonChange === null ? naLabel : formatChange(horizonChange)}
                                 </div>
-                                {trade.rationale && (
-                                  <div className="text-xs text-muted-foreground">
-                                    {trade.rationale}
-                                  </div>
-                                )}
+                            {trade.rationale && (() => {
+                              const noteKind = findAnalysisNoteKind(trade.analysis?.details)
+                              return (
+                                <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                                  {noteKind ? (
+                                    <Badge
+                                      variant="outline"
+                                      className="h-4 px-1.5 text-[9px] uppercase tracking-wide"
+                                    >
+                                      {t(`analysis.badges.${noteKind}`)}
+                                    </Badge>
+                                  ) : null}
+                                  <span>{trade.rationale}</span>
+                                </div>
+                              )
+                            })()}
                               </div>
                               <div className="flex flex-wrap items-center gap-2">
                                 <Badge variant="outline" className={scoreTone(trade.score)}>
-                                  Score {trade.score?.toFixed(1) ?? "--"}
+                                  {t("dashboard.labels.score", {
+                                    score: trade.score?.toFixed(1) ?? naLabel,
+                                  })}
                                 </Badge>
                                 <Badge variant="outline">
-                                  {trade.signals?.total ? `${trade.signals.total} signals` : "No signals"}
+                                  {trade.signals?.total
+                                    ? t("dashboard.labels.signalsCount", {
+                                        count: trade.signals.total,
+                                      })
+                                    : t("dashboard.labels.noSignals")}
                                 </Badge>
                                 {!isPrimaryTrade(trade) && (
                                   <Button
@@ -3348,7 +3655,7 @@ export default function DashboardPage() {
                                     onClick={() => addTradeToPrimary(trade)}
                                     disabled={!firebaseEnabled}
                                   >
-                                    Mark primary
+                                    {t("dashboard.actions.markPrimary")}
                                   </Button>
                                 )}
                                 {!isWatchlisted(trade) && (
@@ -3358,7 +3665,7 @@ export default function DashboardPage() {
                                     onClick={() => addTradeToUniverse(trade)}
                                     disabled={!firebaseEnabled}
                                   >
-                                    Add to universe
+                                    {t("dashboard.actions.addToUniverse")}
                                   </Button>
                                 )}
                               </div>
@@ -3373,15 +3680,17 @@ export default function DashboardPage() {
                 <Card className="reveal" style={{ "--delay": "180ms" } as CSSProperties}>
                   <CardHeader className="flex-row items-center justify-between space-y-0">
                     <div>
-                      <CardTitle className="text-base">Hot Trades</CardTitle>
+                      <CardTitle className="text-base">{t("dashboard.hotTrades.title")}</CardTitle>
                       <div className="text-xs text-muted-foreground">
-                        Consensus + momentum + bot strength
+                        {t("dashboard.hotTrades.subtitle")}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
                       {hotTradesUpdatedAt && (
                         <Badge variant="outline">
-                          Updated {formatRelativeTimestamp(hotTradesUpdatedAt)}
+                          {t("tradeNow.updatedAt", {
+                            time: formatRelativeTimestamp(hotTradesUpdatedAt),
+                          })}
                         </Badge>
                       )}
                     </div>
@@ -3389,13 +3698,13 @@ export default function DashboardPage() {
                   <CardContent className="space-y-3">
                     {!firebaseEnabled ? (
                       <div className="text-sm opacity-70">
-                        Connect Firebase to load market intel.
+                        {t("dashboard.states.connectFirebaseMarketIntel")}
                       </div>
                     ) : loadingHotTrades ? (
-                      <div className="text-sm opacity-70">Loading hot trades...</div>
+                      <div className="text-sm opacity-70">{t("dashboard.hotTrades.loading")}</div>
                     ) : focusedHotTrades.length === 0 ? (
                       <div className="text-sm opacity-70">
-                        No hot trades yet. Deploy the market intel worker to populate this feed.
+                        {t("dashboard.hotTrades.empty")}
                       </div>
                     ) : (
                       <div className="space-y-3">
@@ -3408,76 +3717,96 @@ export default function DashboardPage() {
                               <div className="flex flex-wrap items-center gap-2">
                                 <div className="text-sm font-semibold">{trade.symbol}</div>
                                 <Badge variant="outline" className="uppercase">
-                                  {trade.assetClass}
+                                  {getAssetLabel(trade.assetClass, "short")}
                                 </Badge>
                                 {trade.side && (
                                   <Badge
                                     variant={signalBadgeVariant(trade.side)}
                                     className="uppercase"
                                   >
-                                    {trade.side}
+                                    {t(`trade.side.${trade.side}`)}
                                   </Badge>
                                 )}
                                 {isWatchlisted(trade) && (
-                                  <Badge variant="secondary">Watchlist</Badge>
+                                  <Badge variant="secondary">{t("dashboard.badges.watchlist")}</Badge>
                                 )}
                                 {isPrimaryTrade(trade) && (
-                                  <Badge variant="secondary">Primary</Badge>
+                                  <Badge variant="secondary">{t("dashboard.badges.primary")}</Badge>
                                 )}
                                 <div className="ml-auto flex items-center gap-1">
                                   <Button
                                     variant="ghost"
                                     size="icon"
                                     className="h-6 w-6"
-                                    onClick={() => {
-                                      setBreakdownAsset(trade)
-                                      setBreakdownOpen(true)
-                                    }}
-                                    title="Score breakdown"
-                                  >
-                                    <InfoIcon className="h-4 w-4" />
-                                  </Button>
-                                  <Button
+                                      onClick={() => {
+                                        setBreakdownAsset(trade)
+                                        setBreakdownOpen(true)
+                                      }}
+                                      title={t("tradeNow.scoreBreakdown")}
+                                    >
+                                      <InfoIcon className="h-4 w-4" />
+                                    </Button>
+                                    <Button
                                     variant="ghost"
                                     size="icon"
                                     className="h-6 w-6"
-                                    onClick={() => {
-                                      setChartAsset(trade)
-                                      setChartOpen(true)
-                                    }}
-                                    title="View Chart"
-                                  >
-                                    <BarChart3 className="h-4 w-4" />
-                                  </Button>
+                                      onClick={() => {
+                                        setChartAsset(trade)
+                                        setChartOpen(true)
+                                      }}
+                                      title={t("tradeNow.viewChart")}
+                                    >
+                                      <BarChart3 className="h-4 w-4" />
+                                    </Button>
+                                  </div>
                                 </div>
-                              </div>
-                              <div className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
+                                <div className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
                                 <span className="font-bold text-foreground">
                                   {(() => {
                                     const current = prices[trade.symbol] ?? trade.price
                                     return formatAssetPrice(current, trade.assetClass)
                                   })()}
                                 </span>
-                                {livePrices[trade.symbol] && (
-                                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
-                                )}
-                                <span>·</span>
-                                {trade.name || trade.assetClass} · 24h:{" "}
-                                {formatChange(trade.momentum?.change24h)}
-                                {trade.exchange ? ` · ${trade.exchange}` : ""}
-                              </div>
-                              {trade.rationale && (
-                                <div className="text-xs text-muted-foreground">
-                                  {trade.rationale}
+                                  {livePrices[trade.symbol] && (
+                                    <span
+                                      className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"
+                                      title={t("tradeNow.livePrice")}
+                                    ></span>
+                                  )}
+                                  <span>·</span>
+                                  {trade.name || getAssetLabel(trade.assetClass)} · {t("tradeNow.twentyFourHour")}:{" "}
+                                  {formatChange(trade.momentum?.change24h)}
+                                  {trade.exchange ? ` · ${trade.exchange}` : ""}
                                 </div>
-                              )}
+                              {trade.rationale && (() => {
+                                const noteKind = findAnalysisNoteKind(trade.analysis?.details)
+                                return (
+                                  <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                                    {noteKind ? (
+                                      <Badge
+                                        variant="outline"
+                                        className="h-4 px-1.5 text-[9px] uppercase tracking-wide"
+                                      >
+                                        {t(`analysis.badges.${noteKind}`)}
+                                      </Badge>
+                                    ) : null}
+                                    <span>{trade.rationale}</span>
+                                  </div>
+                                )
+                              })()}
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
                               <Badge variant="outline" className={scoreTone(trade.score)}>
-                                Score {trade.score?.toFixed(1) ?? "--"}
+                                {t("dashboard.labels.score", {
+                                  score: trade.score?.toFixed(1) ?? naLabel,
+                                })}
                               </Badge>
                               <Badge variant="outline">
-                                {trade.signals?.total ? `${trade.signals.total} signals` : "No signals"}
+                                {trade.signals?.total
+                                  ? t("dashboard.labels.signalsCount", {
+                                      count: trade.signals.total,
+                                    })
+                                  : t("dashboard.labels.noSignals")}
                               </Badge>
                               {!isWatchlisted(trade) && (
                                 <Button
@@ -3486,7 +3815,7 @@ export default function DashboardPage() {
                                   onClick={() => addTradeToUniverse(trade)}
                                   disabled={!firebaseEnabled}
                                 >
-                                  Add to universe
+                                  {t("dashboard.actions.addToUniverse")}
                                 </Button>
                               )}
                             </div>
@@ -3497,18 +3826,22 @@ export default function DashboardPage() {
                   </CardContent>
                 </Card>
 
-                <Card className="reveal lg:col-span-2" style={{ "--delay": "210ms" } as CSSProperties}>
+                <Card className="reveal" style={{ "--delay": "200ms" } as CSSProperties}>
                   <CardHeader className="flex-row items-center justify-between space-y-0">
                     <div>
-                      <CardTitle className="text-base">Trending Now</CardTitle>
+                      <CardTitle className="text-base">
+                        {t("dashboard.swingOvernight.title")}
+                      </CardTitle>
                       <div className="text-xs text-muted-foreground">
-                        Weighted momentum, liquidity, and bot consensus.
+                        {t("dashboard.swingOvernight.subtitle")}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      {trendingUpdatedAt && (
+                      {swingOvernightUpdatedAt && (
                         <Badge variant="outline">
-                          Updated {formatRelativeTimestamp(trendingUpdatedAt)}
+                          {t("tradeNow.updatedAt", {
+                            time: formatRelativeTimestamp(swingOvernightUpdatedAt),
+                          })}
                         </Badge>
                       )}
                     </div>
@@ -3516,13 +3849,291 @@ export default function DashboardPage() {
                   <CardContent className="space-y-3">
                     {!firebaseEnabled ? (
                       <div className="text-sm opacity-70">
-                        Connect Firebase to load trending data.
+                        {t("dashboard.states.connectFirebaseMarketIntel")}
+                      </div>
+                    ) : loadingSwingOvernight ? (
+                      <div className="text-sm opacity-70">
+                        {t("dashboard.swingOvernight.loading")}
+                      </div>
+                    ) : swingOvernightItems.length === 0 ? (
+                      <div className="text-sm opacity-70">
+                        {t("dashboard.swingOvernight.empty")}
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {swingOvernightItems.slice(0, 6).map((trade) => {
+                          const localized = localizeAnalysis(
+                            trade.analysis,
+                            t,
+                            i18n.language
+                          )
+                          const noteKind = findAnalysisNoteKind(trade.analysis?.details)
+                          return (
+                            <div
+                              key={`swing-${trade.symbol}`}
+                              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 bg-background/70 p-3"
+                            >
+                              <div className="min-w-0 space-y-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className="text-sm font-semibold">{trade.symbol}</div>
+                                  <Badge variant="outline" className="uppercase">
+                                    {getAssetLabel(trade.assetClass, "short")}
+                                  </Badge>
+                                  <Badge variant="secondary">
+                                    {t("tradeNow.swingOvernightBadge")}
+                                  </Badge>
+                                  <div className="ml-auto flex items-center gap-1">
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-6 w-6"
+                                      onClick={() => {
+                                        setBreakdownAsset(trade)
+                                        setBreakdownOpen(true)
+                                      }}
+                                      title={t("tradeNow.scoreBreakdown")}
+                                    >
+                                      <InfoIcon className="h-4 w-4" />
+                                    </Button>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-6 w-6"
+                                      onClick={() => {
+                                        setChartAsset(trade)
+                                        setChartOpen(true)
+                                      }}
+                                      title={t("tradeNow.viewChart")}
+                                    >
+                                      <BarChart3 className="h-4 w-4" />
+                                    </Button>
+                                  </div>
+                                </div>
+                                <div className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
+                                  <span className="font-bold text-foreground">
+                                    {(() => {
+                                      const current = prices[trade.symbol] ?? trade.price
+                                      return formatAssetPrice(current, trade.assetClass)
+                                    })()}
+                                  </span>
+                                  {livePrices[trade.symbol] && (
+                                    <span
+                                      className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"
+                                      title={t("tradeNow.livePrice")}
+                                    ></span>
+                                  )}
+                                  <span>·</span>
+                                  {trade.name || getAssetLabel(trade.assetClass)} ·{" "}
+                                  {t("tradeNow.twentyFourHour")}:{" "}
+                                  {formatChange(trade.momentum?.change24h)}
+                                </div>
+                                {localized.summary ? (
+                                  <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                                    {noteKind ? (
+                                      <Badge
+                                        variant="outline"
+                                        className="h-4 px-1.5 text-[9px] uppercase tracking-wide"
+                                      >
+                                        {t(`analysis.badges.${noteKind}`)}
+                                      </Badge>
+                                    ) : null}
+                                    <span>{localized.summary}</span>
+                                  </div>
+                                ) : trade.rationale ? (
+                                  <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                                    {noteKind ? (
+                                      <Badge
+                                        variant="outline"
+                                        className="h-4 px-1.5 text-[9px] uppercase tracking-wide"
+                                      >
+                                        {t(`analysis.badges.${noteKind}`)}
+                                      </Badge>
+                                    ) : null}
+                                    <span>{trade.rationale}</span>
+                                  </div>
+                                ) : null}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant="outline" className={scoreTone(trade.score)}>
+                                  {t("dashboard.labels.score", {
+                                    score: trade.score?.toFixed(1) ?? naLabel,
+                                  })}
+                                </Badge>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card className="reveal" style={{ "--delay": "210ms" } as CSSProperties}>
+                  <CardHeader className="flex-row items-center justify-between space-y-0">
+                    <div>
+                      <CardTitle className="text-base">
+                        {t("dashboard.prebreakout.title")}
+                      </CardTitle>
+                      <div className="text-xs text-muted-foreground">
+                        {t("dashboard.prebreakout.subtitle")}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {prebreakoutUpdatedAt && (
+                        <Badge variant="outline">
+                          {t("tradeNow.updatedAt", {
+                            time: formatRelativeTimestamp(prebreakoutUpdatedAt),
+                          })}
+                        </Badge>
+                      )}
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {!firebaseEnabled ? (
+                      <div className="text-sm opacity-70">
+                        {t("dashboard.states.connectFirebaseMarketIntel")}
+                      </div>
+                    ) : loadingPrebreakout ? (
+                      <div className="text-sm opacity-70">
+                        {t("dashboard.prebreakout.loading")}
+                      </div>
+                    ) : prebreakoutItems.length === 0 ? (
+                      <div className="text-sm opacity-70">
+                        {t("dashboard.prebreakout.empty")}
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {prebreakoutItems.slice(0, 6).map((trade) => {
+                          const localized = localizeAnalysis(trade.analysis, t, i18n.language)
+                          const noteKind = findAnalysisNoteKind(trade.analysis?.details)
+                          return (
+                            <div
+                              key={`prebreakout-${trade.symbol}`}
+                              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 bg-background/70 p-3"
+                            >
+                              <div className="min-w-0 space-y-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className="text-sm font-semibold">{trade.symbol}</div>
+                                  <Badge variant="outline" className="uppercase">
+                                    {getAssetLabel(trade.assetClass, "short")}
+                                  </Badge>
+                                  <Badge variant="secondary">
+                                    {t("tradeNow.prebreakoutBadge")}
+                                  </Badge>
+                                  <div className="ml-auto flex items-center gap-1">
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-6 w-6"
+                                      onClick={() => {
+                                        setBreakdownAsset(trade)
+                                        setBreakdownOpen(true)
+                                      }}
+                                      title={t("tradeNow.scoreBreakdown")}
+                                    >
+                                      <InfoIcon className="h-4 w-4" />
+                                    </Button>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-6 w-6"
+                                      onClick={() => {
+                                        setChartAsset(trade)
+                                        setChartOpen(true)
+                                      }}
+                                      title={t("tradeNow.viewChart")}
+                                    >
+                                      <BarChart3 className="h-4 w-4" />
+                                    </Button>
+                                  </div>
+                                </div>
+                                <div className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
+                                  <span className="font-bold text-foreground">
+                                    {(() => {
+                                      const current = prices[trade.symbol] ?? trade.price
+                                      return formatAssetPrice(current, trade.assetClass)
+                                    })()}
+                                  </span>
+                                  {livePrices[trade.symbol] && (
+                                    <span
+                                      className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"
+                                      title={t("tradeNow.livePrice")}
+                                    ></span>
+                                  )}
+                                  <span>·</span>
+                                  {trade.name || getAssetLabel(trade.assetClass)} ·{" "}
+                                  {t("tradeNow.twentyFourHour")}:{" "}
+                                  {formatChange(trade.momentum?.change24h)}
+                                </div>
+                                {localized.summary ? (
+                                  <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                                    {noteKind ? (
+                                      <Badge
+                                        variant="outline"
+                                        className="h-4 px-1.5 text-[9px] uppercase tracking-wide"
+                                      >
+                                        {t(`analysis.badges.${noteKind}`)}
+                                      </Badge>
+                                    ) : null}
+                                    <span>{localized.summary}</span>
+                                  </div>
+                                ) : trade.rationale ? (
+                                  <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                                    {noteKind ? (
+                                      <Badge
+                                        variant="outline"
+                                        className="h-4 px-1.5 text-[9px] uppercase tracking-wide"
+                                      >
+                                        {t(`analysis.badges.${noteKind}`)}
+                                      </Badge>
+                                    ) : null}
+                                    <span>{trade.rationale}</span>
+                                  </div>
+                                ) : null}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant="outline" className={scoreTone(trade.score)}>
+                                  {t("dashboard.labels.score", {
+                                    score: trade.score?.toFixed(1) ?? naLabel,
+                                  })}
+                                </Badge>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card className="reveal lg:col-span-2" style={{ "--delay": "220ms" } as CSSProperties}>
+                  <CardHeader className="flex-row items-center justify-between space-y-0">
+                    <div>
+                      <CardTitle className="text-base">{t("dashboard.trending.title")}</CardTitle>
+                      <div className="text-xs text-muted-foreground">
+                        {t("dashboard.trending.subtitle")}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {trendingUpdatedAt && (
+                        <Badge variant="outline">
+                          {t("tradeNow.updatedAt", {
+                            time: formatRelativeTimestamp(trendingUpdatedAt),
+                          })}
+                        </Badge>
+                      )}
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {!firebaseEnabled ? (
+                      <div className="text-sm opacity-70">
+                        {t("dashboard.states.connectFirebaseTrending")}
                       </div>
                     ) : loadingTrending ? (
-                      <div className="text-sm opacity-70">Loading trending list...</div>
+                      <div className="text-sm opacity-70">{t("dashboard.trending.loading")}</div>
                     ) : !trending ? (
                       <div className="text-sm opacity-70">
-                        No trending data yet. Deploy the market intel worker to populate this feed.
+                        {t("dashboard.trending.empty")}
                       </div>
                     ) : (
                       <>
@@ -3539,19 +4150,24 @@ export default function DashboardPage() {
                             </Button>
                           ))}
                           <div className="w-full text-xs text-muted-foreground sm:ml-auto sm:w-auto">
-                            Weights: M{trendWeightsDisplay.momentum} · L{trendWeightsDisplay.liquidity} · C{trendWeightsDisplay.consensus} · N{trendWeightsDisplay.news}
+                            {t("dashboard.trending.weights", {
+                              momentum: trendWeightsDisplay.momentum,
+                              liquidity: trendWeightsDisplay.liquidity,
+                              consensus: trendWeightsDisplay.consensus,
+                              news: trendWeightsDisplay.news,
+                            })}
                           </div>
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {ASSET_FOCUS_OPTIONS.map((option) => (
                             <Button
-                              key={`trend-focus-${option.value}`}
+                              key={`trend-focus-${option}`}
                               type="button"
                               size="sm"
-                              variant={trendAssetFocus.includes(option.value) ? "secondary" : "outline"}
-                              onClick={() => toggleTrendFocus(option.value)}
+                              variant={trendAssetFocus.includes(option) ? "secondary" : "outline"}
+                              onClick={() => toggleTrendFocus(option)}
                             >
-                              {option.label}
+                              {assetLabelMap[option]}
                             </Button>
                           ))}
                         </div>
@@ -3565,12 +4181,7 @@ export default function DashboardPage() {
                                   ? trendingBuckets.stock
                                   : trendingBuckets.forex
                             if (!trendFocusSet.has(assetClass)) return null
-                            const label =
-                              assetClass === "crypto"
-                                ? "Crypto"
-                                : assetClass === "stock"
-                                  ? "Stocks"
-                                  : "FX"
+                            const label = getAssetLabel(assetClass)
                             return (
                               <div
                                 key={`trend-${assetClass}`}
@@ -3581,7 +4192,7 @@ export default function DashboardPage() {
                                 </div>
                                 {list.length === 0 ? (
                                   <div className="text-sm text-muted-foreground">
-                                    No picks yet.
+                                    {t("dashboard.trending.noPicks")}
                                   </div>
                                 ) : (
                                   list.map((item) => {
@@ -3596,21 +4207,33 @@ export default function DashboardPage() {
                                     const consensusValue =
                                       scoreComponents?.consensus ?? (item.components as { signals?: number } | undefined)?.signals
                                     const metrics = [
-                                      { key: "momentum", label: "Momentum", value: scoreComponents?.momentum },
-                                      { key: "liquidity", label: "Liquidity", value: liquidityValue },
-                                      { key: "consensus", label: "Consensus", value: consensusValue },
+                                      {
+                                        key: "momentum",
+                                        label: t("dashboard.trending.metrics.momentum"),
+                                        value: scoreComponents?.momentum,
+                                      },
+                                      {
+                                        key: "liquidity",
+                                        label: t("dashboard.trending.metrics.liquidity"),
+                                        value: liquidityValue,
+                                      },
+                                      {
+                                        key: "consensus",
+                                        label: t("dashboard.trending.metrics.consensus"),
+                                        value: consensusValue,
+                                      },
                                     ]
                                     if (scoreComponents?.universe) {
                                       metrics.push({
                                         key: "universe",
-                                        label: "Universe",
+                                        label: t("dashboard.trending.metrics.universe"),
                                         value: scoreComponents?.universe,
                                       })
                                     }
                                     if (showNewsMetric) {
                                       metrics.push({
                                         key: "news",
-                                        label: "News",
+                                        label: t("dashboard.trending.metrics.news"),
                                         value: scoreComponents?.news,
                                       })
                                     }
@@ -3633,7 +4256,7 @@ export default function DashboardPage() {
                                                   setBreakdownAsset(item)
                                                   setBreakdownOpen(true)
                                                 }}
-                                                title="Score breakdown"
+                                                title={t("tradeNow.scoreBreakdown")}
                                               >
                                                 <InfoIcon className="h-4 w-4" />
                                               </Button>
@@ -3650,7 +4273,7 @@ export default function DashboardPage() {
                                                   })
                                                   setChartOpen(true)
                                                 }}
-                                                title="View Chart"
+                                                title={t("tradeNow.viewChart")}
                                               >
                                                 <BarChart3 className="h-4 w-4" />
                                               </Button>
@@ -3665,19 +4288,26 @@ export default function DashboardPage() {
                                                   return formatAssetPrice(current, item.assetClass)
                                                 })()}
                                                 {livePrices[item.symbol] && (
-                                                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
+                                                  <span
+                                                    className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"
+                                                    title={t("tradeNow.livePrice")}
+                                                  ></span>
                                                 )}
                                               </div>
                                             </div>
                                             {item.signals?.total ? (
                                               <div className="mt-2 text-[11px] text-muted-foreground">
-                                                {item.signals.total} signals · {item.signals.buy ?? 0} buy / {item.signals.sell ?? 0} sell
+                                                {t("dashboard.labels.signalsBreakdown", {
+                                                  total: item.signals.total,
+                                                  buy: item.signals.buy ?? 0,
+                                                  sell: item.signals.sell ?? 0,
+                                                })}
                                               </div>
                                             ) : null}
                                           </div>
                                           <div className="flex flex-col items-end gap-2">
                                             <Badge variant="outline" className={scoreTone(item.score)}>
-                                              {item.score?.toFixed(1) ?? "--"}
+                                              {item.score?.toFixed(1) ?? naLabel}
                                             </Badge>
                                             {!isSymbolWatchlisted(assetClass, item.symbol) && (
                                               <Button
@@ -3692,7 +4322,7 @@ export default function DashboardPage() {
                                                 }
                                                 disabled={!firebaseEnabled}
                                               >
-                                                Add
+                                                {t("common.add")}
                                               </Button>
                                             )}
                                           </div>
@@ -3704,7 +4334,7 @@ export default function DashboardPage() {
                                             const clamped =
                                               value === null ? 0 : Math.min(Math.max(value, 0), 100)
                                             const display =
-                                              value === null ? "--" : Math.round(value).toString()
+                                              value === null ? naLabel : Math.round(value).toString()
                                             return (
                                               <div
                                                 key={`${item.symbol}-${metric.key}`}
@@ -3728,8 +4358,10 @@ export default function DashboardPage() {
                                         </div>
                                         {showNewsMetric ? (
                                           <div className="mt-2 text-[11px] text-muted-foreground">
-                                            {item.news?.count} headlines · sentiment{" "}
-                                            {formatSentiment(item.news?.sentiment)}
+                                            {t("dashboard.trending.newsLine", {
+                                              count: item.news?.count ?? 0,
+                                              sentiment: formatSentiment(item.news?.sentiment),
+                                            })}
                                           </div>
                                         ) : null}
                                       </div>
@@ -3749,18 +4381,22 @@ export default function DashboardPage() {
               <div className="grid gap-4 md:grid-cols-2">
                 <Card className="reveal" style={{ "--delay": "240ms" } as CSSProperties}>
                   <CardHeader>
-                    <CardTitle className="text-sm">Top Buys</CardTitle>
-                    <div className="text-xs text-muted-foreground">Highest confidence longs</div>
+                    <CardTitle className="text-sm">{t("dashboard.ideas.topBuys")}</CardTitle>
+                    <div className="text-xs text-muted-foreground">
+                      {t("dashboard.ideas.topBuysSubtitle")}
+                    </div>
                   </CardHeader>
                   <CardContent className="space-y-3">
                     {!firebaseEnabled ? (
-                      <div className="text-sm opacity-70">Connect Firebase to view signals.</div>
+                      <div className="text-sm opacity-70">{t("tradeNow.connectFirebase")}</div>
                     ) : loadingHotTrades ? (
-                      <div className="text-sm opacity-70">Loading ideas...</div>
+                      <div className="text-sm opacity-70">{t("dashboard.ideas.loading")}</div>
                     ) : buyIdeas.length === 0 ? (
-                      <div className="text-sm opacity-70">No buy ideas yet.</div>
+                      <div className="text-sm opacity-70">{t("dashboard.ideas.noBuys")}</div>
                     ) : (
-                      buyIdeas.map((trade) => (
+                      buyIdeas.map((trade) => {
+                        const localizedAnalysis = localizeAnalysis(trade.analysis, t, i18n.language)
+                        return (
                         <div key={`buy-${trade.symbol}`} className="group space-y-1">
                           <div className="flex items-center justify-between">
                             <div>
@@ -3774,7 +4410,7 @@ export default function DashboardPage() {
                                     setBreakdownAsset(trade)
                                     setBreakdownOpen(true)
                                   }}
-                                  title="Score breakdown"
+                                  title={t("tradeNow.scoreBreakdown")}
                                 >
                                   <InfoIcon className="h-3.5 w-3.5" />
                                 </Button>
@@ -3786,7 +4422,7 @@ export default function DashboardPage() {
                                     setChartAsset(trade)
                                     setChartOpen(true)
                                   }}
-                                  title="View Chart"
+                                  title={t("tradeNow.viewChart")}
                                 >
                                   <BarChart3 className="h-3.5 w-3.5" />
                                 </Button>
@@ -3796,10 +4432,10 @@ export default function DashboardPage() {
                                   className="h-5 w-5"
                                   onClick={async () => {
                                     const ok = await copyAiPrompt(trade)
-                                    if (ok) toast.success("AI prompt copied")
-                                    else toast.error("Failed to copy prompt")
+                                    if (ok) toast.success(t("tradeNow.aiPromptCopied"))
+                                    else toast.error(t("tradeNow.aiPromptCopyFailed"))
                                   }}
-                                  title="Copy AI prompt"
+                                  title={t("tradeNow.copyAiPrompt")}
                                 >
                                   <Clipboard className="h-3.5 w-3.5" />
                                 </Button>
@@ -3811,48 +4447,70 @@ export default function DashboardPage() {
                                   return formatAssetPrice(current, trade.assetClass)
                                 })()}
                                 {livePrices[trade.symbol] && (
-                                  <span className="h-1 w-1 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
+                                  <span
+                                    className="h-1 w-1 rounded-full bg-emerald-500 animate-pulse"
+                                    title={t("tradeNow.livePrice")}
+                                  ></span>
                                 )}
                                 <span>·</span>
-                                24h: {formatChange(trade.momentum?.change24h)}
+                                {t("tradeNow.twentyFourHour")}: {formatChange(trade.momentum?.change24h)}
                               </div>
                             </div>
                             <Badge variant="outline" className={scoreTone(trade.score)}>
-                              {trade.score?.toFixed(0) ?? "--"}
+                              {trade.score?.toFixed(0) ?? naLabel}
                             </Badge>
                           </div>
-                          {trade.analysis?.details?.length ? (
+                          {localizedAnalysis.details?.length ? (
                             <details className="text-[10px] text-muted-foreground">
                               <summary className="cursor-pointer text-[10px] flex items-center gap-1">
-                                <Sparkles className="h-3 w-3" /> Why this pick
+                                <Sparkles className="h-3 w-3" /> {t("tradeNow.whyThisPick")}
                               </summary>
                               <ul className="mt-1 space-y-0.5 break-words list-disc pl-4">
-                                {trade.analysis.details.slice(0, 4).map((line, index) => (
-                                  <li key={`${trade.symbol}-buy-detail-${index}`}>{line}</li>
-                                ))}
+                                {localizedAnalysis.details.slice(0, 4).map((line, index) => {
+                                  const noteKind = getAnalysisNoteKind(trade.analysis?.details?.[index])
+                                  return (
+                                    <li key={`${trade.symbol}-buy-detail-${index}`}>
+                                      <span className="inline-flex items-center gap-1">
+                                        {noteKind ? (
+                                          <Badge
+                                            variant="outline"
+                                            className="h-4 px-1.5 text-[9px] uppercase tracking-wide"
+                                          >
+                                            {t(`analysis.badges.${noteKind}`)}
+                                          </Badge>
+                                        ) : null}
+                                        <span>{line}</span>
+                                      </span>
+                                    </li>
+                                  )
+                                })}
                               </ul>
                             </details>
                           ) : null}
                         </div>
-                      ))
+                      )})
                     )}
                   </CardContent>
                 </Card>
 
                 <Card className="reveal" style={{ "--delay": "270ms" } as CSSProperties}>
                   <CardHeader>
-                    <CardTitle className="text-sm">Top Sells</CardTitle>
-                    <div className="text-xs text-muted-foreground">Risk-off or take profit</div>
+                    <CardTitle className="text-sm">{t("dashboard.ideas.topSells")}</CardTitle>
+                    <div className="text-xs text-muted-foreground">
+                      {t("dashboard.ideas.topSellsSubtitle")}
+                    </div>
                   </CardHeader>
                   <CardContent className="space-y-3">
                     {!firebaseEnabled ? (
-                      <div className="text-sm opacity-70">Connect Firebase to view signals.</div>
+                      <div className="text-sm opacity-70">{t("tradeNow.connectFirebase")}</div>
                     ) : loadingHotTrades ? (
-                      <div className="text-sm opacity-70">Loading ideas...</div>
+                      <div className="text-sm opacity-70">{t("dashboard.ideas.loading")}</div>
                     ) : sellIdeas.length === 0 ? (
-                      <div className="text-sm opacity-70">No sell ideas yet.</div>
+                      <div className="text-sm opacity-70">{t("dashboard.ideas.noSells")}</div>
                     ) : (
-                      sellIdeas.map((trade) => (
+                      sellIdeas.map((trade) => {
+                        const localizedAnalysis = localizeAnalysis(trade.analysis, t, i18n.language)
+                        return (
                         <div
                           key={`sell-${trade.symbol}`}
                           className="group space-y-1"
@@ -3869,7 +4527,7 @@ export default function DashboardPage() {
                                     setBreakdownAsset(trade)
                                     setBreakdownOpen(true)
                                   }}
-                                  title="Score breakdown"
+                                  title={t("tradeNow.scoreBreakdown")}
                                 >
                                   <InfoIcon className="h-3.5 w-3.5" />
                                 </Button>
@@ -3881,7 +4539,7 @@ export default function DashboardPage() {
                                     setChartAsset(trade)
                                     setChartOpen(true)
                                   }}
-                                  title="View Chart"
+                                  title={t("tradeNow.viewChart")}
                                 >
                                   <BarChart3 className="h-3.5 w-3.5" />
                                 </Button>
@@ -3891,10 +4549,10 @@ export default function DashboardPage() {
                                   className="h-5 w-5"
                                   onClick={async () => {
                                     const ok = await copyAiPrompt(trade)
-                                    if (ok) toast.success("AI prompt copied")
-                                    else toast.error("Failed to copy prompt")
+                                    if (ok) toast.success(t("tradeNow.aiPromptCopied"))
+                                    else toast.error(t("tradeNow.aiPromptCopyFailed"))
                                   }}
-                                  title="Copy AI prompt"
+                                  title={t("tradeNow.copyAiPrompt")}
                                 >
                                   <Clipboard className="h-3.5 w-3.5" />
                                 </Button>
@@ -3906,30 +4564,48 @@ export default function DashboardPage() {
                                   return formatAssetPrice(current, trade.assetClass)
                                 })()}
                                 {livePrices[trade.symbol] && (
-                                  <span className="h-1 w-1 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
+                                  <span
+                                    className="h-1 w-1 rounded-full bg-emerald-500 animate-pulse"
+                                    title={t("tradeNow.livePrice")}
+                                  ></span>
                                 )}
                                 <span>·</span>
-                                24h: {formatChange(trade.momentum?.change24h)}
+                                {t("tradeNow.twentyFourHour")}: {formatChange(trade.momentum?.change24h)}
                               </div>
                             </div>
                             <Badge variant="outline" className={scoreTone(trade.score)}>
-                              {trade.score?.toFixed(0) ?? "--"}
+                              {trade.score?.toFixed(0) ?? naLabel}
                             </Badge>
                           </div>
-                          {trade.analysis?.details?.length ? (
+                          {localizedAnalysis.details?.length ? (
                             <details className="text-[10px] text-muted-foreground">
                               <summary className="cursor-pointer text-[10px] flex items-center gap-1">
-                                <Sparkles className="h-3 w-3" /> Why this pick
+                                <Sparkles className="h-3 w-3" /> {t("tradeNow.whyThisPick")}
                               </summary>
                               <ul className="mt-1 space-y-0.5 break-words list-disc pl-4">
-                                {trade.analysis.details.slice(0, 4).map((line, index) => (
-                                  <li key={`${trade.symbol}-sell-detail-${index}`}>{line}</li>
-                                ))}
+                                {localizedAnalysis.details.slice(0, 4).map((line, index) => {
+                                  const noteKind = getAnalysisNoteKind(trade.analysis?.details?.[index])
+                                  return (
+                                    <li key={`${trade.symbol}-sell-detail-${index}`}>
+                                      <span className="inline-flex items-center gap-1">
+                                        {noteKind ? (
+                                          <Badge
+                                            variant="outline"
+                                            className="h-4 px-1.5 text-[9px] uppercase tracking-wide"
+                                          >
+                                            {t(`analysis.badges.${noteKind}`)}
+                                          </Badge>
+                                        ) : null}
+                                        <span>{line}</span>
+                                      </span>
+                                    </li>
+                                  )
+                                })}
                               </ul>
                             </details>
                           ) : null}
                         </div>
-                      ))
+                      )})
                     )}
                   </CardContent>
                 </Card>
@@ -3939,13 +4615,15 @@ export default function DashboardPage() {
             <div className="min-w-0 space-y-4">
               <Card className="reveal" style={{ "--delay": "200ms" } as CSSProperties}>
                 <CardHeader className="flex-row items-center justify-between space-y-0">
-                  <CardTitle className="text-base">Your Universe</CardTitle>
-                  <Badge variant="outline">{universeTotal} assets</Badge>
+                  <CardTitle className="text-base">{t("dashboard.universe.summaryTitle")}</CardTitle>
+                  <Badge variant="outline">
+                    {t("dashboard.universe.assetsCount", { count: universeTotal })}
+                  </Badge>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <div className="space-y-2">
                     <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                      Quick add
+                      {t("dashboard.universe.quickAdd")}
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <Select
@@ -3955,9 +4633,9 @@ export default function DashboardPage() {
                           setQuickAssetClass(event.target.value as AssetClass)
                         }
                       >
-                        <option value="crypto">Crypto</option>
-                        <option value="stock">Stocks</option>
-                        <option value="forex">FX</option>
+                        <option value="crypto">{assetLabelMap.crypto}</option>
+                        <option value="stock">{assetLabelMap.stock}</option>
+                        <option value="forex">{assetLabelMap.forex}</option>
                       </Select>
                       <div className="relative w-full min-w-[180px] flex-1">
                         <Input
@@ -3993,10 +4671,10 @@ export default function DashboardPage() {
                           }}
                           placeholder={
                             quickAssetClass === "stock"
-                              ? "Search tickers (e.g. AAPL)"
+                              ? t("dashboard.universe.quickAddPlaceholderStock")
                               : quickAssetClass === "forex"
-                                ? "Search pairs (e.g. EUR/USD)"
-                                : "Search pairs (e.g. BTC/USDT)"
+                                ? t("dashboard.universe.quickAddPlaceholderFx")
+                                : t("dashboard.universe.quickAddPlaceholderCrypto")
                           }
                           role="combobox"
                           aria-autocomplete="list"
@@ -4033,11 +4711,7 @@ export default function DashboardPage() {
                                 >
                                   <span className="font-medium">{symbol}</span>
                                   <span className="text-xs text-muted-foreground">
-                                    {quickAssetClass === "stock"
-                                      ? "Stock"
-                                      : quickAssetClass === "forex"
-                                        ? "FX"
-                                        : "Crypto"}
+                                    {getAssetLabel(quickAssetClass, "short")}
                                   </span>
                                 </button>
                               ))}
@@ -4046,7 +4720,7 @@ export default function DashboardPage() {
                         )}
                         {quickAssetInput.trim().length > 0 && quickSuggestions.length === 0 && (
                           <div className="absolute z-20 mt-1 w-full rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground shadow-lg">
-                            No matches found.
+                            {t("dashboard.universe.noMatchesFound")}
                           </div>
                         )}
                       </div>
@@ -4056,37 +4730,41 @@ export default function DashboardPage() {
                         onClick={addQuickAsset}
                         disabled={!canQuickAdd}
                       >
-                        Add
+                        {t("common.add")}
                       </Button>
                     </div>
                     {quickAssetClass === "stock" && quickAssetInput && (
                       <div className="text-xs text-muted-foreground">
                         {quickAssetInput.trim().length < 2
-                          ? "Type 2+ letters to search the cached global ticker list."
+                          ? t("dashboard.universe.stocks.searchHint")
                           : quickStockLoading
-                            ? "Searching cached global tickers..."
+                            ? t("dashboard.universe.stocks.searching")
                             : quickStockMatches.length > 0
-                              ? `Showing ${quickStockMatches.length} cached matches.`
-                              : "No cached matches found."}
+                              ? t("dashboard.universe.stocks.matches", {
+                                  count: quickStockMatches.length,
+                                })
+                              : t("dashboard.universe.stocks.noMatches")}
                       </div>
                     )}
                     {!canQuickAdd && normalizedQuickAsset ? (
                       <div className="text-xs text-muted-foreground">
-                        Already in your universe.
+                        {t("dashboard.universe.alreadyInUniverse")}
                       </div>
                     ) : (
                       <div className="text-xs text-muted-foreground">
-                        Use Manage assets for bulk edits and trending picks.
+                        {t("dashboard.universe.manageAssetsHint")}
                       </div>
                     )}
                   </div>
                   <div className="space-y-2">
                     <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                      Crypto
+                      {assetLabelMap.crypto}
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {visibleCrypto.length === 0 ? (
-                        <span className="text-xs text-muted-foreground">No crypto pairs yet.</span>
+                        <span className="text-xs text-muted-foreground">
+                          {t("dashboard.universe.noCryptoYet")}
+                        </span>
                       ) : (
                         visibleCrypto.map((symbol) => (
                           <Badge key={symbol} variant="secondary" className="font-mono">
@@ -4103,11 +4781,13 @@ export default function DashboardPage() {
                   </div>
                   <div className="space-y-2">
                     <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                      Stocks
+                      {assetLabelMap.stock}
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {visibleStocks.length === 0 ? (
-                        <span className="text-xs text-muted-foreground">No stock tickers yet.</span>
+                        <span className="text-xs text-muted-foreground">
+                          {t("dashboard.universe.noStocksYet")}
+                        </span>
                       ) : (
                         visibleStocks.map((symbol) => (
                           <Badge key={symbol} variant="secondary" className="font-mono">
@@ -4124,11 +4804,13 @@ export default function DashboardPage() {
                   </div>
                   <div className="space-y-2">
                     <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                      FX
+                      {assetLabelMap.forex}
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {visibleForex.length === 0 ? (
-                        <span className="text-xs text-muted-foreground">No FX pairs yet.</span>
+                        <span className="text-xs text-muted-foreground">
+                          {t("dashboard.universe.noFxYet")}
+                        </span>
                       ) : (
                         visibleForex.map((symbol) => (
                           <Badge key={symbol} variant="secondary" className="font-mono">
@@ -4144,24 +4826,26 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <Button variant="outline" className="w-full" onClick={() => setUniverseOpen(true)}>
-                    Add or edit assets
+                    {t("dashboard.universe.addOrEditAssets")}
                   </Button>
                   <div className="text-xs text-muted-foreground">
-                    Use Manage assets or tap Add to universe from Hot Trades.
+                    {t("dashboard.universe.addFromHotTradesHint")}
                   </div>
                 </CardContent>
               </Card>
 
               <Card className="reveal" style={{ "--delay": "210ms" } as CSSProperties}>
                 <CardHeader>
-                  <CardTitle className="text-base">Quick Actions</CardTitle>
+                  <CardTitle className="text-base">{t("dashboard.quickActions.title")}</CardTitle>
                   <div className="text-xs text-muted-foreground">
-                    Keep the fleet healthy with one click.
+                    {t("dashboard.quickActions.subtitle")}
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <div className="rounded-lg border border-border/60 bg-background/70 p-3">
-                    <div className="text-xs text-muted-foreground">Offline / idle bots</div>
+                    <div className="text-xs text-muted-foreground">
+                      {t("dashboard.quickActions.offlineBots")}
+                    </div>
                     <div className="mt-1 text-2xl font-semibold">{offlineBots.length}</div>
                   </div>
                   <Button
@@ -4169,23 +4853,29 @@ export default function DashboardPage() {
                     onClick={startOfflineBots}
                     disabled={!firebaseEnabled || startingBots}
                   >
-                    {startingBots ? "Starting bots..." : "Start offline bots"}
+                    {startingBots
+                      ? t("dashboard.actions.startingBots")
+                      : t("dashboard.actions.startOfflineBots")}
                   </Button>
                 </CardContent>
               </Card>
 
               <Card className="reveal" style={{ "--delay": "240ms" } as CSSProperties}>
                 <CardHeader>
-                  <CardTitle className="text-base">Signal Snapshot</CardTitle>
-                  <div className="text-xs text-muted-foreground">Live feed size and freshness</div>
+                  <CardTitle className="text-base">{t("dashboard.signalSnapshot.title")}</CardTitle>
+                  <div className="text-xs text-muted-foreground">
+                    {t("dashboard.signalSnapshot.subtitle")}
+                  </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <div className="rounded-lg border border-border/60 bg-background/70 p-3">
-                    <div className="text-xs text-muted-foreground">Signals tracked</div>
+                    <div className="text-xs text-muted-foreground">
+                      {t("dashboard.signalSnapshot.tracked")}
+                    </div>
                     <div className="mt-1 text-2xl font-semibold">{signals.length}</div>
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    Open Advanced to view the full signal stream.
+                    {t("dashboard.signalSnapshot.hint")}
                   </div>
                 </CardContent>
               </Card>
@@ -4193,15 +4883,17 @@ export default function DashboardPage() {
               <Card className="reveal" style={{ "--delay": "260ms" } as CSSProperties}>
                 <CardHeader className="space-y-1">
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">Prediction Accuracy</CardTitle>
+                    <CardTitle className="text-base">{t("dashboard.performance.title")}</CardTitle>
                     {signalPerformance?.updatedAt && (
                       <Badge variant="outline">
-                        Updated {formatRelativeTimestamp(signalPerformance.updatedAt)}
+                        {t("tradeNow.updatedAt", {
+                          time: formatRelativeTimestamp(signalPerformance.updatedAt),
+                        })}
                       </Badge>
                     )}
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    Signals vs market outcomes by horizon.
+                    {t("dashboard.performance.subtitle")}
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
@@ -4229,7 +4921,7 @@ export default function DashboardPage() {
           <div className="grid gap-4 md:grid-cols-3">
             <Card className="reveal" style={{ "--delay": "0ms" } as CSSProperties}>
               <CardHeader>
-                <CardTitle className="text-sm">Online</CardTitle>
+                <CardTitle className="text-sm">{t("status.online")}</CardTitle>
               </CardHeader>
               <CardContent className="flex items-end justify-between">
                 <div className="text-3xl font-semibold">{statusCounts.online}</div>
@@ -4238,7 +4930,7 @@ export default function DashboardPage() {
             </Card>
             <Card className="reveal" style={{ "--delay": "90ms" } as CSSProperties}>
               <CardHeader>
-                <CardTitle className="text-sm">Error</CardTitle>
+                <CardTitle className="text-sm">{t("status.error")}</CardTitle>
               </CardHeader>
               <CardContent className="flex items-end justify-between">
                 <div className="text-3xl font-semibold">{statusCounts.error}</div>
@@ -4247,7 +4939,7 @@ export default function DashboardPage() {
             </Card>
             <Card className="reveal" style={{ "--delay": "180ms" } as CSSProperties}>
               <CardHeader>
-                <CardTitle className="text-sm">Offline / Idle</CardTitle>
+                <CardTitle className="text-sm">{t("dashboard.statusCards.offlineIdle")}</CardTitle>
               </CardHeader>
               <CardContent className="flex items-end justify-between">
                 <div className="text-3xl font-semibold">
@@ -4262,18 +4954,24 @@ export default function DashboardPage() {
             <Card className="reveal" style={{ "--delay": "220ms" } as CSSProperties}>
               <CardHeader className="flex-row items-center justify-between space-y-0">
                 <div>
-                  <CardTitle className="text-base">Recent Event Stream</CardTitle>
-                  <div className="text-xs text-muted-foreground">Normalized logs across every adapter</div>
+                  <CardTitle className="text-base">{t("dashboard.events.title")}</CardTitle>
+                  <div className="text-xs text-muted-foreground">
+                    {t("dashboard.events.subtitle")}
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
                 {!firebaseEnabled ? (
-                  <div className="text-sm opacity-70">Configure Firebase in <code>.env</code> to view events.</div>
+                  <div className="text-sm opacity-70">
+                    {t("dashboard.events.firebaseHintPrefix")} <code>.env</code>{" "}
+                    {t("dashboard.events.firebaseHintSuffix")}
+                  </div>
                 ) : loadingEvents ? (
-                  <div className="text-sm opacity-70">Loading events...</div>
+                  <div className="text-sm opacity-70">{t("dashboard.events.loading")}</div>
                 ) : events.length === 0 ? (
                   <div className="text-sm opacity-70">
-                    No events yet. Adapters should write to <code>bots/{'{botId}'}/events</code>.
+                    {t("dashboard.events.emptyPrefix")} <code>bots/{'{botId}'}/events</code>
+                    {t("dashboard.events.emptySuffix")}
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -4290,11 +4988,11 @@ export default function DashboardPage() {
                             </Badge>
                           )}
                           <div className="text-sm font-medium">
-                            {event.type || "event"}
+                            {event.type || t("dashboard.events.eventFallback")}
                           </div>
                         </div>
                         <div className="text-sm break-words opacity-80">
-                          {event.message || "Adapter emitted an event without a message."}
+                          {event.message || t("dashboard.events.messageFallback")}
                         </div>
                       </div>
                     ))}
@@ -4305,22 +5003,26 @@ export default function DashboardPage() {
 
             <Card className="reveal" style={{ "--delay": "260ms" } as CSSProperties}>
               <CardHeader>
-                <CardTitle className="text-base">Bot Matrix</CardTitle>
-                <div className="text-xs text-muted-foreground">Current statuses pulled from bots collection</div>
+                <CardTitle className="text-base">{t("dashboard.botMatrix.title")}</CardTitle>
+                <div className="text-xs text-muted-foreground">
+                  {t("dashboard.botMatrix.subtitle")}
+                </div>
               </CardHeader>
               <CardContent className="space-y-3">
                 {!firebaseEnabled ? (
-                  <div className="text-sm opacity-70">Connect Firebase to load bot metadata.</div>
+                  <div className="text-sm opacity-70">{t("dashboard.botMatrix.firebaseHint")}</div>
                 ) : loadingBots ? (
-                  <div className="text-sm opacity-70">Loading bots...</div>
+                  <div className="text-sm opacity-70">{t("bots.loading")}</div>
                 ) : bots.length === 0 ? (
-                  <div className="text-sm opacity-70">No bots registered yet.</div>
+                  <div className="text-sm opacity-70">{t("dashboard.botMatrix.empty")}</div>
                 ) : (
                   bots.slice(0, 6).map((bot) => (
                     <div key={bot.id} className="flex items-center justify-between rounded-lg border border-border/60 bg-background/70 px-3 py-2">
                       <div>
                         <div className="text-sm font-medium">{bot.name || bot.id}</div>
-                        <div className="text-xs text-muted-foreground">{bot.engine || "unknown engine"}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {bot.engine || t("bots.unknownEngine")}
+                        </div>
                       </div>
                       <StatusBadge status={bot.status} />
                     </div>
@@ -4333,19 +5035,22 @@ export default function DashboardPage() {
           <Card className="reveal" style={{ "--delay": "300ms" } as CSSProperties}>
             <CardHeader className="flex-row items-center justify-between space-y-0">
               <div>
-                <CardTitle className="text-base">Signal Radar</CardTitle>
-                <div className="text-xs text-muted-foreground">Latest trade ideas from every engine</div>
+                <CardTitle className="text-base">{t("dashboard.signalRadar.title")}</CardTitle>
+                <div className="text-xs text-muted-foreground">
+                  {t("dashboard.signalRadar.subtitle")}
+                </div>
               </div>
               <Badge variant="outline">{signals.length}</Badge>
             </CardHeader>
             <CardContent className="space-y-3">
               {!firebaseEnabled ? (
-                <div className="text-sm opacity-70">Connect Firebase to view signals.</div>
+                <div className="text-sm opacity-70">{t("tradeNow.connectFirebase")}</div>
               ) : loadingSignals ? (
-                <div className="text-sm opacity-70">Loading signals...</div>
+                <div className="text-sm opacity-70">{t("signals.loading")}</div>
               ) : signals.length === 0 ? (
                 <div className="text-sm opacity-70">
-                  No signals yet. Adapters should write to <code>bots/{'{botId}'}/signals</code>.
+                  {t("signals.emptyPrefix")} <code>bots/{'{botId}'}/signals</code>
+                  {t("signals.emptySuffix")}
                 </div>
               ) : (
                 signals.map((signal) => (
@@ -4357,14 +5062,16 @@ export default function DashboardPage() {
                     <div className="flex flex-wrap items-center gap-2">
                       {signal.side && (
                         <Badge variant={signalBadgeVariant(signal.side)} className="uppercase">
-                          {signal.side}
+                          {t(`trade.side.${signal.side}`)}
                         </Badge>
                       )}
                       {typeof signal.strength === "number" && (
-                        <Badge variant="secondary">Strength {signal.strength.toFixed(2)}</Badge>
+                        <Badge variant="secondary">
+                          {t("signals.strength", { value: signal.strength.toFixed(2) })}
+                        </Badge>
                       )}
                       <div className="text-sm break-words font-medium">
-                        {signal.message || "Signal detected"}
+                        {signal.message || t("signals.detected")}
                       </div>
                     </div>
                   </div>

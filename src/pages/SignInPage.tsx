@@ -11,11 +11,13 @@ import {
 } from "firebase/auth"
 import { useAuth } from "@/features/auth/auth-context"
 import { Badge } from "@/components/ui/badge"
+import { useTranslation } from "react-i18next"
 
 export default function SignInPage() {
   const { user, blockedEmail } = useAuth()
   const location = useLocation()
-  const [testError, setTestError] = useState<string | null>(null)
+  const { t } = useTranslation()
+  const [testError, setTestError] = useState<"missingE2EEnv" | "testSignInFailed" | null>(null)
 
   const redirectTo = (location.state as { from?: string } | null)?.from || "/"
   const isE2E = import.meta.env.VITE_E2E === "true"
@@ -33,7 +35,7 @@ export default function SignInPage() {
     if (!firebaseEnabled || !auth) return
     setTestError(null)
     if (!testEmail || !testPassword) {
-      setTestError("Missing VITE_E2E_TEST_EMAIL or VITE_E2E_TEST_PASSWORD")
+      setTestError("missingE2EEnv")
       return
     }
 
@@ -42,7 +44,7 @@ export default function SignInPage() {
     } catch (err) {
       const code = typeof err === "object" && err && "code" in err ? String(err.code) : ""
       if (code !== "auth/email-already-in-use") {
-        setTestError("Test sign-in failed")
+        setTestError("testSignInFailed")
         return
       }
     }
@@ -62,27 +64,32 @@ export default function SignInPage() {
         <Card className="w-full max-w-md border-border/60 bg-background/80 shadow-lg backdrop-blur">
           <CardHeader className="space-y-3">
             <div className="flex items-center justify-between">
-              <Badge variant="secondary">Private Console</Badge>
-              <span className="text-xs uppercase tracking-[0.35em] text-muted-foreground">RelayOrb</span>
+              <Badge variant="secondary">{t("auth.privateConsole")}</Badge>
+              <span className="text-xs uppercase tracking-[0.35em] text-muted-foreground">
+                {t("app.relayOrb")}
+              </span>
             </div>
-            <CardTitle className="text-2xl">Sign in to Control Deck</CardTitle>
+            <CardTitle className="text-2xl">{t("auth.signInTitle")}</CardTitle>
             <CardDescription>
-              This dashboard is locked to a single admin allowlist and exposes unified controls for all bot engines.
+              {t("auth.signInDescription")}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {!firebaseEnabled ? (
               <div className="space-y-2 text-sm">
-                <div className="font-medium">Firebase not configured</div>
+                <div className="font-medium">{t("auth.firebaseNotConfigured")}</div>
                 <div className="opacity-80">
-                  Fill <code>.env</code> at the project root using <code>.env.example</code>, then restart the dev server.
+                  {t("auth.fillEnvPrefix")} <code>.env</code> {t("auth.fillEnvMiddle")}{" "}
+                  <code>.env.example</code>
+                  {t("auth.fillEnvSuffix")}
                 </div>
               </div>
             ) : blockedEmail ? (
               <div className="space-y-2 text-sm">
-                <div className="font-medium text-destructive">Access denied</div>
+                <div className="font-medium text-destructive">{t("auth.accessDenied")}</div>
                 <div className="opacity-80">
-                  <span className="font-mono text-xs">{blockedEmail}</span> is not on the admin allowlist.
+                  <span className="font-mono text-xs">{blockedEmail}</span>{" "}
+                  {t("auth.notOnAllowlist")}
                 </div>
               </div>
             ) : (
@@ -90,18 +97,20 @@ export default function SignInPage() {
                 {isE2E && (
                   <div className="space-y-2">
                     <Button variant="secondary" className="w-full" onClick={signInTestUser}>
-                      Test sign in
+                      {t("auth.testSignIn")}
                     </Button>
-                    {testError && <div className="text-xs text-destructive">{testError}</div>}
+                    {testError && (
+                      <div className="text-xs text-destructive">{t(`auth.errors.${testError}`)}</div>
+                    )}
                   </div>
                 )}
                 <Button className="w-full" onClick={signInGoogle}>
-                  Sign in with Google
+                  {t("auth.signInWithGoogle")}
                 </Button>
               </>
             )}
             <div className="text-xs text-muted-foreground">
-              Only approved admin accounts can access RelayOrb.
+              {t("auth.onlyApprovedAdmins")}
             </div>
           </CardContent>
         </Card>

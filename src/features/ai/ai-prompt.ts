@@ -1,13 +1,18 @@
 import type { MarketHotTrade } from "@/lib/types"
+import { localizeAnalysis } from "@/lib/analysis-localize"
+import i18n from "@/i18n"
 
 /**
  * Builds an AI prompt for trading advice based on trade data
  */
 export function buildAiPrompt(item: MarketHotTrade) {
+  const t = i18n.t.bind(i18n)
+  const naPrompt = t("aiPrompt.na")
   const momentum = item.momentum || {}
   const signals = item.signals || {}
   const trend = item.trend || {}
   const news = item.news || {}
+  const localizedAnalysis = localizeAnalysis(item.analysis, t, i18n.language)
   
   // Calculate volatility estimate
   const volatility = momentum.change1h !== undefined && momentum.change24h !== undefined
@@ -16,55 +21,95 @@ export function buildAiPrompt(item: MarketHotTrade) {
 
   // Build search query suggestion
   const searchQuery = item.assetClass === "stock"
-    ? `${item.symbol} stock news today price analysis`
+    ? t("aiPrompt.searchQuery.stock", { symbol: item.symbol ?? naPrompt })
     : item.assetClass === "crypto"
-    ? `${item.symbol} cryptocurrency news today price analysis`
-    : `${item.symbol} forex news today analysis`
+    ? t("aiPrompt.searchQuery.crypto", { symbol: item.symbol ?? naPrompt })
+    : t("aiPrompt.searchQuery.forex", { symbol: item.symbol ?? naPrompt })
+  const assetLabelMap: Record<string, string> = {
+    stock: t("assets.stock"),
+    crypto: t("assets.crypto"),
+    forex: t("assets.forex"),
+  }
+  const assetLabel = assetLabelMap[item.assetClass] || item.assetClass
+  const sideLabel = item.side ? t(`trade.side.${item.side}`) : naPrompt
+  const horizonLabelMap: Record<string, string> = {
+    "15m": t("analysis.time.m15"),
+    "1h": t("analysis.time.h1"),
+    "24h": t("analysis.time.h24"),
+    "7d": t("analysis.time.d7"),
+  }
+  const horizonLabel = trend.horizon ? horizonLabelMap[trend.horizon] || trend.horizon : naPrompt
+  const sentimentLine =
+    news.sentiment !== undefined
+      ? t("aiPrompt.sentimentWithCount", {
+          sentiment: news.sentiment.toFixed(2),
+          count: news.count ?? 0,
+        })
+      : naPrompt
+  const aiSummary = localizedAnalysis.summary || item.rationale || naPrompt
 
   return [
-    "You are a trading dashboard assistant. Analyze all provided data AND search the web for recent news and information about the asset to make accurate recommendations.",
+    t("aiPrompt.intro"),
     "",
-    "IMPORTANT: Before making your recommendation, search the web for recent news, earnings reports, technical analysis, or market events about this asset. Use a web search tool or API to find breaking news, price analysis, and market sentiment.",
+    t("aiPrompt.important"),
     "",
-    "Given the trade context, FIRST search the web for recent information about this asset, THEN analyze ALL data and return JSON:",
-    '{"action":"buy|hold|sell","holdMinutes":number,"stopLossPct":0.5-8,"takeProfitPct":1-15,"summary":"simple sentence","reasoning":"short reason"}',
+    t("aiPrompt.instructions"),
+    t("aiPrompt.jsonSchema"),
     "",
-    "Suggested web search query:",
+    t("aiPrompt.searchQueryLabel"),
     `"${searchQuery}"`,
     "",
-    "Calculate holdMinutes (15-1440 minutes) based on:",
-    `- Trend horizon: ${trend.horizon || 'n/a'} (15m=15min, 1h=60min, 24h=1440min, 7d=10080min)`,
-    "- Momentum speed: Fast moves (high 1h change) = shorter holds, slow trends = longer holds",
-    "- Asset class: Crypto moves faster (15-120min), Stocks slower (60-480min), Forex varies",
-    "- Signal strength: Strong signals = shorter holds (capture move quickly), weak = longer",
-    "- Volatility: High volatility = shorter holds, low = longer",
-    "- Recent news/events: Breaking news or events may require immediate action or longer holds",
+    t("aiPrompt.holdIntro"),
+    t("aiPrompt.holdTrend", { horizon: horizonLabel, legend: t("aiPrompt.horizonLegend") }),
+    t("aiPrompt.holdMomentum"),
+    t("aiPrompt.holdAssetClass"),
+    t("aiPrompt.holdSignals"),
+    t("aiPrompt.holdVolatility"),
+    t("aiPrompt.holdNews"),
     "",
-    "Rules:",
-    "- Use 'hold' if signals are mixed or weak.",
-    "- stopLossPct and takeProfitPct are percentages; use null if action is hold.",
-    "- holdMinutes should reflect when the trade thesis expires or target should be reached",
-    "- For crypto scalps: 15-60min, for swing trades: 240-1440min",
-    "- Consider recent news: breaking news may require shorter holds, earnings may require longer",
-    "- Keep the summary short and plain English.",
+    t("aiPrompt.rulesTitle"),
+    t("aiPrompt.ruleHold"),
+    t("aiPrompt.ruleStopTake"),
+    t("aiPrompt.ruleHoldMinutes"),
+    t("aiPrompt.ruleCryptoScalp"),
+    t("aiPrompt.ruleNews"),
+    t("aiPrompt.ruleSummary"),
     "",
-    "Trade Data:",
-    `Symbol: ${item.symbol}`,
-    `Asset class: ${item.assetClass}`,
-    `Side hint: ${item.side || "n/a"}`,
-    `Score: ${item.score ?? "n/a"} / 100`,
-    `Current price: ${item.price ?? "n/a"}`,
-    `Trend score: ${trend.score ?? "n/a"} (higher = stronger trend)`,
-    `Trend horizon: ${trend.horizon || "n/a"} (timeframe of the trend signal)`,
-    `Momentum 1h: ${momentum.change1h !== undefined ? momentum.change1h.toFixed(2) + '%' : 'n/a'}`,
-    `Momentum 24h: ${momentum.change24h !== undefined ? momentum.change24h.toFixed(2) + '%' : 'n/a'}`,
-    `Momentum 7d: ${momentum.change7d !== undefined ? momentum.change7d.toFixed(2) + '%' : 'n/a'}`,
-    `Volatility estimate: ${volatility !== null ? volatility.toFixed(2) + '%' : 'n/a'}`,
-    `Bots: ${signals.buy ?? 0} buy / ${signals.sell ?? 0} sell (${signals.total ?? 0} total)`,
-    `Sentiment: ${news.sentiment !== undefined ? news.sentiment.toFixed(2) + ' (' + (news.count ?? 0) + ' headlines)' : 'n/a'}`,
-    `AI summary: ${item.analysis?.summary || item.rationale || "n/a"}`,
+    t("aiPrompt.tradeDataTitle"),
+    t("aiPrompt.tradeSymbol", { symbol: item.symbol ?? naPrompt }),
+    t("aiPrompt.tradeAssetClass", { assetClass: assetLabel }),
+    t("aiPrompt.tradeSideHint", { side: sideLabel }),
+    t("aiPrompt.tradeScore", { score: item.score ?? naPrompt }),
+    t("aiPrompt.tradeCurrentPrice", { price: item.price ?? naPrompt }),
+    t("aiPrompt.tradeTrendScore", {
+      score: trend.score ?? naPrompt,
+      note: t("aiPrompt.trendStrengthNote"),
+    }),
+    t("aiPrompt.tradeTrendHorizon", {
+      horizon: horizonLabel,
+      note: t("aiPrompt.trendHorizonNote"),
+    }),
+    t("aiPrompt.tradeMomentum1h", {
+      value: momentum.change1h !== undefined ? `${momentum.change1h.toFixed(2)}%` : naPrompt,
+    }),
+    t("aiPrompt.tradeMomentum24h", {
+      value: momentum.change24h !== undefined ? `${momentum.change24h.toFixed(2)}%` : naPrompt,
+    }),
+    t("aiPrompt.tradeMomentum7d", {
+      value: momentum.change7d !== undefined ? `${momentum.change7d.toFixed(2)}%` : naPrompt,
+    }),
+    t("aiPrompt.tradeVolatility", {
+      value: volatility !== null ? `${volatility.toFixed(2)}%` : naPrompt,
+    }),
+    t("aiPrompt.tradeBots", {
+      buy: signals.buy ?? 0,
+      sell: signals.sell ?? 0,
+      total: signals.total ?? 0,
+    }),
+    t("aiPrompt.tradeSentiment", { sentiment: sentimentLine }),
+    t("aiPrompt.tradeAiSummary", { summary: aiSummary }),
     "",
-    "Now search the web for recent information about this asset, then provide your recommendation based on both the trade data and web search results.",
+    t("aiPrompt.closing"),
   ].join("\n")
 }
 

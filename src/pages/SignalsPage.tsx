@@ -15,6 +15,7 @@ import type { BotSignalDoc } from "@/lib/types"
 import { formatTimestamp } from "@/lib/format"
 import { SignalMarketIndicator } from "@/components/SignalMarketIndicator"
 import { useStreamSymbols } from "@/features/market/use-stream-symbols"
+import { useTranslation } from "react-i18next"
 
 function signalBadgeVariant(side?: string) {
   switch (side) {
@@ -43,6 +44,7 @@ export default function SignalsPage() {
   const [signals, setSignals] = useState<BotSignalDoc[]>([])
   const [loading, setLoading] = useState(() => firebaseEnabled && !!db)
   const [assetFilter, setAssetFilter] = useState<"all" | "crypto" | "stock" | "forex">("all")
+  const { t } = useTranslation()
 
   const streamItems = useMemo(
     () =>
@@ -134,20 +136,22 @@ export default function SignalsPage() {
   return (
     <div className="space-y-4">
       <div>
-        <div className="text-xs uppercase tracking-[0.35em] text-muted-foreground">Signals</div>
-        <div className="text-2xl font-semibold">Trading Signals</div>
+        <div className="text-xs uppercase tracking-[0.35em] text-muted-foreground">
+          {t("signals.title")}
+        </div>
+        <div className="text-2xl font-semibold">{t("signals.subtitle")}</div>
       </div>
 
       <Card className="reveal" style={{ "--delay": "120ms" } as CSSProperties}>
         <CardHeader className="flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-base">Signal Feed</CardTitle>
+          <CardTitle className="text-base">{t("signals.feedTitle")}</CardTitle>
           <div className="flex items-center gap-2">
             <div className="flex flex-wrap items-center gap-1 rounded-full border border-border/60 bg-background/70 p-1">
               {[
-                { value: "all", label: "All" },
-                { value: "crypto", label: "Crypto" },
-                { value: "stock", label: "Stocks" },
-                { value: "forex", label: "FX" },
+                { value: "all", label: t("assets.allShort") },
+                { value: "crypto", label: t("assets.crypto") },
+                { value: "stock", label: t("assets.stocks") },
+                { value: "forex", label: t("assets.fx") },
               ].map((filter) => (
                 <Button
                   key={filter.value}
@@ -168,14 +172,21 @@ export default function SignalsPage() {
         </CardHeader>
         <CardContent className="space-y-3">
           {!firebaseEnabled ? (
-            <div className="text-sm opacity-70">Configure Firebase in <code>.env</code> to view signals.</div>
+            <div className="text-sm opacity-70">
+              {t("signals.configureFirebasePrefix")} <code>.env</code> {t("signals.configureFirebaseSuffix")}
+            </div>
           ) : loading ? (
-            <div className="text-sm opacity-70">Loading signals…</div>
+            <div className="text-sm opacity-70">{t("signals.loading")}</div>
           ) : filteredSignals.length === 0 ? (
             <div className="text-sm opacity-70">
               {signals.length === 0
-                ? <>No signals yet. Adapters should write to <code>bots/{'{botId}'}/signals</code>.</>
-                : `No ${assetFilter} signals found. Try a different filter.`}
+                ? (
+                  <>
+                    {t("signals.emptyPrefix")} <code>bots/{'{botId}'}/signals</code>{" "}
+                    {t("signals.emptySuffix")}
+                  </>
+                )
+                : t("signals.noSignalsForFilter", { filter: t(`assets.${assetFilter}`) })}
             </div>
           ) : (
             filteredSignals.map((signal) => (
@@ -187,15 +198,17 @@ export default function SignalsPage() {
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   {signal.side && (
                     <Badge variant={signalBadgeVariant(signal.side)} className="uppercase">
-                      {signal.side}
+                      {t(`trade.side.${signal.side}`)}
                     </Badge>
                   )}
                   {typeof signal.strength === "number" && (
-                    <Badge variant="secondary">Strength {signal.strength.toFixed(2)}</Badge>
+                    <Badge variant="secondary">
+                      {t("signals.strength", { value: signal.strength.toFixed(2) })}
+                    </Badge>
                   )}
                   <SignalMarketIndicator signal={signal} />
                   <div className="text-sm font-medium">
-                    {signal.message || "Signal detected"}
+                    {signal.message || t("signals.detected")}
                   </div>
                 </div>
                 {signal.data && (

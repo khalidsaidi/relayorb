@@ -13,6 +13,7 @@ import {
   formatAge,
   type PipelineHealthStatus,
 } from "@/features/ops/use-pipeline-health"
+import { useTranslation } from "react-i18next"
 
 function StatusIcon({ status }: { status: PipelineHealthStatus["status"] }) {
   switch (status) {
@@ -36,12 +37,27 @@ type PipelineHealthBadgeProps = {
 
 export function PipelineHealthBadge({ showLabel = false, size = "sm" }: PipelineHealthBadgeProps) {
   const { health, loading, error, documentExists } = usePipelineHealth()
+  const { t } = useTranslation()
+  const statusLabels = {
+    ok: t("pipeline.status.ok"),
+    degraded: t("pipeline.status.degraded"),
+    stale: t("pipeline.status.stale"),
+    error: t("pipeline.status.error"),
+    unknown: t("pipeline.status.unknown"),
+  }
+  const ageLabels = {
+    never: t("common.never"),
+    justNow: t("common.justNow"),
+    secondsAgo: t("common.secondsAgo"),
+    minutesAgo: t("common.minutesAgo"),
+    hoursAgo: t("common.hoursAgo"),
+  }
 
   if (loading) {
     return (
       <Badge variant="outline" className="bg-slate-500/10 text-slate-600 border-slate-500/20">
         <Activity className="h-3 w-3 animate-pulse" />
-        {showLabel && <span className="ml-1.5">Loading...</span>}
+        {showLabel && <span className="ml-1.5">{t("common.loading")}</span>}
       </Badge>
     )
   }
@@ -51,32 +67,33 @@ export function PipelineHealthBadge({ showLabel = false, size = "sm" }: Pipeline
 
   const tooltipContent = needsDeployment ? (
     <div className="space-y-2 text-xs max-w-[250px]">
-      <div className="font-medium text-amber-600">Health Monitoring Not Deployed</div>
-      <div className="text-muted-foreground">
-        The pipeline health monitoring code has been added locally but the services 
-        (market-intel, price-streamer, agent) need to be redeployed to Cloud Run/GCP 
-        to start writing health status.
-      </div>
+      <div className="font-medium text-amber-600">{t("pipeline.healthNotDeployed")}</div>
+      <div className="text-muted-foreground">{t("pipeline.healthNotDeployedBody")}</div>
       <div className="pt-1 border-t border-border/50 text-muted-foreground">
-        Run deployment commands from deploy/market-intel/README.md
+        {t("pipeline.healthNotDeployedAction")}
       </div>
     </div>
   ) : (
     <div className="space-y-2 text-xs">
-      <div className="font-medium">{getStatusLabel(health.status)}</div>
+      <div className="font-medium">{getStatusLabel(health.status, statusLabels)}</div>
       <div className="space-y-1 text-muted-foreground">
-        {Object.entries(health.services).map(([name, service]) => (
-          <div key={name} className="flex items-center justify-between gap-4">
-            <span className="capitalize">{name.replace(/_/g, " ")}</span>
-            <span className={getStatusBgColor(service.status).split(" ")[1]}>
-              {service.status} {service.ageMs !== null && `(${formatAge(service.ageMs)})`}
-            </span>
-          </div>
-        ))}
+        {Object.entries(health.services).map(([name, service]) => {
+          const serviceLabel = t(`pipeline.service.${name}`)
+          const statusLabel = statusLabels[service.status] ?? service.status
+          return (
+            <div key={name} className="flex items-center justify-between gap-4">
+              <span className="capitalize">{serviceLabel}</span>
+              <span className={getStatusBgColor(service.status).split(" ")[1]}>
+                {statusLabel}{" "}
+                {service.ageMs !== null && `(${formatAge(service.ageMs, ageLabels)})`}
+              </span>
+            </div>
+          )
+        })}
       </div>
       {health.updatedAt && (
         <div className="pt-1 border-t border-border/50 text-muted-foreground">
-          Last update: {health.updatedAt.toLocaleTimeString()}
+          {t("pipeline.lastUpdate", { time: health.updatedAt.toLocaleTimeString() })}
         </div>
       )}
     </div>
@@ -95,7 +112,7 @@ export function PipelineHealthBadge({ showLabel = false, size = "sm" }: Pipeline
             <StatusIcon status={health.status} />
             {showLabel && (
               <span className="ml-1.5">
-                {health.status === "ok" ? "Healthy" : getStatusLabel(health.status)}
+                {health.status === "ok" ? t("pipeline.healthy") : getStatusLabel(health.status, statusLabels)}
               </span>
             )}
           </Badge>

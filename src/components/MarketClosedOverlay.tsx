@@ -3,6 +3,7 @@ import {
   useMarketStatus,
   formatTimeUntil,
 } from "@/features/market/use-market-status"
+import { useTranslation } from "react-i18next"
 
 type MarketClosedOverlayProps = {
   assetClass?: "stock" | "forex"
@@ -23,6 +24,13 @@ export function MarketClosedOverlay({
 }: MarketClosedOverlayProps) {
   const marketStatus = useMarketStatus()
   const status = marketStatus[assetClass]
+  const { t } = useTranslation()
+  const assetLabel = t(`market.asset.${assetClass}`)
+  const timeLabels = {
+    now: t("common.now"),
+    hourShort: t("common.hourShort"),
+    minuteShort: t("common.minuteShort"),
+  }
   
   // If market is open, just render children normally
   if (status.isOpen) {
@@ -43,25 +51,24 @@ export function MarketClosedOverlay({
         <div className="text-center p-4 rounded-lg bg-card/90 border shadow-sm max-w-xs">
           <StatusIcon className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
           <div className="font-medium text-foreground">
-            {assetClass === "stock" ? "US Stock Market" : "Forex Market"}{" "}
-            {status.label}
+            {assetLabel} {t("market.market")} {status.label}
           </div>
           {status.timeUntilChange && (
             <div className="text-sm text-muted-foreground mt-1">
-              {status.status === "pre" && "Regular session opens in "}
-              {status.status === "after" && "After-hours ends in "}
-              {status.status === "closed" && "Opens in "}
-              {formatTimeUntil(status.timeUntilChange)}
+              {status.status === "pre" && t("market.regularOpensIn")}
+              {status.status === "after" && t("market.afterHoursEndsIn")}
+              {status.status === "closed" && t("market.opensIn")}
+              {formatTimeUntil(status.timeUntilChange, timeLabels)}
             </div>
           )}
           {(status.status === "pre" || status.status === "after") && (
             <div className="text-xs text-muted-foreground mt-2 border-t pt-2">
-              Extended hours prices shown where available
+              {t("market.extendedHoursNote")}
             </div>
           )}
           {status.status === "closed" && (
             <div className="text-xs text-muted-foreground mt-2 border-t pt-2">
-              Showing last available prices
+              {t("market.lastAvailablePrices")}
             </div>
           )}
         </div>
@@ -81,6 +88,13 @@ export function MarketStatusBanner({
 }) {
   const marketStatus = useMarketStatus()
   const status = marketStatus[assetClass]
+  const { t } = useTranslation()
+  const assetLabel = t(`market.asset.${assetClass}`)
+  const timeLabels = {
+    now: t("common.now"),
+    hourShort: t("common.hourShort"),
+    minuteShort: t("common.minuteShort"),
+  }
   
   // Don't show anything if market is open
   if (status.isOpen) {
@@ -98,16 +112,16 @@ export function MarketStatusBanner({
       <StatusIcon className="h-4 w-4 flex-shrink-0" />
       <div className="flex-1 text-sm">
         <span className="font-medium">
-          {assetClass === "stock" ? "US Stock Market" : "Forex Market"} {status.label}
+          {assetLabel} {t("market.market")} {status.label}
         </span>
         {status.timeUntilChange && (
           <span className="text-muted-foreground ml-2">
-            ({formatTimeUntil(status.timeUntilChange)})
+            ({formatTimeUntil(status.timeUntilChange, timeLabels)})
           </span>
         )}
         {(status.status === "pre" || status.status === "after") && (
           <span className="text-muted-foreground ml-2">
-            · Extended hours data shown
+            · {t("market.extendedHoursDataShown")}
           </span>
         )}
       </div>

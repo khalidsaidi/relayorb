@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react"
 import { doc, onSnapshot } from "firebase/firestore"
 import { db, firebaseEnabled } from "@/lib/firebase"
-import type { MarketActionBoardDoc, MarketHotTrade, MarketHotTradesDoc } from "@/lib/types"
+import type {
+  MarketActionBoardDoc,
+  MarketHotTrade,
+  MarketHotTradesDoc,
+  MarketSwingOvernightDoc,
+  MarketPrebreakoutDoc,
+} from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -19,6 +25,13 @@ import { ScoreBreakdownDialog } from "@/components/score/ScoreBreakdownDialog"
 import { BarChart3, InfoIcon } from "lucide-react"
 import { usePaperAutomation } from "@/features/paper/use-paper-monitor"
 import { buildAiPrompt } from "@/features/ai/ai-prompt"
+import { findAnalysisNoteKind, getAnalysisNoteKind, localizeAnalysis } from "@/lib/analysis-localize"
+import {
+  getE2ePrebreakoutOverride,
+  getE2eRefreshUrlOverride,
+  getE2eSwingOvernightOverride,
+} from "@/lib/e2e-overrides"
+import { useTranslation } from "react-i18next"
 
 function scoreTone(score?: number) {
   if (score === undefined || score === null) return "bg-muted text-muted-foreground"
@@ -28,8 +41,8 @@ function scoreTone(score?: number) {
   return "bg-slate-500/10 text-slate-600"
 }
 
-function formatChange(value?: number) {
-  if (value === undefined || value === null) return "—"
+function formatChange(value: number | undefined, naLabel: string) {
+  if (value === undefined || value === null) return naLabel
   const sign = value >= 0 ? "+" : ""
   return `${sign}${value.toFixed(2)}%`
 }
@@ -47,9 +60,10 @@ type AiAdvice = {
 
 type FetchStatusEntry = { status?: string; source?: string; error?: string }
 type FetchStatus = Record<string, FetchStatusEntry>
+type AssetClass = MarketHotTrade["assetClass"]
 
 function buildAdviceKey(item: MarketHotTrade) {
-  return `${item.assetClass}:${item.symbol}:${item.side ?? "hold"}`
+  return `${item.assetClass}:${item.symbol}:${item.side ?? "hold"}:${item.profile ?? "default"}`
 }
 
 function computePriceLevels(
@@ -77,21 +91,25 @@ function computePriceLevels(
 /**
  * Format hold time in a human-readable way
  */
-function formatHoldTime(minutes: number): string {
+function formatHoldTime(
+  minutes: number,
+  labels: { day: string; days: string; hourShort: string; minuteShort: string }
+): string {
   if (minutes >= 1440) {
     const days = Math.round(minutes / 1440)
-    return `${days} day${days > 1 ? 's' : ''}`
+    return `${days} ${days > 1 ? labels.days : labels.day}`
   } else if (minutes >= 60) {
     const hours = Math.round(minutes / 60)
-    return `${hours}h`
+    return `${hours}${labels.hourShort}`
   } else {
-    return `${minutes}m`
+    return `${minutes}${labels.minuteShort}`
   }
 }
 
 function TradeList({
   items,
   title,
+  meta,
   empty,
   aiAdvice,
   aiLoading,
@@ -106,6 +124,7 @@ function TradeList({
 }: {
   items: MarketHotTrade[]
   title: string
+  meta?: string
   empty: string
   aiAdvice: Record<string, AiAdvice>
   aiLoading: Record<string, boolean>
@@ -118,11 +137,36 @@ function TradeList({
   prices: Record<string, number>
   livePrices: Record<string, number>
 }) {
+  const { t, i18n } = useTranslation()
+  const naLabel = t("common.na")
+  const assetLabelMap: Record<AssetClass, string> = {
+    stock: t("assets.stock"),
+    crypto: t("assets.crypto"),
+    forex: t("assets.fx"),
+  }
+  const getAssetLabel = (assetClass?: string | null) =>
+    assetClass ? assetLabelMap[assetClass as AssetClass] ?? assetClass : t("common.unknown")
+  const holdLabels = {
+    day: t("time.day"),
+    days: t("time.days"),
+    hourShort: t("common.hourShort"),
+    minuteShort: t("common.minuteShort"),
+  }
+
   return (
     <Card className="border-border/60 bg-background/70">
       <CardHeader className="space-y-1">
-        <CardTitle className="text-base">{title}</CardTitle>
-        <div className="text-xs text-muted-foreground">{items.length} picks</div>
+        <div className="flex items-start justify-between gap-2">
+          <CardTitle className="text-base">{title}</CardTitle>
+          {meta ? (
+            <Badge variant="outline" className="text-[10px]">
+              {meta}
+            </Badge>
+          ) : null}
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {t("tradeNow.picks", { count: items.length })}
+        </div>
       </CardHeader>
       <CardContent className="space-y-3">
         {items.length === 0 ? (
@@ -132,6 +176,8 @@ function TradeList({
             const adviceKey = buildAdviceKey(item)
             const advice = aiAdvice[adviceKey]
             const loading = aiLoading[adviceKey]
+            const localizedAnalysis = localizeAnalysis(item.analysis, t, i18n.language)
+            const noteKind = findAnalysisNoteKind(item.analysis?.details)
             return (
               <div
                 key={`${title}-${item.assetClass}-${item.symbol}`}
@@ -144,15 +190,25 @@ function TradeList({
                         {item.symbol}
                       </div>
                       <Badge variant="outline" className="uppercase text-[10px]">
-                        {item.assetClass}
+                        {getAssetLabel(item.assetClass)}
                       </Badge>
+                      {item.profile === "swing_overnight" && (
+                        <Badge variant="secondary" className="text-[10px]">
+                          {t("tradeNow.swingOvernightBadge")}
+                        </Badge>
+                      )}
+                      {item.profile === "prebreakout" && (
+                        <Badge variant="secondary" className="text-[10px]">
+                          {t("tradeNow.prebreakoutBadge")}
+                        </Badge>
+                      )}
                       <div className="ml-auto flex items-center gap-1">
                         <Button
                           variant="ghost"
                           size="icon"
                           className="h-6 w-6"
                           onClick={() => onShowBreakdown(item)}
-                          title="Score breakdown"
+                          title={t("tradeNow.scoreBreakdown")}
                         >
                           <InfoIcon className="h-4 w-4" />
                         </Button>
@@ -161,7 +217,7 @@ function TradeList({
                           size="icon"
                           className="h-6 w-6"
                           onClick={() => onShowChart(item)}
-                          title="View Chart"
+                          title={t("tradeNow.viewChart")}
                         >
                           <BarChart3 className="h-4 w-4" />
                         </Button>
@@ -175,11 +231,14 @@ function TradeList({
                         })()}
                       </span>
                       {livePrices[item.symbol] && (
-                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" title="Live price"></span>
+                        <span
+                          className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"
+                          title={t("tradeNow.livePrice")}
+                        ></span>
                       )}
                       <span>·</span>
-                      24h {formatChange(item.momentum?.change24h)} · 1h{" "}
-                      {formatChange(item.momentum?.change1h)}
+                      {t("tradeNow.twentyFourHour")} {formatChange(item.momentum?.change24h, naLabel)} ·{" "}
+                      {t("tradeNow.oneHour")} {formatChange(item.momentum?.change1h, naLabel)}
                     </div>
                   </div>
                   <Badge variant="outline" className={scoreTone(item.score)}>
@@ -188,28 +247,62 @@ function TradeList({
                 </div>
                 {item.signals?.total ? (
                   <div className="mt-2 text-[11px] text-muted-foreground">
-                    {item.signals.total} bot signals · {item.signals.buy ?? 0} buy /{" "}
-                    {item.signals.sell ?? 0} sell
+                    {t("tradeNow.botSignals", {
+                      total: item.signals.total,
+                      buy: item.signals.buy ?? 0,
+                      sell: item.signals.sell ?? 0,
+                    })}
                   </div>
                 ) : null}
-                {item.analysis?.summary ? (
-                  <div className="mt-1 text-xs text-muted-foreground break-words">
-                    {item.analysis.summary}
+                {localizedAnalysis.summary ? (
+                  <div className="mt-1 text-xs text-muted-foreground break-words flex items-center gap-1.5">
+                    {noteKind ? (
+                      <Badge
+                        variant="outline"
+                        className="h-4 px-1.5 text-[9px] uppercase tracking-wide"
+                      >
+                        {t(`analysis.badges.${noteKind}`)}
+                      </Badge>
+                    ) : null}
+                    <span>{localizedAnalysis.summary}</span>
                   </div>
                 ) : item.rationale ? (
-                  <div className="mt-1 text-xs text-muted-foreground break-words">
-                    {item.rationale}
+                  <div className="mt-1 text-xs text-muted-foreground break-words flex items-center gap-1.5">
+                    {noteKind ? (
+                      <Badge
+                        variant="outline"
+                        className="h-4 px-1.5 text-[9px] uppercase tracking-wide"
+                      >
+                        {t(`analysis.badges.${noteKind}`)}
+                      </Badge>
+                    ) : null}
+                    <span>{item.rationale}</span>
                   </div>
                 ) : null}
-                {item.analysis?.details?.length ? (
+                {localizedAnalysis.details?.length ? (
                   <details className="mt-2 text-[11px] text-muted-foreground">
                     <summary className="cursor-pointer text-[11px]">
-                      Why this pick
+                      {t("tradeNow.whyThisPick")}
                     </summary>
                     <ul className="mt-1 space-y-1 break-words list-disc pl-4">
-                      {item.analysis.details.map((line, index) => (
-                        <li key={`${item.symbol}-detail-${index}`}>{line}</li>
-                      ))}
+                      {localizedAnalysis.details.map((line, index) => {
+                        const noteKind = getAnalysisNoteKind(item.analysis?.details?.[index])
+                        return (
+                          <li key={`${item.symbol}-detail-${index}`}>
+                            <span className="inline-flex items-center gap-1">
+                              {noteKind ? (
+                                <Badge
+                                  variant="outline"
+                                  className="h-4 px-1.5 text-[9px] uppercase tracking-wide"
+                                >
+                                  {t(`analysis.badges.${noteKind}`)}
+                                </Badge>
+                              ) : null}
+                              <span>{line}</span>
+                            </span>
+                          </li>
+                        )
+                      })}
                     </ul>
                   </details>
                 ) : null}
@@ -223,7 +316,7 @@ function TradeList({
                     variant="default"
                     className="gap-2"
                   >
-                    <span>Trade</span>
+                    <span>{t("tradeNow.trade")}</span>
                   </PaperTradeButton>
                   <Button
                     type="button"
@@ -232,7 +325,7 @@ function TradeList({
                     onClick={() => onAskAi(item)}
                     disabled={!adviceEnabled || loading}
                   >
-                    {loading ? "Asking..." : "Ask AI"}
+                    {loading ? t("tradeNow.asking") : t("tradeNow.askAi")}
                   </Button>
                   <Button
                     type="button"
@@ -240,23 +333,32 @@ function TradeList({
                     variant="ghost"
                     onClick={() => onCopyPrompt(item)}
                   >
-                    Copy AI prompt
+                    {t("tradeNow.copyAiPrompt")}
                   </Button>
                   <span className="text-[11px] text-muted-foreground">
-                    Get a simple buy/hold/sell plan.
+                    {t("tradeNow.aiHint")}
                   </span>
                 </div>
                 {advice ? (
                   <div className="mt-2 rounded-lg border border-border/60 bg-muted/30 p-2 text-[11px]">
                     <div className="font-medium">
-                      AI:{" "}
+                      {t("tradeNow.aiLabel")}{" "}
                       {advice.summary ||
-                        `${advice.action.charAt(0).toUpperCase() + advice.action.slice(1)} signal for ${item.symbol}.`}
+                        t("tradeNow.aiSignal", {
+                          action: t(`trade.side.${advice.action}`),
+                          symbol: item.symbol,
+                        })}
                     </div>
                     <div className="mt-1 text-muted-foreground">
                       {(() => {
                         if (advice.action === "hold") {
-                          return <>Recheck in {formatHoldTime(advice.holdMinutes)}.</>
+                          return (
+                            <>
+                              {t("tradeNow.recheckIn", {
+                                time: formatHoldTime(advice.holdMinutes, holdLabels),
+                              })}
+                            </>
+                          )
                         }
                         const computed = computePriceLevels(
                           advice.action,
@@ -268,12 +370,12 @@ function TradeList({
                           advice.stopLossPrice ?? computed.stopLossPrice
                         const target =
                           advice.takeProfitPrice ?? computed.takeProfitPrice
-                        const holdTimeText = formatHoldTime(advice.holdMinutes)
+                        const holdTimeText = formatHoldTime(advice.holdMinutes, holdLabels)
                         return (
                           <>
-                            Hold {holdTimeText} · Stop{" "}
-                            {stop ? formatAssetPrice(stop, item.assetClass) : "—"} ·
-                            Target {target ? formatAssetPrice(target, item.assetClass) : "—"}
+                            {t("tradeNow.holdFor", { time: holdTimeText })} · {t("tradeNow.stop")}{" "}
+                            {stop ? formatAssetPrice(stop, item.assetClass) : naLabel} · {t("tradeNow.target")}{" "}
+                            {target ? formatAssetPrice(target, item.assetClass) : naLabel}
                           </>
                         )
                       })()}
@@ -291,7 +393,7 @@ function TradeList({
                         className="mt-2 w-full"
                         onClick={() => onApplyAiSuggestion(item, advice)}
                       >
-                        Apply AI Suggestion
+                        {t("tradeNow.applyAiSuggestion")}
                       </Button>
                     )}
                   </div>
@@ -307,11 +409,18 @@ function TradeList({
 
 export default function TradeNowPage() {
   const { user } = useAuth()
+  const { t } = useTranslation()
   const { prices, livePrices } = useMarketPrices()
   const [actionBoard, setActionBoard] = useState<MarketActionBoardDoc | null>(null)
   const [hotTrades, setHotTrades] = useState<MarketHotTrade[]>([])
   const [hotTradesUpdatedAt, setHotTradesUpdatedAt] = useState<MarketHotTradesDoc["updatedAt"]>()
   const [hotTradesMeta, setHotTradesMeta] = useState<MarketHotTradesDoc["meta"]>()
+  const [swingOvernight, setSwingOvernight] = useState<MarketHotTrade[]>([])
+  const [swingOvernightUpdatedAt, setSwingOvernightUpdatedAt] =
+    useState<MarketSwingOvernightDoc["updatedAt"]>()
+  const [prebreakout, setPrebreakout] = useState<MarketHotTrade[]>([])
+  const [prebreakoutUpdatedAt, setPrebreakoutUpdatedAt] =
+    useState<MarketPrebreakoutDoc["updatedAt"]>()
   const [loading, setLoading] = useState(true)
   const [assetFilter, setAssetFilter] = useState<"all" | "crypto" | "stock" | "forex">(
     "all"
@@ -329,8 +438,18 @@ export default function TradeNowPage() {
     if (actionBoard?.buys?.length) items.push(...actionBoard.buys)
     if (actionBoard?.sells?.length) items.push(...actionBoard.sells)
     if (hotTrades.length) items.push(...hotTrades)
+    if (swingOvernight.length) items.push(...swingOvernight)
+    if (prebreakout.length) items.push(...prebreakout)
     return items
-  }, [actionBoard, hotTrades])
+  }, [actionBoard, hotTrades, swingOvernight, prebreakout])
+
+  const paperMonitorItems = useMemo(() => {
+    const items: MarketHotTrade[] = []
+    if (hotTrades.length) items.push(...hotTrades)
+    if (swingOvernight.length) items.push(...swingOvernight)
+    if (prebreakout.length) items.push(...prebreakout)
+    return items
+  }, [hotTrades, swingOvernight, prebreakout])
 
   useStreamSymbols("trade-now", {
     items: streamItems,
@@ -338,21 +457,33 @@ export default function TradeNowPage() {
   })
 
   // Monitor paper positions for stop loss / take profit
-  usePaperAutomation(user?.uid, hotTrades)
+  usePaperAutomation(user?.uid, paperMonitorItems)
 
   const refreshEndpoint = useMemo(() => {
-    const base = (import.meta.env.VITE_REFRESH_URL || "").trim()
+    const override = getE2eRefreshUrlOverride()
+    const base = (override || import.meta.env.VITE_REFRESH_URL || "").trim()
     if (!base) return ""
     return `${base.replace(/\/+$/, "")}/refresh`
   }, [])
   const adviceEndpoint = useMemo(() => {
-    const base = (import.meta.env.VITE_REFRESH_URL || "").trim()
+    const override = getE2eRefreshUrlOverride()
+    const base = (override || import.meta.env.VITE_REFRESH_URL || "").trim()
     if (!base) return ""
     return `${base.replace(/\/+$/, "")}/advice`
   }, [])
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
+      const e2eOverride = getE2eSwingOvernightOverride()
+      if (e2eOverride) {
+        setSwingOvernight(e2eOverride.items ?? [])
+        setSwingOvernightUpdatedAt(e2eOverride.updatedAt)
+      }
+      const prebreakoutOverride = getE2ePrebreakoutOverride()
+      if (prebreakoutOverride) {
+        setPrebreakout(prebreakoutOverride.items ?? [])
+        setPrebreakoutUpdatedAt(prebreakoutOverride.updatedAt)
+      }
       setLoading(false)
       return
     }
@@ -379,9 +510,46 @@ export default function TradeNowPage() {
       setLoading(false)
     })
 
+    const e2eOverride = getE2eSwingOvernightOverride()
+    if (e2eOverride) {
+      setSwingOvernight(e2eOverride.items ?? [])
+      setSwingOvernightUpdatedAt(e2eOverride.updatedAt)
+    }
+    const prebreakoutOverride = getE2ePrebreakoutOverride()
+    if (prebreakoutOverride) {
+      setPrebreakout(prebreakoutOverride.items ?? [])
+      setPrebreakoutUpdatedAt(prebreakoutOverride.updatedAt)
+    }
+    const unsubSwing = e2eOverride
+      ? null
+      : onSnapshot(doc(db, "market", "swingOvernight"), (snap) => {
+          if (!snap.exists()) {
+            setSwingOvernight([])
+            setSwingOvernightUpdatedAt(undefined)
+            return
+          }
+          const data = snap.data() as MarketSwingOvernightDoc
+          setSwingOvernight(data.items ?? [])
+          setSwingOvernightUpdatedAt(data.updatedAt)
+        })
+    const unsubPrebreakout = prebreakoutOverride
+      ? null
+      : onSnapshot(doc(db, "market", "prebreakout"), (snap) => {
+          if (!snap.exists()) {
+            setPrebreakout([])
+            setPrebreakoutUpdatedAt(undefined)
+            return
+          }
+          const data = snap.data() as MarketPrebreakoutDoc
+          setPrebreakout(data.items ?? [])
+          setPrebreakoutUpdatedAt(data.updatedAt)
+        })
+
     return () => {
       unsubAction()
       unsubHotTrades()
+      if (unsubSwing) unsubSwing()
+      if (unsubPrebreakout) unsubPrebreakout()
     }
   }, [])
 
@@ -418,14 +586,20 @@ export default function TradeNowPage() {
   }, [actionBoard, assetFilter, hasActionBoard, hotTrades])
 
   const updatedAt = hasActionBoard ? actionBoard?.updatedAt : hotTradesUpdatedAt
+  const swingUpdatedAtLabel = swingOvernightUpdatedAt
+    ? t("tradeNow.updatedAt", { time: formatRelativeTimestamp(swingOvernightUpdatedAt) })
+    : undefined
+  const prebreakoutUpdatedAtLabel = prebreakoutUpdatedAt
+    ? t("tradeNow.updatedAt", { time: formatRelativeTimestamp(prebreakoutUpdatedAt) })
+    : undefined
   const assetLabel =
     assetFilter === "all"
-      ? "All assets"
+      ? t("assets.all")
       : assetFilter === "stock"
-        ? "Stocks"
+        ? t("assets.stocks")
         : assetFilter === "forex"
-          ? "FX"
-          : "Crypto"
+          ? t("assets.fx")
+          : t("assets.crypto")
   const fetchStatus = useMemo(() => {
     const meta = hasActionBoard ? actionBoard?.meta : hotTradesMeta
     const status = meta && typeof meta === "object" ? (meta as Record<string, unknown>).fetchStatus : null
@@ -434,33 +608,39 @@ export default function TradeNowPage() {
   const adviceEnabled = Boolean(adviceEndpoint)
 
   function resolveEmptyMessage(sideLabel: "buy" | "sell") {
-    if (assetFilter === "all") return `No ${sideLabel} signals yet.`
+    if (assetFilter === "all") {
+      return t("tradeNow.noSignalsYet", { side: t(`trade.side.${sideLabel}`) })
+    }
     const status = fetchStatus?.[assetFilter]
-    const source = status?.source ? String(status.source) : "data source"
+    const source = status?.source ? String(status.source) : t("tradeNow.dataSource")
     const error = status?.error ? String(status.error) : null
     if (status?.status === "disabled") {
-      return `${assetLabel} data is disabled in your universe.`
+      return t("tradeNow.dataDisabled", { asset: assetLabel })
     }
     if (status?.status === "error") {
-      return `${assetLabel} data unavailable (${source}). ${error ?? "Try again shortly."}`
+      return t("tradeNow.dataUnavailable", {
+        asset: assetLabel,
+        source,
+        error: error ?? t("tradeNow.tryAgainSoon"),
+      })
     }
     if (status?.status === "empty") {
-      return `${assetLabel} data returned no candidates this run. Refresh to try again.`
+      return t("tradeNow.noCandidates", { asset: assetLabel })
     }
-    return `No ${sideLabel} signals yet.`
+    return t("tradeNow.noSignalsYet", { side: t(`trade.side.${sideLabel}`) })
   }
 
   async function triggerRefresh() {
     if (!firebaseEnabled || !db) {
-      toast.error("Firebase not configured")
+      toast.error(t("tradeNow.firebaseNotConfigured"))
       return
     }
     if (!refreshEndpoint) {
-      toast.error("Refresh service not configured")
+      toast.error(t("tradeNow.refreshNotConfigured"))
       return
     }
     if (!user) {
-      toast.error("You must be signed in")
+      toast.error(t("tradeNow.mustBeSignedIn"))
       return
     }
 
@@ -477,18 +657,18 @@ export default function TradeNowPage() {
       })
       const payload = await response.json().catch(() => null)
       if (!response.ok) {
-        throw new Error(payload?.error || `Refresh failed (${response.status})`)
+        throw new Error(payload?.error || t("tradeNow.refreshFailed", { status: response.status }))
       }
       const jobNames = Array.isArray(payload?.jobs)
         ? payload.jobs.map((job: { job?: string }) => job.job).filter(Boolean)
         : []
       toast.success(
         jobNames.length > 0
-          ? `Refresh started: ${jobNames.join(", ")}`
-          : "Refresh started"
+          ? t("tradeNow.refreshStartedWithJobs", { jobs: jobNames.join(", ") })
+          : t("tradeNow.refreshStarted")
       )
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Refresh failed")
+      toast.error(err instanceof Error ? err.message : t("tradeNow.refreshFailedGeneric"))
     } finally {
       setRefreshingJobs(false)
     }
@@ -496,11 +676,11 @@ export default function TradeNowPage() {
 
   async function requestAdvice(item: MarketHotTrade) {
     if (!adviceEndpoint) {
-      toast.error("AI advice endpoint not configured.")
+      toast.error(t("tradeNow.aiEndpointNotConfigured"))
       return
     }
     if (!firebaseEnabled || !user) {
-      toast.error("Sign in to use AI advice.")
+      toast.error(t("tradeNow.signInForAi"))
       return
     }
     if (!item.symbol) return
@@ -538,13 +718,13 @@ export default function TradeNowPage() {
       })
       const data = await res.json()
       if (!res.ok || !data?.ok) {
-        const errorMsg = data?.error || "AI advice failed."
+        const errorMsg = data?.error || t("tradeNow.aiAdviceFailed")
         console.error("Advice API error:", errorMsg, data)
         throw new Error(errorMsg)
       }
       setAiAdvice((prev) => ({ ...prev, [key]: data.advice }))
     } catch (err) {
-      const message = err instanceof Error ? err.message : "AI advice failed."
+      const message = err instanceof Error ? err.message : t("tradeNow.aiAdviceFailed")
       toast.error(message)
     } finally {
       setAiLoading((prev) => ({ ...prev, [key]: false }))
@@ -555,25 +735,25 @@ export default function TradeNowPage() {
     try {
       const prompt = buildAiPrompt(item)
       await navigator.clipboard.writeText(prompt)
-      toast.success("AI prompt copied")
+      toast.success(t("tradeNow.aiPromptCopied"))
     } catch {
-      toast.error("Failed to copy prompt")
+      toast.error(t("tradeNow.aiPromptCopyFailed"))
     }
   }
 
   async function applyAiSuggestion(item: MarketHotTrade, advice: AiAdvice) {
     if (!user || !firebaseEnabled) {
-      toast.error("Sign in to apply AI suggestions")
+      toast.error(t("tradeNow.signInForAiApply"))
       return
     }
 
     if (advice.action === "hold") {
-      toast.info("AI suggests holding - no trade executed")
+      toast.info(t("tradeNow.aiHoldNoTrade"))
       return
     }
 
     if (!item.price || !Number.isFinite(item.price)) {
-      toast.error("Invalid price for trade")
+      toast.error(t("tradeNow.invalidPrice"))
       return
     }
 
@@ -595,10 +775,15 @@ export default function TradeNowPage() {
         takeProfit: advice.takeProfitPrice || undefined,
       })
       toast.success(
-    `Applied AI ${advice.action.toUpperCase()} for ${item.symbol} - $${tradeValue.toFixed(2)} @ $${formatAssetPrice(currentPrice, item.assetClass)}`
+        t("tradeNow.aiApplied", {
+          action: t(`trade.side.${advice.action}`).toUpperCase(),
+          symbol: item.symbol,
+          value: tradeValue.toFixed(2),
+          price: formatAssetPrice(currentPrice, item.assetClass),
+        })
       )
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to apply AI suggestion"
+      const message = err instanceof Error ? err.message : t("tradeNow.aiApplyFailed")
       toast.error(message)
       console.error("Apply AI suggestion error:", err)
     }
@@ -609,11 +794,11 @@ export default function TradeNowPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <div className="text-xs uppercase tracking-[0.35em] text-muted-foreground">
-            Trade Now
+            {t("tradeNow.title")}
           </div>
-          <div className="text-2xl font-semibold">What to buy vs sell</div>
+          <div className="text-2xl font-semibold">{t("tradeNow.subtitle")}</div>
           <div className="text-sm text-muted-foreground">
-            Market movers blended with live bot signals and news sentiment across crypto, stocks, and FX.
+            {t("tradeNow.description")}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -622,16 +807,20 @@ export default function TradeNowPage() {
             size="sm"
             onClick={triggerRefresh}
             disabled={!firebaseEnabled || refreshingJobs || !refreshEndpoint}
-            title={refreshEndpoint ? "Run market jobs now" : "Set VITE_REFRESH_URL to enable"}
+            title={
+              refreshEndpoint
+                ? t("tradeNow.refreshTitle")
+                : t("tradeNow.refreshDisabledTitle")
+            }
           >
-            {refreshingJobs ? "Refreshing..." : "Refresh now"}
+            {refreshingJobs ? t("tradeNow.refreshing") : t("tradeNow.refreshNow")}
           </Button>
           <div className="flex flex-wrap items-center gap-1 rounded-full border border-border/60 bg-background/70 p-1">
             {[
-              { value: "all", label: "All" },
-              { value: "crypto", label: "Crypto" },
-              { value: "stock", label: "Stocks" },
-              { value: "forex", label: "FX" },
+              { value: "all", label: t("assets.allShort") },
+              { value: "crypto", label: t("assets.crypto") },
+              { value: "stock", label: t("assets.stocks") },
+              { value: "forex", label: t("assets.fx") },
             ].map((filter) => (
               <Button
                 key={filter.value}
@@ -647,7 +836,9 @@ export default function TradeNowPage() {
               </Button>
             ))}
           </div>
-          <Badge variant="outline">Updated {formatRelativeTimestamp(updatedAt)}</Badge>
+          <Badge variant="outline">
+            {t("tradeNow.updatedAt", { time: formatRelativeTimestamp(updatedAt) })}
+          </Badge>
         </div>
       </div>
 
@@ -672,53 +863,103 @@ export default function TradeNowPage() {
       )}
 
       {!firebaseEnabled ? (
-        <div className="text-sm text-muted-foreground">Connect Firebase to load signals.</div>
+        <div className="text-sm text-muted-foreground">{t("tradeNow.connectFirebase")}</div>
       ) : loading ? (
-        <div className="text-sm text-muted-foreground">Loading live picks...</div>
+        <div className="text-sm text-muted-foreground">{t("tradeNow.loadingPicks")}</div>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <TradeList
-            items={buys}
-            title={`Buy Now · ${assetLabel}`}
-            empty={resolveEmptyMessage("buy")}
-            aiAdvice={aiAdvice}
-            aiLoading={aiLoading}
-            adviceEnabled={adviceEnabled}
-            onAskAi={requestAdvice}
-            onCopyPrompt={copyPrompt}
-            onShowChart={(item) => {
-              setChartAsset(item)
-              setChartOpen(true)
-            }}
-            onShowBreakdown={(item) => {
-              setBreakdownAsset(item)
-              setBreakdownOpen(true)
-            }}
-            onApplyAiSuggestion={applyAiSuggestion}
-            prices={prices}
-            livePrices={livePrices}
-          />
-          <TradeList
-            items={sells}
-            title={`Sell Now · ${assetLabel}`}
-            empty={resolveEmptyMessage("sell")}
-            aiAdvice={aiAdvice}
-            aiLoading={aiLoading}
-            adviceEnabled={adviceEnabled}
-            onAskAi={requestAdvice}
-            onCopyPrompt={copyPrompt}
-            onShowChart={(item) => {
-              setChartAsset(item)
-              setChartOpen(true)
-            }}
-            onShowBreakdown={(item) => {
-              setBreakdownAsset(item)
-              setBreakdownOpen(true)
-            }}
-            onApplyAiSuggestion={applyAiSuggestion}
-            prices={prices}
-            livePrices={livePrices}
-          />
+        <div className="space-y-4">
+          <div className="grid gap-4 lg:grid-cols-2">
+            <TradeList
+              items={buys}
+              title={t("tradeNow.buyNow", { asset: assetLabel })}
+              empty={resolveEmptyMessage("buy")}
+              aiAdvice={aiAdvice}
+              aiLoading={aiLoading}
+              adviceEnabled={adviceEnabled}
+              onAskAi={requestAdvice}
+              onCopyPrompt={copyPrompt}
+              onShowChart={(item) => {
+                setChartAsset(item)
+                setChartOpen(true)
+              }}
+              onShowBreakdown={(item) => {
+                setBreakdownAsset(item)
+                setBreakdownOpen(true)
+              }}
+              onApplyAiSuggestion={applyAiSuggestion}
+              prices={prices}
+              livePrices={livePrices}
+            />
+            <TradeList
+              items={sells}
+              title={t("tradeNow.sellNow", { asset: assetLabel })}
+              empty={resolveEmptyMessage("sell")}
+              aiAdvice={aiAdvice}
+              aiLoading={aiLoading}
+              adviceEnabled={adviceEnabled}
+              onAskAi={requestAdvice}
+              onCopyPrompt={copyPrompt}
+              onShowChart={(item) => {
+                setChartAsset(item)
+                setChartOpen(true)
+              }}
+              onShowBreakdown={(item) => {
+                setBreakdownAsset(item)
+                setBreakdownOpen(true)
+              }}
+              onApplyAiSuggestion={applyAiSuggestion}
+              prices={prices}
+              livePrices={livePrices}
+            />
+          </div>
+          {(assetFilter === "all" || assetFilter === "stock") && (
+            <TradeList
+              items={swingOvernight}
+              title={t("tradeNow.swingOvernightTitle")}
+              meta={swingUpdatedAtLabel}
+              empty={t("tradeNow.swingOvernightEmpty")}
+              aiAdvice={aiAdvice}
+              aiLoading={aiLoading}
+              adviceEnabled={adviceEnabled}
+              onAskAi={requestAdvice}
+              onCopyPrompt={copyPrompt}
+              onShowChart={(item) => {
+                setChartAsset(item)
+                setChartOpen(true)
+              }}
+              onShowBreakdown={(item) => {
+                setBreakdownAsset(item)
+                setBreakdownOpen(true)
+              }}
+              onApplyAiSuggestion={applyAiSuggestion}
+              prices={prices}
+              livePrices={livePrices}
+            />
+          )}
+          {(assetFilter === "all" || assetFilter === "stock") && (
+            <TradeList
+              items={prebreakout}
+              title={t("tradeNow.prebreakoutTitle")}
+              meta={prebreakoutUpdatedAtLabel}
+              empty={t("tradeNow.prebreakoutEmpty")}
+              aiAdvice={aiAdvice}
+              aiLoading={aiLoading}
+              adviceEnabled={adviceEnabled}
+              onAskAi={requestAdvice}
+              onCopyPrompt={copyPrompt}
+              onShowChart={(item) => {
+                setChartAsset(item)
+                setChartOpen(true)
+              }}
+              onShowBreakdown={(item) => {
+                setBreakdownAsset(item)
+                setBreakdownOpen(true)
+              }}
+              onApplyAiSuggestion={applyAiSuggestion}
+              prices={prices}
+              livePrices={livePrices}
+            />
+          )}
         </div>
       )}
 

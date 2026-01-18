@@ -1,4 +1,5 @@
 import type { Node } from "@antv/x6"
+import { useTranslation } from "react-i18next"
 
 type NodeMetricData = {
   label: string
@@ -19,36 +20,51 @@ const STATUS_COLORS: Record<NonNullable<NodeMetricData["status"]>, { bg: string;
   error: { bg: "#fee2e2", text: "#b91c1c" },
 }
 
-function formatAge(ms: number | null | undefined) {
-  if (!ms || ms <= 0) return "—"
+function formatAge(
+  ms: number | null | undefined,
+  labels: { na: string; secondShort: string; minuteShort: string; hourShort: string }
+) {
+  if (!ms || ms <= 0) return labels.na
   const seconds = Math.floor(ms / 1000)
-  if (seconds < 60) return `${seconds}s`
+  if (seconds < 60) return `${seconds}${labels.secondShort}`
   const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m`
+  if (minutes < 60) return `${minutes}${labels.minuteShort}`
   const hours = Math.floor(minutes / 60)
-  return `${hours}h`
+  return `${hours}${labels.hourShort}`
 }
 
-function formatRate(rate: number | null | undefined) {
-  if (rate === null || rate === undefined) return "—"
+function formatRate(rate: number | null | undefined, naLabel: string) {
+  if (rate === null || rate === undefined) return naLabel
   if (rate < 0.1) return rate.toFixed(2)
   if (rate < 10) return rate.toFixed(1)
   return Math.round(rate).toString()
 }
 
-function formatP95(value: number | null | undefined) {
-  if (value === null || value === undefined) return "—"
+function formatP95(value: number | null | undefined, naLabel: string) {
+  if (value === null || value === undefined) return naLabel
   return `${Math.round(value)}ms`
 }
 
-function formatErrorRate(value: number | null | undefined) {
-  if (value === null || value === undefined) return "—"
+function formatErrorRate(value: number | null | undefined, naLabel: string) {
+  if (value === null || value === undefined) return naLabel
   return `${Math.round(value)}%`
 }
 
 export function OpsGraphNodeCard({ node }: { node: Node }) {
+  const { t } = useTranslation()
   const data = node.getData() as NodeMetricData
   const status = data.status || "idle"
+  const statusLabel = t(`ops.status.${status}`)
+  const naLabel = t("common.na")
+  const ageLabels = {
+    na: naLabel,
+    secondShort: t("common.secondShort"),
+    minuteShort: t("common.minuteShort"),
+    hourShort: t("common.hourShort"),
+  }
+  const perMinuteSuffix = t("ops.perMinuteSuffix")
+  const rateLabelKey = data.rateLabel ? `opsGraph.rate.${data.rateLabel}` : null
+  const rateLabelText = rateLabelKey ? t(rateLabelKey, { defaultValue: data.rateLabel }) : ""
   const zoom = data.zoom ?? 1
   const tvMode = data.tvMode ?? false
   // In TV mode, always show full details
@@ -178,20 +194,20 @@ export function OpsGraphNodeCard({ node }: { node: Node }) {
     <div style={containerStyle}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <div style={titleStyle}>{data.label || node.id}</div>
-        <span style={pillStyle}>{status}</span>
+        <span style={pillStyle}>{statusLabel}</span>
       </div>
       {detailLevel !== "compact" ? (
         <div style={metaStyle}>
-          <span>Last {formatAge(data.lastSeenMs)}</span>
+          <span>{t("ops.lastSeen", { age: formatAge(data.lastSeenMs, ageLabels) })}</span>
           <span>
-            {(data.rateLabel || "events") + "/min"} {formatRate(data.ratePerMin)}
+            {`${rateLabelText || t("ops.events")}${perMinuteSuffix}`} {formatRate(data.ratePerMin, naLabel)}
           </span>
         </div>
       ) : null}
       {detailLevel === "full" ? (
         <div style={metaStyle}>
-          <span>P95 {formatP95(data.p95Ms)}</span>
-          <span>Err {formatErrorRate(data.errorRate)}</span>
+          <span>{t("ops.p95")} {formatP95(data.p95Ms, naLabel)}</span>
+          <span>{t("ops.errorShort")} {formatErrorRate(data.errorRate, naLabel)}</span>
         </div>
       ) : null}
     </div>

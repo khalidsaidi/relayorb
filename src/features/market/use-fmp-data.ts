@@ -327,8 +327,12 @@ export function useFmpSymbolSearch(query: string, assetClass?: string) {
               throw new Error(`Symbol search failed (${resp.status}): ${text || resp.statusText}`)
             }
             const payload = (await resp.json()) as unknown
-            const data = Array.isArray((payload as any)?.data)
-              ? ((payload as any).data as RawSearchRow[])
+            const payloadData =
+              typeof payload === "object" && payload !== null && "data" in payload
+                ? (payload as { data?: unknown }).data
+                : undefined
+            const data = Array.isArray(payloadData)
+              ? (payloadData as RawSearchRow[])
               : Array.isArray(payload)
                 ? (payload as RawSearchRow[])
                 : []
@@ -342,8 +346,12 @@ export function useFmpSymbolSearch(query: string, assetClass?: string) {
               throw new Error(`Name search failed (${resp.status}): ${text || resp.statusText}`)
             }
             const payload = (await resp.json()) as unknown
-            const data = Array.isArray((payload as any)?.data)
-              ? ((payload as any).data as RawSearchRow[])
+            const payloadData =
+              typeof payload === "object" && payload !== null && "data" in payload
+                ? (payload as { data?: unknown }).data
+                : undefined
+            const data = Array.isArray(payloadData)
+              ? (payloadData as RawSearchRow[])
               : Array.isArray(payload)
                 ? (payload as RawSearchRow[])
                 : []

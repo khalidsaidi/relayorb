@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge"
 import type { BotStatus } from "@/lib/types"
+import { useTranslation } from "react-i18next"
 
 const statusStyles: Record<string, string> = {
   online: "bg-emerald-500/15 text-emerald-800",
@@ -12,8 +13,9 @@ const statusStyles: Record<string, string> = {
 }
 
 export function StatusBadge({ status }: { status?: BotStatus }) {
+  const { t } = useTranslation()
   const key = status ?? "unknown"
-  const label = status ?? "unknown"
+  const label = t(`status.${key}`)
 
   return (
     <Badge variant="outline" className={statusStyles[key] || statusStyles.unknown}>

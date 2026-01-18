@@ -5,11 +5,13 @@ import { formatCurrency } from "@/lib/format"
 import { Badge } from "@/components/ui/badge"
 import { Wallet, TrendingUp, TrendingDown } from "lucide-react"
 import type { PaperWallet } from "@/lib/types"
+import { useTranslation } from "react-i18next"
 
 export function SidebarPaperProfile({ userId, collapsed }: { userId: string; collapsed?: boolean }) {
     const [wallet, setWallet] = useState<PaperWallet | null>(null)
     const [positionCount, setPositionCount] = useState(0)
     const [loading, setLoading] = useState(true)
+    const { t } = useTranslation()
 
     useEffect(() => {
         if (!db || !userId) return
@@ -42,7 +44,10 @@ export function SidebarPaperProfile({ userId, collapsed }: { userId: string; col
 
     if (collapsed) {
         return (
-            <div className="flex flex-col items-center py-2" title={`Paper Balance: ${formatCurrency(wallet.balance)}`}>
+            <div
+                className="flex flex-col items-center py-2"
+                title={t("paper.balanceLabel", { balance: formatCurrency(wallet.balance) })}
+            >
                 <div className="rounded-full bg-blue-500/10 p-2 text-blue-600 shadow-sm ring-1 ring-blue-500/20">
                     <Wallet className="h-4 w-4" />
                 </div>
@@ -60,7 +65,9 @@ export function SidebarPaperProfile({ userId, collapsed }: { userId: string; col
                     <div className="rounded-lg bg-blue-500/10 p-1.5 text-blue-600">
                         <Wallet className="h-4 w-4" />
                     </div>
-                    <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/80">Paper Wallet</span>
+                    <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/80">
+                        {t("paper.paperWallet")}
+                    </span>
                 </div>
                 <Badge variant="outline" className="h-5 px-1.5 text-[10px] bg-blue-500/5 text-blue-700 border-blue-500/20">
                     SIM
@@ -78,13 +85,15 @@ export function SidebarPaperProfile({ userId, collapsed }: { userId: string; col
                     <span className={["text-xs font-medium", isPositive ? "text-emerald-600" : "text-rose-600"].join(" ")}>
                         {isPositive ? "+" : "-"}{pnlPercent.toFixed(1)}%
                     </span>
-                    <span className="text-[10px] text-muted-foreground/60">Overall PnL</span>
+                    <span className="text-[10px] text-muted-foreground/60">{t("paper.overallPnl")}</span>
                 </div>
             </div>
 
             <div className="grid grid-cols-1 gap-2 border-t border-border/40 pt-3 mt-3">
                 <div className="flex items-center justify-between">
-                    <span className="text-[10px] uppercase tracking-tighter text-muted-foreground/70">Open Positions</span>
+                    <span className="text-[10px] uppercase tracking-tighter text-muted-foreground/70">
+                        {t("paper.openPositions")}
+                    </span>
                     <span className="text-xs font-bold font-mono">{positionCount}</span>
                 </div>
             </div>

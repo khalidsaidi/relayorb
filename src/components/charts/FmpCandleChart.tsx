@@ -13,6 +13,7 @@ import {
   type Time,
 } from "lightweight-charts"
 import type { FmpBar } from "@/features/market/use-fmp-data"
+import { useTranslation } from "react-i18next"
 
 export type SignalMarker = {
   time: number // ms since epoch
@@ -152,6 +153,7 @@ export function FmpCandleChart({
   rsiPeriod = 14,
   "data-testid": testId,
 }: FmpCandleChartProps) {
+  const { t } = useTranslation()
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null)
@@ -313,7 +315,7 @@ export function FmpCandleChart({
         } as ResizeObserver
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Chart init failed"
+      const message = err instanceof Error ? err.message : t("charts.chartInitFailed")
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setChartError(message)
       chart?.remove()
@@ -341,7 +343,7 @@ export function FmpCandleChart({
       emaSeriesRef.current = null
       rsiSeriesRef.current = null
     }
-  }, [height, showSma, showEma, showRsi])
+  }, [height, showSma, showEma, showRsi, t])
 
   useEffect(() => {
     if (!seriesRef.current) return
@@ -464,7 +466,7 @@ export function FmpCandleChart({
       ) : null}
       {!chartError && bars.length === 0 ? (
         <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
-          No chart data
+          {t("charts.noChartData")}
         </div>
       ) : null}
     </div>

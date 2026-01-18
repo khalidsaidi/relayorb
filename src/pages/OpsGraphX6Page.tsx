@@ -11,6 +11,7 @@ import { usePipelineEvents } from "@/features/ops/use-pipeline-events"
 import type { PipelineEvent } from "@/lib/types"
 import opsLayoutConfig from "@/ops/ops_graph_layout.json"
 import graphSpec from "@/ops/graph_topology.json"
+import { useTranslation } from "react-i18next"
 
 const LAYOUT_CACHE_PREFIX = "ops_graph_layout:"
 const BASE_LAYOUT = {
@@ -1248,6 +1249,7 @@ function applyNodeMetrics(
 }
 
 export default function OpsGraphX6Page() {
+  const { t } = useTranslation()
   ensureX6Shapes()
 
   const base = (import.meta.env.VITE_REFRESH_URL || "").trim()
@@ -2000,12 +2002,12 @@ export default function OpsGraphX6Page() {
 
   const statusBadge =
     status === "live"
-      ? "Live"
+      ? t("opsGraph.status.live")
       : status === "connecting"
-        ? "Connecting"
+        ? t("opsGraph.status.connecting")
         : status === "error"
-          ? "Error"
-          : "Idle"
+          ? t("opsGraph.status.error")
+          : t("opsGraph.status.idle")
 
   return (
     <div
@@ -2034,7 +2036,7 @@ export default function OpsGraphX6Page() {
               variant="ghost"
               className="h-8 w-8 p-0 text-xl font-bold"
               onClick={handleZoomOut}
-              title="Zoom out"
+              title={t("opsGraph.controls.zoomOut")}
             >
               −
             </Button>
@@ -2043,7 +2045,7 @@ export default function OpsGraphX6Page() {
               variant="ghost"
               className="h-8 px-2 text-sm font-medium"
               onClick={() => handleZoomTo(1)}
-              title="100% zoom"
+              title={t("opsGraph.controls.zoomNormal")}
             >
               100%
             </Button>
@@ -2052,7 +2054,7 @@ export default function OpsGraphX6Page() {
               variant="ghost"
               className="h-8 px-2 text-sm font-medium"
               onClick={() => handleZoomTo(1.5)}
-              title="150% zoom"
+              title={t("opsGraph.controls.zoomMid")}
             >
               150%
             </Button>
@@ -2061,7 +2063,7 @@ export default function OpsGraphX6Page() {
               variant="ghost"
               className="h-8 px-2 text-sm font-bold text-blue-600"
               onClick={() => handleZoomTo(2)}
-              title="200% zoom - recommended for TV"
+              title={t("opsGraph.controls.zoomTv")}
             >
               200%
             </Button>
@@ -2070,7 +2072,7 @@ export default function OpsGraphX6Page() {
               variant="ghost"
               className="h-8 w-8 p-0 text-xl font-bold"
               onClick={handleZoomIn}
-              title="Zoom in"
+              title={t("opsGraph.controls.zoomIn")}
             >
               +
             </Button>
@@ -2082,7 +2084,7 @@ export default function OpsGraphX6Page() {
             className="bg-white/95 backdrop-blur-sm shadow-md h-9 px-4 text-sm"
             onClick={handleFitView}
           >
-            Fit
+            {t("opsGraph.controls.fit")}
           </Button>
           <Button
             size="sm"
@@ -2092,9 +2094,9 @@ export default function OpsGraphX6Page() {
               : "bg-white/95 backdrop-blur-sm shadow-md h-9 px-4 text-sm"
             }
             onClick={() => setTvMode((prev) => !prev)}
-            title="TV Mode - larger text and auto-zoom for big screens"
+            title={t("opsGraph.controls.tvModeTitle")}
           >
-            📺 TV Mode
+            📺 {t("opsGraph.controls.tvMode")}
           </Button>
           <Button
             size="sm"
@@ -2102,7 +2104,7 @@ export default function OpsGraphX6Page() {
             className="bg-white/95 backdrop-blur-sm shadow-md h-9 px-4 text-sm"
             onClick={() => setIsFullscreen(false)}
           >
-            ✕ Exit
+            ✕ {t("opsGraph.controls.exit")}
           </Button>
         </div>
       )}
@@ -2112,16 +2114,18 @@ export default function OpsGraphX6Page() {
         <>
           <header className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-col gap-1">
-              <h1 className="text-xl font-semibold">Ops Graph</h1>
+              <h1 className="text-xl font-semibold">{t("opsGraph.header.title")}</h1>
               <p className="text-sm text-muted-foreground">
-                Diagram-grade pipeline map with live metrics and orthogonal routing.
+                {t("opsGraph.header.subtitle")}
               </p>
             </div>
             <div className="flex items-center gap-2">
               <PipelineHealthBadge showLabel />
               <Badge variant="outline">{statusBadge}</Badge>
               {connectedAt ? (
-                <Badge variant="secondary">Connected {connectedAt.toLocaleTimeString()}</Badge>
+                <Badge variant="secondary">
+                  {t("opsGraph.header.connected", { time: connectedAt.toLocaleTimeString() })}
+                </Badge>
               ) : null}
               {error ? <Badge variant="destructive">{error}</Badge> : null}
             </div>
@@ -2132,30 +2136,32 @@ export default function OpsGraphX6Page() {
 
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant="secondary" onClick={handleResetView}>
-              Reset
+              {t("opsGraph.controls.reset")}
             </Button>
             <Button size="sm" variant="secondary" onClick={handleFitView}>
-              Fit
+              {t("opsGraph.controls.fit")}
             </Button>
             <Button size="sm" variant="secondary" onClick={handleRecomputeLayout} disabled={layoutPending}>
-              {layoutPending ? "Recomputing..." : "Recompute Layout"}
+              {layoutPending
+                ? t("opsGraph.controls.recomputing")
+                : t("opsGraph.controls.recompute")}
             </Button>
             <Button
               size="sm"
               variant={showDebug ? "default" : "secondary"}
               onClick={handleDebugLayout}
             >
-              {showDebug ? "Hide Debug Overlay" : "Debug Overlay"}
+              {showDebug ? t("opsGraph.controls.hideDebug") : t("opsGraph.controls.showDebug")}
             </Button>
             <Button
               size="sm"
               variant={freezeLive ? "default" : "secondary"}
               onClick={() => setFreezeLive((prev) => !prev)}
             >
-              {freezeLive ? "Resume Live" : "Freeze Live"}
+              {freezeLive ? t("opsGraph.controls.resumeLive") : t("opsGraph.controls.freezeLive")}
             </Button>
             <Button size="sm" variant="secondary" onClick={() => setIsFullscreen(true)}>
-              Full Screen
+              {t("opsGraph.controls.fullScreen")}
             </Button>
           </div>
         </>

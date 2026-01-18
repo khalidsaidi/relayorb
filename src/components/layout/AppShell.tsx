@@ -1,5 +1,6 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react"
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react"
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom"
+import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import {
@@ -29,6 +30,7 @@ import {
   BarChart3,
   Share2,
   LineChart,
+  Languages,
 } from "lucide-react"
 import { useAuth } from "@/features/auth/auth-context"
 import { auth, firebaseEnabled } from "@/lib/firebase"
@@ -36,6 +38,7 @@ import { signOut } from "firebase/auth"
 import { SidebarPaperProfile } from "./SidebarPaperProfile"
 import { usePresence } from "@/features/presence/use-presence"
 import { PipelineHealthBadge } from "@/components/PipelineHealthBadge"
+import { languageOptions, setStoredLanguage, type SupportedLanguage } from "@/i18n"
 
 type NavItem = {
   to: string
@@ -43,30 +46,19 @@ type NavItem = {
   icon: ReactNode
 }
 
-const navItems: NavItem[] = [
-  { to: "/", label: "Trade Now", icon: <TrendingUp className="h-4 w-4" /> },
-  { to: "/dashboard", label: "Dashboard", icon: <LayoutDashboard className="h-4 w-4" /> },
-  { to: "/charts", label: "Live Charts", icon: <LineChart className="h-4 w-4" /> },
-  { to: "/signals", label: "Signals", icon: <Activity className="h-4 w-4" /> },
-  { to: "/bots", label: "Bots", icon: <Bot className="h-4 w-4" /> },
-  { to: "/portfolio", label: "Portfolio", icon: <BarChart3 className="h-4 w-4" /> },
-  { to: "/ops/graph", label: "Ops Graph", icon: <Share2 className="h-4 w-4" /> },
-]
-
 const SIDEBAR_STORAGE_KEY = "relayorb.sidebar.collapsed"
 
-function usePageTitle() {
-  const { pathname } = useLocation()
-  if (pathname === "/") return "Trade Now"
-  if (pathname.startsWith("/bots/")) return "Bot Detail"
-  if (pathname.startsWith("/bots")) return "Bots"
-  if (pathname.startsWith("/signals")) return "Signals"
-  if (pathname.startsWith("/charts")) return "Live Charts"
-  if (pathname.startsWith("/portfolio")) return "Portfolio"
-  if (pathname.startsWith("/dashboard")) return "Dashboard"
-  if (pathname.startsWith("/ops/graph")) return "Ops Graph"
-  if (pathname.startsWith("/ops")) return "Ops Graph"
-  return "Dashboard"
+function getPageTitle(pathname: string, t: (key: string) => string) {
+  if (pathname === "/") return t("nav.tradeNow")
+  if (pathname.startsWith("/bots/")) return t("nav.botDetail")
+  if (pathname.startsWith("/bots")) return t("nav.bots")
+  if (pathname.startsWith("/signals")) return t("nav.signals")
+  if (pathname.startsWith("/charts")) return t("nav.liveCharts")
+  if (pathname.startsWith("/portfolio")) return t("nav.portfolio")
+  if (pathname.startsWith("/dashboard")) return t("nav.dashboard")
+  if (pathname.startsWith("/ops/graph")) return t("nav.opsGraph")
+  if (pathname.startsWith("/ops")) return t("nav.opsGraph")
+  return t("nav.dashboard")
 }
 
 function NavItemLink({
@@ -97,8 +89,20 @@ function NavItemLink({
 
 export function AppShell() {
   const { user } = useAuth()
+  const { t, i18n } = useTranslation()
+  const { pathname } = useLocation()
   const navigate = useNavigate()
-  const pageTitle = usePageTitle()
+  const pageTitle = useMemo(() => getPageTitle(pathname, t), [pathname, t])
+
+  const navItems: NavItem[] = [
+    { to: "/", label: t("nav.tradeNow"), icon: <TrendingUp className="h-4 w-4" /> },
+    { to: "/dashboard", label: t("nav.dashboard"), icon: <LayoutDashboard className="h-4 w-4" /> },
+    { to: "/charts", label: t("nav.liveCharts"), icon: <LineChart className="h-4 w-4" /> },
+    { to: "/signals", label: t("nav.signals"), icon: <Activity className="h-4 w-4" /> },
+    { to: "/bots", label: t("nav.bots"), icon: <Bot className="h-4 w-4" /> },
+    { to: "/portfolio", label: t("nav.portfolio"), icon: <BarChart3 className="h-4 w-4" /> },
+    { to: "/ops/graph", label: t("nav.opsGraph"), icon: <Share2 className="h-4 w-4" /> },
+  ]
   
   // Track user presence for activity-based refresh
   usePresence()
@@ -149,9 +153,11 @@ export function AppShell() {
           <div className="flex items-center justify-between px-5 py-4">
             <div className={sidebarCollapsed ? "text-center" : ""}>
               <div className="text-xs uppercase tracking-[0.25em] opacity-60">
-                {sidebarCollapsed ? "RO" : "RelayOrb"}
+                {sidebarCollapsed ? "RO" : t("app.relayOrb")}
               </div>
-              {!sidebarCollapsed && <div className="text-lg font-semibold">Control Deck</div>}
+              {!sidebarCollapsed && (
+                <div className="text-lg font-semibold">{t("app.controlDeck")}</div>
+              )}
             </div>
           </div>
 
@@ -173,7 +179,7 @@ export function AppShell() {
               onClick={doSignOut}
             >
               <LogOut className={sidebarCollapsed ? "h-4 w-4" : "mr-2 h-4 w-4"} />
-              {!sidebarCollapsed && "Sign out"}
+              {!sidebarCollapsed && t("auth.signOut")}
             </Button>
           </div>
         </aside>
@@ -183,13 +189,18 @@ export function AppShell() {
             <div className="flex items-center gap-3">
               <Sheet>
                 <SheetTrigger asChild>
-                  <Button variant="ghost" size="icon" className="md:hidden" aria-label="Open menu">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="md:hidden"
+                    aria-label={t("app.openMenu")}
+                  >
                     <Menu className="h-5 w-5" />
                   </Button>
                 </SheetTrigger>
                 <SheetContent side="left" className="w-64">
                   <SheetHeader>
-                    <SheetTitle>RelayOrb</SheetTitle>
+                    <SheetTitle>{t("app.relayOrb")}</SheetTitle>
                   </SheetHeader>
                   <nav className="mt-4 flex flex-col gap-1">
                     {navItems.map((item) => (
@@ -219,7 +230,9 @@ export function AppShell() {
               </Button>
 
               <div>
-                <div className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Console</div>
+                <div className="text-xs uppercase tracking-[0.3em] text-muted-foreground">
+                  {t("app.console")}
+                </div>
                 <div className="text-base font-semibold">{pageTitle}</div>
               </div>
             </div>
@@ -227,10 +240,32 @@ export function AppShell() {
             <div className="flex items-center gap-2">
               {firebaseEnabled && <PipelineHealthBadge showLabel={false} />}
               {!firebaseEnabled ? (
-                <Badge variant="outline">Firebase Disabled</Badge>
+                <Badge variant="outline">{t("app.firebaseDisabled")}</Badge>
               ) : (
-                <Badge variant="secondary">Private Access</Badge>
+                <Badge variant="secondary">{t("app.privateAccess")}</Badge>
               )}
+
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" aria-label={t("app.language")}>
+                    <Languages className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {languageOptions.map((option) => {
+                    const active = i18n.language === option.value
+                    return (
+                      <DropdownMenuItem
+                        key={option.value}
+                        onClick={() => setStoredLanguage(option.value as SupportedLanguage)}
+                      >
+                        {active ? "✓ " : ""}
+                        {option.nativeLabel} · {option.label}
+                      </DropdownMenuItem>
+                    )
+                  })}
+                </DropdownMenuContent>
+              </DropdownMenu>
 
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -239,12 +274,12 @@ export function AppShell() {
                       <AvatarFallback>{initials}</AvatarFallback>
                     </Avatar>
                     <span className="ml-2 hidden max-w-[180px] truncate text-sm sm:inline">
-                      {user?.displayName || user?.email || "User"}
+                      {user?.displayName || user?.email || t("auth.userFallback")}
                     </span>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={doSignOut}>Sign out</DropdownMenuItem>
+                  <DropdownMenuItem onClick={doSignOut}>{t("auth.signOut")}</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>

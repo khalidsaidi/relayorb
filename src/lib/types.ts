@@ -135,6 +135,8 @@ export type MarketTradeScoreComponents = {
 export type MarketTradeAnalysis = {
   summary?: string
   details?: string[]
+  summaryZh?: string
+  detailsZh?: string[]
 }
 
 export type MarketUniverseMode =
@@ -180,7 +182,7 @@ export type MarketHotTrade = {
   price?: number
   timeframe?: string
   side?: "buy" | "sell" | "hold"
-  profile?: "dip" | "scalp"
+  profile?: "dip" | "scalp" | "swing_overnight" | "prebreakout"
   score?: number
   confidence?: number
   primary?: boolean
@@ -208,12 +210,90 @@ export type MarketHotTrade = {
   source?: string
   rationale?: string
   origins?: string[]
+  swing?: {
+    asOfTs?: string
+    inputs?: {
+      ma20?: number
+      ma50?: number
+      ma20Slope?: number
+      atr14?: number
+      distributionDays10?: number
+      rangePosition?: number
+      todayHigh?: number
+      todayLow?: number
+      lastPrice?: number
+      last60mVolume?: number
+      avgLast60mVolume?: number
+    }
+    reasons?: string[]
+    entryWindow?: {
+      start?: string
+      end?: string
+      close?: string
+      timezone?: string
+    }
+    exitPlan?: {
+      profitTriggerPct?: number
+      morningWindowMinutes?: number
+      timeExit?: string
+      stopAtrMult?: number
+      stopType?: string
+    }
+  }
+  prebreakout?: {
+    asOfTs?: string
+    inputs?: {
+      marketCap?: number
+      floatShares?: number
+      turnoverPct?: number
+      rvol?: number
+      rangePosition?: number
+      runUpPct?: number
+      ma20?: number
+      ma50?: number
+      ma20Slope?: number
+      atr14?: number
+      atrPct?: number
+      todayVolume?: number
+      avgVolume?: number
+      newsCount?: number
+      lastPrice?: number
+      todayHigh?: number
+      todayLow?: number
+    }
+    reasons?: string[]
+    entryWindow?: {
+      start?: string
+      end?: string
+      close?: string
+      timezone?: string
+    }
+    exitPlan?: {
+      profitTriggerPct?: number
+      morningWindowMinutes?: number
+      timeExit?: string
+      stopAtrMult?: number
+      stopType?: string
+    }
+  }
 }
 
 export type MarketHotTradesDoc = {
   updatedAt?: FirestoreTimestamp
   items?: MarketHotTrade[]
   sources?: Record<string, string>
+  meta?: Record<string, unknown>
+}
+
+export type MarketSwingOvernightDoc = {
+  updatedAt?: FirestoreTimestamp
+  items?: MarketHotTrade[]
+  meta?: Record<string, unknown>
+}
+
+export type MarketPrebreakoutDoc = {
+  updatedAt?: FirestoreTimestamp
+  items?: MarketHotTrade[]
   meta?: Record<string, unknown>
 }
 
@@ -307,6 +387,10 @@ export type MarketControlsDoc = {
   enableLLM?: boolean
   newsIntervalMinutes?: number
   enableNews?: boolean
+  swingOvernightEnabled?: boolean
+  swingOvernightAutoPaperEnabled?: boolean
+  prebreakoutEnabled?: boolean
+  prebreakoutAutoPaperEnabled?: boolean
   dipHorizon?: "1h" | "24h" | "7d"
   trendHorizon?: TrendHorizon
   trendWeights?: TrendWeights

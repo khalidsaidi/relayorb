@@ -17,6 +17,7 @@ import { toast } from "sonner"
 import { useMarketPrices } from "@/features/market/use-market-prices"
 import type { MarketHotTrade } from "@/lib/types"
 import { formatAssetPrice } from "@/lib/format"
+import { useTranslation } from "react-i18next"
 
 interface PaperTradeDialogProps {
     open: boolean
@@ -32,6 +33,7 @@ interface PaperTradeDialogProps {
 export function PaperTradeDialog({ open, onOpenChange, tradeStr }: PaperTradeDialogProps) {
     const { user } = useAuth()
     const { prices, livePrices } = useMarketPrices()
+    const { t } = useTranslation()
     const [amount, setAmount] = useState("1000") // Default $1000
     const [mode, setMode] = useState<"usd" | "share">("usd")
     const [side, setSide] = useState<"buy" | "sell">(tradeStr.side)
@@ -53,7 +55,7 @@ export function PaperTradeDialog({ open, onOpenChange, tradeStr }: PaperTradeDia
 
     async function handleTrade() {
         if (!user) {
-            toast.error("You must be logged in")
+            toast.error(t("paper.mustBeLoggedIn"))
             return
         }
 
@@ -68,11 +70,16 @@ export function PaperTradeDialog({ open, onOpenChange, tradeStr }: PaperTradeDia
                 stopLoss: stopLoss ? parseFloat(stopLoss) : undefined,
                 takeProfit: takeProfit ? parseFloat(takeProfit) : undefined,
             })
-            toast.success(`Executed paper ${side.toUpperCase()} for ${tradeStr.symbol}`)
+            toast.success(
+                t("paper.executedTrade", {
+                    side: t(`trade.side.${side}`),
+                    symbol: tradeStr.symbol,
+                })
+            )
             onOpenChange(false)
         } catch (err) {
             console.error(err)
-            toast.error("Failed to place paper trade")
+            toast.error(t("paper.failedTrade"))
         } finally {
             setLoading(false)
         }
@@ -82,10 +89,13 @@ export function PaperTradeDialog({ open, onOpenChange, tradeStr }: PaperTradeDia
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent className="sm:max-w-[425px]">
                 <DialogHeader>
-                    <DialogTitle>Paper Trade: {tradeStr.symbol}</DialogTitle>
+                    <DialogTitle>{t("paper.tradeTitleShort", { symbol: tradeStr.symbol })}</DialogTitle>
                     <DialogDescription>
-                        Placing a {side.toUpperCase()} order at ${formatAssetPrice(price, tradeStr.assetClass)}
-                        {livePrices[tradeStr.symbol] && " (Live)"}.
+                        {t("paper.tradeDescription", {
+                            side: t(`trade.side.${side}`),
+                            price: formatAssetPrice(price, tradeStr.assetClass),
+                            live: livePrices[tradeStr.symbol] ? t("paper.liveTag") : "",
+                        })}
                     </DialogDescription>
                 </DialogHeader>
 
@@ -93,22 +103,26 @@ export function PaperTradeDialog({ open, onOpenChange, tradeStr }: PaperTradeDia
                     {/* Side Toggle */}
                     <Tabs value={side} onValueChange={(v) => setSide(v as "buy" | "sell")} className="w-full">
                         <TabsList className="grid w-full grid-cols-2">
-                            <TabsTrigger value="buy" className="data-[state=active]:bg-emerald-500/10 data-[state=active]:text-emerald-700">Buy / Long</TabsTrigger>
-                            <TabsTrigger value="sell" className="data-[state=active]:bg-rose-500/10 data-[state=active]:text-rose-700">Sell / Short</TabsTrigger>
+                            <TabsTrigger value="buy" className="data-[state=active]:bg-emerald-500/10 data-[state=active]:text-emerald-700">
+                                {t("trade.side.buyLong")}
+                            </TabsTrigger>
+                            <TabsTrigger value="sell" className="data-[state=active]:bg-rose-500/10 data-[state=active]:text-rose-700">
+                                {t("trade.side.sellShort")}
+                            </TabsTrigger>
                         </TabsList>
                     </Tabs>
 
                     {/* Amount Mode */}
                     <Tabs value={mode} onValueChange={(v) => setMode(v as "usd" | "share")} className="w-full">
                         <TabsList className="grid w-full grid-cols-2">
-                            <TabsTrigger value="usd">Amount ($)</TabsTrigger>
-                            <TabsTrigger value="share">Quantity (Units)</TabsTrigger>
+                            <TabsTrigger value="usd">{t("paper.amountUsd")}</TabsTrigger>
+                            <TabsTrigger value="share">{t("paper.amountUnits")}</TabsTrigger>
                         </TabsList>
                     </Tabs>
 
                     <div className="grid grid-cols-4 items-center gap-4">
                         <Label htmlFor="amount" className="text-right">
-                            {mode === "usd" ? "Value" : "Units"}
+                            {mode === "usd" ? t("paper.value") : t("paper.units")}
                         </Label>
                         <Input
                             id="amount"
@@ -121,21 +135,21 @@ export function PaperTradeDialog({ open, onOpenChange, tradeStr }: PaperTradeDia
 
                     <div className="grid grid-cols-2 gap-4">
                         <div className="grid gap-2">
-                            <Label htmlFor="stopLoss">Stop Loss ($)</Label>
+                            <Label htmlFor="stopLoss">{t("paper.stopLoss")}</Label>
                             <Input
                                 id="stopLoss"
                                 type="number"
-                                placeholder="Optional"
+                                placeholder={t("common.optional")}
                                 value={stopLoss}
                                 onChange={e => setStopLoss(e.target.value)}
                             />
                         </div>
                         <div className="grid gap-2">
-                            <Label htmlFor="takeProfit">Take Profit ($)</Label>
+                            <Label htmlFor="takeProfit">{t("paper.takeProfit")}</Label>
                             <Input
                                 id="takeProfit"
                                 type="number"
-                                placeholder="Optional"
+                                placeholder={t("common.optional")}
                                 value={takeProfit}
                                 onChange={e => setTakeProfit(e.target.value)}
                             />
@@ -144,11 +158,11 @@ export function PaperTradeDialog({ open, onOpenChange, tradeStr }: PaperTradeDia
 
                     <div className="rounded-lg bg-muted p-3 text-sm">
                         <div className="flex justify-between">
-                            <span className="text-muted-foreground">Est. Quantity:</span>
+                            <span className="text-muted-foreground">{t("paper.estimatedQuantity")}</span>
                             <span className="font-medium">{quantity.toFixed(4)}</span>
                         </div>
                         <div className="flex justify-between">
-                            <span className="text-muted-foreground">Total Value:</span>
+                            <span className="text-muted-foreground">{t("paper.totalValue")}</span>
                             <span className="font-medium">${totalCost.toFixed(2)}</span>
                         </div>
                     </div>
@@ -156,14 +170,14 @@ export function PaperTradeDialog({ open, onOpenChange, tradeStr }: PaperTradeDia
 
                 <DialogFooter>
                     <Button variant="outline" onClick={() => onOpenChange(false)}>
-                        Cancel
+                        {t("common.cancel")}
                     </Button>
                     <Button
                         onClick={handleTrade}
                         disabled={loading || !amount || parseFloat(amount) <= 0}
                         variant={side === "buy" ? "default" : "destructive"}
                     >
-                        {loading ? "Trading..." : `Confirm ${side.toUpperCase()}`}
+                        {loading ? t("paper.trading") : t("paper.confirmSide", { side: t(`trade.side.${side}`).toUpperCase() })}
                     </Button>
                 </DialogFooter>
             </DialogContent>

@@ -43,17 +43,16 @@ const DEFAULT_HEALTH: PipelineHealthStatus = {
 }
 
 export function usePipelineHealth() {
+  const hasDb = Boolean(db)
   const [health, setHealth] = useState<PipelineHealthStatus>(DEFAULT_HEALTH)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(hasDb)
+  const [error, setError] = useState<string | null>(
+    hasDb ? null : "Firebase not available"
+  )
   const [documentExists, setDocumentExists] = useState(false)
 
   useEffect(() => {
-    if (!db) {
-      setLoading(false)
-      setError("Firebase not available")
-      return
-    }
+    if (!db) return
 
     const unsub = onSnapshot(
       doc(db, "pipeline", "status"),
@@ -113,18 +112,21 @@ function parseServiceHealth(data: unknown): ServiceHealth {
 /**
  * Get a human-readable label for the pipeline status
  */
-export function getStatusLabel(status: PipelineHealthStatus["status"]): string {
+export function getStatusLabel(
+  status: PipelineHealthStatus["status"],
+  labels?: Partial<Record<PipelineHealthStatus["status"], string>>
+): string {
   switch (status) {
     case "ok":
-      return "All Systems Operational"
+      return labels?.ok ?? "All Systems Operational"
     case "degraded":
-      return "Degraded Performance"
+      return labels?.degraded ?? "Degraded Performance"
     case "stale":
-      return "Data May Be Stale"
+      return labels?.stale ?? "Data May Be Stale"
     case "error":
-      return "Service Error"
+      return labels?.error ?? "Service Error"
     default:
-      return "Status Unknown"
+      return labels?.unknown ?? "Status Unknown"
   }
 }
 
@@ -167,10 +169,25 @@ export function getStatusBgColor(status: PipelineHealthStatus["status"]): string
 /**
  * Format age in human-readable form
  */
-export function formatAge(ageMs: number | null): string {
-  if (ageMs === null) return "never"
-  if (ageMs < 1000) return "just now"
-  if (ageMs < 60000) return `${Math.round(ageMs / 1000)}s ago`
-  if (ageMs < 3600000) return `${Math.round(ageMs / 60000)}m ago`
-  return `${Math.round(ageMs / 3600000)}h ago`
+export function formatAge(
+  ageMs: number | null,
+  labels: {
+    never: string
+    justNow: string
+    secondsAgo: string
+    minutesAgo: string
+    hoursAgo: string
+  } = {
+    never: "never",
+    justNow: "just now",
+    secondsAgo: "s ago",
+    minutesAgo: "m ago",
+    hoursAgo: "h ago",
+  }
+): string {
+  if (ageMs === null) return labels.never
+  if (ageMs < 1000) return labels.justNow
+  if (ageMs < 60000) return `${Math.round(ageMs / 1000)}${labels.secondsAgo}`
+  if (ageMs < 3600000) return `${Math.round(ageMs / 60000)}${labels.minutesAgo}`
+  return `${Math.round(ageMs / 3600000)}${labels.hoursAgo}`
 }

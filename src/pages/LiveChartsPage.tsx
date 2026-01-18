@@ -26,6 +26,7 @@ import {
   Maximize2,
   X,
 } from "lucide-react"
+import { useTranslation } from "react-i18next"
 
 type IntervalOption = "1m-tv" | "5m" | "15m" | "30m" | "1h" | "eod"
 
@@ -42,19 +43,21 @@ function StatCard({
   subValue,
   icon: Icon,
   color = "text-muted-foreground",
+  naLabel = "—",
 }: {
   label: string
   value: string | number | undefined
   subValue?: string
   icon?: React.ComponentType<{ className?: string }>
   color?: string
+  naLabel?: string
 }) {
   return (
     <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-muted/30 border border-border/40">
       {Icon && <Icon className={`h-4 w-4 ${color}`} />}
       <div className="flex flex-col">
         <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span>
-        <span className="text-sm font-medium">{value ?? "—"}</span>
+        <span className="text-sm font-medium">{value ?? naLabel}</span>
         {subValue && <span className="text-[10px] text-muted-foreground">{subValue}</span>}
       </div>
     </div>
@@ -62,6 +65,7 @@ function StatCard({
 }
 
 export default function LiveChartsPage() {
+  const { t } = useTranslation()
   const [symbolInput, setSymbolInput] = useState("AAPL")
   const [assetClass, setAssetClass] = useState<"stock" | "crypto" | "forex">("stock")
   const [activeSymbol, setActiveSymbol] = useState("AAPL")
@@ -103,6 +107,8 @@ export default function LiveChartsPage() {
     () => normalizeSymbol(activeSymbol, assetClass),
     [activeSymbol, assetClass]
   )
+  const assetLabel = t(`assets.${assetClass}`)
+  const naLabel = t("common.na")
   const searchQuery = symbolInput.trim()
   const { results: symbolMatches } = useFmpSymbolSearch(searchQuery, assetClass)
 
@@ -176,10 +182,12 @@ export default function LiveChartsPage() {
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Charts</div>
-          <h1 className="text-3xl font-bold tracking-tight">Live Charts</h1>
+          <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+            {t("liveCharts.title")}
+          </div>
+          <h1 className="text-3xl font-bold tracking-tight">{t("liveCharts.subtitle")}</h1>
           <p className="text-sm text-muted-foreground">
-            Real-time quotes, technicals, signals, and news
+            {t("liveCharts.description")}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -194,21 +202,21 @@ export default function LiveChartsPage() {
               setActiveSymbol(nextSymbol)
             }}
           >
-            <option value="stock">Stock</option>
-            <option value="forex">Forex</option>
-            <option value="crypto">Crypto</option>
+            <option value="stock">{t("assets.stock")}</option>
+            <option value="forex">{t("assets.forex")}</option>
+            <option value="crypto">{t("assets.crypto")}</option>
           </select>
           <Input
             value={symbolInput}
             onChange={(e) => setSymbolInput(e.target.value)}
-            placeholder="Symbol (e.g., AAPL, EURUSD, BTCUSD)"
+            placeholder={t("liveCharts.symbolPlaceholder")}
             className="w-56"
           />
           <Button
             onClick={() => setActiveSymbol(symbolInput || activeSymbol)}
             disabled={!symbolInput.trim()}
           >
-            Load
+            {t("liveCharts.load")}
           </Button>
         </div>
       </div>
@@ -216,7 +224,9 @@ export default function LiveChartsPage() {
       {/* Symbol search results */}
       {symbolMatches.length > 0 && (
         <div className="w-full max-w-xl rounded-lg border border-border/60 bg-background/95 p-2 shadow-sm">
-          <div className="text-xs uppercase text-muted-foreground px-1 pb-1">Matches</div>
+          <div className="text-xs uppercase text-muted-foreground px-1 pb-1">
+            {t("liveCharts.matches")}
+          </div>
           <div className="flex flex-col divide-y divide-border/60">
             {symbolMatches.map((match) => (
               <button
@@ -246,7 +256,7 @@ export default function LiveChartsPage() {
               <div className="flex items-center gap-2">
                 <span className="text-xl font-bold">{normalizedSymbol}</span>
                 <span className="text-xs uppercase text-muted-foreground bg-muted/50 px-2 py-0.5 rounded">
-                  {assetClass}
+                  {assetLabel}
                 </span>
                 {profile?.companyName && (
                   <span className="text-sm text-muted-foreground hidden sm:inline">
@@ -258,7 +268,7 @@ export default function LiveChartsPage() {
                 <div className="text-2xl font-semibold">
                   {quote?.price !== undefined
                     ? formatAssetPrice(quote.price, assetClass)
-                    : "—"}
+                    : naLabel}
                 </div>
                 <div
                   className={`flex items-center gap-1 font-medium ${
@@ -283,43 +293,48 @@ export default function LiveChartsPage() {
             {/* Key stats row */}
             <div className="flex flex-wrap gap-2">
               <StatCard
-                label="Day High"
+                label={t("liveCharts.dayHigh")}
                 value={quote?.dayHigh ? formatAssetPrice(quote.dayHigh, assetClass) : undefined}
                 icon={TrendingUp}
                 color="text-emerald-600"
+                naLabel={naLabel}
               />
               <StatCard
-                label="Day Low"
+                label={t("liveCharts.dayLow")}
                 value={quote?.dayLow ? formatAssetPrice(quote.dayLow, assetClass) : undefined}
                 icon={TrendingDown}
                 color="text-rose-600"
+                naLabel={naLabel}
               />
               <StatCard
-                label="Prev Close"
+                label={t("liveCharts.prevClose")}
                 value={
                   quote?.previousClose
                     ? formatAssetPrice(quote.previousClose, assetClass)
                     : undefined
                 }
+                naLabel={naLabel}
               />
               <StatCard
-                label="Volume"
+                label={t("liveCharts.volume")}
                 value={quote?.volume ? formatNumber(quote.volume) : undefined}
                 icon={BarChart3}
+                naLabel={naLabel}
               />
               {assetClass === "stock" && (
                 <>
                   <StatCard
-                    label="52W Range"
+                    label={t("liveCharts.range52w")}
                     value={
                       low52w && high52w
                         ? `$${low52w.toFixed(0)} - $${high52w.toFixed(0)}`
                         : undefined
                     }
+                    naLabel={naLabel}
                   />
                   {priceTarget?.targetConsensus && (
                     <StatCard
-                      label="PT Consensus"
+                      label={t("liveCharts.ptConsensus")}
                       value={`$${priceTarget.targetConsensus.toFixed(2)}`}
                       subValue={
                         priceTarget.targetLow && priceTarget.targetHigh
@@ -328,13 +343,16 @@ export default function LiveChartsPage() {
                       }
                       icon={Target}
                       color="text-blue-500"
+                      naLabel={naLabel}
                     />
                   )}
                   {rating?.ratingRecommendation && (
                     <StatCard
-                      label="Rating"
+                      label={t("liveCharts.rating")}
                       value={rating.ratingRecommendation}
-                      subValue={`Score: ${rating.ratingScore || "—"}`}
+                      subValue={t("liveCharts.ratingScore", {
+                        score: rating.ratingScore ?? naLabel,
+                      })}
                       icon={Activity}
                       color={
                         rating.ratingRecommendation?.toLowerCase().includes("buy")
@@ -358,18 +376,17 @@ export default function LiveChartsPage() {
                   onChange={(e) => setShowIndicators(e.target.checked)}
                   className="rounded border-border"
                 />
-                <span className="text-muted-foreground">Show SMA/EMA/RSI</span>
+                <span className="text-muted-foreground">{t("liveCharts.showIndicators")}</span>
               </label>
               {signalMarkers.length > 0 && (
                 <span className="text-muted-foreground">
-                  {signalMarkers.length} bot signal{signalMarkers.length !== 1 ? "s" : ""} on
-                  chart
+                  {t("liveCharts.botSignalsOnChart", { count: signalMarkers.length })}
                 </span>
               )}
               <div className="flex-1" />
               <div className="text-muted-foreground">
-                {quoteUpdated ? <span>Quote {quoteUpdated}</span> : null}
-                {barUpdated ? <span className="ml-2">Bar {barUpdated}</span> : null}
+                {quoteUpdated ? <span>{t("liveCharts.quoteUpdated", { time: quoteUpdated })}</span> : null}
+                {barUpdated ? <span className="ml-2">{t("liveCharts.barUpdated", { time: barUpdated })}</span> : null}
               </div>
               <Button
                 variant="outline"
@@ -378,32 +395,32 @@ export default function LiveChartsPage() {
                 className="h-7 px-2 gap-1"
               >
                 <Maximize2 className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Fullscreen</span>
+                <span className="hidden sm:inline">{t("liveCharts.fullscreen")}</span>
               </Button>
             </div>
 
             {/* Chart tabs */}
             <Tabs value={interval} onValueChange={(v) => setInterval(v as IntervalOption)}>
-              <TabsList className="flex flex-wrap justify-start gap-2">
-                <TabsTrigger value="1m-tv">1m (TV)</TabsTrigger>
-                <TabsTrigger value="5m">5m</TabsTrigger>
-                <TabsTrigger value="15m">15m</TabsTrigger>
-                <TabsTrigger value="30m">30m</TabsTrigger>
-                <TabsTrigger value="1h">1h</TabsTrigger>
-                <TabsTrigger value="eod">EOD</TabsTrigger>
+            <TabsList className="flex flex-wrap justify-start gap-2">
+                <TabsTrigger value="1m-tv">{t("liveCharts.oneMinuteTvShort")}</TabsTrigger>
+                <TabsTrigger value="5m">{t("charts.timeframes.m5")}</TabsTrigger>
+                <TabsTrigger value="15m">{t("charts.timeframes.m15")}</TabsTrigger>
+                <TabsTrigger value="30m">{t("charts.timeframes.m30")}</TabsTrigger>
+                <TabsTrigger value="1h">{t("charts.timeframes.h1")}</TabsTrigger>
+                <TabsTrigger value="eod">{t("charts.eod")}</TabsTrigger>
               </TabsList>
               <TabsContent value="1m-tv" className="m-0">
                 {tvUrl ? (
                   <iframe
                     src={tvUrl}
                     className="h-[440px] w-full border-0 rounded-lg"
-                    title={`TradingView chart for ${normalizedSymbol}`}
+                    title={t("charts.tradingViewTitle", { symbol: normalizedSymbol })}
                     allow="clipboard-write"
                     loading="lazy"
                   />
                 ) : (
                   <div className="flex h-[360px] items-center justify-center text-muted-foreground">
-                    No chart data
+                    {t("charts.noChartData")}
                   </div>
                 )}
               </TabsContent>
@@ -434,14 +451,16 @@ export default function LiveChartsPage() {
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-sm">
                 <Newspaper className="h-4 w-4" />
-                Recent News
+                {t("liveCharts.recentNews")}
               </CardTitle>
             </CardHeader>
             <CardContent>
               {newsError ? (
-                <p className="text-xs text-destructive">Error: {newsError}</p>
+                <p className="text-xs text-destructive">
+                  {t("liveCharts.newsError", { error: newsError })}
+                </p>
               ) : news.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No recent news</p>
+                <p className="text-xs text-muted-foreground">{t("liveCharts.noRecentNews")}</p>
               ) : (
                 <div className="space-y-3">
                   {news.slice(0, 5).map((item, i) => (
@@ -474,12 +493,14 @@ export default function LiveChartsPage() {
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-sm">
                 <Activity className="h-4 w-4" />
-                Bot Signals
+                {t("liveCharts.botSignals")}
               </CardTitle>
             </CardHeader>
             <CardContent>
               {rawSignals.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No recent signals for this symbol</p>
+                <p className="text-xs text-muted-foreground">
+                  {t("liveCharts.noRecentSignals")}
+                </p>
               ) : (
                 <div className="space-y-2">
                   {rawSignals.slice(0, 8).map((signal) => (
@@ -497,7 +518,7 @@ export default function LiveChartsPage() {
                                 : "bg-slate-500/20 text-slate-600"
                           }`}
                         >
-                          {signal.side.toUpperCase()}
+                          {t(`trade.side.${signal.side}`)}
                         </span>
                         <span className="text-muted-foreground">{signal.botId.substring(0, 12)}</span>
                       </div>
@@ -519,33 +540,33 @@ export default function LiveChartsPage() {
           {assetClass === "stock" && profile && (
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">Company Info</CardTitle>
+                <CardTitle className="text-sm">{t("liveCharts.companyInfo")}</CardTitle>
               </CardHeader>
               <CardContent className="text-xs space-y-1">
                 {profile.sector && (
                   <div>
-                    <span className="text-muted-foreground">Sector:</span> {profile.sector}
+                    <span className="text-muted-foreground">{t("liveCharts.sector")}:</span> {profile.sector}
                   </div>
                 )}
                 {profile.industry && (
                   <div>
-                    <span className="text-muted-foreground">Industry:</span> {profile.industry}
+                    <span className="text-muted-foreground">{t("liveCharts.industry")}:</span> {profile.industry}
                   </div>
                 )}
                 {profile.mktCap && (
                   <div>
-                    <span className="text-muted-foreground">Mkt Cap:</span>{" "}
+                    <span className="text-muted-foreground">{t("liveCharts.marketCap")}:</span>{" "}
                     ${formatNumber(profile.mktCap)}
                   </div>
                 )}
                 {profile.beta && (
                   <div>
-                    <span className="text-muted-foreground">Beta:</span> {profile.beta.toFixed(2)}
+                    <span className="text-muted-foreground">{t("liveCharts.beta")}:</span> {profile.beta.toFixed(2)}
                   </div>
                 )}
                 {profile.volAvg && (
                   <div>
-                    <span className="text-muted-foreground">Avg Vol:</span>{" "}
+                    <span className="text-muted-foreground">{t("liveCharts.avgVolume")}:</span>{" "}
                     {formatNumber(profile.volAvg)}
                   </div>
                 )}
@@ -556,7 +577,7 @@ export default function LiveChartsPage() {
                     rel="noopener noreferrer"
                     className="text-blue-500 hover:underline flex items-center gap-1"
                   >
-                    Website <ExternalLink className="h-3 w-3" />
+                    {t("liveCharts.website")} <ExternalLink className="h-3 w-3" />
                   </a>
                 )}
               </CardContent>
@@ -573,7 +594,7 @@ export default function LiveChartsPage() {
             <div className="flex items-center gap-3">
               <span className="text-xl font-bold">{normalizedSymbol}</span>
               <span className="text-xs uppercase text-muted-foreground bg-muted/50 px-2 py-0.5 rounded">
-                {assetClass}
+                {assetLabel}
               </span>
               {quote?.price !== undefined && (
                 <span className="text-lg font-semibold">
@@ -627,7 +648,7 @@ export default function LiveChartsPage() {
                   onChange={(e) => setShowIndicators(e.target.checked)}
                   className="rounded border-border"
                 />
-                <span className="text-muted-foreground hidden sm:inline">Indicators</span>
+                <span className="text-muted-foreground hidden sm:inline">{t("liveCharts.indicators")}</span>
               </label>
               <Button
                 variant="ghost"
@@ -646,7 +667,7 @@ export default function LiveChartsPage() {
               <iframe
                 src={tvUrl}
                 className="h-full w-full border-0 rounded-lg"
-                title={`TradingView chart for ${normalizedSymbol}`}
+                title={t("charts.tradingViewTitle", { symbol: normalizedSymbol })}
                 allow="clipboard-write"
                 loading="lazy"
               />
@@ -667,7 +688,7 @@ export default function LiveChartsPage() {
           <div className="flex items-center gap-4 px-4 py-2 border-t border-border/40 bg-card text-xs overflow-x-auto">
             {quote?.dayHigh && (
               <div className="flex items-center gap-1">
-                <span className="text-muted-foreground">High:</span>
+                <span className="text-muted-foreground">{t("liveCharts.high")}:</span>
                 <span className="text-emerald-600 font-medium">
                   {formatAssetPrice(quote.dayHigh, assetClass)}
                 </span>
@@ -675,7 +696,7 @@ export default function LiveChartsPage() {
             )}
             {quote?.dayLow && (
               <div className="flex items-center gap-1">
-                <span className="text-muted-foreground">Low:</span>
+                <span className="text-muted-foreground">{t("liveCharts.low")}:</span>
                 <span className="text-rose-600 font-medium">
                   {formatAssetPrice(quote.dayLow, assetClass)}
                 </span>
@@ -683,24 +704,24 @@ export default function LiveChartsPage() {
             )}
             {quote?.previousClose && (
               <div className="flex items-center gap-1">
-                <span className="text-muted-foreground">Prev:</span>
+                <span className="text-muted-foreground">{t("liveCharts.prevShort")}:</span>
                 <span>{formatAssetPrice(quote.previousClose, assetClass)}</span>
               </div>
             )}
             {quote?.volume && (
               <div className="flex items-center gap-1">
-                <span className="text-muted-foreground">Vol:</span>
+                <span className="text-muted-foreground">{t("liveCharts.volumeShort")}:</span>
                 <span>{formatNumber(quote.volume)}</span>
               </div>
             )}
             {signalMarkers.length > 0 && (
               <div className="flex items-center gap-1">
                 <Activity className="h-3 w-3 text-blue-500" />
-                <span>{signalMarkers.length} signals</span>
+                <span>{t("liveCharts.signalCount", { count: signalMarkers.length })}</span>
               </div>
             )}
             <div className="flex-1" />
-            <span className="text-muted-foreground">Press ESC to exit</span>
+            <span className="text-muted-foreground">{t("liveCharts.pressEsc")}</span>
           </div>
         </div>
       )}

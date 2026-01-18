@@ -190,12 +190,154 @@ const PAIR_QUOTES = new Set([
 ])
 const FX_CODES = new Set(["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"])
 const TSX_SUFFIXES = [".TO", ".TSX", ".TSXV", ".V"]
+const ET_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+})
+const ET_WEEKDAY_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  weekday: "short",
+})
+const ET_WEEKDAY_MAP = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+}
 const DEFAULT_TREND_WEIGHTS = {
   momentum: 50,
   volume: 20,
   signals: 20,
   news: 10,
 }
+
+function getEtParts(date) {
+  const parts = ET_FORMATTER.formatToParts(date)
+  const map = {}
+  parts.forEach((part) => {
+    if (part.type !== "literal") {
+      map[part.type] = part.value
+    }
+  })
+  const year = Number(map.year)
+  const month = Number(map.month)
+  const day = Number(map.day)
+  const hour = Number(map.hour)
+  const minute = Number(map.minute)
+  return { year, month, day, hour, minute }
+}
+
+function getEtDateKey(date) {
+  const { year, month, day } = getEtParts(date)
+  const yyyy = String(year).padStart(4, "0")
+  const mm = String(month).padStart(2, "0")
+  const dd = String(day).padStart(2, "0")
+  return `${yyyy}-${mm}-${dd}`
+}
+
+function getEtTimeMinutes(date) {
+  const { hour, minute } = getEtParts(date)
+  return hour * 60 + minute
+}
+
+function getEtWeekday(date) {
+  const key = ET_WEEKDAY_FORMATTER.format(date)
+  return ET_WEEKDAY_MAP[key] ?? 0
+}
+
+function isEtWeekend(dateKey) {
+  const date = new Date(`${dateKey}T12:00:00Z`)
+  const day = getEtWeekday(date)
+  return day === 0 || day === 6
+}
+
+function isUsStockHoliday(dateKey) {
+  return US_STOCK_HOLIDAYS_2026_2027.has(dateKey)
+}
+
+function resolveStockSessionCloseMinutes(dateKey) {
+  return US_STOCK_EARLY_CLOSES_2026_2027.has(dateKey) ? 13 * 60 : 16 * 60
+}
+
+function formatEtMinutes(minutes) {
+  const hours = Math.floor(minutes / 60)
+  const mins = minutes % 60
+  return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`
+}
+const SWING_RULES = {
+  entryWindowMinutes: 60,
+  exitWindowMinutes: 120,
+  rangePositionMax: 0.3,
+  distributionLookback: 10,
+  distributionMax: 1,
+  volumeLookbackSessions: 20,
+  volumeWindowMinutes: 60,
+  maShort: 20,
+  maLong: 50,
+  maSlopeLookback: 5,
+  notExtendedAtrMult: 1.5,
+  stopAtrMult: 0.5,
+  profitTriggerPct: 0.5,
+}
+const PREBREAKOUT_RULES = {
+  entryWindowMinutes: 5,
+  exitWindowMinutes: 120,
+  minMarketCap: 5_000_000,
+  maxMarketCap: 80_000_000,
+  maxFloatShares: 5_000_000,
+  turnoverMinPct: 300,
+  turnoverMaxPct: 800,
+  rvolMin: 3,
+  rvolMax: 8,
+  closeNearHighMin: 0.85,
+  runUpLookback: 10,
+  maxRunUpPct: 70,
+  volumeLookbackSessions: 3,
+  maShort: 20,
+  maLong: 50,
+  maSlopeLookback: 5,
+  maAlignmentMin: 0.9,
+  maAlignmentMax: 1.1,
+  atrPctMax: 0.2,
+  newsMaxCount: 8,
+  profitTriggerPct: 1.0,
+  stopAtrMult: 1.0,
+}
+const US_STOCK_HOLIDAYS_2026_2027 = new Set([
+  "2026-01-01",
+  "2026-01-19",
+  "2026-02-16",
+  "2026-04-03",
+  "2026-05-25",
+  "2026-07-03",
+  "2026-09-07",
+  "2026-11-26",
+  "2026-12-25",
+  "2027-01-01",
+  "2027-01-18",
+  "2027-02-15",
+  "2027-03-26",
+  "2027-05-31",
+  "2027-07-05",
+  "2027-09-06",
+  "2027-11-25",
+  "2027-12-24",
+])
+const US_STOCK_EARLY_CLOSES_2026_2027 = new Set([
+  "2026-07-02",
+  "2026-11-27",
+  "2026-12-24",
+  "2027-07-02",
+  "2027-11-26",
+])
 
 function parseList(value, fallback = []) {
   if (!value) return fallback
@@ -1214,6 +1356,10 @@ async function readControls(db) {
     llmIntervalMinutes,
     enableNews: data?.enableNews !== false,
     newsIntervalMinutes,
+    swingOvernightEnabled: data?.swingOvernightEnabled === true,
+    swingOvernightAutoPaperEnabled: data?.swingOvernightAutoPaperEnabled === true,
+    prebreakoutEnabled: data?.prebreakoutEnabled === true,
+    prebreakoutAutoPaperEnabled: data?.prebreakoutAutoPaperEnabled === true,
     dipHorizon,
     trendHorizon,
     trendWeights,
@@ -1753,6 +1899,18 @@ async function fetchFmpQuote(symbol, assetClass = "stock") {
     }
   } catch (error) {
     console.error(`Failed to fetch FMP quote for ${symbol}:`, error.message)
+    return null
+  }
+}
+
+async function fetchFmpProfile(symbol) {
+  if (!config.marketDataGatewayUrl) return null
+  if (!symbol) return null
+  try {
+    const data = await fetchGatewayJson("/v1/fmp/profile", { symbol })
+    return data?.profile || null
+  } catch (error) {
+    console.error(`Failed to fetch FMP profile for ${symbol}:`, error.message)
     return null
   }
 }
@@ -3523,6 +3681,40 @@ function computeAtrPercent(candles, period = 14) {
   return (atr / lastClose) * 100
 }
 
+function computeAtr(candles, period = 14) {
+  if (!Array.isArray(candles) || candles.length < period + 1) return null
+  const recent = candles.slice(-(period + 1))
+  const ranges = []
+  for (let i = 1; i < recent.length; i += 1) {
+    const prev = recent[i - 1]
+    const curr = recent[i]
+    if (!prev || !curr) continue
+    const highLow = curr.high - curr.low
+    const highClose = Math.abs(curr.high - prev.close)
+    const lowClose = Math.abs(curr.low - prev.close)
+    const tr = Math.max(highLow, highClose, lowClose)
+    if (Number.isFinite(tr)) ranges.push(tr)
+  }
+  if (ranges.length === 0) return null
+  return ranges.reduce((sum, value) => sum + value, 0) / ranges.length
+}
+
+function computeSma(values, period) {
+  if (!Array.isArray(values) || values.length < period) return null
+  const slice = values.slice(-period)
+  const sum = slice.reduce((acc, value) => acc + value, 0)
+  return sum / period
+}
+
+function formatCompactNumber(value) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "n/a"
+  const abs = Math.abs(value)
+  if (abs >= 1e9) return `${(value / 1e9).toFixed(1)}B`
+  if (abs >= 1e6) return `${(value / 1e6).toFixed(1)}M`
+  if (abs >= 1e3) return `${(value / 1e3).toFixed(1)}K`
+  return `${Math.round(value)}`
+}
+
 function computeHoldMinutes(assetClass, absChange, netSignals, profile, atrPct) {
   const isDip = profile === "dip"
   let hold = 120
@@ -3579,15 +3771,6 @@ function computeRecommendation(trade, atrPct) {
     atrPct
   )
 
-  if (action === "hold") {
-    return {
-      action,
-      holdMinutes,
-      stopLossPct: null,
-      takeProfitPct: null,
-    }
-  }
-
   let stopLossPct = null
   let takeProfitPct = null
   if (typeof atrPct === "number") {
@@ -3598,6 +3781,15 @@ function computeRecommendation(trade, atrPct) {
       trade.assetClass === "forex" ? 0.5 : trade.assetClass === "crypto" ? 3 : 2
     stopLossPct = clamp(fallbackStop, 0.5, 8)
     takeProfitPct = clamp(stopLossPct * 1.8, 1, 15)
+  }
+
+  if (action === "hold") {
+    return {
+      action,
+      holdMinutes,
+      stopLossPct: Number(stopLossPct.toFixed(2)),
+      takeProfitPct: Number(takeProfitPct.toFixed(2)),
+    }
   }
 
   return {
@@ -3931,6 +4123,821 @@ function buildHotTrades(candidates, signalMap, scoreOptions, newsScoreMap = null
   })
 
   return scored.sort((a, b) => (b.score || 0) - (a.score || 0))
+}
+
+function resolveSwingEntryWindow(asOf) {
+  const now = asOf instanceof Date ? asOf : new Date(asOf)
+  const dateKey = getEtDateKey(now)
+  const openMinutes = 9 * 60 + 30
+  const closeMinutes = resolveStockSessionCloseMinutes(dateKey)
+  const entryStartMinutes = closeMinutes - SWING_RULES.entryWindowMinutes
+  const entryEndMinutes = closeMinutes
+  const entryWindow = {
+    start: formatEtMinutes(entryStartMinutes),
+    end: formatEtMinutes(entryEndMinutes),
+    close: formatEtMinutes(closeMinutes),
+    timezone: "America/New_York",
+  }
+  if (isEtWeekend(dateKey)) {
+    return { active: false, status: "weekend", dateKey, entryWindow, openMinutes, closeMinutes }
+  }
+  if (isUsStockHoliday(dateKey)) {
+    return { active: false, status: "holiday", dateKey, entryWindow, openMinutes, closeMinutes }
+  }
+  const nowMinutes = getEtTimeMinutes(now)
+  if (nowMinutes < openMinutes) {
+    return { active: false, status: "pre_open", dateKey, entryWindow, openMinutes, closeMinutes }
+  }
+  if (nowMinutes > closeMinutes) {
+    return { active: false, status: "after_close", dateKey, entryWindow, openMinutes, closeMinutes }
+  }
+  if (nowMinutes < entryStartMinutes) {
+    return { active: false, status: "outside_window", dateKey, entryWindow, openMinutes, closeMinutes }
+  }
+  return {
+    active: true,
+    status: "active",
+    dateKey,
+    entryWindow,
+    openMinutes,
+    closeMinutes,
+  }
+}
+
+function resolvePrebreakoutEntryWindow(asOf) {
+  const now = asOf instanceof Date ? asOf : new Date(asOf)
+  const dateKey = getEtDateKey(now)
+  const openMinutes = 9 * 60 + 30
+  const closeMinutes = resolveStockSessionCloseMinutes(dateKey)
+  const entryStartMinutes = closeMinutes - PREBREAKOUT_RULES.entryWindowMinutes
+  const entryEndMinutes = closeMinutes
+  const entryWindow = {
+    start: formatEtMinutes(entryStartMinutes),
+    end: formatEtMinutes(entryEndMinutes),
+    close: formatEtMinutes(closeMinutes),
+    timezone: "America/New_York",
+  }
+  if (isEtWeekend(dateKey)) {
+    return { active: false, status: "weekend", dateKey, entryWindow, openMinutes, closeMinutes }
+  }
+  if (isUsStockHoliday(dateKey)) {
+    return { active: false, status: "holiday", dateKey, entryWindow, openMinutes, closeMinutes }
+  }
+  const nowMinutes = getEtTimeMinutes(now)
+  if (nowMinutes < openMinutes) {
+    return { active: false, status: "pre_open", dateKey, entryWindow, openMinutes, closeMinutes }
+  }
+  if (nowMinutes > closeMinutes) {
+    return { active: false, status: "after_close", dateKey, entryWindow, openMinutes, closeMinutes }
+  }
+  if (nowMinutes < entryStartMinutes) {
+    return { active: false, status: "outside_window", dateKey, entryWindow, openMinutes, closeMinutes }
+  }
+  return {
+    active: true,
+    status: "active",
+    dateKey,
+    entryWindow,
+    openMinutes,
+    closeMinutes,
+  }
+}
+
+function groupStockIntradaySessions(candles) {
+  const sessions = new Map()
+  if (!Array.isArray(candles)) return sessions
+  candles.forEach((candle) => {
+    if (!candle || typeof candle.time !== "number") return
+    const date = new Date(candle.time)
+    const dateKey = getEtDateKey(date)
+    if (isEtWeekend(dateKey) || isUsStockHoliday(dateKey)) return
+    const minutes = getEtTimeMinutes(date)
+    const openMinutes = 9 * 60 + 30
+    const closeMinutes = resolveStockSessionCloseMinutes(dateKey)
+    if (minutes < openMinutes || minutes > closeMinutes) return
+    const entry = { ...candle, minutes }
+    if (!sessions.has(dateKey)) sessions.set(dateKey, [])
+    sessions.get(dateKey).push(entry)
+  })
+  sessions.forEach((list) => {
+    list.sort((a, b) => a.time - b.time)
+  })
+  return sessions
+}
+
+function computeSessionVolume(sessionCandles) {
+  if (!Array.isArray(sessionCandles) || sessionCandles.length === 0) return null
+  const volumes = sessionCandles
+    .map((candle) => parseNumber(candle.volume))
+    .filter((value) => Number.isFinite(value))
+  if (volumes.length === 0) return null
+  return volumes.reduce((sum, value) => sum + value, 0)
+}
+
+function computeLastWindowVolume(sessionCandles, closeMinutes, windowMinutes) {
+  if (!Array.isArray(sessionCandles) || sessionCandles.length === 0) return null
+  const start = closeMinutes - windowMinutes
+  const windowCandles = sessionCandles.filter((candle) => candle.minutes >= start)
+  if (windowCandles.length < 2) return null
+  const volumes = windowCandles
+    .map((candle) => parseNumber(candle.volume))
+    .filter((value) => Number.isFinite(value))
+  if (volumes.length < 2) return null
+  return volumes.reduce((sum, value) => sum + value, 0)
+}
+
+function resolveProfileMarketCap(profile) {
+  if (!profile || typeof profile !== "object") return null
+  return (
+    parseNumber(profile.mktCap) ??
+    parseNumber(profile.marketCap) ??
+    parseNumber(profile.marketCapitalization) ??
+    parseNumber(profile.marketCapUsd) ??
+    null
+  )
+}
+
+function resolveProfileFloatShares(profile) {
+  if (!profile || typeof profile !== "object") return null
+  return (
+    parseNumber(profile.sharesFloat) ??
+    parseNumber(profile.float) ??
+    parseNumber(profile.floatShares) ??
+    parseNumber(profile.freeFloat) ??
+    null
+  )
+}
+
+function resolveProfileSharesOutstanding(profile) {
+  if (!profile || typeof profile !== "object") return null
+  return (
+    parseNumber(profile.sharesOutstanding) ??
+    parseNumber(profile.sharesOut) ??
+    parseNumber(profile.shares) ??
+    null
+  )
+}
+
+function buildSwingAnalysis(metrics) {
+  if (!metrics) return null
+  const rangePct = Number((metrics.rangePosition * 100).toFixed(1))
+  const maxRangePct = Math.round(SWING_RULES.rangePositionMax * 100)
+  const details = [
+    `Swing trend: price above MA${SWING_RULES.maShort}/MA${SWING_RULES.maLong} and MA${SWING_RULES.maShort} rising.`,
+    `Entry window: last ${SWING_RULES.entryWindowMinutes}m before close.`,
+    `Pullback window: range position ${rangePct}% (<= ${maxRangePct}%).`,
+    `Late volume: last ${SWING_RULES.volumeWindowMinutes}m ${formatCompactNumber(
+      metrics.last60mVolume
+    )} vs ${SWING_RULES.volumeLookbackSessions}d avg ${formatCompactNumber(
+      metrics.avgLast60mVolume
+    )}.`,
+    `Distribution days (${SWING_RULES.distributionLookback}d): ${metrics.distributionDays} (max ${SWING_RULES.distributionMax}).`,
+    `Exit plan: +${SWING_RULES.profitTriggerPct}% pop by ${SWING_RULES.exitWindowMinutes}m, else exit by 12:00 ET or MA${SWING_RULES.maShort} - ${SWING_RULES.stopAtrMult} ATR.`,
+  ]
+  return {
+    summary: "BUY signal · swing overnight.",
+    details,
+  }
+}
+
+function buildPrebreakoutAnalysis(metrics) {
+  if (!metrics) return null
+  const rangePct = Number((metrics.rangePosition * 100).toFixed(1))
+  const turnoverPct = Number(metrics.turnoverPct.toFixed(1))
+  const rvol = Number(metrics.rvol.toFixed(2))
+  const atrPct = Number(metrics.atrPct.toFixed(2))
+  const runUpPct = Number(metrics.runUpPct.toFixed(1))
+  const details = [
+    `Microcap gate: market cap $${formatCompactNumber(metrics.marketCap)} and float ${formatCompactNumber(metrics.floatShares)}.`,
+    `Turnover: ${turnoverPct}% (target ${PREBREAKOUT_RULES.turnoverMinPct}-${PREBREAKOUT_RULES.turnoverMaxPct}%).`,
+    `RVOL: ${rvol}x (avg ${formatCompactNumber(metrics.avgVolume)}).`,
+    `Close near high: ${rangePct}% of range (min ${Math.round(PREBREAKOUT_RULES.closeNearHighMin * 100)}%).`,
+    `Run-up check: ${formatSignedPercent(runUpPct)} over ${PREBREAKOUT_RULES.runUpLookback}d (max +${PREBREAKOUT_RULES.maxRunUpPct}%).`,
+    `Base + lift: MA${PREBREAKOUT_RULES.maShort} slope ${metrics.ma20Slope.toFixed(4)}, ATR% ${atrPct} (<= ${Math.round(PREBREAKOUT_RULES.atrPctMax * 100)}%).`,
+    `Narrative saturation: ${metrics.newsCount} headlines (max ${PREBREAKOUT_RULES.newsMaxCount}).`,
+    `Entry timing: 15:55 ET (last 5m close).`,
+    `Exit plan: +${PREBREAKOUT_RULES.profitTriggerPct}% pop by ${PREBREAKOUT_RULES.exitWindowMinutes}m, else exit by 11:30 ET, stop ${PREBREAKOUT_RULES.stopAtrMult} ATR.`,
+  ]
+  return {
+    summary: "BUY signal · pre-breakout watch.",
+    details,
+  }
+}
+
+async function buildSwingOvernight({
+  candidates,
+  universe,
+  trendingByHorizon,
+  asOf,
+}) {
+  const entryWindow = resolveSwingEntryWindow(asOf)
+  const baseMeta = {
+    runId: activeRunId || null,
+    asOf: asOf.toISOString(),
+    status: entryWindow.status,
+    entryWindow: entryWindow.entryWindow,
+    sessionClose: entryWindow.entryWindow?.close,
+  }
+
+  const symbolSet = new Set()
+  const originMap = new Map()
+  const addOrigin = (symbol, origin) => {
+    if (!symbol || !origin) return
+    const existing = originMap.get(symbol) || []
+    originMap.set(symbol, mergeOrigins(existing, [origin]))
+  }
+  const watchlist = Array.isArray(universe?.stocks?.symbols) ? universe.stocks.symbols : []
+  watchlist.forEach((symbol) => {
+    const normalized = normalizeTicker(symbol)
+    if (!normalized || isTsxSymbol(normalized)) return
+    symbolSet.add(normalized)
+    addOrigin(normalized, "user_universe")
+  })
+  const trendingStocks = trendingByHorizon?.["24h"]?.stock || []
+  trendingStocks.forEach((item) => {
+    const normalized = normalizeTicker(item?.symbol)
+    if (!normalized || isTsxSymbol(normalized)) return
+    symbolSet.add(normalized)
+    addOrigin(normalized, "trending")
+  })
+  const symbols = Array.from(symbolSet)
+
+  const candidateMap = new Map()
+  if (Array.isArray(candidates)) {
+    candidates
+      .filter((candidate) => candidate?.assetClass === "stock")
+      .forEach((candidate) => {
+        const key = normalizeTicker(candidate.symbol)
+        if (key) candidateMap.set(key, candidate)
+      })
+  }
+
+  if (!entryWindow.active) {
+    return {
+      items: [],
+      meta: { ...baseMeta, totalSymbols: symbols.length },
+    }
+  }
+
+  const items = await mapWithConcurrency(symbols, 4, async (symbol) => {
+    const dailyCandles = await fetchFmpCandles(symbol, "stock", "1day", 80)
+    const intradayCandles = await fetchFmpCandles(symbol, "stock", "30min", 500)
+    if (dailyCandles.length === 0 || intradayCandles.length === 0) return null
+
+    const todayKey = entryWindow.dateKey
+    const daily = dailyCandles
+      .map((candle) => ({
+        ...candle,
+        dateKey: getEtDateKey(new Date(candle.time)),
+      }))
+      .sort((a, b) => a.time - b.time)
+    const cleanedDaily =
+      daily.length > 0 && daily[daily.length - 1].dateKey === todayKey
+        ? daily.slice(0, -1)
+        : daily
+    if (cleanedDaily.length < SWING_RULES.maLong + SWING_RULES.maSlopeLookback) {
+      return null
+    }
+    const closes = cleanedDaily.map((candle) => candle.close).filter(Number.isFinite)
+    const volumes = cleanedDaily.map((candle) => candle.volume).filter(Number.isFinite)
+    if (closes.length < SWING_RULES.maLong || volumes.length < SWING_RULES.maShort) {
+      return null
+    }
+    const ma20 = computeSma(closes, SWING_RULES.maShort)
+    const ma50 = computeSma(closes, SWING_RULES.maLong)
+    const ma20Prev = computeSma(
+      closes.slice(0, closes.length - SWING_RULES.maSlopeLookback),
+      SWING_RULES.maShort
+    )
+    if (!ma20 || !ma50 || !ma20Prev) return null
+
+    const atr14 = computeAtr(cleanedDaily, 14)
+    if (!atr14) return null
+
+    const avgVolume20 = computeSma(volumes, SWING_RULES.maShort)
+    if (!avgVolume20) return null
+
+    const distributionStart = cleanedDaily.length - (SWING_RULES.distributionLookback + 1)
+    if (distributionStart < 0) return null
+    let distributionDays = 0
+    for (let i = distributionStart + 1; i < cleanedDaily.length; i += 1) {
+      const prev = cleanedDaily[i - 1]
+      const day = cleanedDaily[i]
+      if (!prev || !day) continue
+      if (!Number.isFinite(day.volume) || !Number.isFinite(prev.close)) continue
+      if (day.close < prev.close && day.volume >= avgVolume20 * 1.5) {
+        distributionDays += 1
+      }
+    }
+
+    const sessions = groupStockIntradaySessions(intradayCandles)
+    const todaySession = sessions.get(todayKey)
+    if (!todaySession || todaySession.length === 0) return null
+
+    const todayHigh = Math.max(...todaySession.map((candle) => candle.high || 0))
+    const todayLow = Math.min(...todaySession.map((candle) => candle.low || Infinity))
+    if (!Number.isFinite(todayHigh) || !Number.isFinite(todayLow) || todayHigh <= todayLow) {
+      return null
+    }
+
+    const lastCandle = todaySession[todaySession.length - 1]
+    const lastPrice = parseNumber(lastCandle?.close)
+    if (!Number.isFinite(lastPrice)) return null
+
+    const last60mVolume = computeLastWindowVolume(
+      todaySession,
+      entryWindow.closeMinutes,
+      SWING_RULES.volumeWindowMinutes
+    )
+    if (!last60mVolume) return null
+
+    const priorSessionKeys = Array.from(sessions.keys())
+      .filter((key) => key < todayKey)
+      .sort()
+      .slice(-SWING_RULES.volumeLookbackSessions)
+    if (priorSessionKeys.length < SWING_RULES.volumeLookbackSessions) return null
+
+    const priorVolumes = []
+    for (const key of priorSessionKeys) {
+      const session = sessions.get(key)
+      const closeMinutes = resolveStockSessionCloseMinutes(key)
+      const volume = computeLastWindowVolume(session, closeMinutes, SWING_RULES.volumeWindowMinutes)
+      if (!volume) return null
+      priorVolumes.push(volume)
+    }
+    const avgLast60mVolume =
+      priorVolumes.length > 0
+        ? priorVolumes.reduce((sum, value) => sum + value, 0) / priorVolumes.length
+        : null
+    if (!avgLast60mVolume) return null
+
+    const rangePosition = (lastPrice - todayLow) / (todayHigh - todayLow)
+    if (!Number.isFinite(rangePosition)) return null
+
+    const notExtended =
+      lastPrice <= ma20 + SWING_RULES.notExtendedAtrMult * atr14
+    if (
+      lastPrice <= ma20 ||
+      lastPrice <= ma50 ||
+      ma20 <= ma20Prev ||
+      distributionDays > SWING_RULES.distributionMax ||
+      rangePosition > SWING_RULES.rangePositionMax ||
+      last60mVolume >= avgLast60mVolume ||
+      !notExtended
+    ) {
+      return null
+    }
+
+    const pullbackScore = clamp(
+      1 - rangePosition / SWING_RULES.rangePositionMax,
+      0,
+      1
+    )
+    const volumeScore = clamp(1 - last60mVolume / avgLast60mVolume, 0, 1)
+    const distributionScore = clamp(
+      1 - distributionDays / Math.max(1, SWING_RULES.distributionMax),
+      0,
+      1
+    )
+    const trendScore = clamp((ma20 - ma50) / ma50, 0, 0.05) / 0.05
+    const score =
+      (pullbackScore * 0.45 +
+        volumeScore * 0.2 +
+        distributionScore * 0.15 +
+        trendScore * 0.2) *
+      100
+
+    const candidate = candidateMap.get(symbol)
+    const change24h =
+      typeof candidate?.change24h === "number" && Number.isFinite(candidate.change24h)
+        ? candidate.change24h
+        : cleanedDaily.length > 1 && cleanedDaily[cleanedDaily.length - 1]?.close
+          ? ((lastPrice - cleanedDaily[cleanedDaily.length - 1].close) /
+              cleanedDaily[cleanedDaily.length - 1].close) *
+            100
+          : undefined
+
+    const swingInputs = {
+      ma20: Number(ma20.toFixed(4)),
+      ma50: Number(ma50.toFixed(4)),
+      ma20Slope: Number((ma20 - ma20Prev).toFixed(4)),
+      atr14: Number(atr14.toFixed(4)),
+      distributionDays10: distributionDays,
+      rangePosition: Number(rangePosition.toFixed(4)),
+      todayHigh: Number(todayHigh.toFixed(4)),
+      todayLow: Number(todayLow.toFixed(4)),
+      lastPrice: Number(lastPrice.toFixed(4)),
+      last60mVolume: Math.round(last60mVolume),
+      avgLast60mVolume: Math.round(avgLast60mVolume),
+    }
+
+    const reasons = [
+      "trend_above_ma",
+      "ma20_slope_up",
+      "pullback_near_lows",
+      "late_volume_below_avg",
+      "distribution_ok",
+      "not_extended",
+    ]
+
+    const analysis = buildSwingAnalysis({
+      ...swingInputs,
+      last60mVolume,
+      avgLast60mVolume,
+      distributionDays,
+      rangePosition,
+    })
+
+    const mergedOrigins = mergeOrigins(candidate?.origins, originMap.get(symbol))
+    const resolvedOrigins = normalizeOrigins(mergedOrigins)
+    const chartSymbol = normalizeSymbolForCharting(symbol, "stock")
+    return compactObject({
+      assetClass: "stock",
+      symbol: chartSymbol || symbol,
+      name: candidate?.name || symbol,
+      exchange: candidate?.exchange,
+      price: Number(lastPrice.toFixed(4)),
+      timeframe: "1d",
+      side: "buy",
+      profile: "swing_overnight",
+      score: Number(score.toFixed(2)),
+      confidence: Number((score / 100).toFixed(2)),
+      momentum:
+        typeof change24h === "number"
+          ? { change24h: Number(change24h.toFixed(2)) }
+          : undefined,
+      primary: candidate?.primary ? true : undefined,
+      origins: resolvedOrigins.length > 0 ? resolvedOrigins : undefined,
+      source: candidate?.source || "swing_overnight",
+      analysis,
+      swing: {
+        asOfTs: asOf.toISOString(),
+        inputs: swingInputs,
+        reasons,
+        entryWindow: entryWindow.entryWindow,
+        exitPlan: {
+          profitTriggerPct: SWING_RULES.profitTriggerPct,
+          morningWindowMinutes: SWING_RULES.exitWindowMinutes,
+          timeExit: "12:00 ET",
+          stopAtrMult: SWING_RULES.stopAtrMult,
+          stopType: "ma20_atr",
+        },
+      },
+    })
+  })
+
+  const filtered = items.filter(Boolean)
+  filtered.sort((a, b) => (b.score || 0) - (a.score || 0))
+  const limited = filtered.slice(0, Math.max(1, config.hotTradesLimit))
+  const originBreakdown = summarizeOrigins(limited)
+
+  return {
+    items: limited,
+    meta: {
+      ...baseMeta,
+      totalSymbols: symbols.length,
+      count: limited.length,
+      origins: originBreakdown,
+    },
+  }
+}
+
+async function buildPrebreakout({
+  candidates,
+  universe,
+  trendingByHorizon,
+  newsScoreMap,
+  botSignals,
+  asOf,
+}) {
+  const entryWindow = resolvePrebreakoutEntryWindow(asOf)
+  const baseMeta = {
+    runId: activeRunId || null,
+    asOf: asOf.toISOString(),
+    status: entryWindow.status,
+    entryWindow: entryWindow.entryWindow,
+    sessionClose: entryWindow.entryWindow?.close,
+  }
+
+  const symbolSet = new Set()
+  const originMap = new Map()
+  const addOrigin = (symbol, origin) => {
+    if (!symbol || !origin) return
+    const existing = originMap.get(symbol) || []
+    originMap.set(symbol, mergeOrigins(existing, [origin]))
+  }
+  const watchlist = Array.isArray(universe?.stocks?.symbols) ? universe.stocks.symbols : []
+  watchlist.forEach((symbol) => {
+    const normalized = normalizeTicker(symbol)
+    if (!normalized || isTsxSymbol(normalized)) return
+    symbolSet.add(normalized)
+    addOrigin(normalized, "user_universe")
+  })
+  const trendingStocks = trendingByHorizon?.["24h"]?.stock || []
+  trendingStocks.forEach((item) => {
+    const normalized = normalizeTicker(item?.symbol)
+    if (!normalized || isTsxSymbol(normalized)) return
+    symbolSet.add(normalized)
+    addOrigin(normalized, "trending")
+  })
+  const symbols = Array.from(symbolSet)
+
+  const candidateMap = new Map()
+  if (Array.isArray(candidates)) {
+    candidates
+      .filter((candidate) => candidate?.assetClass === "stock")
+      .forEach((candidate) => {
+        const key = normalizeTicker(candidate.symbol)
+        if (key) candidateMap.set(key, candidate)
+      })
+  }
+
+  if (!entryWindow.active) {
+    return {
+      items: [],
+      meta: { ...baseMeta, totalSymbols: symbols.length },
+    }
+  }
+
+  const items = await mapWithConcurrency(symbols, 4, async (symbol) => {
+    const profile = await fetchFmpProfile(symbol)
+    const marketCap = resolveProfileMarketCap(profile)
+    const floatShares = resolveProfileFloatShares(profile)
+    if (
+      !Number.isFinite(marketCap) ||
+      marketCap < PREBREAKOUT_RULES.minMarketCap ||
+      marketCap > PREBREAKOUT_RULES.maxMarketCap
+    ) {
+      return null
+    }
+    if (
+      !Number.isFinite(floatShares) ||
+      floatShares <= 0 ||
+      floatShares > PREBREAKOUT_RULES.maxFloatShares
+    ) {
+      return null
+    }
+
+    const dailyCandles = await fetchFmpCandles(symbol, "stock", "1day", 90)
+    const intradayCandles = await fetchFmpCandles(symbol, "stock", "5min", 200)
+    if (dailyCandles.length === 0 || intradayCandles.length === 0) return null
+
+    const todayKey = entryWindow.dateKey
+    const daily = dailyCandles
+      .map((candle) => ({
+        ...candle,
+        dateKey: getEtDateKey(new Date(candle.time)),
+      }))
+      .sort((a, b) => a.time - b.time)
+    const cleanedDaily =
+      daily.length > 0 && daily[daily.length - 1].dateKey === todayKey
+        ? daily.slice(0, -1)
+        : daily
+    if (cleanedDaily.length < PREBREAKOUT_RULES.maLong + PREBREAKOUT_RULES.maSlopeLookback) {
+      return null
+    }
+
+    const closes = cleanedDaily.map((candle) => candle.close).filter(Number.isFinite)
+    const volumes = cleanedDaily.map((candle) => candle.volume).filter(Number.isFinite)
+    if (closes.length < PREBREAKOUT_RULES.maLong || volumes.length < PREBREAKOUT_RULES.volumeLookbackSessions) {
+      return null
+    }
+
+    const ma20 = computeSma(closes, PREBREAKOUT_RULES.maShort)
+    const ma50 = computeSma(closes, PREBREAKOUT_RULES.maLong)
+    const ma20Prev = computeSma(
+      closes.slice(0, closes.length - PREBREAKOUT_RULES.maSlopeLookback),
+      PREBREAKOUT_RULES.maShort
+    )
+    if (!ma20 || !ma50 || !ma20Prev) return null
+
+    const atr14 = computeAtr(cleanedDaily, 14)
+    if (!atr14) return null
+    const atrPct = (atr14 / closes[closes.length - 1]) * 100
+
+    const sessions = groupStockIntradaySessions(intradayCandles)
+    const todaySession = sessions.get(todayKey)
+    if (!todaySession || todaySession.length === 0) return null
+
+    const todayHigh = Math.max(...todaySession.map((candle) => candle.high || 0))
+    const todayLow = Math.min(...todaySession.map((candle) => candle.low || Infinity))
+    if (!Number.isFinite(todayHigh) || !Number.isFinite(todayLow) || todayHigh <= todayLow) {
+      return null
+    }
+
+    const lastCandle = todaySession[todaySession.length - 1]
+    const lastPrice = parseNumber(lastCandle?.close)
+    if (!Number.isFinite(lastPrice)) return null
+
+    const todayVolume = computeSessionVolume(todaySession)
+    if (!todayVolume) return null
+
+    const recentVolumes = volumes.slice(-PREBREAKOUT_RULES.volumeLookbackSessions)
+    const avgVolume =
+      recentVolumes.length > 0
+        ? recentVolumes.reduce((sum, value) => sum + value, 0) / recentVolumes.length
+        : null
+    if (!avgVolume) return null
+
+    const rvol = todayVolume / avgVolume
+    const turnoverPct = (todayVolume / floatShares) * 100
+    const rangePosition = (lastPrice - todayLow) / (todayHigh - todayLow)
+    if (!Number.isFinite(rangePosition)) return null
+
+    const lookbackIndex = cleanedDaily.length - PREBREAKOUT_RULES.runUpLookback - 1
+    if (lookbackIndex < 0) return null
+    const baseClose = cleanedDaily[lookbackIndex]?.close
+    if (!baseClose) return null
+    const runUpPct = ((lastPrice - baseClose) / baseClose) * 100
+
+    const newsKey = getAssetKey("stock", symbol)
+    const newsItem = newsKey ? newsScoreMap?.get(newsKey) : null
+    const newsCount = Math.max(0, parseNumber(newsItem?.count) || 0)
+
+    const ma20Slope = ma20 - ma20Prev
+    const maAlignment = ma20 / ma50
+    const closeNearHigh = rangePosition >= PREBREAKOUT_RULES.closeNearHighMin
+
+    if (
+      rvol < PREBREAKOUT_RULES.rvolMin ||
+      rvol > PREBREAKOUT_RULES.rvolMax ||
+      turnoverPct < PREBREAKOUT_RULES.turnoverMinPct ||
+      turnoverPct > PREBREAKOUT_RULES.turnoverMaxPct ||
+      !closeNearHigh ||
+      runUpPct > PREBREAKOUT_RULES.maxRunUpPct ||
+      newsCount > PREBREAKOUT_RULES.newsMaxCount ||
+      ma20Slope <= 0 ||
+      maAlignment < PREBREAKOUT_RULES.maAlignmentMin ||
+      maAlignment > PREBREAKOUT_RULES.maAlignmentMax ||
+      atrPct > PREBREAKOUT_RULES.atrPctMax * 100
+    ) {
+      return null
+    }
+
+    const rvolScore = clamp(
+      (rvol - PREBREAKOUT_RULES.rvolMin) /
+        (PREBREAKOUT_RULES.rvolMax - PREBREAKOUT_RULES.rvolMin),
+      0,
+      1
+    )
+    const closeScore = clamp(
+      (rangePosition - PREBREAKOUT_RULES.closeNearHighMin) /
+        (1 - PREBREAKOUT_RULES.closeNearHighMin),
+      0,
+      1
+    )
+    const turnoverScore = clamp(
+      (turnoverPct - PREBREAKOUT_RULES.turnoverMinPct) /
+        (PREBREAKOUT_RULES.turnoverMaxPct - PREBREAKOUT_RULES.turnoverMinPct),
+      0,
+      1
+    )
+    const maScore = clamp((ma20 - ma50) / ma50, 0, 0.05) / 0.05
+    const atrScore = clamp(1 - atrPct / (PREBREAKOUT_RULES.atrPctMax * 100), 0, 1)
+    const runUpScore = clamp(1 - runUpPct / PREBREAKOUT_RULES.maxRunUpPct, 0, 1)
+    const newsScore = clamp(1 - newsCount / PREBREAKOUT_RULES.newsMaxCount, 0, 1)
+
+    const signalData = newsKey ? botSignals?.get(newsKey) : null
+    const botScore =
+      signalData && signalData.weightedTotal
+        ? clamp(
+          (signalData.weightedBuy - signalData.weightedSell) /
+            Math.max(1, signalData.weightedTotal),
+          0,
+          1
+        )
+        : 0
+
+    const score =
+      (rvolScore * 0.22 +
+        closeScore * 0.2 +
+        turnoverScore * 0.16 +
+        maScore * 0.12 +
+        atrScore * 0.1 +
+        runUpScore * 0.1 +
+        newsScore * 0.05 +
+        botScore * 0.05) *
+      100
+
+    const candidate = candidateMap.get(symbol)
+    const change24h =
+      typeof candidate?.change24h === "number" && Number.isFinite(candidate.change24h)
+        ? candidate.change24h
+        : cleanedDaily.length > 1 && cleanedDaily[cleanedDaily.length - 1]?.close
+          ? ((lastPrice - cleanedDaily[cleanedDaily.length - 1].close) /
+              cleanedDaily[cleanedDaily.length - 1].close) *
+            100
+          : undefined
+
+    const prebreakoutInputs = {
+      marketCap: Math.round(marketCap),
+      floatShares: Math.round(floatShares),
+      turnoverPct: Number(turnoverPct.toFixed(2)),
+      rvol: Number(rvol.toFixed(2)),
+      rangePosition: Number(rangePosition.toFixed(4)),
+      runUpPct: Number(runUpPct.toFixed(2)),
+      ma20: Number(ma20.toFixed(4)),
+      ma50: Number(ma50.toFixed(4)),
+      ma20Slope: Number(ma20Slope.toFixed(4)),
+      atr14: Number(atr14.toFixed(4)),
+      atrPct: Number(atrPct.toFixed(2)),
+      todayVolume: Math.round(todayVolume),
+      avgVolume: Math.round(avgVolume),
+      newsCount,
+      lastPrice: Number(lastPrice.toFixed(4)),
+      todayHigh: Number(todayHigh.toFixed(4)),
+      todayLow: Number(todayLow.toFixed(4)),
+    }
+
+    const reasons = [
+      "microcap_float",
+      "rvol_in_range",
+      "turnover_ok",
+      "close_near_high",
+      "runup_ok",
+      "base_and_lift",
+      "atr_contracted",
+      "news_light",
+    ]
+
+    const analysis = buildPrebreakoutAnalysis({
+      marketCap,
+      floatShares,
+      turnoverPct,
+      rvol,
+      avgVolume,
+      rangePosition,
+      runUpPct,
+      ma20Slope,
+      atrPct,
+      newsCount,
+    })
+
+    const mergedOrigins = mergeOrigins(candidate?.origins, originMap.get(symbol))
+    const resolvedOrigins = normalizeOrigins(mergedOrigins)
+    const chartSymbol = normalizeSymbolForCharting(symbol, "stock")
+    return compactObject({
+      assetClass: "stock",
+      symbol: chartSymbol || symbol,
+      name: candidate?.name || symbol,
+      exchange: candidate?.exchange,
+      price: Number(lastPrice.toFixed(4)),
+      timeframe: "1d",
+      side: "buy",
+      profile: "prebreakout",
+      score: Number(score.toFixed(2)),
+      confidence: Number((score / 100).toFixed(2)),
+      momentum:
+        typeof change24h === "number"
+          ? { change24h: Number(change24h.toFixed(2)) }
+          : undefined,
+      signals:
+        signalData && (signalData.total || signalData.weightedTotal)
+          ? {
+              total: signalData.total,
+              buy: signalData.buy,
+              sell: signalData.sell,
+              strengthAvg:
+                signalData.weightedTotal > 0
+                  ? Number((signalData.weightedStrengthSum / signalData.weightedTotal).toFixed(2))
+                  : undefined,
+              bots: Array.from(signalData.bots || []),
+            }
+          : undefined,
+      primary: candidate?.primary ? true : undefined,
+      origins: resolvedOrigins.length > 0 ? resolvedOrigins : undefined,
+      source: candidate?.source || "prebreakout",
+      analysis,
+      prebreakout: {
+        asOfTs: asOf.toISOString(),
+        inputs: prebreakoutInputs,
+        reasons,
+        entryWindow: entryWindow.entryWindow,
+        exitPlan: {
+          profitTriggerPct: PREBREAKOUT_RULES.profitTriggerPct,
+          morningWindowMinutes: PREBREAKOUT_RULES.exitWindowMinutes,
+          timeExit: "11:30 ET",
+          stopAtrMult: PREBREAKOUT_RULES.stopAtrMult,
+          stopType: "atr",
+        },
+      },
+    })
+  })
+
+  const filtered = items.filter(Boolean)
+  filtered.sort((a, b) => (b.score || 0) - (a.score || 0))
+  const limited = filtered.slice(0, Math.max(1, config.hotTradesLimit))
+  const originBreakdown = summarizeOrigins(limited)
+
+  return {
+    items: limited,
+    meta: {
+      ...baseMeta,
+      totalSymbols: symbols.length,
+      count: limited.length,
+      origins: originBreakdown,
+    },
+  }
 }
 
 function buildActionBoard(hotTrades, newsScoreMap, limit) {
@@ -4275,7 +5282,8 @@ function buildTradeAnalysis(trade, trendItem, newsItem, options) {
   }
 
   if (options.aiSummary) {
-    details.push(`AI note: ${formatAiSnippet(options.aiSummary, 140)}`)
+    const label = options.aiSummarySource === "llm" ? "AI note" : "Note"
+    details.push(`${label}: ${formatAiSnippet(options.aiSummary, 140)}`)
   }
 
   return { summary, details }
@@ -4287,11 +5295,10 @@ function attachTradeAnalysis(trade, context) {
   const trendItem = key ? context.trendLookup.get(key) : null
   const newsItem = key ? context.newsScoreMap.get(key) : null
   const symbolKey = trade.symbol ? String(trade.symbol).toUpperCase() : null
-  const aiSummary =
-    (symbolKey && context.llmMap?.get(symbolKey)) ||
-    (symbolKey && context.fallbackMap?.get(symbolKey)) ||
-    trade.rationale ||
-    null
+  const llmSummary = symbolKey ? context.llmMap?.get(symbolKey) : null
+  const rationale = trade.rationale ? String(trade.rationale) : null
+  const aiSummary = llmSummary || rationale || null
+  const aiSummarySource = llmSummary ? "llm" : rationale ? "rationale" : null
   const analysis = buildTradeAnalysis(trade, trendItem, newsItem, {
     trendHorizon: context.trendHorizon,
     trendWeights: context.trendWeights,
@@ -4300,6 +5307,7 @@ function attachTradeAnalysis(trade, context) {
     signalRecentMinutes: context.signalRecentMinutes,
     signalMinRecent: context.signalMinRecent,
     aiSummary,
+    aiSummarySource,
   })
   const trend = trendItem
     ? {
@@ -4736,6 +5744,182 @@ async function dispatchAutoPaperTrades(db, actionBoard) {
   }
 }
 
+async function dispatchAutoPaperSwingOvernight(db, swingResult, controls) {
+  if (!controls?.swingOvernightAutoPaperEnabled) return
+  const items = Array.isArray(swingResult?.items) ? swingResult.items : []
+  if (items.length === 0) return
+
+  const botsSnap = await db.collection("bots").get()
+  const paperBots = []
+  botsSnap.docs.forEach((doc) => {
+    const botData = doc.data()
+    const mode = String(botData?.desiredConfig?.mode || "signal").toLowerCase()
+    if (mode === "paper") {
+      paperBots.push({
+        id: doc.id,
+        engine: botData.engine,
+        assetClass: botData.desiredConfig?.assetClass,
+      })
+    }
+  })
+
+  if (paperBots.length === 0) return
+
+  const today = new Date().toISOString().split("T")[0]
+  const paperMetaRef = db.doc("market/swing_paper_trading_meta")
+  const paperMeta = (await paperMetaRef.get()).data() || {}
+  const todayStats = paperMeta[today] || { tradeCount: 0 }
+
+  const MAX_DAILY_SWING_AUTO_TRADES = 6
+  if (todayStats.tradeCount >= MAX_DAILY_SWING_AUTO_TRADES) {
+    console.log(
+      `Swing auto paper limit reached (${todayStats.tradeCount}/${MAX_DAILY_SWING_AUTO_TRADES})`
+    )
+    return
+  }
+
+  const sorted = [...items].sort((a, b) => (b.score || 0) - (a.score || 0))
+  const tradesToExecute = sorted.slice(
+    0,
+    MAX_DAILY_SWING_AUTO_TRADES - todayStats.tradeCount
+  )
+
+  const batch = db.batch()
+  let executedCount = 0
+
+  for (const trade of tradesToExecute) {
+    const symbol = trade.symbol
+    if (!symbol || !trade.price || trade.price <= 0) continue
+    const bot = paperBots.find((b) => b.assetClass === "stock")
+    if (!bot) continue
+
+    const paperTradeRef = db.collection("paper_trade_queue").doc()
+    batch.set(paperTradeRef, {
+      symbol,
+      assetClass: "stock",
+      side: "buy",
+      price: trade.price,
+      score: trade.score,
+      botId: bot.id,
+      status: "pending",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      profile: "swing_overnight",
+      reason: `Auto paper swing: score=${trade.score}`,
+      swing: trade.swing || null,
+    })
+    executedCount++
+  }
+
+  batch.set(
+    paperMetaRef,
+    {
+      [today]: {
+        tradeCount: todayStats.tradeCount + executedCount,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+    },
+    { merge: true }
+  )
+
+  if (executedCount > 0) {
+    await batch.commit()
+    console.log(`Swing auto paper: dispatched ${executedCount} trades`)
+  }
+}
+
+async function dispatchAutoPaperPrebreakout(db, prebreakoutResult, controls) {
+  if (!controls?.prebreakoutAutoPaperEnabled) return
+  const items = Array.isArray(prebreakoutResult?.items) ? prebreakoutResult.items : []
+  if (items.length === 0) return
+
+  const botsSnap = await db.collection("bots").get()
+  const paperBots = []
+  botsSnap.docs.forEach((doc) => {
+    const botData = doc.data()
+    const mode = String(botData?.desiredConfig?.mode || "signal").toLowerCase()
+    if (mode === "paper") {
+      paperBots.push({
+        id: doc.id,
+        engine: botData.engine,
+        assetClass: botData.desiredConfig?.assetClass,
+      })
+    }
+  })
+
+  if (paperBots.length === 0) return
+
+  const today = new Date().toISOString().split("T")[0]
+  const paperMetaRef = db.doc("market/prebreakout_paper_trading_meta")
+  const paperMeta = (await paperMetaRef.get()).data() || {}
+  const todayStats = paperMeta[today] || { tradeCount: 0 }
+
+  const MAX_DAILY_PREBREAKOUT_AUTO_TRADES = 6
+  if (todayStats.tradeCount >= MAX_DAILY_PREBREAKOUT_AUTO_TRADES) {
+    console.log(
+      `Pre-breakout auto paper limit reached (${todayStats.tradeCount}/${MAX_DAILY_PREBREAKOUT_AUTO_TRADES})`
+    )
+    return
+  }
+
+  const sorted = [...items].sort((a, b) => (b.score || 0) - (a.score || 0))
+  const tradesToExecute = sorted.slice(
+    0,
+    MAX_DAILY_PREBREAKOUT_AUTO_TRADES - todayStats.tradeCount
+  )
+
+  const batch = db.batch()
+  let executedCount = 0
+
+  for (const trade of tradesToExecute) {
+    const symbol = trade.symbol
+    if (!symbol || !trade.price || trade.price <= 0) continue
+    const bot = paperBots.find((b) => b.assetClass === "stock")
+    if (!bot) continue
+
+    const atr = trade.prebreakout?.inputs?.atr14
+    const stopLoss =
+      typeof atr === "number" ? trade.price - PREBREAKOUT_RULES.stopAtrMult * atr : undefined
+    const takeProfit =
+      typeof trade.price === "number"
+        ? trade.price * (1 + PREBREAKOUT_RULES.profitTriggerPct / 100)
+        : undefined
+
+    const paperTradeRef = db.collection("paper_trade_queue").doc()
+    batch.set(paperTradeRef, {
+      symbol,
+      assetClass: "stock",
+      side: "buy",
+      price: trade.price,
+      score: trade.score,
+      botId: bot.id,
+      status: "pending",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      profile: "prebreakout",
+      reason: `Auto paper pre-breakout: score=${trade.score}`,
+      stopLoss: Number.isFinite(stopLoss) ? Number(stopLoss.toFixed(4)) : undefined,
+      takeProfit: Number.isFinite(takeProfit) ? Number(takeProfit.toFixed(4)) : undefined,
+      prebreakout: trade.prebreakout || null,
+    })
+    executedCount++
+  }
+
+  batch.set(
+    paperMetaRef,
+    {
+      [today]: {
+        tradeCount: todayStats.tradeCount + executedCount,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+    },
+    { merge: true }
+  )
+
+  if (executedCount > 0) {
+    await batch.commit()
+    console.log(`Pre-breakout auto paper: dispatched ${executedCount} trades`)
+  }
+}
+
 async function safeFetch(fetcher) {
   try {
     const result = await fetcher()
@@ -4921,6 +6105,8 @@ async function run() {
         llmIntervalMinutes: config.llmIntervalMinutes,
         enableNews: true,
         newsIntervalMinutes: config.newsIntervalMinutes,
+        swingOvernightEnabled: false,
+        swingOvernightAutoPaperEnabled: false,
         dipHorizon: "24h",
         trendHorizon: "15m",
         trendWeights: { ...DEFAULT_TREND_WEIGHTS },
@@ -5191,6 +6377,78 @@ async function run() {
     scoreOptions,
     newsData.scoreMap
   )
+  const swingEntryWindow = resolveSwingEntryWindow(startedAt)
+  const swingResult = controls.swingOvernightEnabled
+    ? await buildSwingOvernight({
+        candidates,
+        universe,
+        trendingByHorizon,
+        asOf: startedAt,
+      })
+    : {
+        items: [],
+        meta: {
+          runId,
+          asOf: startedAt.toISOString(),
+          status: "disabled",
+          entryWindow: swingEntryWindow.entryWindow,
+          sessionClose: swingEntryWindow.entryWindow?.close,
+        },
+      }
+  if (config.pipelineEventsEnabled) {
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "swing_overnight",
+        eventType: "compute_swing",
+        edgeKey: "market_intel->swing_overnight",
+        nodeIds: ["market_intel", "swing_overnight"],
+        status: "end",
+        batchId: runId,
+        meta: {
+          runId,
+          status: swingResult?.meta?.status,
+          count: swingResult?.items?.length ?? 0,
+        },
+      })
+    )
+  }
+  const prebreakoutEntryWindow = resolvePrebreakoutEntryWindow(startedAt)
+  const prebreakoutResult = controls.prebreakoutEnabled
+    ? await buildPrebreakout({
+        candidates,
+        universe,
+        trendingByHorizon,
+        newsScoreMap: newsData.scoreMap,
+        botSignals,
+        asOf: startedAt,
+      })
+    : {
+        items: [],
+        meta: {
+          runId,
+          asOf: startedAt.toISOString(),
+          status: "disabled",
+          entryWindow: prebreakoutEntryWindow.entryWindow,
+          sessionClose: prebreakoutEntryWindow.entryWindow?.close,
+        },
+      }
+  if (config.pipelineEventsEnabled) {
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "prebreakout",
+        eventType: "compute_prebreakout",
+        edgeKey: "market_intel->prebreakout",
+        nodeIds: ["market_intel", "prebreakout"],
+        status: "end",
+        batchId: runId,
+        meta: {
+          runId,
+          status: prebreakoutResult?.meta?.status,
+          count: prebreakoutResult?.items?.length ?? 0,
+        },
+      })
+    )
+  }
   const actionBoard = buildActionBoard(
     hotTradesWithRecommendations,
     newsData.scoreMap,
@@ -5325,15 +6583,6 @@ async function run() {
   )
 
   const existing = await db.doc("market/hotTrades").get()
-  const previousItems = existing.exists ? existing.data()?.items : []
-  const previousMap = new Map()
-  if (Array.isArray(previousItems)) {
-    previousItems.forEach((item) => {
-      if (item?.symbol && item?.rationale) {
-        previousMap.set(String(item.symbol).toUpperCase(), String(item.rationale))
-      }
-    })
-  }
 
   let llmMap = null
   let llmUpdatedAt = null
@@ -5364,8 +6613,7 @@ async function run() {
 
   const items = trimmed.map((item) => {
     const key = item.symbol.toUpperCase()
-    const rationale =
-      llmMap?.get(key) || previousMap.get(key) || item.rationale
+    const rationale = llmMap?.get(key) || item.rationale
     return {
       ...item,
       rationale,
@@ -5385,7 +6633,6 @@ async function run() {
     minAccuracySignals: config.minAccuracySignals,
     signalWeight,
     llmMap,
-    fallbackMap: previousMap,
   }
   const analyzedItems = annotateTrades(items, analysisContext)
   const analyzedActionBoard = {
@@ -5440,6 +6687,42 @@ async function run() {
           fetchStatus,
           candidateCounts,
         }),
+      },
+      { merge: true }
+    ),
+    db.doc("market/swingOvernight").set(
+      {
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        items: swingResult?.items ?? [],
+        meta: swingResult?.meta ?? {},
+      },
+      { merge: true }
+    ),
+    db.doc("market/prebreakout").set(
+      {
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        items: prebreakoutResult?.items ?? [],
+        meta: prebreakoutResult?.meta ?? {},
+      },
+      { merge: true }
+    ),
+    db.collection("market_swing_overnight_runs").doc(runId).set(
+      {
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        runId,
+        items: swingResult?.items ?? [],
+        meta: swingResult?.meta ?? {},
+      },
+      { merge: true }
+    ),
+    db.collection("market_prebreakout_runs").doc(runId).set(
+      {
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        runId,
+        items: prebreakoutResult?.items ?? [],
+        meta: prebreakoutResult?.meta ?? {},
       },
       { merge: true }
     ),
@@ -5538,6 +6821,44 @@ async function run() {
       : Promise.resolve(),
     autoTuneWrite,
   ])
+
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "swing_overnight",
+      eventType: "fs_write",
+      edgeKey: "swing_overnight->firestore",
+      nodeIds: ["swing_overnight", "firestore"],
+      status: "end",
+      batchId: runId,
+      meta: {
+        runId,
+        status: swingResult?.meta?.status,
+        count: swingResult?.items?.length ?? 0,
+      },
+      outputs: {
+        firestoreDocs: ["market/swingOvernight", `market_swing_overnight_runs/${runId}`],
+      },
+    })
+  )
+
+  await publishPipelineEvent(
+    buildPipelineEvent({
+      stationId: "prebreakout",
+      eventType: "fs_write",
+      edgeKey: "prebreakout->firestore",
+      nodeIds: ["prebreakout", "firestore"],
+      status: "end",
+      batchId: runId,
+      meta: {
+        runId,
+        status: prebreakoutResult?.meta?.status,
+        count: prebreakoutResult?.items?.length ?? 0,
+      },
+      outputs: {
+        firestoreDocs: ["market/prebreakout", `market_prebreakout_runs/${runId}`],
+      },
+    })
+  )
 
   await publishPipelineEvent(
     buildPipelineEvent({
@@ -5683,6 +7004,12 @@ async function run() {
   // Auto paper trading: dispatch high-confidence signals to execution bots
   await dispatchAutoPaperTrades(db, analyzedActionBoard).catch((err) => {
     console.error("Auto paper trade dispatch failed", err.message)
+  })
+  await dispatchAutoPaperSwingOvernight(db, swingResult, controls).catch((err) => {
+    console.error("Swing auto paper dispatch failed", err.message)
+  })
+  await dispatchAutoPaperPrebreakout(db, prebreakoutResult, controls).catch((err) => {
+    console.error("Pre-breakout auto paper dispatch failed", err.message)
   })
 
   console.log("mi_run_complete", { runId, count: items.length, durationMs })

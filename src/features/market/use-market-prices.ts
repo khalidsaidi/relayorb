@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { doc, onSnapshot } from "firebase/firestore"
 import { db } from "@/lib/firebase"
+import { getE2eMarketPricesOverride } from "@/lib/e2e-overrides"
 
 export type MarketPrice = {
     symbol: string
@@ -9,10 +10,13 @@ export type MarketPrice = {
 }
 
 export function useMarketPrices() {
-    const [livePrices, setLivePrices] = useState<Record<string, number>>({})
-    const [snapshotPrices, setSnapshotPrices] = useState<Record<string, number>>({})
-    const [liveLoaded, setLiveLoaded] = useState(false)
-    const [snapshotLoaded, setSnapshotLoaded] = useState(false)
+    const e2eOverride = getE2eMarketPricesOverride()
+    const initialLive = e2eOverride?.livePrices ?? {}
+    const initialSnapshot = e2eOverride?.prices ?? {}
+    const [livePrices, setLivePrices] = useState<Record<string, number>>(() => initialLive)
+    const [snapshotPrices, setSnapshotPrices] = useState<Record<string, number>>(() => initialSnapshot)
+    const [liveLoaded, setLiveLoaded] = useState(() => Boolean(e2eOverride))
+    const [snapshotLoaded, setSnapshotLoaded] = useState(() => Boolean(e2eOverride))
 
     const prices = useMemo(
         () => ({ ...snapshotPrices, ...livePrices }),
@@ -21,6 +25,7 @@ export function useMarketPrices() {
     const loading = !liveLoaded && !snapshotLoaded
 
     useEffect(() => {
+        if (e2eOverride) return
         if (!db) return
 
         const unsub = onSnapshot(doc(db, "market", "prices"), (snap) => {
@@ -44,9 +49,10 @@ export function useMarketPrices() {
         })
 
         return () => unsub()
-    }, [])
+    }, [e2eOverride])
 
     useEffect(() => {
+        if (e2eOverride) return
         if (!db) return
 
         const unsub = onSnapshot(doc(db, "market", "prices_snapshot"), (snap) => {
@@ -70,7 +76,7 @@ export function useMarketPrices() {
         })
 
         return () => unsub()
-    }, [])
+    }, [e2eOverride])
 
     return { prices, livePrices, loading }
 }

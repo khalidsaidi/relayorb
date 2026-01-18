@@ -42,19 +42,21 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { StatusBadge } from "@/components/StatusBadge"
 import { formatRelativeTimestamp, formatTimestamp } from "@/lib/format"
+import { findAnalysisNoteKind } from "@/lib/analysis-localize"
 import { useAuth } from "@/features/auth/auth-context"
 import { DEFAULT_EXCHANGES, DEFAULT_MODES, DEFAULT_TIMEFRAMES, parsePairs, uniqueList } from "@/lib/universe"
 import { AssetChartModal } from "@/components/charts/AssetChartModal"
 import { ScoreBreakdownDialog } from "@/components/score/ScoreBreakdownDialog"
 import { useStreamSymbols } from "@/features/market/use-stream-symbols"
 import { BarChart3, InfoIcon } from "lucide-react"
+import { useTranslation } from "react-i18next"
 
-const commandOptions: { type: BotCommandType; label: string }[] = [
-  { type: "start", label: "Start" },
-  { type: "stop", label: "Stop" },
-  { type: "restart", label: "Restart" },
-  { type: "reload_config", label: "Reload Config" },
-  { type: "update_agent", label: "Update Agent" },
+const COMMAND_OPTIONS: BotCommandType[] = [
+  "start",
+  "stop",
+  "restart",
+  "reload_config",
+  "update_agent",
 ]
 
 const ENGINE_COMMANDS: Record<string, BotCommandType[]> = {
@@ -68,6 +70,7 @@ const STRATEGY_PRESETS: Record<string, string[]> = {
 }
 const PERFORMANCE_HORIZONS = ["1h", "24h", "7d"] as const
 const RECOMMENDED_SYMBOL_LIMIT = 6
+type AssetClass = MarketHotTrade["assetClass"]
 
 function formatPercent(value?: number | null) {
   if (value === undefined || value === null || Number.isNaN(value)) return "—"
@@ -98,6 +101,34 @@ function extractEngineAdvanced(advanced: unknown, engine?: string) {
 export default function BotDetailPage() {
   const { botId } = useParams()
   const { user } = useAuth()
+  const { t } = useTranslation()
+  const naLabel = t("common.na")
+  const unknownLabel = t("common.unknown")
+  const assetLabelMap = useMemo(
+    () => ({
+      crypto: t("assets.crypto"),
+      stock: t("assets.stocks"),
+      forex: t("assets.fx"),
+    }),
+    [t]
+  )
+  const assetLabelShortMap = useMemo(
+    () => ({
+      crypto: t("assets.crypto"),
+      stock: t("assets.stock"),
+      forex: t("assets.fx"),
+    }),
+    [t]
+  )
+  const getAssetLabel = (assetClass?: string | null, variant: "short" | "long" = "long") => {
+    if (!assetClass) return unknownLabel
+    const map = variant === "short" ? assetLabelShortMap : assetLabelMap
+    return map[assetClass as AssetClass] ?? assetClass
+  }
+  const getModeLabel = (modeValue?: string | null) => {
+    if (!modeValue) return naLabel
+    return t(`botDetail.mode.${modeValue}`, { defaultValue: modeValue })
+  }
   const [bot, setBot] = useState<BotDoc | null>(null)
   const [events, setEvents] = useState<BotEventDoc[]>([])
   const [loadingBot, setLoadingBot] = useState(true)
@@ -141,6 +172,15 @@ export default function BotDetailPage() {
   const desiredConfigKey = useMemo(
     () => JSON.stringify(bot?.desiredConfig ?? {}),
     [bot?.desiredConfig]
+  )
+
+  const commandOptions = useMemo(
+    () =>
+      COMMAND_OPTIONS.map((type) => ({
+        type,
+        label: t(`botDetail.commands.${type}`),
+      })),
+    [t]
   )
 
   const pairsPreview = useMemo(() => parsePairs(pairsInput), [pairsInput])
@@ -202,13 +242,8 @@ export default function BotDetailPage() {
     enabled: Boolean(botId),
   })
 
-  const engineConfigLabel = useMemo(() => {
-    return "Engine Config (JSON)"
-  }, [bot?.engine])
-
-  const engineConfigTemplate = useMemo(() => {
-    return JSON.stringify({ config: {} }, null, 2)
-  }, [bot?.engine])
+  const engineConfigLabel = "Engine Config (JSON)"
+  const engineConfigTemplate = JSON.stringify({ config: {} }, null, 2)
 
   const wizardConfig = useMemo(() => {
     const pairs = parsePairs(pairsInput)
@@ -255,7 +290,7 @@ export default function BotDetailPage() {
     const engineKey = bot?.engine || "default"
     const allowed = ENGINE_COMMANDS[engineKey] || ENGINE_COMMANDS.default
     return commandOptions.filter((option) => allowed.includes(option.type))
-  }, [bot?.engine])
+  }, [bot?.engine, commandOptions])
 
   useEffect(() => {
     if (!botId || !firebaseEnabled || !db) {
@@ -389,10 +424,10 @@ export default function BotDetailPage() {
     const defaultStrategy =
       (STRATEGY_PRESETS[bot.engine ?? "default"] ?? STRATEGY_PRESETS.default)[0] ??
       ""
-    let fallbackExchange = defaultExchange
-    let fallbackPairs: string[] = []
-    let fallbackTimeframe = defaultTimeframe
-    let fallbackStrategy = defaultStrategy
+    const fallbackExchange = defaultExchange
+    const fallbackPairs: string[] = []
+    const fallbackTimeframe = defaultTimeframe
+    const fallbackStrategy = defaultStrategy
 
     setBaselineAdvanced(advanced ? { ...advanced } : null)
 
@@ -418,11 +453,11 @@ export default function BotDetailPage() {
 
   const summary = useMemo(() => {
     return [
-      { label: "Positions", value: bot?.summary?.positions ?? "—" },
-      { label: "Orders", value: bot?.summary?.orders ?? "—" },
-      { label: "PnL", value: bot?.summary?.pnl ?? "—" },
+      { label: t("botDetail.summary.positions"), value: bot?.summary?.positions ?? naLabel },
+      { label: t("botDetail.summary.orders"), value: bot?.summary?.orders ?? naLabel },
+      { label: t("botDetail.summary.pnl"), value: bot?.summary?.pnl ?? naLabel },
     ]
-  }, [bot])
+  }, [bot, naLabel, t])
 
   function parseOptionalNumber(value: string) {
     const trimmed = value.trim()
@@ -468,7 +503,7 @@ export default function BotDetailPage() {
       setAdvancedConfigError(null)
       return parsed as Record<string, unknown>
     } catch {
-      setAdvancedConfigError("Advanced config must be valid JSON")
+      setAdvancedConfigError(t("botDetail.errors.advancedConfigInvalid"))
       return null
     }
   }
@@ -519,7 +554,7 @@ export default function BotDetailPage() {
     setConfigDirty(true)
     setAdvancedConfigError(null)
     setDetailTab("config")
-    toast.success("Recommendation applied to config")
+    toast.success(t("botDetail.toasts.recommendationApplied"))
     setTimeout(() => {
       configCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
     }, 0)
@@ -530,7 +565,7 @@ export default function BotDetailPage() {
   async function queueCommand(type: BotCommandType, overridePayload?: Record<string, unknown>) {
     if (!botId) return
     if (!firebaseEnabled || !db) {
-      toast.error("Firebase not configured")
+      toast.error(t("tradeNow.firebaseNotConfigured"))
       return
     }
 
@@ -545,7 +580,7 @@ export default function BotDetailPage() {
         try {
           parsedPayload = JSON.parse(trimmed)
         } catch {
-          setPayloadError("Payload must be valid JSON")
+          setPayloadError(t("botDetail.errors.payloadInvalid"))
           setSending(false)
           return
         }
@@ -557,16 +592,16 @@ export default function BotDetailPage() {
         type,
         status: "queued",
         createdAt: serverTimestamp(),
-        requestedBy: user?.email ?? "unknown",
+        requestedBy: user?.email ?? unknownLabel,
       }
       if (parsedPayload && Object.keys(parsedPayload).length > 0) {
         command.payload = parsedPayload
       }
 
       await addDoc(collection(activeDb, "bots", botId, "commands"), command)
-      toast.success("Command queued")
+      toast.success(t("botDetail.toasts.commandQueued"))
     } catch {
-      toast.error("Failed to queue command")
+      toast.error(t("botDetail.toasts.commandFailed"))
     } finally {
       setSending(false)
     }
@@ -575,14 +610,14 @@ export default function BotDetailPage() {
   async function saveUniverseConfig() {
     if (!botId) return
     if (!firebaseEnabled || !db) {
-      toast.error("Firebase not configured")
+      toast.error(t("tradeNow.firebaseNotConfigured"))
       return
     }
 
     const activeDb = db
     setConfigSaving(true)
     if (timeframeInvalid) {
-      toast.error("Timeframe must look like 1m, 1h, 1d")
+      toast.error(t("botDetail.toasts.timeframeInvalid"))
       setConfigSaving(false)
       return
     }
@@ -625,9 +660,9 @@ export default function BotDetailPage() {
         { merge: true }
       )
       setConfigDirty(false)
-      toast.success("Universe saved")
+      toast.success(t("botDetail.toasts.universeSaved"))
     } catch {
-      toast.error("Failed to save universe")
+      toast.error(t("botDetail.toasts.universeSaveFailed"))
     } finally {
       setConfigSaving(false)
     }
@@ -635,7 +670,7 @@ export default function BotDetailPage() {
 
   async function applyUniverseConfig() {
     if (timeframeInvalid) {
-      toast.error("Timeframe must look like 1m, 1h, 1d")
+      toast.error(t("botDetail.toasts.timeframeInvalid"))
       return
     }
     const advancedConfig = resolveAdvancedConfig()
@@ -671,7 +706,7 @@ export default function BotDetailPage() {
 
   function applyRecommendedSymbols(mode: "append" | "replace", limit = RECOMMENDED_SYMBOL_LIMIT) {
     if (!botPerformance) {
-      toast.error("No bot accuracy data yet.")
+      toast.error(t("botDetail.toasts.noAccuracyData"))
       return
     }
     const picks = (botPerformance.topSymbols?.[recommendHorizon] ?? [])
@@ -679,7 +714,7 @@ export default function BotDetailPage() {
       .filter(Boolean)
       .slice(0, limit)
     if (picks.length === 0) {
-      toast.error("No recommendations yet for this horizon.")
+      toast.error(t("botDetail.toasts.noRecommendations"))
       return
     }
     const existing = parsePairs(pairsInput)
@@ -689,8 +724,8 @@ export default function BotDetailPage() {
     setConfigDirty(true)
     toast.success(
       mode === "replace"
-        ? "Pairs replaced with recommendations"
-        : "Pairs updated with recommendations"
+        ? t("botDetail.toasts.pairsReplaced")
+        : t("botDetail.toasts.pairsUpdated")
     )
   }
 
@@ -701,7 +736,7 @@ export default function BotDetailPage() {
     const next = uniqueList([...existing, trimmed])
     setPairsInput(next.join(", "))
     setConfigDirty(true)
-    toast.success(`${trimmed} added to pairs`)
+    toast.success(t("botDetail.toasts.pairAdded", { symbol: trimmed }))
   }
 
   function renderBotPerformancePanel(horizon: (typeof PERFORMANCE_HORIZONS)[number]) {
@@ -713,56 +748,52 @@ export default function BotDetailPage() {
     return (
       <div className="space-y-3">
         {!firebaseEnabled ? (
-          <div className="text-sm opacity-70">Connect Firebase to load accuracy data.</div>
+          <div className="text-sm opacity-70">{t("dashboard.performance.firebaseHint")}</div>
         ) : loadingPerformance ? (
-          <div className="text-sm opacity-70">Loading performance...</div>
+          <div className="text-sm opacity-70">{t("dashboard.performance.loading")}</div>
         ) : !botPerformance ? (
           <div className="text-sm opacity-70">
-            This bot has not produced scored predictions yet. Start it and wait for a full horizon
-            to pass.
+            {t("botDetail.performance.noPredictions")}
           </div>
         ) : !stats ? (
-          <div className="text-sm opacity-70">No scored signals yet for this horizon.</div>
+          <div className="text-sm opacity-70">{t("botDetail.performance.noSignalsForHorizon")}</div>
         ) : (
           <>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-lg border border-border/60 bg-background/70 p-3">
-                <div className="text-xs text-muted-foreground">Accuracy</div>
+                <div className="text-xs text-muted-foreground">
+                  {t("dashboard.performance.accuracy")}
+                </div>
                 <div className="mt-1 text-2xl font-semibold">
-                  {stats.hitRate !== undefined ? `${stats.hitRate.toFixed(1)}%` : "—"}
+                  {stats.hitRate !== undefined ? `${stats.hitRate.toFixed(1)}%` : naLabel}
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  {stats.count ?? 0} signals scored
+                  {t("dashboard.performance.signalsScored", { count: stats.count ?? 0 })}
                 </div>
               </div>
               <div className="rounded-lg border border-border/60 bg-background/70 p-3">
-                <div className="text-xs text-muted-foreground">Avg return</div>
+                <div className="text-xs text-muted-foreground">
+                  {t("dashboard.performance.avgReturn")}
+                </div>
                 <div className="mt-1 text-2xl font-semibold">
                   {formatPercent(stats.avgReturn)}
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  Horizon {horizon}
+                  {t("dashboard.performance.horizon", { horizon })}
                 </div>
               </div>
             </div>
 
             <div className="space-y-2">
               <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                Accuracy by asset
+                {t("dashboard.performance.accuracyByAsset")}
               </div>
               {assetStats.length === 0 ? (
-                <div className="text-sm opacity-70">No asset breakdown yet.</div>
+                <div className="text-sm opacity-70">{t("dashboard.performance.assetsEmpty")}</div>
               ) : (
                 <div className="grid gap-2 sm:grid-cols-3">
                   {assetStats.map((asset) => {
-                    const label =
-                      asset.assetClass === "crypto"
-                        ? "Crypto"
-                        : asset.assetClass === "stock"
-                          ? "Stocks"
-                          : asset.assetClass === "forex"
-                            ? "FX"
-                            : asset.assetClass
+                    const label = getAssetLabel(asset.assetClass)
                     return (
                       <div
                         key={asset.assetClass}
@@ -773,7 +804,10 @@ export default function BotDetailPage() {
                           {asset.hitRate.toFixed(1)}%
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          {asset.count} signals • {formatPercent(asset.avgReturn)}
+                          {t("dashboard.performance.assetLine", {
+                            count: asset.count,
+                            value: formatPercent(asset.avgReturn),
+                          })}
                         </div>
                       </div>
                     )
@@ -785,10 +819,10 @@ export default function BotDetailPage() {
             <div className="grid gap-3 lg:grid-cols-2">
               <div className="space-y-2">
                 <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                  Best symbols
+                  {t("dashboard.performance.bestSymbols")}
                 </div>
                 {topSymbols.length === 0 ? (
-                  <div className="text-sm opacity-70">No symbol ranking yet.</div>
+                  <div className="text-sm opacity-70">{t("dashboard.performance.symbolsEmpty")}</div>
                 ) : (
                   <div className="space-y-2">
                     {topSymbols.map((symbol) => (
@@ -799,13 +833,13 @@ export default function BotDetailPage() {
                         <div className="min-w-0">
                           <div className="font-mono truncate">{symbol.symbol}</div>
                           <div className="text-xs text-muted-foreground">
-                            {symbol.assetClass ?? "unknown"}
+                            {getAssetLabel(symbol.assetClass)}
                           </div>
                         </div>
                         <div className="text-right text-xs text-muted-foreground">
-                          <div>{symbol.hitRate.toFixed(1)}% hit</div>
+                          <div>{t("dashboard.performance.hitRate", { value: symbol.hitRate.toFixed(1) })}</div>
                           <div>{formatPercent(symbol.avgReturn)}</div>
-                          <div>{symbol.count} signals</div>
+                          <div>{t("dashboard.labels.signalsCount", { count: symbol.count })}</div>
                         </div>
                       </div>
                     ))}
@@ -815,10 +849,10 @@ export default function BotDetailPage() {
 
               <div className="space-y-2">
                 <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                  Needs attention
+                  {t("dashboard.performance.needsAttention")}
                 </div>
                 {bottomSymbols.length === 0 ? (
-                  <div className="text-sm opacity-70">No symbol ranking yet.</div>
+                  <div className="text-sm opacity-70">{t("dashboard.performance.symbolsEmpty")}</div>
                 ) : (
                   <div className="space-y-2">
                     {bottomSymbols.map((symbol) => (
@@ -829,13 +863,13 @@ export default function BotDetailPage() {
                         <div className="min-w-0">
                           <div className="font-mono truncate">{symbol.symbol}</div>
                           <div className="text-xs text-muted-foreground">
-                            {symbol.assetClass ?? "unknown"}
+                            {getAssetLabel(symbol.assetClass)}
                           </div>
                         </div>
                         <div className="text-right text-xs text-muted-foreground">
-                          <div>{symbol.hitRate.toFixed(1)}% hit</div>
+                          <div>{t("dashboard.performance.hitRate", { value: symbol.hitRate.toFixed(1) })}</div>
                           <div>{formatPercent(symbol.avgReturn)}</div>
-                          <div>{symbol.count} signals</div>
+                          <div>{t("dashboard.labels.signalsCount", { count: symbol.count })}</div>
                         </div>
                       </div>
                     ))}
@@ -853,27 +887,29 @@ export default function BotDetailPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-xs uppercase tracking-[0.35em] text-muted-foreground">Bot Detail</div>
+          <div className="text-xs uppercase tracking-[0.35em] text-muted-foreground">
+            {t("botDetail.header.kicker")}
+          </div>
           <div className="text-2xl font-semibold">{bot?.name || botId}</div>
         </div>
         <Link className="text-sm text-muted-foreground hover:text-foreground" to="/bots">
-          ← Back to bots
+          {t("botDetail.header.backToBots")}
         </Link>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
         <Card className="reveal lg:order-2" style={{ "--delay": "120ms" } as CSSProperties}>
           <CardHeader className="flex-row items-center justify-between space-y-0">
-            <CardTitle className="text-base">Status & Metadata</CardTitle>
+            <CardTitle className="text-base">{t("botDetail.status.title")}</CardTitle>
             <StatusBadge status={bot?.status} />
           </CardHeader>
           <CardContent className="space-y-4">
             {!firebaseEnabled ? (
-              <div className="text-sm opacity-70">Configure Firebase to load bot details.</div>
+              <div className="text-sm opacity-70">{t("botDetail.status.firebaseHint")}</div>
             ) : loadingBot ? (
-              <div className="text-sm opacity-70">Loading bot…</div>
+              <div className="text-sm opacity-70">{t("botDetail.status.loading")}</div>
             ) : !bot ? (
-              <div className="text-sm opacity-70">Bot not found.</div>
+              <div className="text-sm opacity-70">{t("botDetail.status.notFound")}</div>
             ) : (
               <div className="space-y-4">
                 <div className="grid gap-3 md:grid-cols-3">
@@ -886,17 +922,23 @@ export default function BotDetailPage() {
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="rounded-lg border border-border/60 bg-background/70 p-3">
-                    <div className="text-xs text-muted-foreground">Engine</div>
-                    <div className="text-sm font-medium">{bot.engine || "unknown"}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {t("bots.table.engine")}
+                    </div>
+                    <div className="text-sm font-medium">{bot.engine || unknownLabel}</div>
                   </div>
                   <div className="rounded-lg border border-border/60 bg-background/70 p-3">
-                    <div className="text-xs text-muted-foreground">Last Heartbeat</div>
+                    <div className="text-xs text-muted-foreground">
+                      {t("bots.table.lastHeartbeat")}
+                    </div>
                     <div className="text-sm font-medium">{formatTimestamp(bot.lastHeartbeat)}</div>
                   </div>
                 </div>
                 {bot.state && (
                   <div className="rounded-lg border border-border/60 bg-background/70 p-3">
-                    <div className="text-xs text-muted-foreground">Latest Trading State</div>
+                    <div className="text-xs text-muted-foreground">
+                      {t("botDetail.status.latestTradingState")}
+                    </div>
                     <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-3 text-xs">
                       {JSON.stringify(bot.state, null, 2)}
                     </pre>
@@ -910,31 +952,31 @@ export default function BotDetailPage() {
         <div className="space-y-4">
           <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-4">
             <TabsList className="grid w-full grid-cols-2 gap-2 md:grid-cols-4">
-              <TabsTrigger value="overview">Overview</TabsTrigger>
-              <TabsTrigger value="config">Config</TabsTrigger>
-              <TabsTrigger value="commands">Commands</TabsTrigger>
-              <TabsTrigger value="events">Events</TabsTrigger>
+              <TabsTrigger value="overview">{t("botDetail.tabs.overview")}</TabsTrigger>
+              <TabsTrigger value="config">{t("botDetail.tabs.config")}</TabsTrigger>
+              <TabsTrigger value="commands">{t("botDetail.tabs.commands")}</TabsTrigger>
+              <TabsTrigger value="events">{t("botDetail.tabs.events")}</TabsTrigger>
             </TabsList>
 
             <TabsContent value="overview" className="space-y-4">
               <div className="grid gap-4 lg:grid-cols-2">
                 <Card className="reveal" style={{ "--delay": "160ms" } as CSSProperties}>
                   <CardHeader>
-                    <CardTitle className="text-base">AI Recommendations</CardTitle>
+                    <CardTitle className="text-base">{t("botDetail.recommendations.title")}</CardTitle>
                     <div className="text-xs text-muted-foreground">
-                      Curated hot trades with bot consensus and market momentum.
+                      {t("botDetail.recommendations.subtitle")}
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-3">
                     {!firebaseEnabled ? (
                       <div className="text-sm opacity-70">
-                        Connect Firebase to load recommendations.
+                        {t("botDetail.recommendations.firebaseHint")}
                       </div>
                     ) : loadingRecommendations ? (
-                      <div className="text-sm opacity-70">Loading recommendations...</div>
+                      <div className="text-sm opacity-70">{t("botDetail.recommendations.loading")}</div>
                     ) : recommendations.length === 0 ? (
                       <div className="text-sm opacity-70">
-                        No recommendations yet. Deploy the market intel worker to populate this feed.
+                        {t("botDetail.recommendations.empty")}
                       </div>
                     ) : (
                       recommendations.slice(0, 3).map((trade) => (
@@ -954,7 +996,7 @@ export default function BotDetailPage() {
                                     setBreakdownAsset(trade)
                                     setBreakdownOpen(true)
                                   }}
-                                  title="Score breakdown"
+                                  title={t("tradeNow.scoreBreakdown")}
                                 >
                                   <InfoIcon className="h-4 w-4" />
                                 </Button>
@@ -966,24 +1008,37 @@ export default function BotDetailPage() {
                                     setChartAsset(trade)
                                     setChartOpen(true)
                                   }}
-                                  title="View Chart"
+                                  title={t("tradeNow.viewChart")}
                                 >
                                   <BarChart3 className="h-4 w-4" />
                                 </Button>
                               </div>
                               <div className="text-xs text-muted-foreground">
-                                {trade.assetClass}
+                                {getAssetLabel(trade.assetClass)}
                               </div>
                             </div>
                             <Badge variant="outline">
-                              Score {trade.score?.toFixed(1) ?? "--"}
+                              {t("dashboard.labels.score", {
+                                score: trade.score?.toFixed(1) ?? naLabel,
+                              })}
                             </Badge>
                           </div>
-                          {trade.rationale && (
-                            <div className="mt-2 text-xs text-muted-foreground">
-                              {trade.rationale}
-                            </div>
-                          )}
+                          {trade.rationale && (() => {
+                            const noteKind = findAnalysisNoteKind(trade.analysis?.details)
+                            return (
+                              <div className="mt-2 text-xs text-muted-foreground flex items-center gap-1.5">
+                                {noteKind ? (
+                                  <Badge
+                                    variant="outline"
+                                    className="h-4 px-1.5 text-[9px] uppercase tracking-wide"
+                                  >
+                                    {t(`analysis.badges.${noteKind}`)}
+                                  </Badge>
+                                ) : null}
+                                <span>{trade.rationale}</span>
+                              </div>
+                            )
+                          })()}
                           <Button
                             variant="outline"
                             size="sm"
@@ -991,7 +1046,7 @@ export default function BotDetailPage() {
                             onClick={() => applyRecommendation(trade)}
                             disabled={!firebaseEnabled}
                           >
-                            Use recommendation
+                            {t("botDetail.recommendations.use")}
                           </Button>
                         </div>
                       ))
@@ -1001,44 +1056,52 @@ export default function BotDetailPage() {
 
                 <Card className="reveal" style={{ "--delay": "190ms" } as CSSProperties}>
                   <CardHeader className="flex-row items-center justify-between space-y-0">
-                    <CardTitle className="text-base">Active Universe</CardTitle>
-                    <Badge variant="outline">{pairsPreview.length} pairs</Badge>
+                    <CardTitle className="text-base">{t("botDetail.universe.title")}</CardTitle>
+                    <Badge variant="outline">
+                      {t("botDetail.universe.pairsCount", { count: pairsPreview.length })}
+                    </Badge>
                   </CardHeader>
                   <CardContent className="space-y-3">
                     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                       <div className="rounded-lg border border-border/60 bg-background/70 p-3 min-w-0">
-                        <div className="text-xs text-muted-foreground">Exchange</div>
+                        <div className="text-xs text-muted-foreground">
+                          {t("bots.exchange")}
+                        </div>
                         <div className="text-sm font-medium truncate">
-                          {exchangeTrimmed || "--"}
+                          {exchangeTrimmed || naLabel}
                         </div>
                       </div>
                       <div className="rounded-lg border border-border/60 bg-background/70 p-3 min-w-0">
-                        <div className="text-xs text-muted-foreground">Timeframe</div>
+                        <div className="text-xs text-muted-foreground">
+                          {t("bots.timeframe")}
+                        </div>
                         <div className="text-sm font-medium truncate">
-                          {timeframeTrimmed || "--"}
+                          {timeframeTrimmed || naLabel}
                         </div>
                       </div>
                       <div className="rounded-lg border border-border/60 bg-background/70 p-3 min-w-0">
-                        <div className="text-xs text-muted-foreground">Mode</div>
-                        <div className="text-sm font-medium truncate">{mode || "--"}</div>
+                        <div className="text-xs text-muted-foreground">{t("botDetail.config.mode")}</div>
+                        <div className="text-sm font-medium truncate">{getModeLabel(mode)}</div>
                       </div>
                       <div className="rounded-lg border border-border/60 bg-background/70 p-3 min-w-0 sm:col-span-2 xl:col-span-1">
-                        <div className="text-xs text-muted-foreground">Strategy</div>
+                        <div className="text-xs text-muted-foreground">
+                          {t("botDetail.config.strategy")}
+                        </div>
                         <div className="text-sm font-medium truncate">
-                          {strategyTrimmed || "--"}
+                          {strategyTrimmed || naLabel}
                         </div>
                       </div>
                     </div>
                     <div className="rounded-lg border border-border/60 bg-muted/30 p-3 text-sm">
                       {pairsPreview.length === 0
-                        ? "No pairs selected yet."
+                        ? t("botDetail.universe.empty")
                         : pairsPreview
                             .slice(0, 6)
                             .map((pair) => pair.toUpperCase())
                             .join(", ")}
                       {pairsPreview.length > 6 && (
                         <span className="ml-2 text-xs text-muted-foreground">
-                          +{pairsPreview.length - 6} more
+                          {t("botDetail.universe.more", { count: pairsPreview.length - 6 })}
                         </span>
                       )}
                     </div>
@@ -1048,7 +1111,7 @@ export default function BotDetailPage() {
                       size="sm"
                       onClick={() => setDetailTab("config")}
                     >
-                      Open config
+                      {t("botDetail.universe.openConfig")}
                     </Button>
                   </CardContent>
                 </Card>
@@ -1056,14 +1119,16 @@ export default function BotDetailPage() {
                 <Card className="reveal lg:col-span-2" style={{ "--delay": "220ms" } as CSSProperties}>
                   <CardHeader className="flex-row items-center justify-between space-y-0">
                     <div>
-                      <CardTitle className="text-base">Bot Prediction Accuracy</CardTitle>
+                      <CardTitle className="text-base">{t("botDetail.performance.title")}</CardTitle>
                       <div className="text-xs text-muted-foreground">
-                        How this bot performed by symbol and asset class.
+                        {t("botDetail.performance.subtitle")}
                       </div>
                     </div>
                     {botPerformance?.updatedAt && (
                       <Badge variant="outline">
-                        Updated {formatRelativeTimestamp(botPerformance.updatedAt)}
+                        {t("tradeNow.updatedAt", {
+                          time: formatRelativeTimestamp(botPerformance.updatedAt),
+                        })}
                       </Badge>
                     )}
                   </CardHeader>
@@ -1094,9 +1159,9 @@ export default function BotDetailPage() {
             style={{ "--delay": "200ms" } as CSSProperties}
           >
             <CardHeader>
-              <CardTitle className="text-base">Trading Universe & Config</CardTitle>
+              <CardTitle className="text-base">{t("botDetail.config.title")}</CardTitle>
               <div className="text-xs text-muted-foreground">
-                Choose exchange, pairs, timeframe, and advanced config. Saved configs are applied when adapters reload.
+                {t("botDetail.config.subtitle")}
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
@@ -1104,7 +1169,7 @@ export default function BotDetailPage() {
                 <div className="space-y-4">
                   <div className="grid gap-3 md:grid-cols-2">
                     <div className="space-y-2">
-                      <Label htmlFor="exchange">Exchange</Label>
+                      <Label htmlFor="exchange">{t("bots.exchange")}</Label>
                       <Select
                         id="exchange"
                         value={exchange}
@@ -1113,7 +1178,7 @@ export default function BotDetailPage() {
                           setConfigDirty(true)
                         }}
                       >
-                        <option value="">Select exchange</option>
+                        <option value="">{t("botDetail.config.selectExchange")}</option>
                         {exchangeOptions.map((option) => (
                           <option key={option} value={option}>
                             {option}
@@ -1123,7 +1188,7 @@ export default function BotDetailPage() {
                     </div>
 
                     <div className="space-y-2">
-                      <Label htmlFor="timeframe">Timeframe</Label>
+                      <Label htmlFor="timeframe">{t("bots.timeframe")}</Label>
                       <Select
                         id="timeframe"
                         value={timeframe}
@@ -1132,7 +1197,7 @@ export default function BotDetailPage() {
                           setConfigDirty(true)
                         }}
                       >
-                        <option value="">Select timeframe</option>
+                        <option value="">{t("botDetail.config.selectTimeframe")}</option>
                         {timeframeOptions.map((option) => (
                           <option key={option} value={option}>
                             {option}
@@ -1141,14 +1206,14 @@ export default function BotDetailPage() {
                       </Select>
                       {timeframeInvalid && (
                         <div className="text-xs text-destructive">
-                          Timeframe should look like 1m, 1h, 1d.
+                          {t("botDetail.config.timeframeHint")}
                         </div>
                       )}
                     </div>
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="pairs">Pairs (comma or newline separated)</Label>
+                    <Label htmlFor="pairs">{t("botDetail.config.pairsLabel")}</Label>
                     <Textarea
                       id="pairs"
                       value={pairsInput}
@@ -1157,7 +1222,7 @@ export default function BotDetailPage() {
                         setConfigDirty(true)
                       }}
                       className="min-h-24 font-mono text-xs"
-                      placeholder="BTC/USDT, ETH/USDT"
+                      placeholder={t("botDetail.config.pairsPlaceholder")}
                     />
                   </div>
 
@@ -1165,15 +1230,17 @@ export default function BotDetailPage() {
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
                         <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                          Recommended universe
+                          {t("botDetail.recommended.title")}
                         </div>
                         <div className="text-sm font-medium">
-                          Based on this bot's prediction accuracy
+                          {t("botDetail.recommended.subtitle")}
                         </div>
                       </div>
                       {botPerformance?.updatedAt && (
                         <Badge variant="outline">
-                          Updated {formatRelativeTimestamp(botPerformance.updatedAt)}
+                          {t("tradeNow.updatedAt", {
+                            time: formatRelativeTimestamp(botPerformance.updatedAt),
+                          })}
                         </Badge>
                       )}
                     </div>
@@ -1194,11 +1261,11 @@ export default function BotDetailPage() {
 
                     {!botPerformance ? (
                       <div className="text-sm text-muted-foreground">
-                        Start the bot and let it emit signals to generate recommendations.
+                        {t("botDetail.recommended.noPerformance")}
                       </div>
                     ) : (botPerformance.topSymbols?.[recommendHorizon] ?? []).length === 0 ? (
                       <div className="text-sm text-muted-foreground">
-                        No recommended symbols yet for this horizon.
+                        {t("botDetail.recommended.empty")}
                       </div>
                     ) : (
                       <div className="space-y-2">
@@ -1212,14 +1279,14 @@ export default function BotDetailPage() {
                               <div className="min-w-0">
                                 <div className="font-mono truncate">{symbol.symbol}</div>
                                 <div className="text-xs text-muted-foreground">
-                                  {symbol.assetClass ?? "unknown"}
+                                  {getAssetLabel(symbol.assetClass)}
                                 </div>
                               </div>
                               <div className="flex flex-col items-end gap-1 text-xs text-muted-foreground sm:text-right">
                                 <div className="flex flex-wrap items-center justify-end gap-2">
-                                  <span>{symbol.hitRate.toFixed(1)}% hit</span>
+                                  <span>{t("dashboard.performance.hitRate", { value: symbol.hitRate.toFixed(1) })}</span>
                                   <span>{formatPercent(symbol.avgReturn)}</span>
-                                  <span>{symbol.count} signals</span>
+                                  <span>{t("dashboard.labels.signalsCount", { count: symbol.count })}</span>
                                 </div>
                                 <Button
                                   type="button"
@@ -1227,7 +1294,7 @@ export default function BotDetailPage() {
                                   variant="outline"
                                   onClick={() => addRecommendedSymbol(symbol.symbol)}
                                 >
-                                  Add
+                                  {t("common.add")}
                                 </Button>
                               </div>
                             </div>
@@ -1243,7 +1310,7 @@ export default function BotDetailPage() {
                         onClick={() => applyRecommendedSymbols("append")}
                         disabled={!botPerformance}
                       >
-                        Append top {RECOMMENDED_SYMBOL_LIMIT}
+                        {t("botDetail.recommended.appendTop", { count: RECOMMENDED_SYMBOL_LIMIT })}
                       </Button>
                       <Button
                         type="button"
@@ -1251,13 +1318,13 @@ export default function BotDetailPage() {
                         onClick={() => applyRecommendedSymbols("replace")}
                         disabled={!botPerformance}
                       >
-                        Replace with top {RECOMMENDED_SYMBOL_LIMIT}
+                        {t("botDetail.recommended.replaceTop", { count: RECOMMENDED_SYMBOL_LIMIT })}
                       </Button>
                     </div>
                   </div>
 
                   <div className="space-y-2">
-                    <Label>Mode</Label>
+                    <Label>{t("botDetail.config.mode")}</Label>
                     <div className="flex flex-wrap gap-2">
                       {modeOptions.map((option) => (
                         <Button
@@ -1269,7 +1336,7 @@ export default function BotDetailPage() {
                             setConfigDirty(true)
                           }}
                         >
-                          {option}
+                          {getModeLabel(option)}
                         </Button>
                       ))}
                     </div>
@@ -1277,11 +1344,11 @@ export default function BotDetailPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label>Risk guardrails</Label>
+                  <Label>{t("botDetail.config.riskGuardrails")}</Label>
                   <div className="grid gap-3 md:grid-cols-2">
                     <div className="space-y-1">
                       <Label htmlFor="risk-max-position" className="text-xs text-muted-foreground">
-                        Max position size
+                        {t("botDetail.config.risk.maxPosition")}
                       </Label>
                       <Input
                         id="risk-max-position"
@@ -1297,7 +1364,7 @@ export default function BotDetailPage() {
                     </div>
                     <div className="space-y-1">
                       <Label htmlFor="risk-max-loss" className="text-xs text-muted-foreground">
-                        Max daily loss
+                        {t("botDetail.config.risk.maxDailyLoss")}
                       </Label>
                       <Input
                         id="risk-max-loss"
@@ -1313,7 +1380,7 @@ export default function BotDetailPage() {
                     </div>
                     <div className="space-y-1">
                       <Label htmlFor="risk-max-orders" className="text-xs text-muted-foreground">
-                        Max open orders
+                        {t("botDetail.config.risk.maxOpenOrders")}
                       </Label>
                       <Input
                         id="risk-max-orders"
@@ -1329,7 +1396,7 @@ export default function BotDetailPage() {
                     </div>
                     <div className="space-y-1">
                       <Label htmlFor="risk-max-leverage" className="text-xs text-muted-foreground">
-                        Max leverage
+                        {t("botDetail.config.risk.maxLeverage")}
                       </Label>
                       <Input
                         id="risk-max-leverage"
@@ -1349,10 +1416,10 @@ export default function BotDetailPage() {
 
               <div className="space-y-3 rounded-lg border border-border/60 bg-muted/30 p-4">
                 <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                  Engine Wizard
+                  {t("botDetail.config.engineWizard")}
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="strategy">Strategy preset</Label>
+                  <Label htmlFor="strategy">{t("botDetail.config.strategyPreset")}</Label>
                   <Input
                     id="strategy"
                     list="strategy-options"
@@ -1361,7 +1428,7 @@ export default function BotDetailPage() {
                       setStrategy(event.target.value)
                       setConfigDirty(true)
                     }}
-                    placeholder="default"
+                    placeholder={t("botDetail.config.strategyPlaceholder")}
                   />
                   {strategyOptions.length > 0 && (
                     <datalist id="strategy-options">
@@ -1394,37 +1461,38 @@ export default function BotDetailPage() {
               <div className="rounded-lg border border-border/60 bg-muted/30 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <div className="text-sm font-medium">Expert config</div>
+                      <div className="text-sm font-medium">{t("botDetail.expert.title")}</div>
                       <div className="text-xs text-muted-foreground">
-                        Locked raw JSON for engine-specific settings.
+                        {t("botDetail.expert.subtitle")}
                       </div>
                     </div>
                     <Sheet open={expertOpen} onOpenChange={handleExpertOpenChange}>
                       <SheetTrigger asChild>
                         <Button type="button" variant="outline" size="sm">
-                          Open expert
+                          {t("botDetail.expert.open")}
                         </Button>
                       </SheetTrigger>
                       <SheetContent side="right" className="sm:max-w-lg">
                         <SheetHeader>
-                          <SheetTitle>Expert Config</SheetTitle>
+                          <SheetTitle>{t("botDetail.expert.sheetTitle")}</SheetTitle>
                           <SheetDescription>
-                            Raw JSON editor for {engineConfigLabel}. Unlock to edit.
+                            {t("botDetail.expert.sheetDescription", {
+                              label: engineConfigLabel,
+                            })}
                           </SheetDescription>
                         </SheetHeader>
                         <div className="flex-1 space-y-3 overflow-y-auto px-4 pb-4">
                           {!expertUnlocked ? (
                             <>
                               <div className="rounded-lg border border-border/60 bg-muted/40 p-3 text-sm text-muted-foreground">
-                                Editing raw JSON can break adapters. Use this only if you know the
-                                engine config format.
+                                {t("botDetail.expert.warning")}
                               </div>
                               <Button
                                 type="button"
                                 variant="secondary"
                                 onClick={() => setExpertUnlocked(true)}
                               >
-                                Unlock expert editor
+                                {t("botDetail.expert.unlock")}
                               </Button>
                             </>
                           ) : (
@@ -1437,7 +1505,7 @@ export default function BotDetailPage() {
                                   size="sm"
                                   onClick={applyWizardConfigText}
                                 >
-                                  Use wizard JSON
+                                  {t("botDetail.expert.useWizard")}
                                 </Button>
                               </div>
                               <Textarea
@@ -1466,19 +1534,35 @@ export default function BotDetailPage() {
 
               {bot?.capabilities && (
                 <div className="rounded-lg border border-border/60 bg-muted/40 p-3 text-xs text-muted-foreground">
-                  <div>Exchanges: {bot.capabilities.exchanges?.length ? bot.capabilities.exchanges.join(", ") : "any"}</div>
-                  <div>Timeframes: {bot.capabilities.timeframes?.length ? bot.capabilities.timeframes.join(", ") : "any"}</div>
+                  <div>
+                    {t("botDetail.capabilities.exchanges", {
+                      value: bot.capabilities.exchanges?.length
+                        ? bot.capabilities.exchanges.join(", ")
+                        : t("botDetail.capabilities.any"),
+                    })}
+                  </div>
+                  <div>
+                    {t("botDetail.capabilities.timeframes", {
+                      value: bot.capabilities.timeframes?.length
+                        ? bot.capabilities.timeframes.join(", ")
+                        : t("botDetail.capabilities.any"),
+                    })}
+                  </div>
                 </div>
               )}
 
               <div className="flex flex-wrap gap-2">
                 <Button onClick={saveUniverseConfig} disabled={configDisabled}>
-                  {configSaving ? "Saving..." : "Save Universe"}
+                  {configSaving ? t("botDetail.config.saving") : t("botDetail.config.saveUniverse")}
                 </Button>
                 <Button variant="outline" onClick={applyUniverseConfig} disabled={commandDisabled}>
-                  Apply Config
+                  {t("botDetail.config.applyConfig")}
                 </Button>
-                {configDirty && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
+                {configDirty && (
+                  <span className="text-xs text-muted-foreground">
+                    {t("botDetail.config.unsavedChanges")}
+                  </span>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -1487,9 +1571,10 @@ export default function BotDetailPage() {
         <TabsContent value="commands" className="space-y-4">
           <Card className="reveal" style={{ "--delay": "220ms" } as CSSProperties}>
             <CardHeader>
-              <CardTitle className="text-base">Command Console</CardTitle>
+              <CardTitle className="text-base">{t("botDetail.commands.title")}</CardTitle>
               <div className="text-xs text-muted-foreground">
-                Commands are queued into <code>bots/{botId}/commands</code>.
+                {t("botDetail.commands.subtitlePrefix")} <code>bots/{botId}/commands</code>
+                {t("botDetail.commands.subtitleSuffix")}
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -1508,11 +1593,14 @@ export default function BotDetailPage() {
               </div>
               {!firebaseEnabled && (
                 <div className="text-xs text-muted-foreground">
-                  Firebase is not configured. Update <code>.env</code> to enable commands.
+                  {t("botDetail.commands.firebaseHintPrefix")} <code>.env</code>{" "}
+                  {t("botDetail.commands.firebaseHintSuffix")}
                 </div>
               )}
               <div className="space-y-2">
-                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Optional JSON payload</div>
+                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                  {t("botDetail.commands.payloadLabel")}
+                </div>
                 <Textarea
                   value={payload}
                   onChange={(event) => setPayload(event.target.value)}
@@ -1527,25 +1615,25 @@ export default function BotDetailPage() {
         <TabsContent value="events" className="space-y-4">
           <Card className="reveal" style={{ "--delay": "240ms" } as CSSProperties}>
             <CardHeader className="flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-base">Recent Events</CardTitle>
+              <CardTitle className="text-base">{t("botDetail.events.title")}</CardTitle>
               <Badge variant="outline">{events.length}</Badge>
             </CardHeader>
             <CardContent className="space-y-3">
               {!firebaseEnabled ? (
-                <div className="text-sm opacity-70">Configure Firebase to load events.</div>
+                <div className="text-sm opacity-70">{t("dashboard.events.firebaseHintPrefix")} <code>.env</code>{" "}{t("dashboard.events.firebaseHintSuffix")}</div>
               ) : loadingEvents ? (
-                <div className="text-sm opacity-70">Loading events…</div>
+                <div className="text-sm opacity-70">{t("dashboard.events.loading")}</div>
               ) : events.length === 0 ? (
-                <div className="text-sm opacity-70">No events yet.</div>
+                <div className="text-sm opacity-70">{t("botDetail.events.empty")}</div>
               ) : (
                 events.map((event) => (
                   <div key={event.id} className="rounded-lg border border-border/60 bg-background/70 p-3">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span className="font-mono">{event.type || "event"}</span>
+                      <span className="font-mono">{event.type || t("dashboard.events.eventFallback")}</span>
                       <span>{formatTimestamp(event.createdAt)}</span>
                     </div>
                     <div className="mt-2 break-words text-sm font-medium">
-                      {event.message || "Adapter emitted an event without a message."}
+                      {event.message || t("dashboard.events.messageFallback")}
                     </div>
                     {event.data && (
                       <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-3 text-xs">
