@@ -1,8 +1,16 @@
 const http = require("http")
 const crypto = require("crypto")
+const admin = require("firebase-admin")
+const { Storage } = require("@google-cloud/storage")
 const { createClient } = require("redis")
+const zlib = require("zlib")
 
 const config = {
+  projectId:
+    process.env.FIREBASE_PROJECT_ID ||
+    process.env.GCLOUD_PROJECT ||
+    process.env.GOOGLE_CLOUD_PROJECT ||
+    "relayorb",
   fmpKey: process.env.FMP_API_KEY || "",
   marketauxKey: process.env.MARKETAUX_API_KEY || "",
   port: parseInt(process.env.PORT || "8080", 10),
@@ -24,11 +32,25 @@ const config = {
   pipelineEventsRunEnv: process.env.PIPELINE_EVENTS_RUN_ENV || "prod",
   corsOrigin: process.env.MDG_CORS_ORIGIN || "*",
   corsAllowHeaders: process.env.MDG_CORS_HEADERS || "Content-Type",
+  replayAllowed: process.env.REPLAY_ALLOWED !== "false",
+  replayBucket: process.env.REPLAY_GCS_BUCKET || process.env.REPLAY_BUCKET || "",
+  replayPrefix: process.env.REPLAY_GCS_PREFIX || "replay",
+  replayControlsCacheMs: parseInt(process.env.REPLAY_CONTROLS_CACHE_MS || "1500", 10),
+  replayManifestCacheMs: parseInt(process.env.REPLAY_MANIFEST_CACHE_MS || "10000", 10),
+  replayArtifactCacheMs: parseInt(process.env.REPLAY_ARTIFACT_CACHE_MS || "60000", 10),
+  replayAckIntervalMs: parseInt(process.env.REPLAY_ACK_INTERVAL_MS || "15000", 10),
 }
 
 const cache = new Map()
 let pipelineRedis = null
 let pipelineRedisReady = false
+let firestore = null
+let storage = null
+const replayControlsCache = { value: null, expiresAt: 0 }
+const replayManifestCache = { value: null, expiresAt: 0, key: "" }
+const replayArtifactCache = new Map()
+const replayAckState = { lastSentAt: 0, lastSessionId: null, lastVersion: null, lastMode: null }
+let lastReplayState = { mode: "live", runId: null, sessionId: null }
 
 function logEvent(event, data = {}) {
   console.log(JSON.stringify({ event, ...data }))
@@ -60,6 +82,9 @@ function setCached(key, value, ttlMs) {
 }
 
 function resolvePipelineStream() {
+  if (lastReplayState?.mode === "replay" && lastReplayState.runId) {
+    return `replay:${lastReplayState.runId}:pipeline_events`
+  }
   if (config.pipelineEventsStream) return config.pipelineEventsStream
   const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
   return `${prefix}pipeline_events`
@@ -93,10 +118,14 @@ function sanitizeUrl(rawUrl) {
 }
 
 function buildPipelineEvent(payload) {
+  const runEnv = lastReplayState?.mode === "replay" ? "replay" : config.pipelineEventsRunEnv
+  const runId = lastReplayState?.runId || undefined
   return {
     ts: new Date().toISOString(),
     eventId: createEventId(),
-    runEnv: config.pipelineEventsRunEnv,
+    runEnv,
+    runId,
+    sessionId: lastReplayState?.sessionId || undefined,
     service: "market-data-gateway",
     severity: "info",
     ...payload,
@@ -442,6 +471,451 @@ function respondJson(res, status, payload) {
   res.end(JSON.stringify(payload))
 }
 
+function initFirestore() {
+  if (!firestore) {
+    if (!admin.apps.length) {
+      admin.initializeApp({ projectId: config.projectId })
+    }
+    firestore = admin.firestore()
+  }
+  return firestore
+}
+
+function initStorage() {
+  if (!storage) {
+    storage = new Storage({ projectId: config.projectId })
+  }
+  return storage
+}
+
+function parseReplayAsOf(value) {
+  if (!value) return null
+  if (typeof value.toDate === "function") return value.toDate()
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function parseTimeToMinutes(raw) {
+  if (!raw) return null
+  const parts = String(raw).split(":").map((value) => parseInt(value, 10))
+  if (parts.length < 2 || Number.isNaN(parts[0]) || Number.isNaN(parts[1])) return null
+  return parts[0] * 60 + parts[1]
+}
+
+function formatDateKeyFromParts(parts) {
+  const pad = (value) => String(value).padStart(2, "0")
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`
+}
+
+function getLocalDateParts(timestampMs, timezone) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  })
+  const parts = formatter.formatToParts(new Date(timestampMs))
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  const year = parseInt(lookup.year, 10)
+  const month = parseInt(lookup.month, 10)
+  const day = parseInt(lookup.day, 10)
+  const hour = parseInt(lookup.hour, 10)
+  const minute = parseInt(lookup.minute, 10)
+  const second = parseInt(lookup.second, 10)
+  return {
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second,
+    dateKey: formatDateKeyFromParts({ year, month, day }),
+    minutesOfDay: hour * 60 + minute,
+  }
+}
+
+function shiftDateKey(dateKey, deltaDays) {
+  if (!dateKey) return null
+  const [year, month, day] = dateKey.split("-").map((value) => parseInt(value, 10))
+  if (!year || !month || !day) return null
+  const date = new Date(Date.UTC(year, month - 1, day))
+  date.setUTCDate(date.getUTCDate() + deltaDays)
+  const nextYear = date.getUTCFullYear()
+  const nextMonth = date.getUTCMonth() + 1
+  const nextDay = date.getUTCDate()
+  return formatDateKeyFromParts({ year: nextYear, month: nextMonth, day: nextDay })
+}
+
+function buildCacheKey(baseKey, replayState, options = {}) {
+  if (!replayState || replayState.mode !== "replay") return `live:${baseKey}`
+  const bucketMs = options.bucketMs || 60000
+  const asOfBucket =
+    typeof options.asOfMs === "number" && Number.isFinite(options.asOfMs)
+      ? `:asof:${Math.floor(options.asOfMs / bucketMs)}`
+      : ""
+  const runId = replayState.runId || "unknown"
+  const sessionId = replayState.sessionId || "unknown"
+  return `replay:${runId}:${sessionId}:${baseKey}${asOfBucket}`
+}
+
+function buildReplayMissingPayload({
+  legacyKey,
+  symbolKeyV2,
+  artifact,
+  tapeDate,
+  runId,
+}) {
+  return {
+    code: "REPLAY_TAPE_MISSING",
+    legacyKey,
+    symbolKeyV2,
+    artifact,
+    tapeDate,
+    runId,
+  }
+}
+
+function buildReplayOutOfCoveragePayload({
+  legacyKey,
+  symbolKeyV2,
+  tapeDate,
+  runId,
+  asOf,
+  coverageWindow,
+}) {
+  return {
+    code: "REPLAY_OUT_OF_COVERAGE",
+    legacyKey,
+    symbolKeyV2,
+    tapeDate,
+    runId,
+    asOf,
+    coverageWindow,
+  }
+}
+
+function respondReplayError(res, status, payload) {
+  respondJson(res, status, payload)
+}
+
+function respondReplayUnsupported(res, detail) {
+  respondReplayError(res, 409, { code: "REPLAY_UNSUPPORTED", detail })
+}
+
+function normalizeLegacySymbol(symbol, assetClass) {
+  if (assetClass === "stock") return normalizeTicker(symbol)
+  if (assetClass === "crypto" || assetClass === "forex") return normalizeSymbol(symbol)
+  return normalizeSymbol(symbol) || normalizeTicker(symbol)
+}
+
+function buildLegacyKey(symbol, assetClass) {
+  const normalized = normalizeLegacySymbol(symbol, assetClass)
+  if (!normalized) return null
+  return `${assetClass}:${normalized}`
+}
+
+async function readReplayControls() {
+  if (!config.replayAllowed) return null
+  if (replayControlsCache.expiresAt > Date.now() && replayControlsCache.value) {
+    return replayControlsCache.value
+  }
+  try {
+    const db = initFirestore()
+    const snap = await db.doc("replay/controls").get()
+    const data = snap.exists ? snap.data() : null
+    replayControlsCache.value = data
+    replayControlsCache.expiresAt = Date.now() + config.replayControlsCacheMs
+    return data
+  } catch (err) {
+    console.error("Replay controls read failed:", err.message)
+    return null
+  }
+}
+
+async function resolveReplayState() {
+  const controls = await readReplayControls()
+  const desiredMode = controls?.desiredMode === "replay" ? "replay" : "live"
+  if (!config.replayAllowed || desiredMode !== "replay") {
+    lastReplayState = { mode: "live", runId: null, sessionId: null }
+    return { mode: "live", controls }
+  }
+  const state = {
+    mode: "replay",
+    controls,
+    runId: controls?.activeRunId || null,
+    datasetId: controls?.datasetId || null,
+    sessionId: controls?.sessionId || null,
+    version: controls?.version ?? null,
+    phase: controls?.phase || null,
+    asOf: parseReplayAsOf(controls?.asOf),
+  }
+  lastReplayState = {
+    mode: "replay",
+    runId: state.runId || null,
+    sessionId: state.sessionId || null,
+  }
+  return state
+}
+
+async function maybeAckReplayState(state) {
+  if (!state || !state.controls) return
+  const now = Date.now()
+  if (
+    replayAckState.lastMode === state.mode &&
+    replayAckState.lastSessionId === state.sessionId &&
+    replayAckState.lastVersion === state.version &&
+    now - replayAckState.lastSentAt < config.replayAckIntervalMs
+  ) {
+    return
+  }
+  try {
+    const db = initFirestore()
+    await db.doc("replay/controls/consumers/mdg").set(
+      {
+        serviceName: "mdg",
+        effectiveMode: state.mode,
+        sessionId: state.sessionId || null,
+        seenControlsVersion: state.version ?? null,
+        activeRunId: state.runId || null,
+        datasetId: state.datasetId || null,
+        phase: state.phase || null,
+        lastHeartbeat: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+    replayAckState.lastSentAt = now
+    replayAckState.lastMode = state.mode
+    replayAckState.lastSessionId = state.sessionId
+    replayAckState.lastVersion = state.version
+  } catch (err) {
+    console.error("Replay ACK failed:", err.message)
+  }
+}
+
+function getManifestCacheKey(state, runInfo) {
+  const runId = state?.runId || "unknown"
+  const datasetId = runInfo?.datasetId || state?.datasetId || "unknown"
+  const manifestPath = runInfo?.manifestPath || ""
+  return `manifest:${runId}:${datasetId}:${manifestPath}`
+}
+
+async function loadReplayManifest(state) {
+  if (!state || state.mode !== "replay") return null
+  if (!config.replayBucket) return null
+
+  const db = initFirestore()
+  let runInfo = null
+  try {
+    if (state.runId) {
+      const snap = await db.doc(`replay/controls/runs/${state.runId}`).get()
+      runInfo = snap.exists ? snap.data() : null
+    }
+  } catch (err) {
+    console.error("Replay run read failed:", err.message)
+  }
+
+  const datasetId = runInfo?.datasetId || state.datasetId
+  const manifestPath =
+    runInfo?.manifestPath ||
+    (datasetId ? `${config.replayPrefix}/tapes/stocks/${datasetId}/manifest.json` : null)
+
+  if (!manifestPath) return null
+
+  const cacheKey = getManifestCacheKey(state, { datasetId, manifestPath })
+  if (replayManifestCache.key === cacheKey && replayManifestCache.expiresAt > Date.now()) {
+    return replayManifestCache.value
+  }
+
+  try {
+    const bucket = initStorage().bucket(config.replayBucket)
+    const file = bucket.file(manifestPath)
+    const [contents] = await file.download()
+    const manifest = JSON.parse(contents.toString("utf8"))
+    replayManifestCache.value = manifest
+    replayManifestCache.key = cacheKey
+    replayManifestCache.expiresAt = Date.now() + config.replayManifestCacheMs
+    return manifest
+  } catch (err) {
+    console.error("Replay manifest load failed:", err.message)
+    return null
+  }
+}
+
+function deriveTapeDate(asOfMs, manifest) {
+  const timezone = manifest?.timezone || "America/New_York"
+  const openMinutes = parseTimeToMinutes(manifest?.openTime)
+  const local = getLocalDateParts(asOfMs, timezone)
+  if (openMinutes !== null && local.minutesOfDay < openMinutes) {
+    return shiftDateKey(local.dateKey, -1)
+  }
+  return local.dateKey
+}
+
+function getCoverageWindow(manifest) {
+  return {
+    coverage: manifest?.coverage || "RTH",
+    timezone: manifest?.timezone || "America/New_York",
+    openTime: manifest?.openTime || null,
+    closeTime: manifest?.closeTime || null,
+    extOpenTime: manifest?.extOpenTime || null,
+    extCloseTime: manifest?.extCloseTime || null,
+  }
+}
+
+function isOutOfCoverage(asOfMs, manifest) {
+  const coverageWindow = getCoverageWindow(manifest)
+  if (coverageWindow.coverage === "FULL") {
+    return { outOfCoverage: false, coverageWindow }
+  }
+  const timezone = coverageWindow.timezone
+  const local = getLocalDateParts(asOfMs, timezone)
+  const openMinutes = parseTimeToMinutes(
+    coverageWindow.coverage === "RTH+EXT" && coverageWindow.extOpenTime
+      ? coverageWindow.extOpenTime
+      : coverageWindow.openTime
+  )
+  const closeMinutes = parseTimeToMinutes(
+    coverageWindow.coverage === "RTH+EXT" && coverageWindow.extCloseTime
+      ? coverageWindow.extCloseTime
+      : coverageWindow.closeTime
+  )
+  if (openMinutes === null || closeMinutes === null) {
+    return { outOfCoverage: false, coverageWindow }
+  }
+  const outOfCoverage = local.minutesOfDay < openMinutes || local.minutesOfDay > closeMinutes
+  return { outOfCoverage, coverageWindow }
+}
+
+function normalizeReplayCandle(entry) {
+  if (!entry) return null
+  const rawTime =
+    entry.time ??
+    entry.t ??
+    entry.timestamp ??
+    entry.date ??
+    entry.datetime ??
+    entry.start ??
+    null
+  let timeMs = null
+  if (typeof rawTime === "number") {
+    timeMs = rawTime > 1e12 ? rawTime : rawTime * 1000
+  } else if (rawTime) {
+    const parsed = new Date(rawTime).getTime()
+    timeMs = Number.isFinite(parsed) ? parsed : null
+  }
+  const open = parseNumber(entry.open ?? entry.o)
+  const high = parseNumber(entry.high ?? entry.h)
+  const low = parseNumber(entry.low ?? entry.l)
+  const close = parseNumber(entry.close ?? entry.c)
+  if (!timeMs || open === undefined || high === undefined || low === undefined || close === undefined) {
+    return null
+  }
+  return {
+    time: timeMs,
+    open,
+    high,
+    low,
+    close,
+    volume: parseNumber(entry.volume ?? entry.v),
+  }
+}
+
+function normalizeReplayCandles(raw) {
+  const list = Array.isArray(raw)
+    ? raw
+    : Array.isArray(raw?.candles)
+      ? raw.candles
+      : Array.isArray(raw?.data)
+        ? raw.data
+        : []
+  return list.map(normalizeReplayCandle).filter(Boolean).sort((a, b) => a.time - b.time)
+}
+
+function aggregateReplayCandles(candles, intervalMs) {
+  if (!intervalMs || intervalMs <= 0) return candles
+  const buckets = new Map()
+  candles.forEach((candle) => {
+    const bucketTime = Math.floor(candle.time / intervalMs) * intervalMs
+    const existing = buckets.get(bucketTime)
+    if (!existing) {
+      buckets.set(bucketTime, {
+        time: bucketTime,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume ?? 0,
+      })
+      return
+    }
+    existing.high = Math.max(existing.high, candle.high)
+    existing.low = Math.min(existing.low, candle.low)
+    existing.close = candle.close
+    if (typeof candle.volume === "number") {
+      existing.volume = (existing.volume ?? 0) + candle.volume
+    }
+  })
+  return Array.from(buckets.values()).sort((a, b) => a.time - b.time)
+}
+
+function filterReplayDailyCandles(candles, asOfMs, manifest, sessionDate) {
+  const timezone = manifest?.timezone || "America/New_York"
+  const closeMinutes = parseTimeToMinutes(manifest?.closeTime)
+  const local = getLocalDateParts(asOfMs, timezone)
+  const includeCurrent =
+    closeMinutes === null ? true : local.minutesOfDay >= closeMinutes && local.dateKey === sessionDate
+  return candles.filter((candle) => {
+    const candleDate = getLocalDateParts(candle.time, timezone).dateKey
+    if (candleDate < sessionDate) return true
+    if (candleDate === sessionDate) return includeCurrent
+    return false
+  })
+}
+
+function getArtifactEntry(manifest, symbolKeyV2) {
+  if (!manifest || !symbolKeyV2) return null
+  if (manifest.artifacts && manifest.artifacts[symbolKeyV2]) return manifest.artifacts[symbolKeyV2]
+  if (Array.isArray(manifest.symbols)) {
+    const entry = manifest.symbols.find((item) =>
+      item?.symbolKeyV2 === symbolKeyV2 ||
+      item?.symbol === symbolKeyV2 ||
+      item?.key === symbolKeyV2
+    )
+    if (entry?.artifacts) return entry.artifacts
+  }
+  return null
+}
+
+async function loadReplayArtifact(path, cacheKey, gzip) {
+  const cached = replayArtifactCache.get(cacheKey)
+  if (cached && cached.expiresAt > Date.now()) {
+    return { payload: cached.value, missing: false }
+  }
+  try {
+    const bucket = initStorage().bucket(config.replayBucket)
+    const file = bucket.file(path)
+    const [contents] = await file.download()
+    const buffer = gzip ? zlib.gunzipSync(contents) : contents
+    const payload = JSON.parse(buffer.toString("utf8"))
+    replayArtifactCache.set(cacheKey, {
+      value: payload,
+      expiresAt: Date.now() + config.replayArtifactCacheMs,
+    })
+    return { payload, missing: false }
+  } catch (err) {
+    const message = err?.message ? String(err.message) : ""
+    if (err?.code === 404 || message.includes("No such object") || message.includes("Not Found")) {
+      return { payload: null, missing: true }
+    }
+    throw err
+  }
+}
+
 function buildFmpQuotePayload(entry, symbol, assetClass) {
   if (!entry) return null
   const bid = parseNumber(entry.bid)
@@ -472,6 +946,401 @@ function buildFmpQuotePayload(entry, symbol, assetClass) {
   }
 }
 
+function mapIntervalToMs(interval) {
+  const mapping = {
+    "1min": 60 * 1000,
+    "5min": 5 * 60 * 1000,
+    "15min": 15 * 60 * 1000,
+    "30min": 30 * 60 * 1000,
+    "1hour": 60 * 60 * 1000,
+    "4hour": 4 * 60 * 60 * 1000,
+  }
+  return mapping[interval] || null
+}
+
+async function resolveReplaySymbolContext(replayState, assetClass, symbol) {
+  const legacyKey = buildLegacyKey(symbol, assetClass)
+  if (!legacyKey) {
+    return { error: { status: 400, payload: { error: "Invalid symbol" } } }
+  }
+  if (!replayState?.asOf || !replayState?.runId) {
+    return {
+      error: { status: 500, payload: { error: "Replay controls missing asOf/runId" } },
+    }
+  }
+  const manifest = await loadReplayManifest(replayState)
+  if (!manifest) {
+    return { error: { status: 500, payload: { error: "Replay manifest unavailable" } } }
+  }
+  const symbolKeyV2 = manifest?.symbolMap?.[legacyKey]
+  const tapeDate = deriveTapeDate(replayState.asOf.getTime(), manifest)
+  if (!symbolKeyV2) {
+    return {
+      error: {
+        status: 404,
+        payload: buildReplayMissingPayload({
+          legacyKey,
+          symbolKeyV2: null,
+          artifact: "symbolMap",
+          tapeDate,
+          runId: replayState.runId,
+        }),
+      },
+    }
+  }
+
+  const coverage = isOutOfCoverage(replayState.asOf.getTime(), manifest)
+  return {
+    legacyKey,
+    symbolKeyV2,
+    tapeDate,
+    manifest,
+    coverage,
+    asOfMs: replayState.asOf.getTime(),
+  }
+}
+
+async function loadReplayBars(replayState, manifest, symbolKeyV2, tapeDate, interval) {
+  const artifactEntry = getArtifactEntry(manifest, symbolKeyV2)
+  const expectsDaily = interval === "1day"
+  const artifactFlag = expectsDaily ? "bars1d" : "bars1m"
+  if (artifactEntry && artifactEntry[artifactFlag] === false) {
+    return { missing: true, payload: null }
+  }
+
+  const suffix = expectsDaily ? "bars.1d.json.gz" : "bars.1m.json.gz"
+  const path = `${config.replayPrefix}/tapes/stocks/${tapeDate}/${symbolKeyV2}.${suffix}`
+  const cacheKey = buildCacheKey(
+    `replay:${artifactFlag}:${symbolKeyV2}:${tapeDate}`,
+    replayState,
+    { asOfMs: replayState.asOf?.getTime() }
+  )
+  return loadReplayArtifact(path, cacheKey, true)
+}
+
+function buildReplayQuotePayload(symbol, assetClass, candle, replayState, coverage) {
+  return {
+    symbol,
+    assetClass,
+    price: candle.close,
+    bid: undefined,
+    ask: undefined,
+    volume: candle.volume,
+    changePercent: undefined,
+    source: "replay",
+    asOf: replayState.asOf?.toISOString?.() || null,
+    meta: coverage?.outOfCoverage ? { outOfCoverage: true } : undefined,
+  }
+}
+
+async function handleReplayQuote(res, params, replayState) {
+  const symbol = params.get("symbol") || ""
+  const assetClass = params.get("assetClass") || "stock"
+  const context = await resolveReplaySymbolContext(replayState, assetClass, symbol)
+  if (context.error) {
+    respondReplayError(res, context.error.status, context.error.payload)
+    return
+  }
+  const { legacyKey, symbolKeyV2, tapeDate, manifest, asOfMs, coverage } = context
+  const barsResult = await loadReplayBars(replayState, manifest, symbolKeyV2, tapeDate, "1min")
+  if (barsResult.missing) {
+    respondReplayError(
+      res,
+      404,
+      buildReplayMissingPayload({
+        legacyKey,
+        symbolKeyV2,
+        artifact: "bars1m",
+        tapeDate,
+        runId: replayState.runId,
+      })
+    )
+    return
+  }
+  const candles = normalizeReplayCandles(barsResult.payload).filter((candle) => candle.time <= asOfMs)
+  if (candles.length === 0) {
+    respondReplayError(
+      res,
+      409,
+      buildReplayOutOfCoveragePayload({
+        legacyKey,
+        symbolKeyV2,
+        tapeDate,
+        runId: replayState.runId,
+        asOf: replayState.asOf?.toISOString?.() || null,
+        coverageWindow: coverage.coverageWindow,
+      })
+    )
+    return
+  }
+  const last = candles[candles.length - 1]
+  const payload = buildReplayQuotePayload(symbol, assetClass, last, replayState, coverage)
+  respondJson(res, 200, payload)
+}
+
+async function handleReplayQuotes(res, params, replayState) {
+  const symbolsRaw = params.get("symbols") || ""
+  const assetClass = params.get("assetClass") || "stock"
+  const rawSymbols = symbolsRaw
+    .split(",")
+    .map((symbol) => symbol.trim())
+    .filter(Boolean)
+  if (rawSymbols.length === 0) {
+    respondJson(res, 400, { error: "Symbols are required" })
+    return
+  }
+
+  const manifest = await loadReplayManifest(replayState)
+  if (!manifest) {
+    respondReplayError(res, 500, { error: "Replay manifest unavailable" })
+    return
+  }
+  const asOf = replayState.asOf
+  if (!asOf) {
+    respondReplayError(res, 500, { error: "Replay asOf missing" })
+    return
+  }
+  const tapeDate = deriveTapeDate(asOf.getTime(), manifest)
+  const coverage = isOutOfCoverage(asOf.getTime(), manifest)
+
+  const items = []
+  const missingSymbols = []
+
+  for (const rawSymbol of rawSymbols) {
+    const legacyKey = buildLegacyKey(rawSymbol, assetClass)
+    if (!legacyKey) {
+      missingSymbols.push({ symbol: rawSymbol, reason: "invalid_symbol" })
+      continue
+    }
+    const symbolKeyV2 = manifest?.symbolMap?.[legacyKey]
+    if (!symbolKeyV2) {
+      missingSymbols.push({ symbol: rawSymbol, reason: "symbolMap_missing" })
+      continue
+    }
+    const barsResult = await loadReplayBars(replayState, manifest, symbolKeyV2, tapeDate, "1min")
+    if (barsResult.missing) {
+      missingSymbols.push({ symbol: rawSymbol, reason: "bars1m_missing" })
+      continue
+    }
+    const candles = normalizeReplayCandles(barsResult.payload).filter(
+      (candle) => candle.time <= asOf.getTime()
+    )
+    if (candles.length === 0) {
+      missingSymbols.push({ symbol: rawSymbol, reason: "out_of_coverage" })
+      continue
+    }
+    const last = candles[candles.length - 1]
+    items.push(buildReplayQuotePayload(rawSymbol, assetClass, last, replayState, coverage))
+  }
+
+  respondJson(res, 200, {
+    items,
+    assetClass,
+    source: "replay",
+    missingSymbols,
+  })
+}
+
+async function handleReplayCandles(res, params, replayState) {
+  const symbol = params.get("symbol") || ""
+  const assetClass = params.get("assetClass") || "stock"
+  const interval = params.get("interval") || "15min"
+  const limit = clamp(parseInt(params.get("limit") || "120", 10), 1, 500)
+
+  const fmpInterval = mapIntervalToFmp(interval)
+  const context = await resolveReplaySymbolContext(replayState, assetClass, symbol)
+  if (context.error) {
+    respondReplayError(res, context.error.status, context.error.payload)
+    return
+  }
+  const { legacyKey, symbolKeyV2, tapeDate, manifest, asOfMs, coverage } = context
+  const isDaily = fmpInterval === "1day"
+  const barsResult = await loadReplayBars(replayState, manifest, symbolKeyV2, tapeDate, isDaily ? "1day" : "1min")
+  if (barsResult.missing) {
+    respondReplayError(
+      res,
+      404,
+      buildReplayMissingPayload({
+        legacyKey,
+        symbolKeyV2,
+        artifact: isDaily ? "bars1d" : "bars1m",
+        tapeDate,
+        runId: replayState.runId,
+      })
+    )
+    return
+  }
+
+  let candles = normalizeReplayCandles(barsResult.payload)
+  if (isDaily) {
+    candles = filterReplayDailyCandles(candles, asOfMs, manifest, tapeDate)
+  } else {
+    candles = candles.filter((candle) => candle.time <= asOfMs)
+    const intervalMs = mapIntervalToMs(fmpInterval)
+    if (intervalMs && intervalMs !== 60000) {
+      candles = aggregateReplayCandles(candles, intervalMs)
+    }
+  }
+
+  if (candles.length === 0) {
+    respondReplayError(
+      res,
+      409,
+      buildReplayOutOfCoveragePayload({
+        legacyKey,
+        symbolKeyV2,
+        tapeDate,
+        runId: replayState.runId,
+        asOf: replayState.asOf?.toISOString?.() || null,
+        coverageWindow: coverage.coverageWindow,
+      })
+    )
+    return
+  }
+
+  const payload = {
+    symbol,
+    assetClass,
+    interval: fmpInterval,
+    candles: candles.slice(-limit),
+    source: "replay",
+    asOf: replayState.asOf?.toISOString?.() || null,
+    meta: coverage.outOfCoverage ? { outOfCoverage: true } : undefined,
+  }
+  respondJson(res, 200, payload)
+}
+
+async function handleReplayProfile(res, params, replayState) {
+  const symbol = params.get("symbol") || ""
+  const assetClass = params.get("assetClass") || "stock"
+  const context = await resolveReplaySymbolContext(replayState, assetClass, symbol)
+  if (context.error) {
+    respondReplayError(res, context.error.status, context.error.payload)
+    return
+  }
+  const { legacyKey, symbolKeyV2, tapeDate, manifest } = context
+  const artifactEntry = getArtifactEntry(manifest, symbolKeyV2)
+  if (artifactEntry && artifactEntry.profile === false) {
+    respondReplayError(
+      res,
+      404,
+      buildReplayMissingPayload({
+        legacyKey,
+        symbolKeyV2,
+        artifact: "profile",
+        tapeDate,
+        runId: replayState.runId,
+      })
+    )
+    return
+  }
+
+  const path = `${config.replayPrefix}/tapes/profile/${symbolKeyV2}.json`
+  const cacheKey = buildCacheKey(`replay:profile:${symbolKeyV2}`, replayState)
+  const result = await loadReplayArtifact(path, cacheKey, false)
+  if (result.missing) {
+    respondReplayError(
+      res,
+      404,
+      buildReplayMissingPayload({
+        legacyKey,
+        symbolKeyV2,
+        artifact: "profile",
+        tapeDate,
+        runId: replayState.runId,
+      })
+    )
+    return
+  }
+  respondJson(res, 200, { symbol: symbol.toUpperCase(), profile: result.payload, source: "replay" })
+}
+
+function extractPublishedAt(item) {
+  const raw =
+    item?.publishedAt ||
+    item?.published_at ||
+    item?.published ||
+    item?.published_at_utc ||
+    item?.datetime ||
+    item?.date ||
+    null
+  if (!raw) return null
+  const parsed = new Date(raw)
+  const time = parsed.getTime()
+  return Number.isNaN(time) ? null : time
+}
+
+async function handleReplayNews(res, params, replayState) {
+  const symbol = params.get("symbol") || ""
+  const assetClass = params.get("assetClass") || "stock"
+  const limit = clamp(parseInt(params.get("limit") || "20", 10), 1, 100)
+  const lookbackHours = parseInt(params.get("lookbackHours") || "", 10)
+  const lookbackMs = Number.isFinite(lookbackHours) ? lookbackHours * 60 * 60 * 1000 : null
+
+  const context = await resolveReplaySymbolContext(replayState, assetClass, symbol)
+  if (context.error) {
+    respondReplayError(res, context.error.status, context.error.payload)
+    return
+  }
+  const { legacyKey, symbolKeyV2, tapeDate, manifest, asOfMs } = context
+  const artifactEntry = getArtifactEntry(manifest, symbolKeyV2)
+  if (artifactEntry && artifactEntry.news === false) {
+    respondReplayError(
+      res,
+      404,
+      buildReplayMissingPayload({
+        legacyKey,
+        symbolKeyV2,
+        artifact: "news",
+        tapeDate,
+        runId: replayState.runId,
+      })
+    )
+    return
+  }
+
+  const path = `${config.replayPrefix}/tapes/news/${tapeDate}/by_symbol/${symbolKeyV2}.json.gz`
+  const cacheKey = buildCacheKey(
+    `replay:news:${symbolKeyV2}:${tapeDate}`,
+    replayState,
+    { asOfMs }
+  )
+  const result = await loadReplayArtifact(path, cacheKey, true)
+  if (result.missing) {
+    respondReplayError(
+      res,
+      404,
+      buildReplayMissingPayload({
+        legacyKey,
+        symbolKeyV2,
+        artifact: "news",
+        tapeDate,
+        runId: replayState.runId,
+      })
+    )
+    return
+  }
+
+  const rawItems = Array.isArray(result.payload)
+    ? result.payload
+    : Array.isArray(result.payload?.data)
+      ? result.payload.data
+      : []
+  const filtered = rawItems.filter((item) => {
+    const publishedAt = extractPublishedAt(item)
+    if (!publishedAt) return false
+    if (publishedAt > asOfMs) return false
+    if (lookbackMs !== null && publishedAt < asOfMs - lookbackMs) return false
+    return true
+  })
+  respondJson(res, 200, {
+    symbol: symbol || "all",
+    data: filtered.slice(0, limit),
+    source: "replay",
+    meta: { count: filtered.length },
+  })
+}
+
 async function fetchFmpQuoteCached(symbol, assetClass) {
   const cacheKey = `fmp:quote:${assetClass}:${symbol}`
   const cached = getCached(cacheKey)
@@ -488,7 +1357,11 @@ async function fetchFmpQuoteCached(symbol, assetClass) {
   return { payload, cacheHit: false }
 }
 
-async function handleFmpQuote(req, res, params) {
+async function handleFmpQuote(req, res, params, replayState) {
+  if (replayState?.mode === "replay") {
+    await handleReplayQuote(res, params, replayState)
+    return
+  }
   if (!config.fmpKey) {
     respondJson(res, 500, { error: "FMP API key is not configured" })
     return
@@ -593,7 +1466,11 @@ async function handleFmpQuote(req, res, params) {
   })
 }
 
-async function handleFmpQuotes(req, res, params) {
+async function handleFmpQuotes(req, res, params, replayState) {
+  if (replayState?.mode === "replay") {
+    await handleReplayQuotes(res, params, replayState)
+    return
+  }
   if (!config.fmpKey) {
     respondJson(res, 500, { error: "FMP API key is not configured" })
     return
@@ -688,7 +1565,11 @@ async function handleFmpQuotes(req, res, params) {
   })
 }
 
-async function handleFmpCandles(req, res, params) {
+async function handleFmpCandles(req, res, params, replayState) {
+  if (replayState?.mode === "replay") {
+    await handleReplayCandles(res, params, replayState)
+    return
+  }
   if (!config.fmpKey) {
     respondJson(res, 500, { error: "FMP API key is not configured" })
     return
@@ -1233,7 +2114,11 @@ async function handleFmpIndicators(req, res, params) {
   })
 }
 
-async function handleFmpProfile(req, res, params) {
+async function handleFmpProfile(req, res, params, replayState) {
+  if (replayState?.mode === "replay") {
+    await handleReplayProfile(res, params, replayState)
+    return
+  }
   if (!config.fmpKey) {
     respondJson(res, 500, { error: "FMP_API_KEY is not configured" })
     return
@@ -1288,7 +2173,11 @@ async function handleFmpProfile(req, res, params) {
   })
 }
 
-async function handleFmpNews(req, res, params) {
+async function handleFmpNews(req, res, params, replayState) {
+  if (replayState?.mode === "replay") {
+    await handleReplayNews(res, params, replayState)
+    return
+  }
   if (!config.fmpKey) {
     respondJson(res, 500, { error: "FMP_API_KEY is not configured" })
     return
@@ -1776,6 +2665,21 @@ async function requestHandler(req, res) {
     }
 
     const params = url.searchParams
+    const replayState = await resolveReplayState()
+    await maybeAckReplayState(replayState)
+
+    const replaySupportedPaths = new Set([
+      "/v1/fmp/quote",
+      "/v1/fmp/quotes",
+      "/v1/fmp/candles",
+      "/v1/fmp/profile",
+      "/v1/fmp/news",
+    ])
+
+    if (replayState.mode === "replay" && !replaySupportedPaths.has(path)) {
+      respondReplayUnsupported(res, `Replay does not support ${path}`)
+      return
+    }
 
     if (path === "/ping/fmp") {
       if (!config.fmpKey) {
@@ -1809,15 +2713,15 @@ async function requestHandler(req, res) {
     }
 
     if (path === "/v1/fmp/quote") {
-      await handleFmpQuote(req, res, params)
+      await handleFmpQuote(req, res, params, replayState)
       return
     }
     if (path === "/v1/fmp/quotes") {
-      await handleFmpQuotes(req, res, params)
+      await handleFmpQuotes(req, res, params, replayState)
       return
     }
     if (path === "/v1/fmp/candles") {
-      await handleFmpCandles(req, res, params)
+      await handleFmpCandles(req, res, params, replayState)
       return
     }
     if (path === "/v1/fmp/biggest-gainers") {
@@ -1853,11 +2757,11 @@ async function requestHandler(req, res) {
       return
     }
     if (path === "/v1/fmp/profile") {
-      await handleFmpProfile(req, res, params)
+      await handleFmpProfile(req, res, params, replayState)
       return
     }
     if (path === "/v1/fmp/news") {
-      await handleFmpNews(req, res, params)
+      await handleFmpNews(req, res, params, replayState)
       return
     }
     if (path === "/v1/fmp/price-target") {

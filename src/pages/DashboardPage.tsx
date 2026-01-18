@@ -65,6 +65,7 @@ import { usePaperAutomation } from "@/features/paper/use-paper-monitor"
 import { PipelineHealthBadge } from "@/components/PipelineHealthBadge"
 import { copyAiPrompt } from "@/features/ai/ai-prompt"
 import { findAnalysisNoteKind, getAnalysisNoteKind, localizeAnalysis } from "@/lib/analysis-localize"
+import { useReplayControls } from "@/features/replay/use-replay-controls"
 import {
   getE2eDisableFirestoreWrites,
   getE2ePrebreakoutOverride,
@@ -233,6 +234,7 @@ export default function DashboardPage() {
   const { user } = useAuth()
   const { t, i18n } = useTranslation()
   const { prices, livePrices } = useMarketPrices()
+  const { replayActive } = useReplayControls()
 
   const [bots, setBots] = useState<BotDoc[]>([])
   const [events, setEvents] = useState<BotEventDoc[]>([])
@@ -949,6 +951,10 @@ export default function DashboardPage() {
   )
 
   async function startOfflineBots() {
+    if (replayActive) {
+      toast.info(t("replay.actionsDisabled"))
+      return
+    }
     if (!firebaseEnabled || !db) {
       toast.error(t("tradeNow.firebaseNotConfigured"))
       return
@@ -980,6 +986,10 @@ export default function DashboardPage() {
   }
 
   async function triggerRefresh() {
+    if (replayActive) {
+      toast.info(t("replay.actionsDisabled"))
+      return
+    }
     if (!firebaseEnabled || !db) {
       toast.error(t("tradeNow.firebaseNotConfigured"))
       return
@@ -1783,7 +1793,7 @@ export default function DashboardPage() {
   )
 
   // Monitor paper positions for stop loss / take profit
-  usePaperAutomation(user?.uid, paperMonitorItems)
+  usePaperAutomation(replayActive ? undefined : user?.uid, paperMonitorItems)
 
 
   const trendFocusSet = useMemo(() => new Set(trendAssetFocus), [trendAssetFocus])
@@ -2203,9 +2213,13 @@ export default function DashboardPage() {
           <Button
             variant="secondary"
             onClick={triggerRefresh}
-            disabled={!firebaseEnabled || refreshingJobs || !refreshEndpoint}
+            disabled={!firebaseEnabled || refreshingJobs || !refreshEndpoint || replayActive}
             title={
-              refreshEndpoint ? t("tradeNow.refreshTitle") : t("tradeNow.refreshDisabledTitle")
+              replayActive
+                ? t("replay.actionsDisabled")
+                : refreshEndpoint
+                  ? t("tradeNow.refreshTitle")
+                  : t("tradeNow.refreshDisabledTitle")
             }
           >
             {refreshingJobs ? t("tradeNow.refreshing") : t("tradeNow.refreshNow")}
@@ -2213,7 +2227,8 @@ export default function DashboardPage() {
           <Button
             variant="outline"
             onClick={startOfflineBots}
-            disabled={!firebaseEnabled || startingBots}
+            disabled={!firebaseEnabled || startingBots || replayActive}
+            title={replayActive ? t("replay.actionsDisabled") : undefined}
           >
             {startingBots ? t("dashboard.actions.startingBots") : t("dashboard.actions.startOfflineBots")}
           </Button>
@@ -4439,7 +4454,13 @@ export default function DashboardPage() {
                                 >
                                   <Clipboard className="h-3.5 w-3.5" />
                                 </Button>
-                                <PaperTradeButton trade={trade} size="icon" className="h-5 w-5 opacity-0 hover:opacity-100 group-hover:opacity-100 transition-opacity" />
+                                <PaperTradeButton
+                                  trade={trade}
+                                  size="icon"
+                                  className="h-5 w-5 opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100"
+                                  disabled={replayActive}
+                                  disabledReason={t("replay.actionsDisabled")}
+                                />
                               </div>
                               <div className="text-xs text-muted-foreground flex items-center gap-1">
                                 {(() => {
@@ -4556,7 +4577,13 @@ export default function DashboardPage() {
                                 >
                                   <Clipboard className="h-3.5 w-3.5" />
                                 </Button>
-                                <PaperTradeButton trade={trade} size="icon" className="h-5 w-5 opacity-0 hover:opacity-100 group-hover:opacity-100 transition-opacity" />
+                                <PaperTradeButton
+                                  trade={trade}
+                                  size="icon"
+                                  className="h-5 w-5 opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100"
+                                  disabled={replayActive}
+                                  disabledReason={t("replay.actionsDisabled")}
+                                />
                               </div>
                               <div className="text-xs text-muted-foreground flex items-center gap-1">
                                 {(() => {
@@ -4851,7 +4878,8 @@ export default function DashboardPage() {
                   <Button
                     className="w-full"
                     onClick={startOfflineBots}
-                    disabled={!firebaseEnabled || startingBots}
+                    disabled={!firebaseEnabled || startingBots || replayActive}
+                    title={replayActive ? t("replay.actionsDisabled") : undefined}
                   >
                     {startingBots
                       ? t("dashboard.actions.startingBots")

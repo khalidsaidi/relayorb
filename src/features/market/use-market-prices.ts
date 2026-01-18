@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { doc, onSnapshot } from "firebase/firestore"
 import { db } from "@/lib/firebase"
 import { getE2eMarketPricesOverride } from "@/lib/e2e-overrides"
+import { useReplayControls } from "@/features/replay/use-replay-controls"
 
 export type MarketPrice = {
     symbol: string
@@ -11,6 +12,8 @@ export type MarketPrice = {
 
 export function useMarketPrices() {
     const e2eOverride = getE2eMarketPricesOverride()
+    const { replayActive, controls } = useReplayControls()
+    const replayRunId = replayActive ? controls?.activeRunId : null
     const initialLive = e2eOverride?.livePrices ?? {}
     const initialSnapshot = e2eOverride?.prices ?? {}
     const [livePrices, setLivePrices] = useState<Record<string, number>>(() => initialLive)
@@ -22,13 +25,21 @@ export function useMarketPrices() {
         () => ({ ...snapshotPrices, ...livePrices }),
         [snapshotPrices, livePrices]
     )
-    const loading = !liveLoaded && !snapshotLoaded
+    const replayBlocked = replayActive && !replayRunId
+    const effectiveLiveLoaded = replayBlocked ? true : liveLoaded
+    const effectiveSnapshotLoaded = replayBlocked ? true : snapshotLoaded
+    const loading = !effectiveLiveLoaded && !effectiveSnapshotLoaded
 
     useEffect(() => {
         if (e2eOverride) return
         if (!db) return
+        if (replayBlocked) return
 
-        const unsub = onSnapshot(doc(db, "market", "prices"), (snap) => {
+        const pricesRef = replayRunId
+            ? doc(db, "replay", "controls", "runs", replayRunId, "market", "prices")
+            : doc(db, "market", "prices")
+
+        const unsub = onSnapshot(pricesRef, (snap) => {
             if (snap.exists()) {
                 const data = snap.data()
                 const items = data.items || []
@@ -49,13 +60,18 @@ export function useMarketPrices() {
         })
 
         return () => unsub()
-    }, [e2eOverride])
+    }, [e2eOverride, replayActive, replayRunId, replayBlocked])
 
     useEffect(() => {
         if (e2eOverride) return
         if (!db) return
+        if (replayBlocked) return
 
-        const unsub = onSnapshot(doc(db, "market", "prices_snapshot"), (snap) => {
+        const snapshotRef = replayRunId
+            ? doc(db, "replay", "controls", "runs", replayRunId, "market", "prices_snapshot")
+            : doc(db, "market", "prices_snapshot")
+
+        const unsub = onSnapshot(snapshotRef, (snap) => {
             if (snap.exists()) {
                 const data = snap.data()
                 const items = data.items || []
@@ -76,7 +92,7 @@ export function useMarketPrices() {
         })
 
         return () => unsub()
-    }, [e2eOverride])
+    }, [e2eOverride, replayActive, replayRunId, replayBlocked])
 
     return { prices, livePrices, loading }
 }

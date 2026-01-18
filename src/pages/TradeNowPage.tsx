@@ -26,6 +26,7 @@ import { BarChart3, InfoIcon } from "lucide-react"
 import { usePaperAutomation } from "@/features/paper/use-paper-monitor"
 import { buildAiPrompt } from "@/features/ai/ai-prompt"
 import { findAnalysisNoteKind, getAnalysisNoteKind, localizeAnalysis } from "@/lib/analysis-localize"
+import { useReplayControls } from "@/features/replay/use-replay-controls"
 import {
   getE2ePrebreakoutOverride,
   getE2eRefreshUrlOverride,
@@ -119,6 +120,8 @@ function TradeList({
   onShowChart,
   onShowBreakdown,
   onApplyAiSuggestion,
+  actionsDisabled = false,
+  actionsDisabledReason,
   prices,
   livePrices,
 }: {
@@ -134,6 +137,8 @@ function TradeList({
   onShowChart: (item: MarketHotTrade) => void
   onShowBreakdown: (item: MarketHotTrade) => void
   onApplyAiSuggestion: (item: MarketHotTrade, advice: AiAdvice) => void
+  actionsDisabled?: boolean
+  actionsDisabledReason?: string
   prices: Record<string, number>
   livePrices: Record<string, number>
 }) {
@@ -315,6 +320,8 @@ function TradeList({
                     size="sm"
                     variant="default"
                     className="gap-2"
+                    disabled={actionsDisabled}
+                    disabledReason={actionsDisabledReason}
                   >
                     <span>{t("tradeNow.trade")}</span>
                   </PaperTradeButton>
@@ -392,6 +399,8 @@ function TradeList({
                         variant="default"
                         className="mt-2 w-full"
                         onClick={() => onApplyAiSuggestion(item, advice)}
+                        disabled={actionsDisabled}
+                        title={actionsDisabled ? actionsDisabledReason : undefined}
                       >
                         {t("tradeNow.applyAiSuggestion")}
                       </Button>
@@ -410,6 +419,8 @@ function TradeList({
 export default function TradeNowPage() {
   const { user } = useAuth()
   const { t } = useTranslation()
+  const { replayActive, controls: replayControls } = useReplayControls()
+  const replayRunId = replayActive ? replayControls?.activeRunId : null
   const { prices, livePrices } = useMarketPrices()
   const [actionBoard, setActionBoard] = useState<MarketActionBoardDoc | null>(null)
   const [hotTrades, setHotTrades] = useState<MarketHotTrade[]>([])
@@ -432,6 +443,7 @@ export default function TradeNowPage() {
   const [chartOpen, setChartOpen] = useState(false)
   const [breakdownAsset, setBreakdownAsset] = useState<MarketHotTrade | null>(null)
   const [breakdownOpen, setBreakdownOpen] = useState(false)
+  const replayActionDisabledReason = t("replay.actionsDisabled")
 
   const streamItems = useMemo(() => {
     const items: MarketHotTrade[] = []
@@ -457,7 +469,7 @@ export default function TradeNowPage() {
   })
 
   // Monitor paper positions for stop loss / take profit
-  usePaperAutomation(user?.uid, paperMonitorItems)
+  usePaperAutomation(replayActive ? undefined : user?.uid, paperMonitorItems)
 
   const refreshEndpoint = useMemo(() => {
     const override = getE2eRefreshUrlOverride()
@@ -487,8 +499,32 @@ export default function TradeNowPage() {
       setLoading(false)
       return
     }
+    if (replayActive && !replayRunId) {
+      setActionBoard(null)
+      setHotTrades([])
+      setHotTradesUpdatedAt(undefined)
+      setSwingOvernight([])
+      setSwingOvernightUpdatedAt(undefined)
+      setPrebreakout([])
+      setPrebreakoutUpdatedAt(undefined)
+      setLoading(false)
+      return
+    }
 
-    const unsubAction = onSnapshot(doc(db, "market", "actionBoard"), (snap) => {
+    const actionRef = replayRunId
+      ? doc(db, "replay", "controls", "runs", replayRunId, "market", "actionBoard")
+      : doc(db, "market", "actionBoard")
+    const hotTradesRef = replayRunId
+      ? doc(db, "replay", "controls", "runs", replayRunId, "market", "hotTrades")
+      : doc(db, "market", "hotTrades")
+    const swingRef = replayRunId
+      ? doc(db, "replay", "controls", "runs", replayRunId, "market", "swingOvernight")
+      : doc(db, "market", "swingOvernight")
+    const prebreakoutRef = replayRunId
+      ? doc(db, "replay", "controls", "runs", replayRunId, "market", "prebreakout")
+      : doc(db, "market", "prebreakout")
+
+    const unsubAction = onSnapshot(actionRef, (snap) => {
       if (!snap.exists()) {
         setActionBoard(null)
         return
@@ -496,7 +532,7 @@ export default function TradeNowPage() {
       setActionBoard(snap.data() as MarketActionBoardDoc)
     })
 
-    const unsubHotTrades = onSnapshot(doc(db, "market", "hotTrades"), (snap) => {
+    const unsubHotTrades = onSnapshot(hotTradesRef, (snap) => {
       if (!snap.exists()) {
         setHotTrades([])
         setHotTradesUpdatedAt(undefined)
@@ -522,7 +558,7 @@ export default function TradeNowPage() {
     }
     const unsubSwing = e2eOverride
       ? null
-      : onSnapshot(doc(db, "market", "swingOvernight"), (snap) => {
+      : onSnapshot(swingRef, (snap) => {
           if (!snap.exists()) {
             setSwingOvernight([])
             setSwingOvernightUpdatedAt(undefined)
@@ -534,7 +570,7 @@ export default function TradeNowPage() {
         })
     const unsubPrebreakout = prebreakoutOverride
       ? null
-      : onSnapshot(doc(db, "market", "prebreakout"), (snap) => {
+      : onSnapshot(prebreakoutRef, (snap) => {
           if (!snap.exists()) {
             setPrebreakout([])
             setPrebreakoutUpdatedAt(undefined)
@@ -551,7 +587,7 @@ export default function TradeNowPage() {
       if (unsubSwing) unsubSwing()
       if (unsubPrebreakout) unsubPrebreakout()
     }
-  }, [])
+  }, [replayActive, replayRunId])
 
   const hasActionBoard = Boolean(
     actionBoard && (actionBoard.buys?.length || actionBoard.sells?.length)
@@ -631,6 +667,10 @@ export default function TradeNowPage() {
   }
 
   async function triggerRefresh() {
+    if (replayActive) {
+      toast.info(replayActionDisabledReason)
+      return
+    }
     if (!firebaseEnabled || !db) {
       toast.error(t("tradeNow.firebaseNotConfigured"))
       return
@@ -742,6 +782,10 @@ export default function TradeNowPage() {
   }
 
   async function applyAiSuggestion(item: MarketHotTrade, advice: AiAdvice) {
+    if (replayActive) {
+      toast.info(replayActionDisabledReason)
+      return
+    }
     if (!user || !firebaseEnabled) {
       toast.error(t("tradeNow.signInForAiApply"))
       return
@@ -806,11 +850,13 @@ export default function TradeNowPage() {
             variant="secondary"
             size="sm"
             onClick={triggerRefresh}
-            disabled={!firebaseEnabled || refreshingJobs || !refreshEndpoint}
+            disabled={!firebaseEnabled || refreshingJobs || !refreshEndpoint || replayActive}
             title={
-              refreshEndpoint
-                ? t("tradeNow.refreshTitle")
-                : t("tradeNow.refreshDisabledTitle")
+              replayActive
+                ? replayActionDisabledReason
+                : refreshEndpoint
+                  ? t("tradeNow.refreshTitle")
+                  : t("tradeNow.refreshDisabledTitle")
             }
           >
             {refreshingJobs ? t("tradeNow.refreshing") : t("tradeNow.refreshNow")}
@@ -887,6 +933,8 @@ export default function TradeNowPage() {
                 setBreakdownOpen(true)
               }}
               onApplyAiSuggestion={applyAiSuggestion}
+              actionsDisabled={replayActive}
+              actionsDisabledReason={replayActionDisabledReason}
               prices={prices}
               livePrices={livePrices}
             />
@@ -908,6 +956,8 @@ export default function TradeNowPage() {
                 setBreakdownOpen(true)
               }}
               onApplyAiSuggestion={applyAiSuggestion}
+              actionsDisabled={replayActive}
+              actionsDisabledReason={replayActionDisabledReason}
               prices={prices}
               livePrices={livePrices}
             />
@@ -932,6 +982,8 @@ export default function TradeNowPage() {
                 setBreakdownOpen(true)
               }}
               onApplyAiSuggestion={applyAiSuggestion}
+              actionsDisabled={replayActive}
+              actionsDisabledReason={replayActionDisabledReason}
               prices={prices}
               livePrices={livePrices}
             />
@@ -956,6 +1008,8 @@ export default function TradeNowPage() {
                 setBreakdownOpen(true)
               }}
               onApplyAiSuggestion={applyAiSuggestion}
+              actionsDisabled={replayActive}
+              actionsDisabledReason={replayActionDisabledReason}
               prices={prices}
               livePrices={livePrices}
             />

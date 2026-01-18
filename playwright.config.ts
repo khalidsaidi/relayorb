@@ -15,8 +15,8 @@ if (!process.env.RELAYORB_E2E_TARGET) {
   process.env.RELAYORB_E2E_TARGET = "prod"
 }
 
-const reuseExistingServer = true
-const webPort = Number.parseInt(process.env.VITE_E2E_PORT || "5175", 10)
+const reuseExistingServer = process.env.VITE_E2E_REUSE_SERVER === "true"
+const webPort = Number.parseInt(process.env.VITE_E2E_PORT || "5176", 10)
 const baseURL = `http://127.0.0.1:${Number.isFinite(webPort) ? webPort : 5175}`
 
 export default defineConfig({

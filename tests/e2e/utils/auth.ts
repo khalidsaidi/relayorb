@@ -1,6 +1,9 @@
 import type { Page } from "@playwright/test"
 
 export async function signInTestUser(page: Page) {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("relayorb.language", "en")
+  })
   await page.goto("/signin", { waitUntil: "domcontentloaded" })
   const testButton = page.getByRole("button", { name: /test sign in/i })
   try {
@@ -10,7 +13,7 @@ export async function signInTestUser(page: Page) {
     // Already signed in or test sign-in is not available.
   }
 
-  const shellLink = page.getByRole("link", { name: /trade now/i })
+  const shellLink = page.locator("a[href='/']").first()
   try {
     await shellLink.waitFor({ state: "visible", timeout: 30000 })
   } catch (err) {

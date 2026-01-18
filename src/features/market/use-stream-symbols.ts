@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react"
 import { doc, serverTimestamp, setDoc } from "firebase/firestore"
 import { db, firebaseEnabled } from "@/lib/firebase"
+import { useReplayControls } from "@/features/replay/use-replay-controls"
 
 const FX_CODES = new Set(["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"])
 const DEFAULT_LIMIT = 120
@@ -107,6 +108,8 @@ export function useStreamSymbols(sourceKey: string, options: StreamSymbolsOption
     enabled = true,
     limitPerClass = DEFAULT_LIMIT,
   } = options
+  const { replayActive, controls } = useReplayControls()
+  const replayRunId = replayActive ? controls?.activeRunId : null
 
   const payload = useMemo(
     () => buildBuckets(items, buckets, limitPerClass),
@@ -121,8 +124,12 @@ export function useStreamSymbols(sourceKey: string, options: StreamSymbolsOption
     if (!enabled || !firebaseEnabled || !db) return
     if (!sourceKey) return
     if (signature === lastSignature.current) return
+    if (replayActive && !replayRunId) return
 
     const activeDb = db
+    const targetDoc = replayRunId
+      ? doc(activeDb, "replay", "controls", "runs", replayRunId, "market", "streamSymbols")
+      : doc(activeDb, "market", "streamSymbols")
 
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current)
@@ -131,7 +138,7 @@ export function useStreamSymbols(sourceKey: string, options: StreamSymbolsOption
     timeoutRef.current = setTimeout(() => {
       lastSignature.current = signature
       setDoc(
-        doc(activeDb, "market", "streamSymbols"),
+        targetDoc,
         {
           updatedAt: serverTimestamp(),
           sources: {
@@ -152,5 +159,5 @@ export function useStreamSymbols(sourceKey: string, options: StreamSymbolsOption
         clearTimeout(timeoutRef.current)
       }
     }
-  }, [enabled, payload, signature, sourceKey])
+  }, [enabled, payload, signature, sourceKey, replayActive, replayRunId])
 }

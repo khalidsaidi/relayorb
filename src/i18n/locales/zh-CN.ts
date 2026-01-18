@@ -72,6 +72,16 @@ const zhCN = {
     idle: "空闲",
     unknown: "未知",
   },
+  replay: {
+    active: "回放",
+    bannerTitle: "回放模式已启用",
+    bannerSubtitle: "回放运行期间将禁用实时操作。",
+    runId: "运行",
+    datasetId: "数据集",
+    asOf: "回放时间",
+    phase: "阶段",
+    actionsDisabled: "回放模式已启用，实时操作已禁用。",
+  },
   trade: {
     side: {
       buy: "买入",

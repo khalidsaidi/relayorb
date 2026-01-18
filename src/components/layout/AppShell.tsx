@@ -39,6 +39,8 @@ import { SidebarPaperProfile } from "./SidebarPaperProfile"
 import { usePresence } from "@/features/presence/use-presence"
 import { PipelineHealthBadge } from "@/components/PipelineHealthBadge"
 import { languageOptions, setStoredLanguage, type SupportedLanguage } from "@/i18n"
+import { useReplayControls } from "@/features/replay/use-replay-controls"
+import { formatTimestamp } from "@/lib/format"
 
 type NavItem = {
   to: string
@@ -93,6 +95,11 @@ export function AppShell() {
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const pageTitle = useMemo(() => getPageTitle(pathname, t), [pathname, t])
+  const { controls: replayControls, replayActive } = useReplayControls()
+  const replayAsOfLabel = useMemo(
+    () => formatTimestamp(replayControls?.asOf as Parameters<typeof formatTimestamp>[0]),
+    [replayControls?.asOf]
+  )
 
   const navItems: NavItem[] = [
     { to: "/", label: t("nav.tradeNow"), icon: <TrendingUp className="h-4 w-4" /> },
@@ -284,6 +291,30 @@ export function AppShell() {
               </DropdownMenu>
             </div>
           </header>
+
+          {replayActive && (
+            <div className="border-b border-amber-200/70 bg-amber-50/80 px-4 py-3 text-sm text-amber-950 md:px-6">
+              <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-3">
+                <Badge variant="destructive" className="uppercase tracking-[0.2em]">
+                  {t("replay.active")}
+                </Badge>
+                <span className="font-semibold">{t("replay.bannerTitle")}</span>
+                <span className="text-amber-900/80">{t("replay.bannerSubtitle")}</span>
+                <span className="text-amber-900/80">
+                  {t("replay.runId")}: {replayControls?.activeRunId || t("common.na")}
+                </span>
+                <span className="text-amber-900/80">
+                  {t("replay.datasetId")}: {replayControls?.datasetId || t("common.na")}
+                </span>
+                <span className="text-amber-900/80">
+                  {t("replay.asOf")}: {replayAsOfLabel}
+                </span>
+                <span className="text-amber-900/80">
+                  {t("replay.phase")}: {replayControls?.phase || t("common.na")}
+                </span>
+              </div>
+            </div>
+          )}
 
           <div className="flex-1 p-4 md:p-6">
             <div className="mx-auto w-full max-w-7xl">

@@ -30,6 +30,9 @@ const config = {
   pipelineEventsMaxlen: parseInt(process.env.PIPELINE_EVENTS_MAXLEN || "20000", 10),
   pipelineEventsSampleRate: parseFloat(process.env.PIPELINE_EVENTS_SAMPLE_RATE || "0.15"),
   pipelineEventsRunEnv: process.env.PIPELINE_EVENTS_RUN_ENV || "prod",
+  replayAllowed: process.env.REPLAY_ALLOWED !== "false",
+  replayControlsCacheMs: parseInt(process.env.REPLAY_CONTROLS_CACHE_MS || "1500", 10),
+  replayAckIntervalMs: parseInt(process.env.REPLAY_ACK_INTERVAL_MS || "15000", 10),
   candidatePublishLimit: parseInt(process.env.CANDIDATE_PUBLISH_LIMIT || "150", 10),
   batchCollection: process.env.BATCH_COLLECTION || "batches",
   runId: process.env.RUN_ID || "",
@@ -123,6 +126,19 @@ const RISK_WEIGHT_MULTIPLIERS = {
 let redis = null
 let redisReady = false
 let activeRunId = ""
+const replayControlsCache = { value: null, expiresAt: 0 }
+let replayState = {
+  mode: "live",
+  runId: null,
+  sessionId: null,
+  version: null,
+  phase: null,
+  datasetId: null,
+  asOfMs: null,
+  lastAckAt: 0,
+  lastAckSessionId: null,
+  lastAckVersion: null,
+}
 const SPREAD_PCT_LIMITS = {
   stock: 0.5,
   forex: 0.08,
@@ -130,9 +146,11 @@ const SPREAD_PCT_LIMITS = {
 }
 
 function resolvePipelineStream() {
+  if (isReplayMode() && replayState.runId) {
+    return resolveRedisKey("pipeline_events")
+  }
   if (config.pipelineEventsStream) return config.pipelineEventsStream
-  const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
-  return `${prefix}pipeline_events`
+  return resolveRedisKey("pipeline_events")
 }
 
 function createEventId() {
@@ -146,11 +164,29 @@ function shouldSample(rate) {
   return Math.random() <= rate
 }
 
+function isReplayMode() {
+  return replayState?.mode === "replay"
+}
+
+function getEffectiveNowMs() {
+  if (isReplayMode() && Number.isFinite(replayState.asOfMs)) {
+    return replayState.asOfMs
+  }
+  return Date.now()
+}
+
+function getPipelineRunEnv() {
+  return isReplayMode() ? "replay" : config.pipelineEventsRunEnv
+}
+
 function buildPipelineEvent(payload) {
+  const runId = replayState?.runId || config.runId || undefined
   return {
     ts: new Date().toISOString(),
     eventId: createEventId(),
-    runEnv: config.pipelineEventsRunEnv,
+    runEnv: getPipelineRunEnv(),
+    runId,
+    sessionId: replayState?.sessionId || undefined,
     service: "market-intel",
     severity: "info",
     ...payload,
@@ -377,14 +413,53 @@ function hashParams(value) {
   }
 }
 
-function resolveRedisKey(suffix) {
+function resolveRedisKey(suffix, replay = replayState) {
+  if (replay?.mode === "replay" && replay.runId) {
+    return `replay:${replay.runId}:${suffix}`
+  }
   const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
   return `${prefix}${suffix}`
 }
 
 function resolveEventChannel() {
+  if (isReplayMode()) return resolveRedisKey("events")
   if (config.redisEventChannel) return config.redisEventChannel
   return resolveRedisKey("events")
+}
+
+function resolveSnapshotCollectionName(baseName) {
+  if (isReplayMode() && replayState.runId) {
+    return `replay/controls/runs/${replayState.runId}/snapshots_${baseName}`
+  }
+  return baseName
+}
+
+function resolveMarketDocPath(docId) {
+  if (isReplayMode() && replayState.runId) {
+    return `replay/controls/runs/${replayState.runId}/market/${docId}`
+  }
+  return `market/${docId}`
+}
+
+function resolveMarketCollectionPath(collectionName) {
+  if (isReplayMode() && replayState.runId) {
+    return `replay/controls/runs/${replayState.runId}/${collectionName}`
+  }
+  return collectionName
+}
+
+function resolvePipelineDocPath(docId) {
+  if (isReplayMode() && replayState.runId) {
+    return `replay/controls/runs/${replayState.runId}/pipeline/${docId}`
+  }
+  return `pipeline/${docId}`
+}
+
+function resolveBatchCollectionName() {
+  if (isReplayMode() && replayState.runId) {
+    return `replay/controls/runs/${replayState.runId}/${config.batchCollection}`
+  }
+  return config.batchCollection
 }
 
 async function initRedis() {
@@ -442,7 +517,7 @@ async function readRedisLatestPrices() {
   }
   if (!payload || !Array.isArray(payload.items)) return null
   const updatedAt = parseNumber(payload.updatedAt)
-  if (updatedAt && Date.now() - updatedAt > config.redisLatestMaxAgeMs) {
+  if (updatedAt && getEffectiveNowMs() - updatedAt > config.redisLatestMaxAgeMs) {
     return null
   }
   return {
@@ -1215,6 +1290,84 @@ function initAdmin() {
   return admin.firestore()
 }
 
+async function loadReplayControls(db) {
+  if (!config.replayAllowed) return null
+  if (replayControlsCache.expiresAt > Date.now() && replayControlsCache.value) {
+    return replayControlsCache.value
+  }
+  try {
+    const snap = await db.doc("replay/controls").get()
+    const data = snap.exists ? snap.data() : null
+    replayControlsCache.value = data
+    replayControlsCache.expiresAt = Date.now() + config.replayControlsCacheMs
+    return data
+  } catch (err) {
+    console.error("Replay controls read failed", err.message)
+    return null
+  }
+}
+
+function parseReplayTimestamp(value) {
+  if (!value) return null
+  if (value instanceof Date) return value
+  if (typeof value?.toDate === "function") return value.toDate()
+  const parsed = new Date(value)
+  return Number.isFinite(parsed.getTime()) ? parsed : null
+}
+
+function applyReplayControls(controls) {
+  const desired =
+    controls?.desiredMode === "replay" && config.replayAllowed ? "replay" : "live"
+  const next = {
+    mode: desired,
+    runId: controls?.activeRunId || null,
+    sessionId: controls?.sessionId || null,
+    version: typeof controls?.version === "number" ? controls.version : null,
+    phase: controls?.phase || null,
+    datasetId: controls?.datasetId || null,
+    asOfMs: parseReplayTimestamp(controls?.asOf)?.getTime?.() ?? null,
+    lastAckAt: replayState.lastAckAt || 0,
+    lastAckSessionId: replayState.lastAckSessionId || null,
+    lastAckVersion: replayState.lastAckVersion || null,
+  }
+
+  if (next.mode === "replay" && (!next.runId || !next.sessionId || next.version === null)) {
+    throw new Error("Replay mode missing activeRunId/sessionId/version")
+  }
+  replayState = next
+}
+
+async function ackReplayControls(db, note) {
+  if (!replayState.sessionId || replayState.version === null) return
+  const now = Date.now()
+  if (
+    now - replayState.lastAckAt < config.replayAckIntervalMs &&
+    replayState.lastAckSessionId === replayState.sessionId &&
+    replayState.lastAckVersion === replayState.version
+  ) {
+    return
+  }
+  await db
+    .doc("replay/controls/consumers/market-intel")
+    .set(
+      compactObject({
+        service: "market-intel",
+        effectiveMode: replayState.mode,
+        sessionId: replayState.sessionId,
+        seenControlsVersion: replayState.version,
+        activeRunId: replayState.runId,
+        phase: replayState.phase || undefined,
+        datasetId: replayState.datasetId || undefined,
+        note: note || undefined,
+        heartbeatAt: admin.firestore.FieldValue.serverTimestamp(),
+      }),
+      { merge: true }
+    )
+  replayState.lastAckAt = now
+  replayState.lastAckSessionId = replayState.sessionId
+  replayState.lastAckVersion = replayState.version
+}
+
 async function readUniverse(db) {
   const snap = await db.doc("market/universe").get()
   const data = snap.exists ? snap.data() : {}
@@ -1378,7 +1531,36 @@ async function readControls(db) {
   }
 }
 
+async function readReplayConfigSnapshot(db, runId) {
+  if (!runId) return null
+  const snap = await db
+    .doc(`replay/controls/runs/${runId}/configSnapshot`)
+    .get()
+    .catch(() => null)
+  if (!snap?.exists) return null
+  return snap.data() || null
+}
+
+async function writeReplayConfigSnapshot(db, runId, payload) {
+  if (!runId) return
+  try {
+    await db.doc(`replay/controls/runs/${runId}/configSnapshot`).set(
+      compactObject({
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        ...payload,
+      }),
+      { merge: true }
+    )
+  } catch (err) {
+    console.error("Replay config snapshot write failed", err.message)
+  }
+}
+
 async function refreshStockSymbolCache(db) {
+  if (isReplayMode()) {
+    console.log("Stock symbol cache skipped (replay mode)")
+    return
+  }
   if (!config.marketDataGatewayUrl) {
     console.log("Stock symbol cache skipped (no market data gateway)")
     return
@@ -1603,7 +1785,7 @@ const STALENESS_THRESHOLDS = {
  */
 function checkPriceStaleness(updatedAt, source) {
   if (!updatedAt) return { isStale: true, ageMs: null }
-  const ageMs = Date.now() - updatedAt.getTime()
+  const ageMs = getEffectiveNowMs() - updatedAt.getTime()
   const isStale = ageMs > STALENESS_THRESHOLDS.prices
   if (isStale) {
     console.warn("mi_stale_prices", {
@@ -1628,7 +1810,8 @@ async function readLivePrices(db) {
     }
   }
   if (!db) return { items: [], updatedAt: null, staleness: { isStale: true, ageMs: null } }
-  const snap = await db.doc("market/prices").get()
+  const pricesPath = resolveMarketDocPath("prices")
+  const snap = await db.doc(pricesPath).get()
   if (!snap.exists) return { items: [], updatedAt: null, staleness: { isStale: true, ageMs: null } }
   const data = snap.data() || {}
   if (config.pipelineEventsEnabled) {
@@ -1640,7 +1823,7 @@ async function readLivePrices(db) {
         nodeIds: ["market_intel", "firestore"],
         status: "end",
         batchId: activeRunId || undefined,
-        inputs: { firestoreDocs: ["market/prices"] },
+        inputs: { firestoreDocs: [pricesPath] },
       })
     )
   }
@@ -1687,7 +1870,7 @@ async function fetchLiveSnapshotMovers(db, options) {
     return { items: [], movers: null, snapshot: null }
   }
 
-  const createdAt = priceSnapshot?.updatedAt || new Date()
+  const createdAt = priceSnapshot?.updatedAt || new Date(getEffectiveNowMs())
   const cutoff = new Date(createdAt.getTime() - config.moverWindowMinutes * 60 * 1000)
   let snapshot = null
   let previous = null
@@ -1944,7 +2127,7 @@ async function fetchStocks(db, preferences = {}) {
 
   const [usResult, tsxResult] = await Promise.all([
     fetchLiveSnapshotMovers(db, {
-      collectionName: "market_snapshots_us",
+      collectionName: resolveSnapshotCollectionName("market_snapshots_us"),
       assetClass: "stock",
       normalizeItem: normalizeSnapshotStock,
       watchlistSet,
@@ -1956,7 +2139,7 @@ async function fetchStocks(db, preferences = {}) {
       source: "stream",
     }),
     fetchLiveSnapshotMovers(db, {
-      collectionName: "market_snapshots_tsx",
+      collectionName: resolveSnapshotCollectionName("market_snapshots_tsx"),
       assetClass: "stock",
       normalizeItem: normalizeSnapshotStock,
       watchlistSet,
@@ -2029,7 +2212,7 @@ async function fetchForex(db, preferences = {}) {
       console.error("Live price snapshot read failed:", error.message)
     }
     const result = await fetchLiveSnapshotMovers(db, {
-      collectionName: "market_snapshots_fx",
+      collectionName: resolveSnapshotCollectionName("market_snapshots_fx"),
       assetClass: "forex",
       normalizeItem: normalizeSnapshotForex,
       watchlistSet: new Set(pairs),
@@ -2950,15 +3133,18 @@ async function loadNewsData(db, candidates, controls, universe, runId, runConfig
   const isTestRun = runConfig?.testMode === true
   const overrides = isTestRun ? runConfig?.overrides?.marketaux : null
 
-  const ref = db.doc("market/news")
+  const ref = db.doc(resolveMarketDocPath("news"))
   const snap = await ref.get()
   const cached = snap.exists ? snap.data() : null
   const lastUpdated = cached?.updatedAt?.toDate?.() || null
   const intervalMs = (controls.newsIntervalMinutes || config.newsIntervalMinutes) * 60 * 1000
-  const shouldFetch = !lastUpdated || Date.now() - lastUpdated.getTime() >= intervalMs
+  const nowMs = getEffectiveNowMs()
+  const shouldFetch = !lastUpdated || nowMs - lastUpdated.getTime() >= intervalMs
 
   if (!shouldFetch && cached?.items && !isTestRun) {
-    console.log(`Using cached news data (${cached.items?.length || 0} items, updated ${Math.round((Date.now() - lastUpdated.getTime()) / 60000)} minutes ago)`)
+    console.log(
+      `Using cached news data (${cached.items?.length || 0} items, updated ${Math.round((nowMs - lastUpdated.getTime()) / 60000)} minutes ago)`
+    )
     return { scoreMap: mapNewsItems(cached.items), updatedAt: cached.updatedAt }
   }
 
@@ -3097,7 +3283,7 @@ function getSignalCreatedAt() {
     return { createdAt: admin.firestore.FieldValue.serverTimestamp(), backfillMinutes: 0 }
   }
   const createdAt = admin.firestore.Timestamp.fromDate(
-    new Date(Date.now() - config.signalBackfillMinutes * 60 * 1000)
+    new Date(getEffectiveNowMs() - config.signalBackfillMinutes * 60 * 1000)
   )
   return { createdAt, backfillMinutes: config.signalBackfillMinutes }
 }
@@ -3196,8 +3382,8 @@ async function emitMarketSignals(db, trendingByHorizon, controls) {
 
 async function fetchBotSignals(db, botWeights = new Map()) {
   const lookbackMs = config.signalLookbackMinutes * 60 * 1000
-  const cutoff = admin.firestore.Timestamp.fromDate(new Date(Date.now() - lookbackMs))
-  const now = Date.now()
+  const now = getEffectiveNowMs()
+  const cutoff = admin.firestore.Timestamp.fromDate(new Date(now - lookbackMs))
   const halfLifeMs = Math.max(config.signalDecayHalfLifeMinutes, 1) * 60 * 1000
   const recentMs = Math.max(config.signalRecentMinutes, 1) * 60 * 1000
 
@@ -6077,11 +6263,35 @@ async function aggregatePipelineHealth(db, marketIntelHealth) {
 
 async function run() {
   const db = initAdmin()
+  const replayControls = await loadReplayControls(db)
+  applyReplayControls(replayControls)
+  await ackReplayControls(db, "run_start")
   redis = await initRedis()
-  const startedAt = new Date()
-  const runId =
-    config.runId || `${startedAt.getTime()}-${Math.random().toString(36).slice(2, 8)}`
+  if (isReplayMode() && !replayState.asOfMs) {
+    throw new Error("Replay mode missing asOf timestamp")
+  }
+  const startedAt = isReplayMode()
+    ? new Date(replayState.asOfMs)
+    : new Date()
+  const runId = isReplayMode()
+    ? replayState.runId
+    : config.runId || `${startedAt.getTime()}-${Math.random().toString(36).slice(2, 8)}`
   activeRunId = runId
+  const replayMode = isReplayMode()
+  const marketDocPaths = {
+    hotTrades: resolveMarketDocPath("hotTrades"),
+    swingOvernight: resolveMarketDocPath("swingOvernight"),
+    prebreakout: resolveMarketDocPath("prebreakout"),
+    trending: resolveMarketDocPath("trending"),
+    popular: resolveMarketDocPath("popular"),
+    actionBoard: resolveMarketDocPath("actionBoard"),
+    candidates: resolveMarketDocPath("candidates"),
+    pricesSnapshot: resolveMarketDocPath("prices_snapshot"),
+    movers: resolveMarketDocPath("movers"),
+  }
+  const swingRunCollection = resolveMarketCollectionPath("market_swing_overnight_runs")
+  const prebreakoutRunCollection = resolveMarketCollectionPath("market_prebreakout_runs")
+  const batchCollectionName = resolveBatchCollectionName()
 
   console.log("mi_run_start", { startedAt: startedAt.toISOString(), runId })
 
@@ -6089,39 +6299,95 @@ async function run() {
     console.error("Stock symbol cache refresh failed", err.message)
   })
 
-  const [universe, controls, runConfig] = await Promise.all([
-    readUniverse(db).catch((err) => {
-      console.error("Universe fetch failed", err.message)
-      return {
-        crypto: { mode: DEFAULT_UNIVERSE_MODE, symbols: [] },
-        stocks: { mode: DEFAULT_UNIVERSE_MODE, symbols: [] },
-        forex: { mode: DEFAULT_UNIVERSE_MODE, pairs: [] },
-      }
-    }),
-    readControls(db).catch((err) => {
-      console.error("Controls fetch failed", err.message)
-      return {
-        enableLLM: true,
-        llmIntervalMinutes: config.llmIntervalMinutes,
-        enableNews: true,
-        newsIntervalMinutes: config.newsIntervalMinutes,
-        swingOvernightEnabled: false,
-        swingOvernightAutoPaperEnabled: false,
-        dipHorizon: "24h",
-        trendHorizon: "15m",
-        trendWeights: { ...DEFAULT_TREND_WEIGHTS },
-        riskProfile: "balanced",
-        assetFocus: ["crypto", "stock", "forex"],
-        primaryAssets: { crypto: [], stocks: [], forex: [] },
-        autoTuneEnabled: config.autoTuneEnabled,
-        autoTuneWithAI: true,
-        autoTuneIntervalHours: config.autoTuneIntervalHours,
-        autoTuneLastAt: null,
-        autoTuneNotes: "",
-      }
-    }),
-    readRunConfig(db, runId),
-  ])
+  let universe = null
+  let controls = null
+  let runConfig = null
+
+  if (isReplayMode()) {
+    const snapshot = await readReplayConfigSnapshot(db, runId)
+    if (snapshot?.universe && snapshot?.controls) {
+      universe = snapshot.universe
+      controls = snapshot.controls
+      runConfig = snapshot.runConfig || null
+    } else {
+      ;[universe, controls, runConfig] = await Promise.all([
+        readUniverse(db).catch((err) => {
+          console.error("Universe fetch failed", err.message)
+          return {
+            crypto: { mode: DEFAULT_UNIVERSE_MODE, symbols: [] },
+            stocks: { mode: DEFAULT_UNIVERSE_MODE, symbols: [] },
+            forex: { mode: DEFAULT_UNIVERSE_MODE, pairs: [] },
+          }
+        }),
+        readControls(db).catch((err) => {
+          console.error("Controls fetch failed", err.message)
+          return {
+            enableLLM: true,
+            llmIntervalMinutes: config.llmIntervalMinutes,
+            enableNews: true,
+            newsIntervalMinutes: config.newsIntervalMinutes,
+            swingOvernightEnabled: false,
+            swingOvernightAutoPaperEnabled: false,
+            prebreakoutEnabled: false,
+            prebreakoutAutoPaperEnabled: false,
+            dipHorizon: "24h",
+            trendHorizon: "15m",
+            trendWeights: { ...DEFAULT_TREND_WEIGHTS },
+            riskProfile: "balanced",
+            assetFocus: ["crypto", "stock", "forex"],
+            primaryAssets: { crypto: [], stocks: [], forex: [] },
+            autoTuneEnabled: config.autoTuneEnabled,
+            autoTuneWithAI: true,
+            autoTuneIntervalHours: config.autoTuneIntervalHours,
+            autoTuneLastAt: null,
+            autoTuneNotes: "",
+          }
+        }),
+        readRunConfig(db, runId),
+      ])
+      await writeReplayConfigSnapshot(db, runId, {
+        universe,
+        controls,
+        runConfig,
+      })
+    }
+  } else {
+    ;[universe, controls, runConfig] = await Promise.all([
+      readUniverse(db).catch((err) => {
+        console.error("Universe fetch failed", err.message)
+        return {
+          crypto: { mode: DEFAULT_UNIVERSE_MODE, symbols: [] },
+          stocks: { mode: DEFAULT_UNIVERSE_MODE, symbols: [] },
+          forex: { mode: DEFAULT_UNIVERSE_MODE, pairs: [] },
+        }
+      }),
+      readControls(db).catch((err) => {
+        console.error("Controls fetch failed", err.message)
+        return {
+          enableLLM: true,
+          llmIntervalMinutes: config.llmIntervalMinutes,
+          enableNews: true,
+          newsIntervalMinutes: config.newsIntervalMinutes,
+          swingOvernightEnabled: false,
+          swingOvernightAutoPaperEnabled: false,
+          prebreakoutEnabled: false,
+          prebreakoutAutoPaperEnabled: false,
+          dipHorizon: "24h",
+          trendHorizon: "15m",
+          trendWeights: { ...DEFAULT_TREND_WEIGHTS },
+          riskProfile: "balanced",
+          assetFocus: ["crypto", "stock", "forex"],
+          primaryAssets: { crypto: [], stocks: [], forex: [] },
+          autoTuneEnabled: config.autoTuneEnabled,
+          autoTuneWithAI: true,
+          autoTuneIntervalHours: config.autoTuneIntervalHours,
+          autoTuneLastAt: null,
+          autoTuneNotes: "",
+        }
+      }),
+      readRunConfig(db, runId),
+    ])
+  }
 
   const testFilter = buildTestFilter(runConfig)
   if (testFilter) {
@@ -6136,7 +6402,7 @@ async function run() {
   }
 
   const llmIntervalMinutes = controls.llmIntervalMinutes
-  const llmEnabled = controls.enableLLM && Boolean(config.openaiKey)
+  const llmEnabled = !replayMode && controls.enableLLM && Boolean(config.openaiKey)
   const primarySets = {
     crypto: new Set(controls.primaryAssets?.crypto ?? []),
     stocks: new Set(controls.primaryAssets?.stocks ?? []),
@@ -6146,10 +6412,11 @@ async function run() {
   const accuracyHorizon = VALID_HORIZONS.has(controls.dipHorizon)
     ? controls.dipHorizon
     : "24h"
-  const shouldWeightSignals = controls.autoTuneEnabled !== false
+  const shouldWeightSignals = !replayMode && controls.autoTuneEnabled !== false
   const shouldLoadBotRegistry =
-    shouldWeightSignals ||
-    (controls.botWeights && Object.keys(controls.botWeights).length > 0)
+    !replayMode &&
+    (shouldWeightSignals ||
+      (controls.botWeights && Object.keys(controls.botWeights).length > 0))
   const [cryptoResult, stockResult, forexResult, accuracySummary, botRegistryResult] =
     await Promise.all([
       safeFetch(() => fetchCrypto(db, universe.crypto)),
@@ -6171,20 +6438,21 @@ async function run() {
   const signalWeight = shouldWeightSignals
     ? computeSignalWeightMultiplier(accuracySummary)
     : 1
-  const botSignals = await fetchBotSignals(db, resolvedBotWeights).catch((err) => {
-    console.error("Bot signals fetch failed", err.message)
-    return new Map()
-  })
-  const autoTuneResult = maybeAutoTuneTrendWeights(
-    controls,
-    accuracySummary,
-    accuracyHorizon
-  )
+  const botSignals = replayMode
+    ? new Map()
+    : await fetchBotSignals(db, resolvedBotWeights).catch((err) => {
+        console.error("Bot signals fetch failed", err.message)
+        return new Map()
+      })
+  const autoTuneResult = replayMode
+    ? null
+    : maybeAutoTuneTrendWeights(controls, accuracySummary, accuracyHorizon)
   let tunedWeights =
     autoTuneResult?.weights || controls.trendWeights || DEFAULT_TREND_WEIGHTS
   let autoTuneNotes = autoTuneResult?.note || ""
   let aiDelta = 0
-  const aiEnabled = Boolean(config.openaiKey) && controls.autoTuneWithAI !== false
+  const aiEnabled =
+    !replayMode && Boolean(config.openaiKey) && controls.autoTuneWithAI !== false
   if (
     controls.autoTuneEnabled &&
     aiEnabled &&
@@ -6277,7 +6545,7 @@ async function run() {
         },
       },
       outputs: {
-        firestoreDocs: ["market/candidates"],
+        firestoreDocs: [marketDocPaths.candidates],
       },
     })
   )
@@ -6307,13 +6575,13 @@ async function run() {
       )
     )
   }
-  const batchDocRef = db.collection(config.batchCollection).doc(runId)
+  const batchDocRef = db.collection(batchCollectionName).doc(runId)
   const batchDoc = compactObject({
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     batchId: runId,
     runId,
-    docPath: "market/candidates",
+    docPath: marketDocPaths.candidates,
     count: candidateBatch.length,
     counts: candidateBatchCounts,
     sources: {
@@ -6464,9 +6732,11 @@ async function run() {
   const trendWeightsDoc = cleanTrendWeightsForDoc(scoreWeightDisplay)
   const popularItems = buildPopularList(hotTradesWithRecommendations, config.popularPerClass)
   const priceSnapshot = buildPriceSnapshot(candidates)
-  await monitorPaperTrading(db, priceSnapshot).catch((err) => {
-    console.error("Paper trading automation failed", err.message)
-  })
+  if (!replayMode) {
+    await monitorPaperTrading(db, priceSnapshot).catch((err) => {
+      console.error("Paper trading automation failed", err.message)
+    })
+  }
 
   const trimmed = hotTradesWithRecommendations.slice(0, config.hotTradesLimit)
   if (config.pipelineEventsEnabled && shouldSample(config.pipelineEventsSampleRate)) {
@@ -6577,12 +6847,12 @@ async function run() {
         windowMinutes: config.moverWindowMinutes,
       },
       outputs: {
-        firestoreDocs: moversDoc ? ["market/movers"] : undefined,
+        firestoreDocs: moversDoc ? [marketDocPaths.movers] : undefined,
       },
     })
   )
 
-  const existing = await db.doc("market/hotTrades").get()
+  const existing = await db.doc(marketDocPaths.hotTrades).get()
 
   let llmMap = null
   let llmUpdatedAt = null
@@ -6645,8 +6915,9 @@ async function run() {
     },
   }
 
-  const autoTuneWrite = autoTuneTriggered
-    ? db.doc("market/controls").set(
+  const autoTuneWrite =
+    autoTuneTriggered && !replayMode
+      ? db.doc("market/controls").set(
       {
         trendWeights: tunedWeights,
         autoTuneEnabled: controls.autoTuneEnabled,
@@ -6660,10 +6931,10 @@ async function run() {
       },
       { merge: true }
     )
-    : Promise.resolve()
+      : Promise.resolve()
 
   await Promise.all([
-    db.doc("market/hotTrades").set(
+    db.doc(marketDocPaths.hotTrades).set(
       {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         items: analyzedItems,
@@ -6690,7 +6961,7 @@ async function run() {
       },
       { merge: true }
     ),
-    db.doc("market/swingOvernight").set(
+    db.doc(marketDocPaths.swingOvernight).set(
       {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         items: swingResult?.items ?? [],
@@ -6698,7 +6969,7 @@ async function run() {
       },
       { merge: true }
     ),
-    db.doc("market/prebreakout").set(
+    db.doc(marketDocPaths.prebreakout).set(
       {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         items: prebreakoutResult?.items ?? [],
@@ -6706,7 +6977,7 @@ async function run() {
       },
       { merge: true }
     ),
-    db.collection("market_swing_overnight_runs").doc(runId).set(
+    db.collection(resolveMarketCollectionPath("market_swing_overnight_runs")).doc(runId).set(
       {
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -6716,7 +6987,7 @@ async function run() {
       },
       { merge: true }
     ),
-    db.collection("market_prebreakout_runs").doc(runId).set(
+    db.collection(resolveMarketCollectionPath("market_prebreakout_runs")).doc(runId).set(
       {
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -6726,7 +6997,7 @@ async function run() {
       },
       { merge: true }
     ),
-    db.doc("market/trending").set(
+    db.doc(marketDocPaths.trending).set(
       {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         horizons: TREND_HORIZONS,
@@ -6744,7 +7015,7 @@ async function run() {
       },
       { merge: true }
     ),
-    db.doc("market/popular").set(
+    db.doc(marketDocPaths.popular).set(
       {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         items: popularItems,
@@ -6755,7 +7026,7 @@ async function run() {
       },
       { merge: true }
     ),
-    db.doc("market/actionBoard").set(
+    db.doc(marketDocPaths.actionBoard).set(
       {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         buys: analyzedActionBoard.buys,
@@ -6784,7 +7055,7 @@ async function run() {
       },
       { merge: true }
     ),
-    db.doc("market/candidates").set(
+    db.doc(marketDocPaths.candidates).set(
       {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         batchId: runId,
@@ -6805,7 +7076,7 @@ async function run() {
       { merge: true }
     ),
     batchDocRef.set(batchDoc, { merge: true }),
-    db.doc("market/prices_snapshot").set(
+    db.doc(marketDocPaths.pricesSnapshot).set(
       {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         items: priceSnapshot,
@@ -6817,7 +7088,7 @@ async function run() {
       { merge: true }
     ),
     moversDoc
-      ? db.doc("market/movers").set(moversDoc, { merge: true })
+      ? db.doc(marketDocPaths.movers).set(moversDoc, { merge: true })
       : Promise.resolve(),
     autoTuneWrite,
   ])
@@ -6836,7 +7107,7 @@ async function run() {
         count: swingResult?.items?.length ?? 0,
       },
       outputs: {
-        firestoreDocs: ["market/swingOvernight", `market_swing_overnight_runs/${runId}`],
+        firestoreDocs: [marketDocPaths.swingOvernight, `${swingRunCollection}/${runId}`],
       },
     })
   )
@@ -6855,7 +7126,7 @@ async function run() {
         count: prebreakoutResult?.items?.length ?? 0,
       },
       outputs: {
-        firestoreDocs: ["market/prebreakout", `market_prebreakout_runs/${runId}`],
+        firestoreDocs: [marketDocPaths.prebreakout, `${prebreakoutRunCollection}/${runId}`],
       },
     })
   )
@@ -6875,7 +7146,7 @@ async function run() {
         popularCount: popularItems.length,
       },
       outputs: {
-        firestoreDocs: ["market/hotTrades", "market/trending", "market/popular"],
+        firestoreDocs: [marketDocPaths.hotTrades, marketDocPaths.trending, marketDocPaths.popular],
       },
     })
   )
@@ -6899,7 +7170,7 @@ async function run() {
         counts: candidateBatchCounts,
       },
       outputs: {
-        firestoreDocs: ["market/candidates", `${config.batchCollection}/${runId}`],
+        firestoreDocs: [marketDocPaths.candidates, `${batchCollectionName}/${runId}`],
       },
     })
   )
@@ -6909,11 +7180,11 @@ async function run() {
       type: "new_batch",
       batchId: runId,
       runId,
-      docPath: "market/candidates",
-      batchPath: `${config.batchCollection}/${runId}`,
+      docPath: marketDocPaths.candidates,
+      batchPath: `${batchCollectionName}/${runId}`,
       count: candidateBatch.length,
       counts: candidateBatchCounts,
-      publishedAt: Date.now(),
+      publishedAt: getEffectiveNowMs(),
     })
   )
 
@@ -6942,11 +7213,12 @@ async function run() {
     analyzedActionBoard.allPicks && analyzedActionBoard.allPicks.length > 0
       ? analyzedActionBoard.allPicks
       : [...analyzedActionBoard.buys, ...analyzedActionBoard.sells]
-  await dispatchSignalRequests(db, dispatchList, controls).catch((err) => {
-    console.error("Signal request dispatch failed", err.message)
-  })
-
-  await emitMarketSignals(db, trendingByHorizon, controls)
+  if (!replayMode) {
+    await dispatchSignalRequests(db, dispatchList, controls).catch((err) => {
+      console.error("Signal request dispatch failed", err.message)
+    })
+    await emitMarketSignals(db, trendingByHorizon, controls)
+  }
 
   // Write pipeline health status for UI visibility
   const endedAt = new Date()
@@ -6992,25 +7264,27 @@ async function run() {
     },
   }
   
-  await db.doc("pipeline/market_intel").set(pipelineHealth, { merge: true }).catch((err) => {
-    console.error("Pipeline health write failed", err.message)
-  })
+  if (!replayMode) {
+    await db.doc("pipeline/market_intel").set(pipelineHealth, { merge: true }).catch((err) => {
+      console.error("Pipeline health write failed", err.message)
+    })
 
-  // Aggregate all service health into unified pipeline status
-  await aggregatePipelineHealth(db, pipelineHealth).catch((err) => {
-    console.error("Pipeline aggregation failed", err.message)
-  })
+    // Aggregate all service health into unified pipeline status
+    await aggregatePipelineHealth(db, pipelineHealth).catch((err) => {
+      console.error("Pipeline aggregation failed", err.message)
+    })
 
-  // Auto paper trading: dispatch high-confidence signals to execution bots
-  await dispatchAutoPaperTrades(db, analyzedActionBoard).catch((err) => {
-    console.error("Auto paper trade dispatch failed", err.message)
-  })
-  await dispatchAutoPaperSwingOvernight(db, swingResult, controls).catch((err) => {
-    console.error("Swing auto paper dispatch failed", err.message)
-  })
-  await dispatchAutoPaperPrebreakout(db, prebreakoutResult, controls).catch((err) => {
-    console.error("Pre-breakout auto paper dispatch failed", err.message)
-  })
+    // Auto paper trading: dispatch high-confidence signals to execution bots
+    await dispatchAutoPaperTrades(db, analyzedActionBoard).catch((err) => {
+      console.error("Auto paper trade dispatch failed", err.message)
+    })
+    await dispatchAutoPaperSwingOvernight(db, swingResult, controls).catch((err) => {
+      console.error("Swing auto paper dispatch failed", err.message)
+    })
+    await dispatchAutoPaperPrebreakout(db, prebreakoutResult, controls).catch((err) => {
+      console.error("Pre-breakout auto paper dispatch failed", err.message)
+    })
+  }
 
   console.log("mi_run_complete", { runId, count: items.length, durationMs })
 

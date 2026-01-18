@@ -64,6 +64,9 @@ const config = {
   pipelineEventsMaxlen: parseInt(process.env.PIPELINE_EVENTS_MAXLEN || "20000", 10),
   pipelineEventsSampleRate: parseFloat(process.env.PIPELINE_EVENTS_SAMPLE_RATE || "0.15"),
   pipelineEventsRunEnv: process.env.PIPELINE_EVENTS_RUN_ENV || "prod",
+  replayAllowed: process.env.REPLAY_ALLOWED !== "false",
+  replayControlsCacheMs: parseInt(process.env.REPLAY_CONTROLS_CACHE_MS || "1500", 10),
+  replayAckIntervalMs: parseInt(process.env.REPLAY_ACK_INTERVAL_MS || "15000", 10),
 }
 
 const caches = {
@@ -82,11 +85,26 @@ const REFERENCE_TOLERANCE_MS = 5 * 60 * 1000
 
 let redis = null
 let redisReady = false
+const replayControlsCache = { value: null, expiresAt: 0 }
+let replayState = {
+  mode: "live",
+  runId: null,
+  sessionId: null,
+  version: null,
+  phase: null,
+  datasetId: null,
+  asOfMs: null,
+  lastAckAt: 0,
+  lastAckSessionId: null,
+  lastAckVersion: null,
+}
 
 function resolvePipelineStream() {
+  if (isReplayMode() && replayState.runId) {
+    return resolveRedisKey("pipeline_events")
+  }
   if (config.pipelineEventsStream) return config.pipelineEventsStream
-  const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
-  return `${prefix}pipeline_events`
+  return resolveRedisKey("pipeline_events")
 }
 
 function createEventId() {
@@ -101,11 +119,33 @@ function shouldSample(rate) {
   return Math.random() < rate
 }
 
+function isReplayMode() {
+  return replayState?.mode === "replay"
+}
+
+function getEffectiveNowMs() {
+  if (isReplayMode() && Number.isFinite(replayState.asOfMs)) {
+    return replayState.asOfMs
+  }
+  return Date.now()
+}
+
+function getPipelineRunEnv() {
+  return isReplayMode() ? "replay" : config.pipelineEventsRunEnv
+}
+
+function getActiveRunId() {
+  return replayState?.runId || config.runId || undefined
+}
+
 function buildPipelineEvent(payload) {
+  const runId = getActiveRunId()
   return {
     ts: new Date().toISOString(),
     eventId: createEventId(),
-    runEnv: config.pipelineEventsRunEnv,
+    runEnv: getPipelineRunEnv(),
+    runId,
+    sessionId: replayState?.sessionId || undefined,
     service: "signal-evaluator",
     severity: "info",
     ...payload,
@@ -153,9 +193,33 @@ function hashParams(value) {
   }
 }
 
-function resolveRedisKey(suffix) {
+function resolveRedisKey(suffix, replay = replayState) {
+  if (replay?.mode === "replay" && replay.runId) {
+    return `replay:${replay.runId}:${suffix}`
+  }
   const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
   return `${prefix}${suffix}`
+}
+
+function resolveMarketDocPath(docId) {
+  if (isReplayMode() && replayState.runId) {
+    return `replay/controls/runs/${replayState.runId}/market/${docId}`
+  }
+  return `market/${docId}`
+}
+
+function resolveAnalyticsDocPath(docId) {
+  if (isReplayMode() && replayState.runId) {
+    return `replay/controls/runs/${replayState.runId}/analytics/${docId}`
+  }
+  return `analytics/${docId}`
+}
+
+function resolveBotAnalyticsDocPath(botId, docId) {
+  if (isReplayMode() && replayState.runId) {
+    return `replay/controls/runs/${replayState.runId}/bots/${botId}/analytics/${docId}`
+  }
+  return `bots/${botId}/analytics/${docId}`
 }
 
 async function initRedis() {
@@ -200,7 +264,7 @@ async function loadRedisPriceSnapshot() {
         edgeKey: "redis->signal_evaluator",
         nodeIds: ["redis", "signal_evaluator"],
         status: "end",
-        batchId: config.runId || undefined,
+        batchId: getActiveRunId(),
         meta: {
           key,
           hit: Boolean(payload),
@@ -316,6 +380,84 @@ function initAdmin() {
   return admin.firestore()
 }
 
+async function loadReplayControls(db) {
+  if (!config.replayAllowed) return null
+  if (replayControlsCache.expiresAt > Date.now() && replayControlsCache.value) {
+    return replayControlsCache.value
+  }
+  try {
+    const snap = await db.doc("replay/controls").get()
+    const data = snap.exists ? snap.data() : null
+    replayControlsCache.value = data
+    replayControlsCache.expiresAt = Date.now() + config.replayControlsCacheMs
+    return data
+  } catch (err) {
+    console.error("Replay controls read failed", err.message)
+    return null
+  }
+}
+
+function parseReplayTimestamp(value) {
+  if (!value) return null
+  if (value instanceof Date) return value
+  if (typeof value?.toDate === "function") return value.toDate()
+  const parsed = new Date(value)
+  return Number.isFinite(parsed.getTime()) ? parsed : null
+}
+
+function applyReplayControls(controls) {
+  const desired =
+    controls?.desiredMode === "replay" && config.replayAllowed ? "replay" : "live"
+  const next = {
+    mode: desired,
+    runId: controls?.activeRunId || null,
+    sessionId: controls?.sessionId || null,
+    version: typeof controls?.version === "number" ? controls.version : null,
+    phase: controls?.phase || null,
+    datasetId: controls?.datasetId || null,
+    asOfMs: parseReplayTimestamp(controls?.asOf)?.getTime?.() ?? null,
+    lastAckAt: replayState.lastAckAt || 0,
+    lastAckSessionId: replayState.lastAckSessionId || null,
+    lastAckVersion: replayState.lastAckVersion || null,
+  }
+
+  if (next.mode === "replay" && (!next.runId || !next.sessionId || next.version === null)) {
+    throw new Error("Replay mode missing activeRunId/sessionId/version")
+  }
+  replayState = next
+}
+
+async function ackReplayControls(db, note) {
+  if (!replayState.sessionId || replayState.version === null) return
+  const now = Date.now()
+  if (
+    now - replayState.lastAckAt < config.replayAckIntervalMs &&
+    replayState.lastAckSessionId === replayState.sessionId &&
+    replayState.lastAckVersion === replayState.version
+  ) {
+    return
+  }
+  await db
+    .doc("replay/controls/consumers/signal-evaluator")
+    .set(
+      {
+        service: "signal-evaluator",
+        effectiveMode: replayState.mode,
+        sessionId: replayState.sessionId,
+        seenControlsVersion: replayState.version,
+        activeRunId: replayState.runId,
+        phase: replayState.phase || undefined,
+        datasetId: replayState.datasetId || undefined,
+        note: note || undefined,
+        heartbeatAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+  replayState.lastAckAt = now
+  replayState.lastAckSessionId = replayState.sessionId
+  replayState.lastAckVersion = replayState.version
+}
+
 async function fetchJson(url) {
   const res = await fetch(url)
   if (!res.ok) {
@@ -358,7 +500,7 @@ async function fetchGatewayJson(path, params) {
         edgeKey: "signal_evaluator->market_data_gateway",
         nodeIds: ["signal_evaluator", "market_data_gateway"],
         status: "start",
-        batchId: config.runId || undefined,
+        batchId: getActiveRunId(),
         meta: {
           endpointName,
           paramsHash,
@@ -377,7 +519,7 @@ async function fetchGatewayJson(path, params) {
           nodeIds: ["signal_evaluator", "market_data_gateway"],
           status: "end",
           durationMs: Date.now() - startedAt,
-          batchId: config.runId || undefined,
+          batchId: getActiveRunId(),
           meta: {
             endpointName,
             paramsHash,
@@ -406,7 +548,7 @@ async function fetchGatewayJson(path, params) {
           nodeIds: ["signal_evaluator", "market_data_gateway"],
           status: "error",
           durationMs: Date.now() - startedAt,
-          batchId: config.runId || undefined,
+          batchId: getActiveRunId(),
           severity: "error",
           meta: {
             endpointName,
@@ -457,12 +599,19 @@ function getFmpCache(assetClass, interval) {
   return interval === "15min" ? caches.fmpStocksIntraday : caches.fmpStocksDaily
 }
 
+function getCacheKeyPrefix() {
+  if (isReplayMode() && replayState.runId) {
+    return `replay:${replayState.runId}:${replayState.sessionId || "session"}`
+  }
+  return "live"
+}
+
 async function fetchFmpSeries(symbol, assetClass, interval) {
   if (!config.marketDataGatewayUrl) return null
   const normalized = normalizeFmpSymbol(symbol, assetClass)
   if (!normalized) return null
   const cache = getFmpCache(assetClass, interval)
-  const key = `${normalized}|${interval}`
+  const key = `${getCacheKeyPrefix()}:${normalized}|${interval}`
   if (cache.has(key)) return cache.get(key)
 
   try {
@@ -554,24 +703,25 @@ async function loadPriceDocument(db, docPath) {
 }
 
 async function getMarketPriceSnapshot(db) {
-  if (marketPriceCache && Date.now() - marketPriceCacheAt < MARKET_PRICE_CACHE_MS) {
+  const nowMs = getEffectiveNowMs()
+  if (marketPriceCache && nowMs - marketPriceCacheAt < MARKET_PRICE_CACHE_MS) {
     return marketPriceCache
   }
 
   try {
     const redisSnapshot = await loadRedisPriceSnapshot()
-    const live = redisSnapshot || (await loadPriceDocument(db, "market/prices"))
+    const live = redisSnapshot || (await loadPriceDocument(db, resolveMarketDocPath("prices")))
     const snapshot =
       live && live.map && live.map.size > 0
         ? live
-        : await loadPriceDocument(db, "market/prices_snapshot")
+        : await loadPriceDocument(db, resolveMarketDocPath("prices_snapshot"))
 
     marketPriceCache = snapshot || null
-    marketPriceCacheAt = Date.now()
+    marketPriceCacheAt = nowMs
     return marketPriceCache
   } catch (err) {
     marketPriceCache = null
-    marketPriceCacheAt = Date.now()
+    marketPriceCacheAt = nowMs
     return null
   }
 }
@@ -592,7 +742,7 @@ async function evaluateSignals(db) {
       edgeKey: "firestore->signal_evaluator",
       nodeIds: ["signal_evaluator", "firestore"],
       status: "start",
-      batchId: config.runId || undefined,
+      batchId: getActiveRunId(),
       meta: {
         lookbackHours: config.evalLookbackHours,
         maxSignals: config.evalMaxSignals,
@@ -602,7 +752,30 @@ async function evaluateSignals(db) {
       },
     })
   )
-  const nowMs = Date.now()
+  if (isReplayMode()) {
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "signal_eval",
+        eventType: "fs_read",
+        edgeKey: "firestore->signal_evaluator",
+        nodeIds: ["signal_evaluator", "firestore"],
+        status: "end",
+        batchId: replayState.runId || undefined,
+        durationMs: Date.now() - evalStartedAt,
+        meta: {
+          updated: 0,
+          skipped: 0,
+          signalsScanned: 0,
+          replay: true,
+        },
+        inputs: {
+          firestoreDocs: [],
+        },
+      })
+    )
+    return { updated: 0, skipped: 0 }
+  }
+  const nowMs = getEffectiveNowMs()
   const cutoff = new Date(nowMs - config.evalLookbackHours * 60 * 60 * 1000)
   const minHorizonMinutes = Math.min(...Object.values(HORIZONS))
   const eligibleBefore = new Date(nowMs - minHorizonMinutes * 60 * 1000)
@@ -839,7 +1012,7 @@ async function evaluateSignals(db) {
       edgeKey: "firestore->signal_evaluator",
       nodeIds: ["signal_evaluator", "firestore"],
       status: "end",
-      batchId: config.runId || undefined,
+      batchId: getActiveRunId(),
       durationMs: Date.now() - evalStartedAt,
       meta: {
         updated: processed.updated,
@@ -869,6 +1042,46 @@ function ensureNestedBucket(container, key, horizonKey) {
 
 async function buildPerformanceReport(db) {
   const reportStartedAt = Date.now()
+  if (isReplayMode()) {
+    const emptySummary = {
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      horizons: Object.keys(HORIZONS),
+      overall: {},
+      topBots: {},
+      byAsset: {},
+      topSymbols: {},
+      bottomSymbols: {},
+      meta: {
+        lookbackDays: config.aggLookbackDays,
+        signalsScanned: 0,
+        minBotSignals: config.minBotSignals,
+        minSymbolSignals: config.minSymbolSignals,
+        runId: replayState.runId || null,
+        replay: true,
+      },
+    }
+    await db.doc(resolveAnalyticsDocPath("signalPerformance")).set(emptySummary, { merge: true })
+    await publishPipelineEvent(
+      buildPipelineEvent({
+        stationId: "signal_eval",
+        eventType: "fs_write",
+        edgeKey: "signal_evaluator->firestore",
+        nodeIds: ["signal_evaluator", "firestore"],
+        status: "end",
+        batchId: replayState.runId || undefined,
+        durationMs: Date.now() - reportStartedAt,
+        meta: {
+          signalsScanned: 0,
+          lookbackDays: config.aggLookbackDays,
+          replay: true,
+        },
+        outputs: {
+          firestoreDocs: [resolveAnalyticsDocPath("signalPerformance")],
+        },
+      })
+    )
+    return
+  }
   const cutoff = new Date(Date.now() - config.aggLookbackDays * 24 * 60 * 60 * 1000)
   await publishPipelineEvent(
     buildPipelineEvent({
@@ -877,7 +1090,7 @@ async function buildPerformanceReport(db) {
       edgeKey: "firestore->signal_evaluator",
       nodeIds: ["signal_evaluator", "firestore"],
       status: "start",
-      batchId: config.runId || undefined,
+      batchId: getActiveRunId(),
       meta: {
         lookbackDays: config.aggLookbackDays,
         maxSignals: config.aggMaxSignals,
@@ -1119,13 +1332,13 @@ async function buildPerformanceReport(db) {
         meta: {
           lookbackDays: config.aggLookbackDays,
           minSymbolSignals: config.minSymbolSignals,
-          runId: config.runId || null,
+          runId: getActiveRunId() || null,
         },
       },
     }
   })
 
-  await db.doc("analytics/signalPerformance").set(
+  await db.doc(resolveAnalyticsDocPath("signalPerformance")).set(
     {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       horizons: Object.keys(HORIZONS),
@@ -1139,7 +1352,7 @@ async function buildPerformanceReport(db) {
         signalsScanned: snap.size,
         minBotSignals: config.minBotSignals,
         minSymbolSignals: config.minSymbolSignals,
-        runId: config.runId || null,
+        runId: getActiveRunId() || null,
       },
     },
     { merge: true }
@@ -1147,10 +1360,7 @@ async function buildPerformanceReport(db) {
 
   await Promise.all(
     botDocuments.map(({ botId, data }) =>
-      db.collection("bots").doc(botId).collection("analytics").doc("signalPerformance").set(
-        data,
-        { merge: true }
-      )
+      db.doc(resolveBotAnalyticsDocPath(botId, "signalPerformance")).set(data, { merge: true })
     )
   )
 
@@ -1161,14 +1371,14 @@ async function buildPerformanceReport(db) {
       edgeKey: "signal_evaluator->firestore",
       nodeIds: ["signal_evaluator", "firestore"],
       status: "end",
-      batchId: config.runId || undefined,
+      batchId: getActiveRunId(),
       durationMs: Date.now() - reportStartedAt,
       meta: {
         signalsScanned: snap.size,
         lookbackDays: config.aggLookbackDays,
       },
       outputs: {
-        firestoreDocs: ["analytics/signalPerformance", "bots/*/analytics/signalPerformance"],
+        firestoreDocs: [resolveAnalyticsDocPath("signalPerformance"), "bots/*/analytics/signalPerformance"],
       },
     })
   )
@@ -1180,14 +1390,14 @@ async function buildPerformanceReport(db) {
       edgeKey: "signal_evaluator->signal_performance",
       nodeIds: ["signal_evaluator", "signal_performance", "firestore"],
       status: "end",
-      batchId: config.runId || undefined,
+      batchId: getActiveRunId(),
       durationMs: Date.now() - reportStartedAt,
       meta: {
         signalsScanned: snap.size,
         lookbackDays: config.aggLookbackDays,
       },
       outputs: {
-        firestoreDocs: ["analytics/signalPerformance", "bots/*/analytics/signalPerformance"],
+        firestoreDocs: [resolveAnalyticsDocPath("signalPerformance"), "bots/*/analytics/signalPerformance"],
       },
     })
   )
@@ -1195,14 +1405,21 @@ async function buildPerformanceReport(db) {
 
 async function run() {
   const db = initAdmin()
+  const replayControls = await loadReplayControls(db)
+  applyReplayControls(replayControls)
+  await ackReplayControls(db, "run_start")
   redis = await initRedis()
-  console.log("se_run_start", { runId: config.runId || null })
+  if (isReplayMode() && !replayState.asOfMs) {
+    throw new Error("Replay mode missing asOf timestamp")
+  }
+  const runId = getActiveRunId() || null
+  console.log("se_run_start", { runId })
 
   const evaluation = await evaluateSignals(db)
-  console.log("se_eval_updated", { runId: config.runId || null, ...evaluation })
+  console.log("se_eval_updated", { runId, ...evaluation })
 
   await buildPerformanceReport(db)
-  console.log("se_performance_updated", { runId: config.runId || null })
+  console.log("se_performance_updated", { runId })
 
   if (redis) {
     await redis.quit().catch(() => {})

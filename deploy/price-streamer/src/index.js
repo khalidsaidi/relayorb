@@ -32,6 +32,10 @@ const config = {
   pipelineEventsMaxlen: parseInt(process.env.PIPELINE_EVENTS_MAXLEN || "20000", 10),
   pipelineEventsSampleRate: parseFloat(process.env.PIPELINE_EVENTS_SAMPLE_RATE || "0.2"),
   pipelineEventsRunEnv: process.env.PIPELINE_EVENTS_RUN_ENV || "prod",
+  replayAllowed: process.env.REPLAY_ALLOWED !== "false",
+  replayControlsCacheMs: parseInt(process.env.REPLAY_CONTROLS_CACHE_MS || "1500", 10),
+  replayAckIntervalMs: parseInt(process.env.REPLAY_ACK_INTERVAL_MS || "15000", 10),
+  replayTickMs: parseInt(process.env.REPLAY_TICK_MS || "1000", 10),
   // Rate limiting: 300 calls/minute on FMP plan
   rateLimitPerMinute: parseInt(process.env.FMP_RATE_LIMIT_PER_MINUTE || "300", 10),
   rateLimitWarningPct: parseFloat(process.env.FMP_RATE_LIMIT_WARNING_PCT || "0.83"),
@@ -197,6 +201,7 @@ function trackApiCall() {
 }
 
 function canMakeApiCall() {
+  if (isReplayMode()) return true
   resetRateLimitIfNeeded()
   return rateLimit.callsThisMinute < config.rateLimitPerMinute
 }
@@ -220,11 +225,14 @@ if (!admin.apps.length) {
 const db = admin.firestore()
 const runId =
   config.runId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+const replayControlsCache = { value: null, expiresAt: 0 }
 
 function resolvePipelineStream() {
+  if (state?.replay?.mode === "replay" && state.replay.runId) {
+    return resolveRedisKey("pipeline_events", state.replay)
+  }
   if (config.pipelineEventsStream) return config.pipelineEventsStream
-  const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
-  return `${prefix}pipeline_events`
+  return resolveRedisKey("pipeline_events", state.replay)
 }
 
 function createEventId() {
@@ -268,13 +276,231 @@ async function publishPipelineEvent(event) {
 }
 
 function buildPipelineEvent(payload) {
+  const runEnv = state?.replay?.mode === "replay" ? "replay" : config.pipelineEventsRunEnv
+  const runId = state?.replay?.runId || config.runId || undefined
   return {
     ts: new Date().toISOString(),
     eventId: createEventId(),
-    runEnv: config.pipelineEventsRunEnv,
+    runEnv,
+    runId,
+    sessionId: state?.replay?.sessionId || undefined,
     service: "price-streamer",
     severity: "info",
     ...payload,
+  }
+}
+
+function isReplayMode() {
+  return state?.replay?.mode === "replay"
+}
+
+function getEffectiveNow() {
+  if (isReplayMode() && Number.isFinite(state.replay.asOfMs)) {
+    return state.replay.asOfMs
+  }
+  return Date.now()
+}
+
+function parseReplayAsOf(value) {
+  if (!value) return null
+  if (typeof value.toDate === "function") return value.toDate()
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+async function readReplayControls() {
+  if (!config.replayAllowed) return null
+  if (replayControlsCache.expiresAt > Date.now() && replayControlsCache.value) {
+    return replayControlsCache.value
+  }
+  try {
+    const snap = await db.doc("replay/controls").get()
+    const data = snap.exists ? snap.data() : null
+    replayControlsCache.value = data
+    replayControlsCache.expiresAt = Date.now() + config.replayControlsCacheMs
+    return data
+  } catch (err) {
+    console.error("Replay controls read failed:", err.message)
+    return null
+  }
+}
+
+async function clearReplayRedis(runId) {
+  if (!state.redis || !state.redisReady || !runId) return
+  try {
+    const pattern = `replay:${runId}:prices:snapshot:*`
+    const keys = []
+    for await (const key of state.redis.scanIterator({ MATCH: pattern, COUNT: 100 })) {
+      keys.push(key)
+    }
+    if (keys.length) {
+      const multi = state.redis.multi()
+      keys.forEach((key) => multi.del(key))
+      await multi.exec()
+    }
+    await state.redis.del(`replay:${runId}:prices:latest`)
+    await state.redis.del(`replay:${runId}:prices:snapshots`)
+  } catch (err) {
+    console.error("Replay redis clear failed:", err.message)
+  }
+}
+
+async function refreshReplayState() {
+  const controls = await readReplayControls()
+  const desiredMode =
+    controls?.desiredMode === "replay" && config.replayAllowed ? "replay" : "live"
+  const next = {
+    mode: desiredMode,
+    desiredMode,
+    runId: controls?.activeRunId || null,
+    datasetId: controls?.datasetId || null,
+    sessionId: controls?.sessionId || null,
+    version: controls?.version ?? null,
+    phase: controls?.phase || null,
+    speedScript: Array.isArray(controls?.speedScript) ? controls.speedScript : [],
+    asOfMs: null,
+    lastControlsAt: Date.now(),
+    lastAckAt: state.replay.lastAckAt,
+    lastAckSessionId: state.replay.lastAckSessionId,
+    lastAckVersion: state.replay.lastAckVersion,
+    lastTickAt: state.replay.lastTickAt,
+  }
+
+  const asOf = parseReplayAsOf(controls?.asOf)
+  if (asOf) {
+    next.asOfMs = asOf.getTime()
+  }
+
+  const versionChanged =
+    desiredMode === "replay" &&
+    state.replay.version !== null &&
+    next.version !== null &&
+    state.replay.version !== next.version
+
+  const modeChanged = state.replay.mode !== desiredMode
+  state.replay = next
+
+  if (modeChanged) {
+    state.priceCache.clear()
+    state.priceHistory.clear()
+    state.dirty = false
+    state.replay.lastTickAt = null
+  }
+
+  if ((modeChanged || versionChanged) && state.replay.mode === "replay" && state.replay.runId) {
+    await clearReplayRedis(state.replay.runId)
+  }
+}
+
+async function maybeAckReplayState() {
+  if (!state.replay || !state.replay.sessionId || !state.replay.version) return
+  const now = Date.now()
+  if (
+    now - state.replay.lastAckAt < config.replayAckIntervalMs &&
+    state.replay.lastAckSessionId === state.replay.sessionId &&
+    state.replay.lastAckVersion === state.replay.version
+  ) {
+    return
+  }
+  try {
+    await db.doc("replay/controls/consumers/price-streamer").set(
+      {
+        serviceName: "price-streamer",
+        effectiveMode: state.replay.mode,
+        sessionId: state.replay.sessionId,
+        seenControlsVersion: state.replay.version,
+        activeRunId: state.replay.runId,
+        datasetId: state.replay.datasetId,
+        phase: state.replay.phase,
+        lastHeartbeat: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+    state.replay.lastAckAt = now
+    state.replay.lastAckSessionId = state.replay.sessionId
+    state.replay.lastAckVersion = state.replay.version
+  } catch (err) {
+    console.error("Replay ACK failed:", err.message)
+  }
+}
+
+function resolveReplaySegment(speedScript, asOfMs) {
+  if (!Array.isArray(speedScript) || speedScript.length === 0) {
+    return { speed: 1 }
+  }
+  for (const segment of speedScript) {
+    if (!segment || typeof segment !== "object") continue
+    if (segment.type === "jump" && Number.isFinite(segment.toTs)) {
+      if (asOfMs < segment.toTs) {
+        return { jumpTo: segment.toTs }
+      }
+      continue
+    }
+    const startTs = Number(segment.startTs)
+    const endTs = Number(segment.endTs)
+    const speed = Number(segment.speed)
+    if (Number.isFinite(startTs) && asOfMs < startTs) {
+      return { jumpTo: startTs }
+    }
+    if (
+      Number.isFinite(startTs) &&
+      Number.isFinite(endTs) &&
+      asOfMs >= startTs &&
+      asOfMs <= endTs
+    ) {
+      return { speed: Number.isFinite(speed) ? speed : 1, endTs }
+    }
+    if (!Number.isFinite(startTs) && !Number.isFinite(endTs) && Number.isFinite(speed)) {
+      return { speed }
+    }
+  }
+  return { speed: 1 }
+}
+
+async function tickReplayClock() {
+  if (!isReplayMode()) return
+  if (state.replay.phase !== "running") return
+  if (!state.replay.runId || !state.replay.sessionId || !state.replay.version) return
+  if (!Number.isFinite(state.replay.asOfMs)) return
+
+  const now = Date.now()
+  if (!state.replay.lastTickAt) {
+    state.replay.lastTickAt = now
+    return
+  }
+  const deltaReal = now - state.replay.lastTickAt
+  const segment = resolveReplaySegment(state.replay.speedScript, state.replay.asOfMs)
+  let nextAsOf = state.replay.asOfMs
+  if (segment.jumpTo && Number.isFinite(segment.jumpTo)) {
+    nextAsOf = segment.jumpTo
+  } else {
+    const speed = Number.isFinite(segment.speed) ? segment.speed : 1
+    nextAsOf = state.replay.asOfMs + deltaReal * speed
+    if (segment.endTs && nextAsOf > segment.endTs) {
+      nextAsOf = segment.endTs
+    }
+  }
+
+  state.replay.lastTickAt = now
+  if (nextAsOf === state.replay.asOfMs) return
+
+  try {
+    const nextDate = new Date(nextAsOf)
+    await db.doc("replay/controls").set(
+      { asOf: admin.firestore.Timestamp.fromDate(nextDate) },
+      { merge: true }
+    )
+    state.replay.asOfMs = nextAsOf
+    if (replayControlsCache.value) {
+      replayControlsCache.value = {
+        ...replayControlsCache.value,
+        asOf: admin.firestore.Timestamp.fromDate(nextDate),
+      }
+      replayControlsCache.expiresAt = Date.now() + config.replayControlsCacheMs
+    }
+  } catch (err) {
+    console.error("Replay asOf update failed:", err.message)
   }
 }
 
@@ -308,6 +534,22 @@ const state = {
     stock: 0,
     forex: 0,
   },
+  replay: {
+    mode: "live",
+    desiredMode: "live",
+    runId: null,
+    datasetId: null,
+    sessionId: null,
+    version: null,
+    phase: null,
+    asOfMs: null,
+    speedScript: [],
+    lastControlsAt: 0,
+    lastAckAt: 0,
+    lastAckSessionId: null,
+    lastAckVersion: null,
+    lastTickAt: null,
+  },
 }
 
 // Staleness thresholds (in ms)
@@ -325,7 +567,10 @@ function parseNumber(value) {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
-function resolveRedisKey(suffix) {
+function resolveRedisKey(suffix, replayState = state.replay) {
+  if (replayState?.mode === "replay" && replayState.runId) {
+    return `replay:${replayState.runId}:${suffix}`
+  }
   const prefix = config.redisPrefix ? `${config.redisPrefix}:` : ""
   return `${prefix}${suffix}`
 }
@@ -593,6 +838,29 @@ async function fetchGatewayJson(path, params) {
 
 async function fetchFmpQuote(symbol, assetClass = "stock") {
   if (!symbol) return null
+
+  if (isReplayMode()) {
+    if (!config.marketDataGatewayUrl) return null
+    try {
+      const data = await fetchGatewayJson("/v1/fmp/quote", {
+        symbol,
+        assetClass,
+      })
+      if (!data || typeof data?.price !== "number") return null
+      return {
+        symbol,
+        price: data.price,
+        bid: parseNumber(data.bid),
+        ask: parseNumber(data.ask),
+        volume: parseNumber(data.volume),
+        change24h: parseNumber(data.changePercent),
+        source: data.source || "replay",
+      }
+    } catch (err) {
+      console.error(`Replay quote failed for ${symbol}:`, err.message)
+      return null
+    }
+  }
   
   // Check rate limit before making call
   if (!canMakeApiCall()) {
@@ -713,6 +981,7 @@ async function fetchQuotesParallel(symbols, assetClass) {
  * @returns {Promise<{symbol: string, price: number, bid: number, ask: number, source: string}|null>}
  */
 async function fetchExtendedHoursQuote(symbol) {
+  if (isReplayMode()) return null
   if (!symbol || !config.fmpKey) return null
   if (!canMakeApiCall()) return null
   
@@ -760,7 +1029,8 @@ async function fetchStockQuotesWithExtendedHours(symbols) {
   if (!Array.isArray(symbols) || symbols.length === 0) return []
   
   const marketStatus = getMarketStatus("stock")
-  const useExtendedHours = marketStatus.status === "pre" || marketStatus.status === "after"
+  const useExtendedHours =
+    !isReplayMode() && (marketStatus.status === "pre" || marketStatus.status === "after")
   
   const concurrency = config.quoteConcurrency
   const delayMs = config.quoteBatchDelayMs
@@ -806,6 +1076,7 @@ async function fetchStockQuotesWithExtendedHours(symbols) {
  * Returns top 10 from each category for a total of up to 30 discovery symbols
  */
 async function fetchStockMovers() {
+  if (isReplayMode()) return []
   const marketStatus = getMarketStatus("stock")
   
   // Only fetch during regular market hours - these endpoints return empty otherwise
@@ -941,15 +1212,15 @@ function buildWatchHash(sets) {
   return JSON.stringify(payload)
 }
 
-function recordPriceHistory(key, price) {
+function recordPriceHistory(key, price, now) {
   const history = state.priceHistory.get(key) || []
-  const now = Date.now()
+  const timestamp = Number.isFinite(now) ? now : Date.now()
   const last = history[history.length - 1]
-  const shouldAppend = !last || last.price !== price || now - last.t > 15000
+  const shouldAppend = !last || last.price !== price || timestamp - last.t > 15000
   if (shouldAppend) {
-    history.push({ t: now, price })
+    history.push({ t: timestamp, price })
   }
-  const cutoff = now - config.historyMinutes * 60 * 1000
+  const cutoff = timestamp - config.historyMinutes * 60 * 1000
   let dropIndex = 0
   while (dropIndex < history.length && history[dropIndex].t < cutoff) {
     dropIndex += 1
@@ -1000,6 +1271,7 @@ function computeRangePct(history, windowMs, now, priceNow) {
 
 function updatePrice(assetClass, symbol, price, source, extra = {}) {
   if (!assetClass || !symbol || typeof price !== "number") return
+  const now = getEffectiveNow()
   const key = `${assetClass}:${symbol}`
   const existing = state.priceCache.get(key) || {}
   const next = {
@@ -1008,14 +1280,14 @@ function updatePrice(assetClass, symbol, price, source, extra = {}) {
     symbol,
     price: Number(price),
     source,
-    updatedAt: Date.now(),
+    updatedAt: now,
   }
   if (typeof extra.bid === "number") next.bid = extra.bid
   if (typeof extra.ask === "number") next.ask = extra.ask
   if (typeof extra.volume === "number") next.volume = extra.volume
   if (typeof extra.change24h === "number") next.change24h = extra.change24h
 
-  const historyUpdated = recordPriceHistory(key, next.price)
+  const historyUpdated = recordPriceHistory(key, next.price, now)
   const changed =
     !existing ||
     existing.price !== next.price ||
@@ -1094,6 +1366,15 @@ function buildHealthPayload() {
       enabled: Boolean(config.redisUrl),
       connected: Boolean(state.redisReady),
     },
+    replay: {
+      mode: state.replay.mode,
+      runId: state.replay.runId,
+      sessionId: state.replay.sessionId,
+      phase: state.replay.phase,
+      asOf: Number.isFinite(state.replay.asOfMs)
+        ? new Date(state.replay.asOfMs).toISOString()
+        : null,
+    },
   }
 }
 
@@ -1102,10 +1383,10 @@ function shouldWriteRedisSnapshot(now) {
   return now - state.lastRedisSnapshotAt >= config.redisSnapshotMs
 }
 
-async function writeRedisPrices(items, meta) {
+async function writeRedisPrices(items, meta, replayState = state.replay) {
   if (!state.redis || !state.redisReady) return
-  const now = Date.now()
-  const latestKey = resolveRedisKey("prices:latest")
+  const now = getEffectiveNow()
+  const latestKey = resolveRedisKey("prices:latest", replayState)
   const payload = JSON.stringify({
     updatedAt: now,
     items,
@@ -1115,8 +1396,8 @@ async function writeRedisPrices(items, meta) {
   multi.set(latestKey, payload, { EX: Math.max(config.redisLatestTtlSeconds, 10) })
 
   if (shouldWriteRedisSnapshot(now)) {
-    const snapshotKey = resolveRedisKey(`prices:snapshot:${now}`)
-    const indexKey = resolveRedisKey("prices:snapshots")
+    const snapshotKey = resolveRedisKey(`prices:snapshot:${now}`, replayState)
+    const indexKey = resolveRedisKey("prices:snapshots", replayState)
     const ttlSeconds = Math.max(config.redisSnapshotTtlSeconds, 300)
     const cutoff = now - ttlSeconds * 1000
     multi.set(snapshotKey, payload, { EX: ttlSeconds })
@@ -1158,13 +1439,23 @@ function startServer() {
 
 async function refreshWatchlist() {
   try {
+    const isReplay = isReplayMode() && state.replay.runId
+    const hotTradesPath = isReplay
+      ? `replay/controls/runs/${state.replay.runId}/market/hotTrades`
+      : "market/hotTrades"
+    const actionBoardPath = isReplay
+      ? `replay/controls/runs/${state.replay.runId}/market/actionBoard`
+      : "market/actionBoard"
+    const streamSymbolsPath = isReplay
+      ? `replay/controls/runs/${state.replay.runId}/market/streamSymbols`
+      : "market/streamSymbols"
     const [universeSnap, hotTradesSnap, actionBoardSnap, positionsSnap, streamSnap] =
       await Promise.all([
       db.doc("market/universe").get(),
-      db.doc("market/hotTrades").get(),
-      db.doc("market/actionBoard").get(),
-      db.collectionGroup("positions").get(),
-      db.doc("market/streamSymbols").get(),
+      db.doc(hotTradesPath).get(),
+      db.doc(actionBoardPath).get(),
+      isReplay ? Promise.resolve({ empty: true, docs: [] }) : db.collectionGroup("positions").get(),
+      db.doc(streamSymbolsPath).get(),
     ])
     const universe = universeSnap.exists ? universeSnap.data() : {}
     const hotTrades = hotTradesSnap.exists ? hotTradesSnap.data()?.items || [] : []
@@ -1307,7 +1598,7 @@ async function refreshWatchlist() {
 
     // Stock Discovery: Add gainers/losers/actives during market hours
     // This runs only when US stock market is open
-    if (config.fmpKey) {
+    if (config.fmpKey && !isReplayMode()) {
       const discoveredStocks = await fetchStockMovers()
       if (discoveredStocks.length > 0) {
         addSymbols(discoveredStocks, "stock")
@@ -1352,6 +1643,7 @@ async function refreshWatchlist() {
 
 
 async function pollCryptoPrices() {
+  if (isReplayMode()) return
   const symbols = Array.from(state.watchlist.crypto)
   if ((!config.fmpKey && !config.marketDataGatewayUrl) || symbols.length === 0) return
   
@@ -1397,7 +1689,7 @@ async function pollCryptoPrices() {
       errors: errorCount,
     })
     
-    state.lastPollAt.crypto = Date.now()
+    state.lastPollAt.crypto = getEffectiveNow()
     state.pollErrors.crypto = errorCount > 0 ? errorCount : 0
   } catch (err) {
     state.pollErrors.crypto = (state.pollErrors.crypto || 0) + 1
@@ -1406,8 +1698,14 @@ async function pollCryptoPrices() {
 }
 
 async function pollStockPrices() {
+  if (isReplayMode() && state.replay.phase !== "running") return
+  if (isReplayMode() && !Number.isFinite(state.replay.asOfMs)) return
   const symbols = Array.from(state.watchlist.stock)
   if ((!config.fmpKey && !config.marketDataGatewayUrl) || symbols.length === 0) return
+  if (isReplayMode() && !config.marketDataGatewayUrl) {
+    console.error("Replay mode requires MARKET_DATA_GATEWAY_URL for price polling")
+    return
+  }
   
   const marketStatus = getMarketStatus("stock")
   const useExtendedHours = marketStatus.status === "pre" || marketStatus.status === "after"
@@ -1460,7 +1758,7 @@ async function pollStockPrices() {
       marketStatus: marketStatus.status,
     })
     
-    state.lastPollAt.stock = Date.now()
+    state.lastPollAt.stock = getEffectiveNow()
     state.pollErrors.stock = errorCount > 0 ? errorCount : 0
   } catch (err) {
     state.pollErrors.stock = (state.pollErrors.stock || 0) + 1
@@ -1469,6 +1767,7 @@ async function pollStockPrices() {
 }
 
 async function pollForexPrices() {
+  if (isReplayMode()) return
   const symbols = Array.from(state.watchlist.forex)
   if ((!config.fmpKey && !config.marketDataGatewayUrl) || symbols.length === 0) return
   
@@ -1514,7 +1813,7 @@ async function pollForexPrices() {
       errors: errorCount,
     })
     
-    state.lastPollAt.forex = Date.now()
+    state.lastPollAt.forex = getEffectiveNow()
     state.pollErrors.forex = errorCount > 0 ? errorCount : 0
   } catch (err) {
     state.pollErrors.forex = (state.pollErrors.forex || 0) + 1
@@ -1533,8 +1832,12 @@ async function writeHeartbeat() {
   }
   
   const health = buildHealthPayload()
+  const heartbeatPath =
+    isReplayMode() && state.replay.runId
+      ? `replay/controls/runs/${state.replay.runId}/pipeline/price_streamer`
+      : "pipeline/price_streamer"
   try {
-    await db.doc("pipeline/price_streamer").set({
+    await db.doc(heartbeatPath).set({
       ...health,
       service: "price_streamer",
       heartbeatAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1551,7 +1854,7 @@ async function flushPrices() {
   if (!state.dirty) return
   state.dirty = false
 
-  const now = Date.now()
+  const now = getEffectiveNow()
   const startedAt = Date.now()
   const items = Array.from(state.priceCache.values()).map((item) => {
     const key = `${item.assetClass}:${item.symbol}`
@@ -1577,6 +1880,12 @@ async function flushPrices() {
     )
   })
   try {
+    const replayDesired = isReplayMode()
+    const isReplay = replayDesired && Boolean(state.replay.runId)
+    if (replayDesired && !state.replay.runId) {
+      console.error("Replay mode active without runId; skipping writes")
+      return
+    }
     const stockSource = config.marketDataGatewayUrl
       ? "gateway"
       : config.fmpKey
@@ -1594,7 +1903,8 @@ async function flushPrices() {
         : "disabled"
 
     const meta = {
-      runId,
+      runId: isReplay ? state.replay.runId : runId,
+      mode: isReplay ? "replay" : "live",
       count: items.length,
       sources: {
         crypto: cryptoSource,
@@ -1607,20 +1917,27 @@ async function flushPrices() {
         forex: state.watchlist.forex.size,
       },
     }
-    await writeRedisPrices(items, meta)
+    if (isReplay) {
+      meta.asOf = new Date(now).toISOString()
+    }
+    await writeRedisPrices(items, meta, state.replay)
     console.log("ps_write_redis", {
       runId,
       count: items.length,
       updatedAt: new Date().toISOString(),
     })
-    await db.doc("market/prices").set(
-      {
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        items,
-        meta,
-      },
-      { merge: true }
-    )
+    const firestorePath = isReplay
+      ? `replay/controls/runs/${state.replay.runId}/market/prices`
+      : "market/prices"
+    const firestorePayload = {
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      items,
+      meta,
+    }
+    if (isReplay) {
+      firestorePayload.asOf = admin.firestore.Timestamp.fromDate(new Date(now))
+    }
+    await db.doc(firestorePath).set(firestorePayload, { merge: true })
     await publishPipelineEvent(
       buildPipelineEvent({
         stationId: "price_streamer",
@@ -1630,16 +1947,19 @@ async function flushPrices() {
         status: "end",
         durationMs: Date.now() - startedAt,
         meta: {
-          runId,
+          runId: isReplay ? state.replay.runId : runId,
           count: items.length,
+          mode: isReplay ? "replay" : "live",
         },
         outputs: {
-          firestoreDocs: ["market/prices"],
+          firestoreDocs: [firestorePath],
         },
       })
     )
     state.lastFlushAt = Date.now()
     state.lastFlushError = null
+    const redisLatestKey = resolveRedisKey("prices:latest", state.replay)
+    const redisSnapshotKey = resolveRedisKey("prices:snapshot:*", state.replay)
     await publishPipelineEvent(
       buildPipelineEvent({
         stationId: "redis_hot",
@@ -1653,13 +1973,14 @@ async function flushPrices() {
           markets: Object.keys(meta.sources || {}),
           sources: meta.sources,
           watchlist: meta.watchlist,
+          mode: isReplay ? "replay" : "live",
         },
         outputs: {
           redisKeys: [
-            `${config.redisPrefix ? `${config.redisPrefix}:` : ""}prices:latest`,
-            `${config.redisPrefix ? `${config.redisPrefix}:` : ""}prices:snapshot:*`,
+            redisLatestKey,
+            redisSnapshotKey,
           ],
-          firestoreDocs: ["market/prices"],
+          firestoreDocs: [firestorePath],
         },
       })
     )
@@ -1683,9 +2004,19 @@ async function flushPrices() {
 
 async function run() {
   state.redis = await initRedis()
+  await refreshReplayState()
+  await maybeAckReplayState()
   await refreshWatchlist()
 
   setInterval(refreshWatchlist, Math.max(config.watchlistRefreshMs, 15000))
+  setInterval(() => {
+    refreshReplayState()
+      .then(() => maybeAckReplayState())
+      .catch((err) => console.error("Replay control refresh error:", err.message))
+  }, Math.max(config.replayControlsCacheMs, 1000))
+  setInterval(() => {
+    tickReplayClock().catch((err) => console.error("Replay tick error:", err.message))
+  }, Math.max(config.replayTickMs, 250))
   setInterval(() => {
     pollCryptoPrices().catch((err) => console.error("Crypto poll error:", err.message))
   }, Math.max(config.cryptoPollMs, 5000))

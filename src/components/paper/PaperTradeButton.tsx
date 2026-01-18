@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, type ReactNode } from "react"
 import { Button } from "@/components/ui/button"
 import { PlayCircle } from "lucide-react"
 import { PaperTradeDialog } from "./PaperTradeDialog"
@@ -10,7 +10,9 @@ interface PaperTradeButtonProps {
     className?: string
     size?: "default" | "sm" | "lg" | "icon"
     variant?: "default" | "destructive" | "outline" | "secondary" | "ghost" | "link"
-    children?: React.ReactNode
+    children?: ReactNode
+    disabled?: boolean
+    disabledReason?: string
 }
 
 export function PaperTradeButton({
@@ -18,7 +20,9 @@ export function PaperTradeButton({
     className,
     size = "icon",
     variant = "ghost",
-    children
+    children,
+    disabled = false,
+    disabledReason
 }: PaperTradeButtonProps) {
     const [open, setOpen] = useState(false)
     const { t } = useTranslation()
@@ -34,9 +38,15 @@ export function PaperTradeButton({
                 className={className}
                 onClick={(e) => {
                     e.stopPropagation() // Prevent parent row click if any
+                    if (disabled) return
                     setOpen(true)
                 }}
-                title={t("paper.tradeTitle", { side: side.toUpperCase(), symbol: trade.symbol })}
+                title={
+                  disabled
+                    ? disabledReason || t("replay.actionsDisabled")
+                    : t("paper.tradeTitle", { side: side.toUpperCase(), symbol: trade.symbol })
+                }
+                disabled={disabled}
             >
                 {children ? children : (
                     <>

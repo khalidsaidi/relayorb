@@ -73,6 +73,16 @@ const en = {
     idle: "idle",
     unknown: "unknown",
   },
+  replay: {
+    active: "Replay",
+    bannerTitle: "Replay mode is active",
+    bannerSubtitle: "Live actions are disabled while replay is running.",
+    runId: "Run",
+    datasetId: "Dataset",
+    asOf: "Replay time",
+    phase: "Phase",
+    actionsDisabled: "Replay mode is active; live actions are disabled.",
+  },
   trade: {
     side: {
       buy: "buy",
