@@ -277,7 +277,7 @@ async function publishPipelineEvent(event) {
 
 function buildPipelineEvent(payload) {
   const runEnv = state?.replay?.mode === "replay" ? "replay" : config.pipelineEventsRunEnv
-  const runId = state?.replay?.runId || config.runId || undefined
+  const runId = isReplayMode() ? state?.replay?.runId || undefined : config.runId || undefined
   return {
     ts: new Date().toISOString(),
     eventId: createEventId(),

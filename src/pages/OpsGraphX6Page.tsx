@@ -7,7 +7,9 @@ import { Button } from "@/components/ui/button"
 import { OpsGraphNodeCard } from "@/components/OpsGraphX6/OpsGraphNodeCard"
 import { PipelineHealthBadge } from "@/components/PipelineHealthBadge"
 import { PipelineHealthPanel } from "@/components/PipelineHealthPanel"
+import { ReplayControlsPanel } from "@/components/ReplayControlsPanel"
 import { usePipelineEvents } from "@/features/ops/use-pipeline-events"
+import { useReplayControls } from "@/features/replay/use-replay-controls"
 import type { PipelineEvent } from "@/lib/types"
 import opsLayoutConfig from "@/ops/ops_graph_layout.json"
 import graphSpec from "@/ops/graph_topology.json"
@@ -1259,6 +1261,7 @@ export default function OpsGraphX6Page() {
   }, [base])
 
   const { events, status, error, connectedAt } = usePipelineEvents(eventsUrl)
+  const { controls: replayControls, replayActive } = useReplayControls()
   const [layoutPending, setLayoutPending] = useState(false)
   const [opsLayout, setOpsLayout] = useState<OpsLayout | null>(null)
   const [freezeLive, setFreezeLive] = useState(false)
@@ -1266,15 +1269,38 @@ export default function OpsGraphX6Page() {
   const [tvMode, setTvMode] = useState(false)
   const [showDebug, setShowDebug] = useState(false)
   const [layoutTick, setLayoutTick] = useState(0)
+  const [eventScope, setEventScope] = useState<"auto" | "live" | "replay" | "all">("auto")
   const forceRecomputeRef = useRef(false)
+
+  const activeRunId = replayControls?.activeRunId
+  const effectiveScope = useMemo(() => {
+    if (eventScope === "auto") return replayActive ? "replay" : "live"
+    return eventScope
+  }, [eventScope, replayActive])
+
+  const filteredEvents = useMemo(() => {
+    if (effectiveScope === "all") return events
+    return events.filter((event) => {
+      const runEnv = typeof event.runEnv === "string" ? event.runEnv : "prod"
+      if (effectiveScope === "live") {
+        return runEnv !== "replay"
+      }
+      if (effectiveScope === "replay") {
+        if (runEnv !== "replay") return false
+        if (activeRunId) return event.runId === activeRunId
+        return true
+      }
+      return true
+    })
+  }, [events, effectiveScope, activeRunId])
 
   const observedProviderKey = useMemo(() => {
     const ids = new Set<string>()
-    events.forEach((event) => {
+    filteredEvents.forEach((event) => {
       collectProviderKeys(event).forEach((id) => ids.add(id))
     })
     return Array.from(ids).sort((a, b) => a.localeCompare(b)).join("|")
-  }, [events])
+  }, [filteredEvents])
 
   const observedProviderIds = useMemo(
     () => (observedProviderKey ? observedProviderKey.split("|") : []),
@@ -1283,11 +1309,11 @@ export default function OpsGraphX6Page() {
 
   const observedBotEngineKey = useMemo(() => {
     const ids = new Set<string>()
-    events.forEach((event) => {
+    filteredEvents.forEach((event) => {
       collectBotEngineKeys(event).forEach((id) => ids.add(id))
     })
     return Array.from(ids).sort((a, b) => a.localeCompare(b)).join("|")
-  }, [events])
+  }, [filteredEvents])
 
   const observedBotEngineIds = useMemo(
     () => (observedBotEngineKey ? observedBotEngineKey.split("|") : []),
@@ -1388,7 +1414,10 @@ export default function OpsGraphX6Page() {
   }, [nodeSpecs, edgeSpecs])
 
   const edgeById = useMemo(() => new Map(edgeSpecs.map((edge) => [edge.id, edge])), [edgeSpecs])
-  const stats = useMemo(() => computeStats(events, edgeById, edgeAliases), [events, edgeById, edgeAliases])
+  const stats = useMemo(
+    () => computeStats(filteredEvents, edgeById, edgeAliases),
+    [filteredEvents, edgeById, edgeAliases]
+  )
 
   const pageRef = useRef<HTMLDivElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -1405,7 +1434,7 @@ export default function OpsGraphX6Page() {
   const rafRef = useRef<number | null>(null)
   const statsRef = useRef(stats)
   const nodeSpecsRef = useRef(nodeSpecs)
-  const eventsRef = useRef<PipelineEvent[]>(events)
+  const eventsRef = useRef<PipelineEvent[]>(filteredEvents)
   const layoutRef = useRef<OpsLayout | null>(opsLayout)
   const initialViewAppliedRef = useRef(false)
   const processedEventsRef = useRef<Set<string>>(new Set())
@@ -1429,8 +1458,8 @@ export default function OpsGraphX6Page() {
   }, [stats, freezeLive])
 
   useEffect(() => {
-    eventsRef.current = events
-  }, [events])
+    eventsRef.current = filteredEvents
+  }, [filteredEvents])
 
   useEffect(() => {
     layoutRef.current = opsLayout
@@ -2133,6 +2162,7 @@ export default function OpsGraphX6Page() {
 
           {/* Pipeline Health Panel */}
           <PipelineHealthPanel defaultExpanded={false} />
+          <ReplayControlsPanel />
 
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant="secondary" onClick={handleResetView}>
@@ -2160,6 +2190,23 @@ export default function OpsGraphX6Page() {
             >
               {freezeLive ? t("opsGraph.controls.resumeLive") : t("opsGraph.controls.freezeLive")}
             </Button>
+            <div className="flex items-center gap-2 rounded-full border border-border/60 bg-white/80 px-3 py-1 text-xs text-muted-foreground">
+              <span>{t("opsGraph.controls.eventScope")}</span>
+              {(["auto", "live", "replay", "all"] as const).map((scope) => (
+                <Button
+                  key={scope}
+                  size="sm"
+                  variant={eventScope === scope ? "default" : "ghost"}
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setEventScope(scope)}
+                >
+                  {t(`opsGraph.controls.eventScopeOptions.${scope}`)}
+                </Button>
+              ))}
+              {effectiveScope === "replay" && activeRunId ? (
+                <Badge variant="outline">{activeRunId}</Badge>
+              ) : null}
+            </div>
             <Button size="sm" variant="secondary" onClick={() => setIsFullscreen(true)}>
               {t("opsGraph.controls.fullScreen")}
             </Button>

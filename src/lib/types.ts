@@ -508,6 +508,8 @@ export type PipelineEvent = {
   ts: string
   eventId: string
   runEnv?: string
+  runId?: string | null
+  sessionId?: string | null
   batchId?: string | null
   symbolKey?: string | null
   service: string

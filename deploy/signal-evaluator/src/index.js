@@ -135,7 +135,8 @@ function getPipelineRunEnv() {
 }
 
 function getActiveRunId() {
-  return replayState?.runId || config.runId || undefined
+  if (isReplayMode()) return replayState?.runId || undefined
+  return config.runId || undefined
 }
 
 function buildPipelineEvent(payload) {

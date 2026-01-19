@@ -42,6 +42,15 @@ const PIPELINE_EVENTS_SAMPLE_RATE = parseFloat(
   process.env.PIPELINE_EVENTS_SAMPLE_RATE || "0.15"
 )
 const PIPELINE_EVENTS_RUN_ENV = process.env.PIPELINE_EVENTS_RUN_ENV || "prod"
+const REPLAY_ALLOWED = process.env.REPLAY_ALLOWED !== "false"
+const REPLAY_CONTROLS_CACHE_MS = parseInt(
+  process.env.REPLAY_CONTROLS_CACHE_MS || "1500",
+  10
+)
+const REPLAY_ACK_INTERVAL_MS = parseInt(
+  process.env.REPLAY_ACK_INTERVAL_MS || "15000",
+  10
+)
 const AGENT_ID =
   process.env.RELAYORB_AGENT_ID ||
   RUN_ID ||
@@ -82,7 +91,8 @@ const log = (message, extra = {}) => {
 }
 
 const logEvent = (event, data = {}) => {
-  const payload = { event, ...(RUN_ID ? { runId: RUN_ID } : {}), ...data }
+  const activeRunId = resolveActiveRunId()
+  const payload = { event, ...(activeRunId ? { runId: activeRunId } : {}), ...data }
   if (STRUCTURED_LOGGING) {
     const entry = {
       severity: "INFO",
@@ -126,10 +136,56 @@ const agentHealth = {
 }
 const HEARTBEAT_INTERVAL_MS = 300000 // 5 minutes
 
+const replayControlsCache = { value: null, expiresAt: 0 }
+let replayState = {
+  mode: "live",
+  desiredMode: "live",
+  runId: null,
+  sessionId: null,
+  version: null,
+  phase: null,
+  datasetId: null,
+  botsReplayEnabled: false,
+  lastAckAt: 0,
+  lastAckSessionId: null,
+  lastAckVersion: null,
+}
+
 function resolvePipelineStream() {
+  if (isReplayMode() && replayState.runId) {
+    return `replay:${replayState.runId}:pipeline_events`
+  }
   if (PIPELINE_EVENTS_STREAM) return PIPELINE_EVENTS_STREAM
   const prefix = REDIS_PREFIX ? `${REDIS_PREFIX}:` : ""
   return `${prefix}pipeline_events`
+}
+
+function resolveActiveRunId() {
+  if (isReplayMode()) return replayState.runId || null
+  return RUN_ID || null
+}
+
+function isReplayMode() {
+  return replayState?.mode === "replay"
+}
+
+function shouldRunBots() {
+  if (!isReplayMode()) return true
+  return Boolean(replayState?.runId) && replayState?.botsReplayEnabled === true
+}
+
+function resolveReplayBasePath() {
+  if (isReplayMode() && replayState.runId) {
+    return `replay/controls/runs/${replayState.runId}`
+  }
+  return null
+}
+
+function resolveEventChannel() {
+  if (isReplayMode() && replayState.runId) {
+    return `replay:${replayState.runId}:events`
+  }
+  return EVENT_CHANNEL
 }
 
 function createEventId() {
@@ -145,13 +201,91 @@ function shouldSample(rate) {
 }
 
 function buildPipelineEvent(payload) {
+  const runEnv = isReplayMode() ? "replay" : PIPELINE_EVENTS_RUN_ENV
+  const runId = isReplayMode() ? replayState.runId || undefined : RUN_ID || undefined
   return {
     ts: new Date().toISOString(),
     eventId: createEventId(),
-    runEnv: PIPELINE_EVENTS_RUN_ENV,
+    runEnv,
+    runId,
+    sessionId: replayState?.sessionId || undefined,
     service: "relayorb-agent",
     severity: "info",
     ...payload,
+  }
+}
+
+async function loadReplayControls(db) {
+  if (!REPLAY_ALLOWED) return null
+  if (replayControlsCache.expiresAt > Date.now() && replayControlsCache.value) {
+    return replayControlsCache.value
+  }
+  try {
+    const snap = await db.doc("replay/controls").get()
+    const data = snap.exists ? snap.data() : null
+    replayControlsCache.value = data
+    replayControlsCache.expiresAt = Date.now() + REPLAY_CONTROLS_CACHE_MS
+    return data
+  } catch (err) {
+    log(`replay controls read failed: ${String(err)}`)
+    return null
+  }
+}
+
+function applyReplayControls(controls) {
+  const desiredMode =
+    controls?.desiredMode === "replay" && REPLAY_ALLOWED ? "replay" : "live"
+  replayState = {
+    mode: desiredMode,
+    desiredMode,
+    runId: controls?.activeRunId || null,
+    sessionId: controls?.sessionId || null,
+    version: typeof controls?.version === "number" ? controls.version : null,
+    phase: controls?.phase || null,
+    datasetId: controls?.datasetId || null,
+    botsReplayEnabled: controls?.botsReplayEnabled === true,
+    lastAckAt: replayState.lastAckAt,
+    lastAckSessionId: replayState.lastAckSessionId,
+    lastAckVersion: replayState.lastAckVersion,
+  }
+}
+
+async function refreshReplayState(db) {
+  const controls = await loadReplayControls(db)
+  applyReplayControls(controls)
+}
+
+async function maybeAckReplayState(db) {
+  if (!replayState.sessionId || replayState.version === null) return
+  const now = Date.now()
+  if (
+    now - replayState.lastAckAt < REPLAY_ACK_INTERVAL_MS &&
+    replayState.lastAckSessionId === replayState.sessionId &&
+    replayState.lastAckVersion === replayState.version
+  ) {
+    return
+  }
+  try {
+    await db.doc("replay/controls/consumers/relayorb-agent").set(
+      {
+        serviceName: "relayorb-agent",
+        effectiveMode: replayState.mode,
+        sessionId: replayState.sessionId,
+        seenControlsVersion: replayState.version,
+        activeRunId: replayState.runId,
+        datasetId: replayState.datasetId,
+        phase: replayState.phase,
+        botsReplayEnabled: replayState.botsReplayEnabled,
+        lastHeartbeat: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+    replayState.lastAckAt = now
+    replayState.lastAckSessionId = replayState.sessionId
+    replayState.lastAckVersion = replayState.version
+  } catch (err) {
+    log(`replay ack failed: ${String(err)}`)
   }
 }
 
@@ -389,7 +523,7 @@ function selectCandidateSymbols(items, assetClass, limit) {
 
 async function readCandidateBatch(db) {
   try {
-    const snap = await db.doc("market/candidates").get()
+    const snap = await resolveCandidateDoc(db).get()
     if (!snap.exists) return null
     const data = snap.data() || {}
     const items = Array.isArray(data.items) ? data.items : []
@@ -401,12 +535,52 @@ async function readCandidateBatch(db) {
   }
 }
 
+function resolveCandidateDoc(db) {
+  const base = resolveReplayBasePath()
+  if (base) {
+    return db.doc(`${base}/market/candidates`)
+  }
+  return db.doc("market/candidates")
+}
+
 function resolveBatchCollection(db) {
+  const base = resolveReplayBasePath()
+  if (base) {
+    return db.collection(`${base}/${BATCH_COLLECTION}`)
+  }
   return db.collection(BATCH_COLLECTION)
 }
 
 function resolveBatchConsumerDoc(db) {
+  const base = resolveReplayBasePath()
+  if (base) {
+    return db.collection(`${base}/batch_consumers`).doc(BATCH_CONSUMER_ID)
+  }
   return db.collection("batch_consumers").doc(BATCH_CONSUMER_ID)
+}
+
+function resolveBotsCollection(db) {
+  const base = resolveReplayBasePath()
+  if (base) {
+    return db.collection(`${base}/bots`)
+  }
+  return db.collection("bots")
+}
+
+function resolveBotDoc(db, botId) {
+  return resolveBotsCollection(db).doc(botId)
+}
+
+function resolveBotSubcollection(db, botId, subcollection) {
+  return resolveBotDoc(db, botId).collection(subcollection)
+}
+
+function resolvePipelineDoc(db) {
+  const base = resolveReplayBasePath()
+  if (base) {
+    return db.doc(`${base}/pipeline/relayorb_agent`)
+  }
+  return db.doc("pipeline/relayorb_agent")
 }
 
 function toDate(value) {
@@ -456,7 +630,7 @@ async function updateBatchConsumerState(db, batchId) {
         lastBatchId: batchId,
         lastProcessedAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        runId: RUN_ID || null,
+        runId: resolveActiveRunId(),
       },
       { merge: true }
     )
@@ -497,7 +671,7 @@ async function fetchPendingBatches(db, lastProcessedAt) {
 
 async function queueScanCommand(db, bot, symbols, assetClass) {
   if (!symbols.length) return
-  const commandsRef = db.collection("bots").doc(bot.id).collection("commands")
+  const commandsRef = resolveBotSubcollection(db, bot.id, "commands")
   await commandsRef.add({
     type: bot.eventCommand || "scan",
     payload: {
@@ -558,6 +732,7 @@ async function triggerBatchScan(db, bots, items) {
 }
 
 async function handleBatchScan(db, bots, batch) {
+  if (!shouldRunBots()) return
   const items =
     Array.isArray(batch?.items) && batch.items.length
       ? batch.items
@@ -579,7 +754,11 @@ async function handleBatchScan(db, bots, batch) {
         candidateCount: items.length,
       },
       inputs: {
-        firestoreDocs: [batch?.id ? `${BATCH_COLLECTION}/${batch.id}` : "market/candidates"],
+        firestoreDocs: [
+          batch?.id
+            ? resolveBatchCollection(db).doc(batch.id).path
+            : resolveCandidateDoc(db).path,
+        ],
       },
     })
   )
@@ -592,6 +771,7 @@ async function handleBatchScan(db, bots, batch) {
 let batchPollInFlight = false
 async function pollForBatches(db, bots) {
   if (batchPollInFlight) return
+  if (!shouldRunBots()) return
   batchPollInFlight = true
   try {
     const state = await readBatchConsumerState(db)
@@ -646,8 +826,10 @@ async function startEventListener(db, bots) {
   await subscriber.connect()
   let lastEventAt = 0
   let lastBatchId = null
+  let subscribedChannel = resolveEventChannel()
 
-  await subscriber.subscribe(EVENT_CHANNEL, async (message) => {
+  const handleMessage = async (message) => {
+    if (!shouldRunBots()) return
     let payload
     try {
       payload = JSON.parse(message)
@@ -663,7 +845,10 @@ async function startEventListener(db, bots) {
     lastEventAt = now
     lastBatchId = batchId
 
-    logEvent("ag_new_batch_received", { batchId, runId: eventRunId || RUN_ID || null })
+    logEvent("ag_new_batch_received", {
+      batchId,
+      runId: eventRunId || resolveActiveRunId(),
+    })
     await publishPipelineEvent(
       buildPipelineEvent({
         stationId: "agent",
@@ -672,9 +857,9 @@ async function startEventListener(db, bots) {
         nodeIds: ["relayorb_agent", "new_batch"],
         status: "end",
         batchId: batchId || undefined,
-        meta: { source: "redis_event", runId: eventRunId || RUN_ID || null },
+        meta: { source: "redis_event", runId: eventRunId || resolveActiveRunId() },
         inputs: {
-          redisKeys: [EVENT_CHANNEL],
+          redisKeys: [subscribedChannel],
         },
       })
     )
@@ -692,9 +877,24 @@ async function startEventListener(db, bots) {
       items: fallback.items,
     })
     lastBatchId = batchId || fallback.batchId
-  })
+  }
 
-  log(`redis event listener active on ${EVENT_CHANNEL}`)
+  await subscriber.subscribe(subscribedChannel, handleMessage)
+  log(`redis event listener active on ${subscribedChannel}`)
+
+  const refreshIntervalMs = Math.max(REPLAY_CONTROLS_CACHE_MS, 2000)
+  setInterval(() => {
+    const desiredChannel = resolveEventChannel()
+    if (desiredChannel === subscribedChannel) return
+    subscriber
+      .unsubscribe(subscribedChannel)
+      .then(() => subscriber.subscribe(desiredChannel, handleMessage))
+      .then(() => {
+        subscribedChannel = desiredChannel
+        log(`redis event listener switched to ${subscribedChannel}`)
+      })
+      .catch((err) => log(`redis event channel switch failed: ${String(err)}`))
+  }, refreshIntervalMs)
 }
 
 function extractSymbolFromText(text) {
@@ -1125,7 +1325,7 @@ function createAdapter(bot) {
 }
 
 async function ensureBotDoc(db, bot) {
-  const docRef = db.collection("bots").doc(bot.id)
+  const docRef = resolveBotDoc(db, bot.id)
   const snap = await docRef.get()
   const existing = snap.exists ? snap.data() : {}
   const capabilities = resolveCapabilities(bot)
@@ -1152,8 +1352,9 @@ async function ensureBotDoc(db, bot) {
 
 async function writeEvents(db, botId, events) {
   if (!events || events.length === 0) return
-  const ref = db.collection("bots").doc(botId).collection("events")
+  const ref = resolveBotSubcollection(db, botId, "events")
   const batch = db.batch()
+  const activeRunId = resolveActiveRunId()
   for (const event of events.slice(0, 50)) {
     const docRef = ref.doc()
     batch.set(docRef, {
@@ -1162,7 +1363,7 @@ async function writeEvents(db, botId, events) {
       severity: event.severity || "info",
       message: event.message || "",
       data: event.data || null,
-      runId: RUN_ID || null,
+      runId: activeRunId,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     })
   }
@@ -1171,7 +1372,8 @@ async function writeEvents(db, botId, events) {
 
 async function writeSignals(db, botId, signals) {
   if (!signals || signals.length === 0) return
-  const ref = db.collection("bots").doc(botId).collection("signals")
+  const ref = resolveBotSubcollection(db, botId, "signals")
+  const activeRunId = resolveActiveRunId()
   
   // Firestore batch limit is 500 operations per batch
   // Process ALL signals using multiple batches if needed
@@ -1195,7 +1397,7 @@ async function writeSignals(db, botId, signals) {
         strength: typeof signal.strength === "number" ? signal.strength : null,
         message: signal.message || "",
         data: signal.data || null,
-        runId: RUN_ID || null,
+        runId: activeRunId,
         createdAt: signalTime
           ? admin.firestore.Timestamp.fromDate(signalTime)
           : admin.firestore.FieldValue.serverTimestamp(),
@@ -1222,10 +1424,11 @@ async function applyUpdate(db, bot, update) {
   if (update?.summary) patch.summary = update.summary
   if (update?.state) patch.state = update.state
 
-  await db.collection("bots").doc(bot.id).set(patch, { merge: true })
+  await resolveBotDoc(db, bot.id).set(patch, { merge: true })
   await writeEvents(db, bot.id, update?.events || [])
   await writeSignals(db, bot.id, update?.signals || [])
   if (update?.signals?.length) {
+    const signalsPath = resolveBotSubcollection(db, bot.id, "signals").path
     const sampledSignals = update.signals.slice(0, 5).map((signal) => {
       const symbol = resolveSignalSymbol(signal)
       return {
@@ -1260,7 +1463,7 @@ async function applyUpdate(db, bot, update) {
           tradingMode: resolveTradingMode(bot),
         },
         outputs: {
-          firestoreDocs: [`bots/${bot.id}/signals`],
+          firestoreDocs: [signalsPath],
         },
       })
     )
@@ -1298,7 +1501,7 @@ async function applyUpdate(db, bot, update) {
 
 async function markBotError(db, bot, err) {
   const message = err instanceof Error ? err.message : String(err)
-  await db.collection("bots").doc(bot.id).set(
+  await resolveBotDoc(db, bot.id).set(
     {
       status: "error",
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1329,6 +1532,7 @@ function startPolling(db, bot, adapter) {
 
   const tick = async () => {
     if (running) return
+    if (!shouldRunBots()) return
     running = true
     const botHealth = agentHealth.bots.get(bot.id)
     try {
@@ -1378,10 +1582,11 @@ async function claimCommand(db, ref) {
 }
 
 function startCommandListener(db, bot, adapter) {
-  const commandsRef = db.collection("bots").doc(bot.id).collection("commands")
+  const commandsRef = resolveBotSubcollection(db, bot.id, "commands")
   const query = commandsRef.where("status", "==", "queued")
 
   query.onSnapshot((snap) => {
+    if (!shouldRunBots()) return
     snap.docChanges().forEach(async (change) => {
       if (change.type !== "added") return
       const preview = change.doc.data()
@@ -1446,7 +1651,7 @@ function startCommandListener(db, bot, adapter) {
           result: result?.result || null,
         })
         if (commandType === "configure" && payload && Object.keys(payload).length > 0) {
-          await db.collection("bots").doc(bot.id).set(
+          await resolveBotDoc(db, bot.id).set(
             {
               desiredConfig: payload,
               desiredConfigUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1456,7 +1661,7 @@ function startCommandListener(db, bot, adapter) {
           )
         }
         if (result?.status) {
-          await db.collection("bots").doc(bot.id).set(
+          await resolveBotDoc(db, bot.id).set(
             {
               status: result.status,
               updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1516,6 +1721,7 @@ async function writeAgentHeartbeat(db) {
   }
   
   const overallStatus = errorBots === 0 ? "ok" : healthyBots === 0 ? "error" : "degraded"
+  const activeRunId = resolveActiveRunId()
   
   const healthDoc = {
     service: "relayorb_agent",
@@ -1523,7 +1729,7 @@ async function writeAgentHeartbeat(db) {
     startedAt: new Date(agentHealth.startedAt).toISOString(),
     uptimeMs,
     heartbeatAt: admin.firestore.FieldValue.serverTimestamp(),
-    runId: RUN_ID || null,
+    runId: activeRunId,
     bots: botsHealth,
     summary: {
       total: agentHealth.bots.size,
@@ -1533,7 +1739,7 @@ async function writeAgentHeartbeat(db) {
   }
   
   try {
-    await db.doc("pipeline/relayorb_agent").set(healthDoc, { merge: true })
+    await resolvePipelineDoc(db).set(healthDoc, { merge: true })
     agentHealth.lastHeartbeatAt = now
     logEvent("ag_heartbeat", { status: overallStatus, healthy: healthyBots, error: errorBots })
   } catch (err) {
@@ -1566,6 +1772,7 @@ async function deleteDocumentRecursive(db, docRef) {
 }
 
 async function pruneOrphanBots(db, config) {
+  if (!shouldRunBots()) return
   const activeBotIds = new Set(
     Array.isArray(config?.bots)
       ? config.bots.map((bot) => String(bot.id || "").trim()).filter(Boolean)
@@ -1573,7 +1780,8 @@ async function pruneOrphanBots(db, config) {
   )
   RESERVED_BOT_IDS.forEach((id) => activeBotIds.add(id))
 
-  const snapshot = await db.collection("bots").get()
+  const botsRef = resolveBotsCollection(db)
+  const snapshot = await botsRef.get()
   const deletions = []
 
   snapshot.docs.forEach((docSnap) => {
@@ -1589,7 +1797,7 @@ async function pruneOrphanBots(db, config) {
 
   log(`pruning ${deletions.length} bot docs not in config`)
   for (const botId of deletions) {
-    const docRef = db.collection("bots").doc(botId)
+    const docRef = botsRef.doc(botId)
     await deleteDocumentRecursive(db, docRef)
     log(`pruned bot doc ${botId}`)
   }
@@ -1599,6 +1807,15 @@ async function main() {
   const config = await loadConfig()
   const db = initFirestore(config.firestore?.projectId)
   await initPipelineRedis()
+  await refreshReplayState(db)
+  await maybeAckReplayState(db)
+
+  const replayPollIntervalMs = Math.max(REPLAY_CONTROLS_CACHE_MS, 1000)
+  setInterval(() => {
+    refreshReplayState(db)
+      .then(() => maybeAckReplayState(db))
+      .catch((err) => log(`replay controls refresh failed: ${String(err)}`))
+  }, replayPollIntervalMs)
 
   logEvent("ag_run_start", { botCount: config.bots.length })
   await pruneOrphanBots(db, config)

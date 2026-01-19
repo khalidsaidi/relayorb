@@ -39,6 +39,10 @@ const config = {
   replayManifestCacheMs: parseInt(process.env.REPLAY_MANIFEST_CACHE_MS || "10000", 10),
   replayArtifactCacheMs: parseInt(process.env.REPLAY_ARTIFACT_CACHE_MS || "60000", 10),
   replayAckIntervalMs: parseInt(process.env.REPLAY_ACK_INTERVAL_MS || "15000", 10),
+  replayBuildEnabled: process.env.REPLAY_BUILD_ENABLED === "true",
+  replayBuildMaxSymbols: parseInt(process.env.REPLAY_BUILD_MAX_SYMBOLS || "200", 10),
+  replayBuildConcurrency: parseInt(process.env.REPLAY_BUILD_CONCURRENCY || "3", 10),
+  replayBuildLookbackDays: parseInt(process.env.REPLAY_BUILD_LOOKBACK_DAYS || "120", 10),
 }
 
 const cache = new Map()
@@ -58,7 +62,7 @@ function logEvent(event, data = {}) {
 
 function applyCorsHeaders(res) {
   res.setHeader("Access-Control-Allow-Origin", config.corsOrigin)
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
   res.setHeader("Access-Control-Allow-Headers", config.corsAllowHeaders)
   res.setHeader("Access-Control-Max-Age", "86400")
 }
@@ -119,7 +123,7 @@ function sanitizeUrl(rawUrl) {
 
 function buildPipelineEvent(payload) {
   const runEnv = lastReplayState?.mode === "replay" ? "replay" : config.pipelineEventsRunEnv
-  const runId = lastReplayState?.runId || undefined
+  const runId = lastReplayState?.mode === "replay" ? lastReplayState?.runId || undefined : undefined
   return {
     ts: new Date().toISOString(),
     eventId: createEventId(),
@@ -469,6 +473,87 @@ function respondJson(res, status, payload) {
     "access-control-allow-origin": config.corsOrigin,
   })
   res.end(JSON.stringify(payload))
+}
+
+async function readJsonBody(req) {
+  const chunks = []
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  }
+  if (!chunks.length) return null
+  const text = Buffer.concat(chunks).toString("utf8").trim()
+  if (!text) return null
+  try {
+    return JSON.parse(text)
+  } catch (err) {
+    throw new Error("Invalid JSON body")
+  }
+}
+
+function parseSymbolsInput(raw) {
+  if (!raw) return []
+  if (Array.isArray(raw)) return raw
+  if (typeof raw === "string") {
+    return raw.split(",")
+  }
+  return []
+}
+
+function normalizeSymbolList(raw) {
+  const list = parseSymbolsInput(raw)
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+  return Array.from(new Set(list))
+}
+
+function resolveTsxSuffix(rawSymbol) {
+  if (!rawSymbol) return null
+  const upper = String(rawSymbol).trim().toUpperCase()
+  const suffixMap = {
+    ".TO": "TSX",
+    ".TSX": "TSX",
+    ".TSXV": "TSXV",
+    ".V": "TSXV",
+  }
+  for (const [suffix, exchange] of Object.entries(suffixMap)) {
+    if (upper.endsWith(suffix)) return exchange
+  }
+  return null
+}
+
+function stripTsxSuffix(symbol) {
+  if (!symbol) return symbol
+  return symbol.replace(/\.(TO|TSX|TSXV|V)$/i, "")
+}
+
+function mapExchangeHintToVenue(exchangeHint) {
+  if (!exchangeHint) return { venue: "US", exchangeMeta: null }
+  const upper = String(exchangeHint).trim().toUpperCase()
+  if (upper.includes("TSXV")) return { venue: "CA", exchangeMeta: "TSXV" }
+  if (upper.includes("TSX")) return { venue: "CA", exchangeMeta: "TSX" }
+  if (upper.includes("NASDAQ")) return { venue: "US", exchangeMeta: "NASDAQ" }
+  if (upper.includes("NYSE")) return { venue: "US", exchangeMeta: "NYSE" }
+  if (upper.includes("AMEX")) return { venue: "US", exchangeMeta: "AMEX" }
+  return { venue: "US", exchangeMeta: upper }
+}
+
+function resolveVenueInfo(rawSymbol, exchangeHint) {
+  const suffixExchange = resolveTsxSuffix(rawSymbol)
+  if (suffixExchange) {
+    return { venue: "CA", exchangeMeta: suffixExchange, suffixMatch: true }
+  }
+  const mapped = mapExchangeHintToVenue(exchangeHint)
+  return { ...mapped, suffixMatch: false }
+}
+
+function normalizeSymbolKeyV2(rawSymbol, venue) {
+  if (!rawSymbol) return null
+  let normalized = normalizeTicker(rawSymbol) || normalizeSymbol(rawSymbol)
+  if (!normalized) return null
+  if (venue === "CA") {
+    normalized = stripTsxSuffix(normalized)
+  }
+  return normalized
 }
 
 function initFirestore() {
@@ -914,6 +999,17 @@ async function loadReplayArtifact(path, cacheKey, gzip) {
     }
     throw err
   }
+}
+
+async function writeReplayArtifact(path, payload, gzip) {
+  const bucket = initStorage().bucket(config.replayBucket)
+  const file = bucket.file(path)
+  const raw = Buffer.from(JSON.stringify(payload))
+  const data = gzip ? zlib.gzipSync(raw) : raw
+  const metadata = gzip
+    ? { contentType: "application/json", contentEncoding: "gzip" }
+    : { contentType: "application/json" }
+  await file.save(data, metadata)
 }
 
 function buildFmpQuotePayload(entry, symbol, assetClass) {
@@ -2643,6 +2739,319 @@ async function handleMarketauxNews(req, res, params) {
   })
 }
 
+function extractMarketauxSymbols(item) {
+  if (!item) return []
+  if (Array.isArray(item.symbols) && item.symbols.length) return item.symbols
+  if (Array.isArray(item.entities) && item.entities.length) {
+    return item.entities
+      .map((entity) => entity?.symbol)
+      .filter(Boolean)
+  }
+  if (item.symbol) return [item.symbol]
+  return []
+}
+
+function buildMarketauxIndex(items) {
+  const index = new Map()
+  items.forEach((item) => {
+    const symbols = extractMarketauxSymbols(item)
+    symbols.forEach((symbol) => {
+      const normalized = normalizeTicker(symbol) || normalizeSymbol(symbol)
+      if (!normalized) return
+      if (!index.has(normalized)) index.set(normalized, [])
+      index.get(normalized).push(item)
+      const stripped = stripTsxSuffix(normalized)
+      if (stripped && stripped !== normalized) {
+        if (!index.has(stripped)) index.set(stripped, [])
+        index.get(stripped).push(item)
+      }
+    })
+  })
+  return index
+}
+
+async function loadExistingManifest(bucket, manifestPath) {
+  try {
+    const file = bucket.file(manifestPath)
+    const [contents] = await file.download()
+    return JSON.parse(contents.toString("utf8"))
+  } catch (err) {
+    const message = err?.message ? String(err.message) : ""
+    if (err?.code === 404 || message.includes("No such object") || message.includes("Not Found")) {
+      return null
+    }
+    throw err
+  }
+}
+
+async function fetchFmpHistoricalBars(symbol, interval, fromDate, toDate) {
+  if (!config.fmpKey) throw new Error("FMP API key is not configured")
+  const url = new URL(`${config.fmpBaseUrl}/stable/historical-chart/${interval}`)
+  url.searchParams.set("symbol", symbol)
+  url.searchParams.set("apikey", config.fmpKey)
+  if (fromDate) url.searchParams.set("from", fromDate)
+  if (toDate) url.searchParams.set("to", toDate)
+  const data = await fetchJsonWithRetry(url.toString())
+  return Array.isArray(data) ? data : []
+}
+
+async function fetchFmpProfileData(symbol) {
+  if (!config.fmpKey) throw new Error("FMP API key is not configured")
+  const url = new URL(`${config.fmpStableBaseUrl}/profile`)
+  url.searchParams.set("symbol", symbol)
+  url.searchParams.set("apikey", config.fmpKey)
+  const data = await fetchJsonWithRetry(url.toString())
+  if (!Array.isArray(data)) return null
+  return data[0] || null
+}
+
+async function fetchMarketauxNewsForSymbols(symbols, limit) {
+  if (!config.marketauxKey) throw new Error("Marketaux key not configured")
+  const url = new URL(config.marketauxBaseUrl)
+  url.searchParams.set("api_token", config.marketauxKey)
+  url.searchParams.set("symbols", symbols.join(","))
+  url.searchParams.set("filter_entities", "true")
+  url.searchParams.set("language", "en")
+  url.searchParams.set("limit", String(limit))
+  const data = await fetchJsonWithRetry(url.toString())
+  return Array.isArray(data?.data) ? data.data : []
+}
+
+async function handleReplayBuildTape(req, res, params) {
+  if (!config.replayBuildEnabled) {
+    respondJson(res, 403, { error: "Replay tape build is disabled" })
+    return
+  }
+  if (!config.replayBucket) {
+    respondJson(res, 400, { error: "Replay bucket is not configured" })
+    return
+  }
+
+  let body = null
+  try {
+    body = await readJsonBody(req)
+  } catch (err) {
+    respondJson(res, 400, { error: err.message || "Invalid JSON body" })
+    return
+  }
+
+  const date = params.get("date") || body?.date
+  if (!date) {
+    respondJson(res, 400, { error: "Missing date (YYYY-MM-DD)" })
+    return
+  }
+  const datasetId = params.get("datasetId") || body?.datasetId || date
+  const assetClass = (body?.assetClass || params.get("assetClass") || "stock").toLowerCase()
+  const includeProfile = body?.includeProfile !== false
+  const includeNews = body?.includeNews === true || params.get("includeNews") === "true"
+  const lookbackDays = clamp(
+    parseInt(body?.lookbackDays || params.get("lookbackDays") || config.replayBuildLookbackDays, 10),
+    1,
+    600
+  )
+  const maxSymbols = clamp(
+    parseInt(body?.maxSymbols || params.get("maxSymbols") || config.replayBuildMaxSymbols, 10),
+    1,
+    2000
+  )
+
+  const symbols = normalizeSymbolList(body?.symbols || params.get("symbols"))
+  if (!symbols.length) {
+    respondJson(res, 400, { error: "Missing symbols list" })
+    return
+  }
+  if (symbols.length > maxSymbols) {
+    respondJson(res, 400, { error: `Too many symbols (max ${maxSymbols})` })
+    return
+  }
+  if (!config.fmpKey) {
+    respondJson(res, 400, { error: "FMP API key is required for tape build" })
+    return
+  }
+
+  const bucket = initStorage().bucket(config.replayBucket)
+  const manifestPath = `${config.replayPrefix}/tapes/stocks/${datasetId}/manifest.json`
+  let manifest = await loadExistingManifest(bucket, manifestPath)
+
+  if (!manifest) {
+    manifest = {
+      datasetId,
+      timezone: "America/New_York",
+      coverage: "RTH",
+      openTime: "09:30",
+      closeTime: "16:00",
+      buildTs: new Date().toISOString(),
+      symbols: [],
+      symbolMap: {},
+      artifacts: {},
+      missingSymbols: [],
+      provider: {
+        source: "fmp",
+        news: includeNews ? "marketaux" : "none",
+      },
+    }
+  }
+
+  const existingByLegacyKey = new Map(
+    Array.isArray(manifest.symbols)
+      ? manifest.symbols.map((entry) => [entry?.legacyKey, entry])
+      : []
+  )
+
+  const fromDate = shiftDateKey(date, -lookbackDays)
+  let newsIndex = null
+  if (includeNews && config.marketauxKey) {
+    try {
+      const newsItems = await fetchMarketauxNewsForSymbols(symbols, 100)
+      newsIndex = buildMarketauxIndex(newsItems)
+    } catch (err) {
+      console.error("Marketaux tape build failed:", err.message)
+      newsIndex = null
+    }
+  }
+
+  const results = {
+    date,
+    datasetId,
+    assetClass,
+    lookbackDays,
+    okSymbols: [],
+    missingSymbols: [],
+    errors: [],
+  }
+
+  const chunks = chunkList(symbols, Math.max(config.replayBuildConcurrency, 1))
+  for (const chunk of chunks) {
+    const processed = await Promise.all(
+      chunk.map(async (rawSymbol) => {
+        const legacyKey = buildLegacyKey(rawSymbol, assetClass)
+        if (!legacyKey) {
+          return { rawSymbol, legacyKey, error: "Invalid symbol" }
+        }
+        const fmpSymbol = normalizeFmpSymbol(rawSymbol, assetClass)
+        if (!fmpSymbol) {
+          return { rawSymbol, legacyKey, error: "Invalid FMP symbol" }
+        }
+
+        let profile = null
+        let exchangeHint = null
+        if (includeProfile) {
+          try {
+            profile = await fetchFmpProfileData(fmpSymbol)
+            exchangeHint =
+              profile?.exchangeShortName ||
+              profile?.exchange ||
+              profile?.exchangeShortName ||
+              null
+          } catch (err) {
+            console.error(`Profile fetch failed for ${rawSymbol}:`, err.message)
+          }
+        }
+
+        const venueInfo = resolveVenueInfo(rawSymbol, exchangeHint)
+        const normalizedSymbol = normalizeSymbolKeyV2(rawSymbol, venueInfo.venue)
+        if (!normalizedSymbol) {
+          return { rawSymbol, legacyKey, error: "Failed to normalize symbol" }
+        }
+        const symbolKeyV2 = `${assetClass}:${venueInfo.venue}:${normalizedSymbol}`
+
+        let bars1m = null
+        let bars1d = null
+        try {
+          bars1m = await fetchFmpHistoricalBars(fmpSymbol, "1min", date, date)
+          bars1d = await fetchFmpHistoricalBars(fmpSymbol, "1day", fromDate, date)
+        } catch (err) {
+          return { rawSymbol, legacyKey, symbolKeyV2, error: err.message || "FMP fetch failed" }
+        }
+
+        const artifacts = {
+          bars1m: Array.isArray(bars1m) && bars1m.length > 0,
+          bars1d: Array.isArray(bars1d) && bars1d.length > 0,
+          profile: Boolean(profile),
+          news: includeNews && Boolean(newsIndex),
+        }
+
+        const basePath = `${config.replayPrefix}/tapes/stocks/${date}`
+        if (artifacts.bars1m) {
+          await writeReplayArtifact(
+            `${basePath}/${symbolKeyV2}.bars.1m.json.gz`,
+            bars1m,
+            true
+          )
+        }
+        if (artifacts.bars1d) {
+          await writeReplayArtifact(
+            `${basePath}/${symbolKeyV2}.bars.1d.json.gz`,
+            bars1d,
+            true
+          )
+        }
+        if (includeProfile && profile) {
+          await writeReplayArtifact(
+            `${config.replayPrefix}/tapes/profile/${symbolKeyV2}.json`,
+            profile,
+            false
+          )
+        }
+        if (includeNews && newsIndex) {
+          const normalizedKey = normalizeTicker(rawSymbol) || normalizeSymbol(rawSymbol) || normalizedSymbol
+          const items = newsIndex.get(stripTsxSuffix(normalizedKey)) || newsIndex.get(normalizedKey) || []
+          await writeReplayArtifact(
+            `${config.replayPrefix}/tapes/news/${date}/by_symbol/${symbolKeyV2}.json.gz`,
+            items,
+            true
+          )
+        }
+
+        return {
+          rawSymbol,
+          legacyKey,
+          symbolKeyV2,
+          normalizedSymbol,
+          exchangeMeta: venueInfo.exchangeMeta || null,
+          venue: venueInfo.venue,
+          artifacts,
+        }
+      })
+    )
+
+    processed.forEach((result) => {
+      if (result.error) {
+        results.missingSymbols.push(result.rawSymbol)
+        results.errors.push({ symbol: result.rawSymbol, error: result.error })
+        return
+      }
+      results.okSymbols.push(result.rawSymbol)
+      manifest.symbolMap[result.legacyKey] = result.symbolKeyV2
+      manifest.artifacts[result.symbolKeyV2] = result.artifacts
+      const existing = existingByLegacyKey.get(result.legacyKey)
+      const entry = {
+        legacyKey: result.legacyKey,
+        symbolKeyV2: result.symbolKeyV2,
+        rawSymbol: result.rawSymbol,
+        normalizedSymbol: result.normalizedSymbol,
+        assetClass,
+        venue: result.venue,
+        exchangeMeta: result.exchangeMeta,
+        artifacts: result.artifacts,
+      }
+      if (existing) {
+        Object.assign(existing, entry)
+      } else {
+        manifest.symbols.push(entry)
+        existingByLegacyKey.set(result.legacyKey, entry)
+      }
+    })
+  }
+
+  manifest.buildTs = new Date().toISOString()
+  manifest.missingSymbols = results.missingSymbols
+
+  await writeReplayArtifact(manifestPath, manifest, false)
+
+  respondJson(res, 200, results)
+}
+
 async function requestHandler(req, res) {
   try {
     applyCorsHeaders(res)
@@ -2654,8 +3063,18 @@ async function requestHandler(req, res) {
 
     const url = new URL(req.url || "/", "http://localhost")
     const path = url.pathname
+    const params = url.searchParams
     if (path === "/" || path === "/healthz" || path === "/readyz") {
       respondJson(res, 200, { status: "ok" })
+      return
+    }
+
+    if (path === "/replay/buildTape") {
+      if (req.method !== "POST") {
+        respondJson(res, 405, { error: "Method not allowed" })
+        return
+      }
+      await handleReplayBuildTape(req, res, params)
       return
     }
 
@@ -2664,7 +3083,6 @@ async function requestHandler(req, res) {
       return
     }
 
-    const params = url.searchParams
     const replayState = await resolveReplayState()
     await maybeAckReplayState(replayState)
 

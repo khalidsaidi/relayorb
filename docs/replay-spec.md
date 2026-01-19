@@ -89,7 +89,7 @@ Replay tapes use symbolKeyV2 only.
 - Resolve legacyKey -> symbolKeyV2 via manifest-backed mapping.
 - Firestore debug mapping:
   ```
-  replay/runs/{runId}/symbolMap/{legacyKey}
+  replay/controls/runs/{runId}/symbolMap/{legacyKey}
   ```
 
 ### TSX suffix mapping (locked)

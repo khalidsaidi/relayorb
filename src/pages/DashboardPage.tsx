@@ -234,7 +234,8 @@ export default function DashboardPage() {
   const { user } = useAuth()
   const { t, i18n } = useTranslation()
   const { prices, livePrices } = useMarketPrices()
-  const { replayActive } = useReplayControls()
+  const { replayActive, controls: replayControls } = useReplayControls()
+  const replayRunId = replayActive ? replayControls?.activeRunId || null : null
 
   const [bots, setBots] = useState<BotDoc[]>([])
   const [events, setEvents] = useState<BotEventDoc[]>([])
@@ -334,6 +335,7 @@ export default function DashboardPage() {
     if (!base) return ""
     return `${base.replace(/\/+$/, "")}/refresh`
   }, [])
+  const e2eDisableWrites = getE2eDisableFirestoreWrites()
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
@@ -548,7 +550,16 @@ export default function DashboardPage() {
       return
     }
 
-    const ref = doc(db, "market", "hotTrades")
+    if (replayActive && !replayRunId) {
+      setHotTrades([])
+      setHotTradesUpdatedAt(undefined)
+      setLoadingHotTrades(false)
+      return
+    }
+
+    const ref = replayRunId
+      ? doc(db, "replay", "controls", "runs", replayRunId, "market", "hotTrades")
+      : doc(db, "market", "hotTrades")
     return onSnapshot(ref, (snap) => {
       if (!snap.exists()) {
         setHotTrades([])
@@ -561,7 +572,7 @@ export default function DashboardPage() {
       setHotTradesUpdatedAt(data.updatedAt)
       setLoadingHotTrades(false)
     })
-  }, [])
+  }, [replayActive, replayRunId])
 
   useEffect(() => {
     const e2eOverride = getE2eSwingOvernightOverride()
@@ -576,7 +587,16 @@ export default function DashboardPage() {
       return
     }
 
-    const ref = doc(db, "market", "swingOvernight")
+    if (replayActive && !replayRunId) {
+      setSwingOvernight([])
+      setSwingOvernightUpdatedAt(undefined)
+      setLoadingSwingOvernight(false)
+      return
+    }
+
+    const ref = replayRunId
+      ? doc(db, "replay", "controls", "runs", replayRunId, "market", "swingOvernight")
+      : doc(db, "market", "swingOvernight")
     return onSnapshot(ref, (snap) => {
       if (!snap.exists()) {
         setSwingOvernight([])
@@ -589,7 +609,7 @@ export default function DashboardPage() {
       setSwingOvernightUpdatedAt(data.updatedAt)
       setLoadingSwingOvernight(false)
     })
-  }, [])
+  }, [replayActive, replayRunId])
 
   useEffect(() => {
     const e2eOverride = getE2ePrebreakoutOverride()
@@ -604,7 +624,16 @@ export default function DashboardPage() {
       return
     }
 
-    const ref = doc(db, "market", "prebreakout")
+    if (replayActive && !replayRunId) {
+      setPrebreakout([])
+      setPrebreakoutUpdatedAt(undefined)
+      setLoadingPrebreakout(false)
+      return
+    }
+
+    const ref = replayRunId
+      ? doc(db, "replay", "controls", "runs", replayRunId, "market", "prebreakout")
+      : doc(db, "market", "prebreakout")
     return onSnapshot(ref, (snap) => {
       if (!snap.exists()) {
         setPrebreakout([])
@@ -617,7 +646,7 @@ export default function DashboardPage() {
       setPrebreakoutUpdatedAt(data.updatedAt)
       setLoadingPrebreakout(false)
     })
-  }, [])
+  }, [replayActive, replayRunId])
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
@@ -625,7 +654,16 @@ export default function DashboardPage() {
       return
     }
 
-    const ref = doc(db, "market", "trending")
+    if (replayActive && !replayRunId) {
+      setTrending(null)
+      setTrendingUpdatedAt(undefined)
+      setLoadingTrending(false)
+      return
+    }
+
+    const ref = replayRunId
+      ? doc(db, "replay", "controls", "runs", replayRunId, "market", "trending")
+      : doc(db, "market", "trending")
     return onSnapshot(ref, (snap) => {
       if (!snap.exists()) {
         setTrending(null)
@@ -638,14 +676,21 @@ export default function DashboardPage() {
       setTrendingUpdatedAt(data.updatedAt)
       setLoadingTrending(false)
     })
-  }, [])
+  }, [replayActive, replayRunId])
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
       return
     }
 
-    const ref = doc(db, "market", "popular")
+    if (replayActive && !replayRunId) {
+      setPopular(null)
+      return
+    }
+
+    const ref = replayRunId
+      ? doc(db, "replay", "controls", "runs", replayRunId, "market", "popular")
+      : doc(db, "market", "popular")
     return onSnapshot(ref, (snap) => {
       if (!snap.exists()) {
         setPopular(null)
@@ -654,7 +699,7 @@ export default function DashboardPage() {
       const data = snap.data() as MarketPopularDoc
       setPopular(data)
     })
-  }, [])
+  }, [replayActive, replayRunId])
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
@@ -2213,11 +2258,17 @@ export default function DashboardPage() {
           <Button
             variant="secondary"
             onClick={triggerRefresh}
-            disabled={!firebaseEnabled || refreshingJobs || !refreshEndpoint || replayActive}
+            disabled={
+              !firebaseEnabled ||
+              refreshingJobs ||
+              !refreshEndpoint ||
+              replayActive ||
+              e2eDisableWrites
+            }
             title={
               replayActive
                 ? t("replay.actionsDisabled")
-                : refreshEndpoint
+                : refreshEndpoint && !e2eDisableWrites
                   ? t("tradeNow.refreshTitle")
                   : t("tradeNow.refreshDisabledTitle")
             }

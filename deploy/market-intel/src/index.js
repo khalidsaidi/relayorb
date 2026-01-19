@@ -180,7 +180,7 @@ function getPipelineRunEnv() {
 }
 
 function buildPipelineEvent(payload) {
-  const runId = replayState?.runId || config.runId || undefined
+  const runId = isReplayMode() ? replayState?.runId || undefined : config.runId || undefined
   return {
     ts: new Date().toISOString(),
     eventId: createEventId(),

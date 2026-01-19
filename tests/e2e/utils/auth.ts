@@ -13,7 +13,7 @@ export async function signInTestUser(page: Page) {
     // Already signed in or test sign-in is not available.
   }
 
-  const shellLink = page.locator("a[href='/']").first()
+  const shellLink = page.getByRole("link", { name: /trade now/i }).first()
   try {
     await shellLink.waitFor({ state: "visible", timeout: 30000 })
   } catch (err) {

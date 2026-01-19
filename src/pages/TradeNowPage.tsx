@@ -28,6 +28,7 @@ import { buildAiPrompt } from "@/features/ai/ai-prompt"
 import { findAnalysisNoteKind, getAnalysisNoteKind, localizeAnalysis } from "@/lib/analysis-localize"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
 import {
+  getE2eDisableFirestoreWrites,
   getE2ePrebreakoutOverride,
   getE2eRefreshUrlOverride,
   getE2eSwingOvernightOverride,
@@ -477,6 +478,7 @@ export default function TradeNowPage() {
     if (!base) return ""
     return `${base.replace(/\/+$/, "")}/refresh`
   }, [])
+  const e2eDisableWrites = getE2eDisableFirestoreWrites()
   const adviceEndpoint = useMemo(() => {
     const override = getE2eRefreshUrlOverride()
     const base = (override || import.meta.env.VITE_REFRESH_URL || "").trim()
@@ -850,11 +852,17 @@ export default function TradeNowPage() {
             variant="secondary"
             size="sm"
             onClick={triggerRefresh}
-            disabled={!firebaseEnabled || refreshingJobs || !refreshEndpoint || replayActive}
+            disabled={
+              !firebaseEnabled ||
+              refreshingJobs ||
+              !refreshEndpoint ||
+              replayActive ||
+              e2eDisableWrites
+            }
             title={
               replayActive
                 ? replayActionDisabledReason
-                : refreshEndpoint
+                : refreshEndpoint && !e2eDisableWrites
                   ? t("tradeNow.refreshTitle")
                   : t("tradeNow.refreshDisabledTitle")
             }

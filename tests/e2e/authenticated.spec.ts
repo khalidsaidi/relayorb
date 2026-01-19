@@ -18,20 +18,6 @@ test.describe("RelayOrb authenticated flow", () => {
     await expect(eventStream).toBeVisible({ timeout: 20000 })
   })
 
-  test("shows replay banner when replay mode is active", async ({ page }) => {
-    test.setTimeout(60000)
-    await page.goto("/dashboard")
-    await expect(page.getByText("Replay mode is active")).toBeVisible({ timeout: 20000 })
-    await expect(page.getByText(/Run:/i)).toBeVisible()
-    await expect(page.getByText(/Dataset:/i)).toBeVisible()
-    await expect(page.getByText(/Replay time:/i)).toBeVisible()
-    await fs.mkdir("docs/ops/replay-evidence", { recursive: true })
-    await page.screenshot({
-      path: "docs/ops/replay-evidence/replay-banner.png",
-      fullPage: true,
-    })
-  })
-
   test("opens bot detail without mutating state", async ({ page }) => {
     await page.goto("/bots")
     await expect(page.getByText("Connected bot instances")).toBeVisible()
@@ -315,6 +301,94 @@ test.describe("RelayOrb authenticated flow", () => {
     })
     await expect(page.getByText("No pre-breakout setups right now.")).toBeVisible({
       timeout: 20000,
+    })
+  })
+})
+
+test.describe("RelayOrb replay banner", () => {
+  test("shows replay banner when replay mode is active", async ({ page }) => {
+    test.setTimeout(60000)
+    page.on("pageerror", (err) => console.log("Page error", err.message))
+    page.on("console", (msg) => {
+      if (msg.type() === "error") {
+        console.log("Console error", msg.text())
+      }
+    })
+    await signInTestUser(page)
+    await expect(page.getByRole("link", { name: "Trade Now" })).toBeVisible({
+      timeout: 20000,
+    })
+    const payload = {
+      desiredMode: "replay",
+      phase: "running",
+      activeRunId: "replay-e2e-run",
+      datasetId: "e2e-dataset",
+      sessionId: "session-e2e",
+      version: 1,
+      asOfMs: Date.now() - 60_000,
+      requiredServices: ["mdg", "price-streamer", "market-intel", "signal-evaluator", "ui"],
+      botsReplayEnabled: false,
+      speedScript: [{ speed: 1 }],
+    }
+    await page.evaluate((value) => {
+      window.localStorage.setItem("relayorb.e2eReplayControls", JSON.stringify(value))
+      ;(window as Window & { __E2E_REPLAY_CONTROLS__?: unknown }).__E2E_REPLAY_CONTROLS__ =
+        value
+      window.dispatchEvent(new Event("relayorb:e2e-replay-update"))
+    }, payload)
+    const debug = await page.evaluate(() => {
+      return (window as Window & { __REPLAY_DEBUG__?: unknown }).__REPLAY_DEBUG__ ?? null
+    })
+    console.log("Replay hook debug", debug)
+    const shellDebug = await page.evaluate(() => {
+      return (window as Window & { __APP_SHELL_REPLAY__?: unknown }).__APP_SHELL_REPLAY__ ?? null
+    })
+    console.log("AppShell replay debug", shellDebug)
+    const textPresent = await page.evaluate(() =>
+      document.body.innerText.includes("Replay mode is active")
+    )
+    console.log("Replay banner text present", textPresent)
+    const testIds = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("[data-testid]")).map((el) =>
+        el.getAttribute("data-testid")
+      )
+    )
+    console.log("Test IDs", testIds)
+    const mainSnapshot = await page.evaluate(() => {
+      const main = document.querySelector("main")
+      return main ? main.innerHTML.slice(0, 500) : null
+    })
+    console.log("Main snapshot", mainSnapshot)
+    const bodySnapshot = await page.evaluate(() => document.body.innerHTML.slice(0, 500))
+    console.log("Body snapshot", bodySnapshot)
+    const rootSnapshot = await page.evaluate(() => {
+      const root = document.getElementById("root")
+      return root ? root.innerHTML.slice(0, 500) : null
+    })
+    console.log("Root snapshot", rootSnapshot)
+    const rootShadow = await page.evaluate(() => {
+      const root = document.getElementById("root")
+      return root?.shadowRoot ? root.shadowRoot.innerHTML.slice(0, 200) : null
+    })
+    console.log("Root shadow snapshot", rootShadow)
+    const linkCount = await page.evaluate(() => document.querySelectorAll("a").length)
+    console.log("Link count", linkCount)
+    const locatorLinkCount = await page.locator("a").count()
+    console.log("Locator link count", locatorLinkCount)
+    console.log("Frames", page.frames().map((frame) => frame.url()))
+    const pageContent = (await page.content()).slice(0, 500)
+    console.log("Page content", pageContent)
+    console.log("Page URL", page.url())
+    const banner = page.locator("[data-testid='replay-banner']")
+    await expect(banner).toBeVisible({ timeout: 20000 })
+    await expect(banner).toContainText("Replay mode is active")
+    await expect(banner).toContainText("Run:")
+    await expect(banner).toContainText("Dataset:")
+    await expect(banner).toContainText("Replay time:")
+    await fs.mkdir("docs/ops/replay-evidence", { recursive: true })
+    await page.screenshot({
+      path: "docs/ops/replay-evidence/replay-banner.png",
+      fullPage: true,
     })
   })
 })

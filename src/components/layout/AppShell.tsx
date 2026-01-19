@@ -40,6 +40,8 @@ import { usePresence } from "@/features/presence/use-presence"
 import { PipelineHealthBadge } from "@/components/PipelineHealthBadge"
 import { languageOptions, setStoredLanguage, type SupportedLanguage } from "@/i18n"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
+import { useReplayConsumers } from "@/features/replay/use-replay-consumers"
+import { ReplayControlsPanel } from "@/components/ReplayControlsPanel"
 import { formatTimestamp } from "@/lib/format"
 
 type NavItem = {
@@ -96,10 +98,35 @@ export function AppShell() {
   const navigate = useNavigate()
   const pageTitle = useMemo(() => getPageTitle(pathname, t), [pathname, t])
   const { controls: replayControls, replayActive } = useReplayControls()
+  const { consumerMap } = useReplayConsumers()
   const replayAsOfLabel = useMemo(
     () => formatTimestamp(replayControls?.asOf as Parameters<typeof formatTimestamp>[0]),
     [replayControls?.asOf]
   )
+  const replayRequired = useMemo(() => {
+    const list = Array.isArray(replayControls?.requiredServices)
+      ? replayControls.requiredServices
+      : []
+    return list.length ? list : ["mdg", "price-streamer", "market-intel", "signal-evaluator", "ui"]
+  }, [replayControls?.requiredServices])
+  const replayReady = useMemo(() => {
+    if (!replayActive) return false
+    if (!replayControls?.sessionId || typeof replayControls?.version !== "number") return false
+    return replayRequired.every((serviceName) => {
+      const consumer = consumerMap.get(serviceName)
+      return (
+        consumer?.effectiveMode === "replay" &&
+        consumer?.sessionId === replayControls.sessionId &&
+        consumer?.seenControlsVersion === replayControls.version
+      )
+    })
+  }, [
+    replayActive,
+    replayControls?.sessionId,
+    replayControls?.version,
+    replayRequired,
+    consumerMap,
+  ])
 
   const navItems: NavItem[] = [
     { to: "/", label: t("nav.tradeNow"), icon: <TrendingUp className="h-4 w-4" /> },
@@ -252,6 +279,19 @@ export function AppShell() {
                 <Badge variant="secondary">{t("app.privateAccess")}</Badge>
               )}
 
+              {firebaseEnabled && (
+                <Sheet>
+                  <SheetTrigger asChild>
+                    <Button variant={replayActive ? "secondary" : "outline"} size="sm">
+                      {t("replay.controls.title")}
+                    </Button>
+                  </SheetTrigger>
+                  <SheetContent side="right" className="w-full max-w-lg overflow-y-auto">
+                    <ReplayControlsPanel />
+                  </SheetContent>
+                </Sheet>
+              )}
+
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="icon" aria-label={t("app.language")}>
@@ -292,8 +332,11 @@ export function AppShell() {
             </div>
           </header>
 
-          {replayActive && (
-            <div className="border-b border-amber-200/70 bg-amber-50/80 px-4 py-3 text-sm text-amber-950 md:px-6">
+          {replayReady && (
+            <div
+              data-testid="replay-banner"
+              className="border-b border-amber-200/70 bg-amber-50/80 px-4 py-3 text-sm text-amber-950 md:px-6"
+            >
               <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-3">
                 <Badge variant="destructive" className="uppercase tracking-[0.2em]">
                   {t("replay.active")}
