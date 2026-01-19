@@ -58,6 +58,8 @@ const zhCN = {
     expand: "展开",
     collapse: "收起",
     unknown: "未知",
+    panelTitle: "面板",
+    panelDescription: "侧边面板内容",
   },
   time: {
     day: "天",

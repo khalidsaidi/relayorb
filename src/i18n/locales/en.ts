@@ -59,6 +59,8 @@ const en = {
     expand: "Expand",
     collapse: "Collapse",
     unknown: "unknown",
+    panelTitle: "Panel",
+    panelDescription: "Side panel content",
   },
   time: {
     day: "day",

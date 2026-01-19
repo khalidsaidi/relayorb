@@ -2098,6 +2098,19 @@ async function fetchFmpProfile(symbol) {
   }
 }
 
+async function fetchFmpSharesFloat(symbol) {
+  if (!config.marketDataGatewayUrl) return null
+  if (!symbol) return null
+  try {
+    const data = await fetchGatewayJson("/v1/fmp/shares-float", { symbol })
+    const items = Array.isArray(data?.items) ? data.items : []
+    return items[0] || null
+  } catch (error) {
+    console.error(`Failed to fetch FMP shares float for ${symbol}:`, error.message)
+    return null
+  }
+}
+
 async function fetchStockQuote(symbol) {
   return fetchFmpQuote(symbol, "stock")
 }
@@ -4847,8 +4860,9 @@ async function buildPrebreakout({
 
   const items = await mapWithConcurrency(symbols, 4, async (symbol) => {
     const profile = await fetchFmpProfile(symbol)
+    const sharesFloat = await fetchFmpSharesFloat(symbol)
     const marketCap = resolveProfileMarketCap(profile)
-    const floatShares = resolveProfileFloatShares(profile)
+    const floatShares = resolveProfileFloatShares(sharesFloat || profile)
     if (
       !Number.isFinite(marketCap) ||
       marketCap < PREBREAKOUT_RULES.minMarketCap ||

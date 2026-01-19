@@ -12,6 +12,7 @@ import {
 import {
   Sheet,
   SheetContent,
+  SheetDescription,
   SheetHeader,
   SheetTitle,
   SheetTrigger,
@@ -235,6 +236,9 @@ export function AppShell() {
                 <SheetContent side="left" className="w-64">
                   <SheetHeader>
                     <SheetTitle>{t("app.relayOrb")}</SheetTitle>
+                    <SheetDescription className="sr-only">
+                      {t("app.controlDeck")}
+                    </SheetDescription>
                   </SheetHeader>
                   <nav className="mt-4 flex flex-col gap-1">
                     {navItems.map((item) => (
@@ -287,6 +291,10 @@ export function AppShell() {
                     </Button>
                   </SheetTrigger>
                   <SheetContent side="right" className="w-full max-w-lg overflow-y-auto">
+                    <SheetHeader className="sr-only">
+                      <SheetTitle>{t("replay.controls.title")}</SheetTitle>
+                      <SheetDescription>{t("replay.controls.subtitle")}</SheetDescription>
+                    </SheetHeader>
                     <ReplayControlsPanel />
                   </SheetContent>
                 </Sheet>

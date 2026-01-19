@@ -1351,6 +1351,56 @@ async function handleReplayProfile(res, params, replayState) {
   respondJson(res, 200, { symbol: symbol.toUpperCase(), profile: result.payload, source: "replay" })
 }
 
+async function handleReplaySharesFloat(res, params, replayState) {
+  const symbol = params.get("symbol") || ""
+  const assetClass = params.get("assetClass") || "stock"
+  const context = await resolveReplaySymbolContext(replayState, assetClass, symbol)
+  if (context.error) {
+    respondReplayError(res, context.error.status, context.error.payload)
+    return
+  }
+  const { legacyKey, symbolKeyV2, tapeDate, manifest } = context
+  const artifactEntry = getArtifactEntry(manifest, symbolKeyV2)
+  if (artifactEntry && artifactEntry.sharesFloat === false) {
+    respondReplayError(
+      res,
+      404,
+      buildReplayMissingPayload({
+        legacyKey,
+        symbolKeyV2,
+        artifact: "sharesFloat",
+        tapeDate,
+        runId: replayState.runId,
+      })
+    )
+    return
+  }
+
+  const path = `${config.replayPrefix}/tapes/profile/${symbolKeyV2}.shares-float.json`
+  const cacheKey = buildCacheKey(`replay:shares-float:${symbolKeyV2}`, replayState)
+  const result = await loadReplayArtifact(path, cacheKey, false)
+  if (result.missing) {
+    respondReplayError(
+      res,
+      404,
+      buildReplayMissingPayload({
+        legacyKey,
+        symbolKeyV2,
+        artifact: "sharesFloat",
+        tapeDate,
+        runId: replayState.runId,
+      })
+    )
+    return
+  }
+  const payload = Array.isArray(result.payload)
+    ? result.payload
+    : result.payload
+      ? [result.payload]
+      : []
+  respondJson(res, 200, { symbol: symbol.toUpperCase(), items: payload, source: "replay" })
+}
+
 function extractPublishedAt(item) {
   const raw =
     item?.publishedAt ||
@@ -1702,12 +1752,25 @@ async function handleFmpCandles(req, res, params, replayState) {
   }
 
   const startedAt = Date.now()
-  const url = new URL(`${config.fmpBaseUrl}/stable/historical-chart/${fmpInterval}`)
-  url.searchParams.set("symbol", normalized)
-  url.searchParams.set("apikey", config.fmpKey)
   let data = []
   try {
-    data = await fetchJson(url.toString())
+    if (fmpInterval === "1day" || fmpInterval === "1week") {
+      try {
+        data = await fetchFmpHistoricalFull(normalized, null, null)
+      } catch (err) {
+        console.error(`Daily full fetch failed for ${normalized}:`, err.message)
+        data = []
+      }
+      if (!Array.isArray(data) || data.length <= 1) {
+        const hourlyRange = await fetchFmpHistoricalBars(normalized, "1hour", null, null)
+        data = buildDailyBarsFromIntraday(hourlyRange)
+      }
+    } else {
+      const url = new URL(`${config.fmpBaseUrl}/stable/historical-chart/${fmpInterval}`)
+      url.searchParams.set("symbol", normalized)
+      url.searchParams.set("apikey", config.fmpKey)
+      data = await fetchJson(url.toString())
+    }
   } catch (err) {
     await emitProviderEvent({
       stationId: "provider:fmp",
@@ -1763,11 +1826,12 @@ async function handleFmpCandles(req, res, params, replayState) {
     .filter(Boolean)
     .sort((a, b) => a.time - b.time)
 
+  const trimmed = limit && candles.length > limit ? candles.slice(-limit) : candles
   const payload = {
     symbol,
     assetClass,
     interval: fmpInterval,
-    candles: candles.slice(-limit),
+    candles: trimmed,
     source: "fmp",
   }
   setCached(cacheKey, payload, config.cacheCandlesMs)
@@ -2269,6 +2333,66 @@ async function handleFmpProfile(req, res, params, replayState) {
   })
 }
 
+async function handleFmpSharesFloat(req, res, params, replayState) {
+  if (replayState?.mode === "replay") {
+    await handleReplaySharesFloat(res, params, replayState)
+    return
+  }
+  if (!config.fmpKey) {
+    respondJson(res, 500, { error: "FMP_API_KEY is not configured" })
+    return
+  }
+
+  const symbol = (params.get("symbol") || "").toUpperCase().replace(/[/-]/g, "")
+  if (!symbol) {
+    respondJson(res, 400, { error: "Missing symbol" })
+    return
+  }
+
+  const cacheKey = `fmp:shares-float:${symbol}`
+  const cached = getCached(cacheKey)
+  if (cached) {
+    respondJson(res, 200, cached)
+    return
+  }
+
+  const startedAt = Date.now()
+  const url = new URL(`${config.fmpStableBaseUrl}/shares-float`)
+  url.searchParams.set("symbol", symbol)
+  url.searchParams.set("apikey", config.fmpKey)
+
+  let data = null
+  try {
+    data = await fetchJson(url.toString())
+  } catch (err) {
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "error",
+      startMs: startedAt,
+      meta: { providerId: "fmp", endpointName: "shares-float", paramsHash: hashParams({ symbol }) },
+      error: { message: err?.message ? String(err.message) : "Request failed" },
+    })
+    throw err
+  }
+
+  const items = Array.isArray(data) ? data : []
+  const payload = { symbol, items, source: "fmp" }
+  setCached(cacheKey, payload, config.cacheMarketsMs * 10)
+  respondJson(res, 200, payload)
+  await emitProviderEvent({
+    stationId: "provider:fmp",
+    status: "end",
+    startMs: startedAt,
+    meta: {
+      providerId: "fmp",
+      endpointName: "shares-float",
+      paramsHash: hashParams({ symbol }),
+      httpStatus: 200,
+      count: items.length,
+    },
+  })
+}
+
 async function handleFmpNews(req, res, params, replayState) {
   if (replayState?.mode === "replay") {
     await handleReplayNews(res, params, replayState)
@@ -2751,6 +2875,75 @@ function extractMarketauxSymbols(item) {
   return []
 }
 
+function extractDateKey(raw) {
+  if (!raw) return null
+  const str = String(raw)
+  if (!str) return null
+  if (str.includes(" ")) return str.split(" ")[0]
+  if (str.includes("T")) return str.split("T")[0]
+  const parsed = new Date(str)
+  if (!Number.isFinite(parsed.getTime())) return null
+  return parsed.toISOString().slice(0, 10)
+}
+
+function extractTimeMs(raw) {
+  if (!raw) return null
+  const parsed = new Date(raw)
+  if (!Number.isFinite(parsed.getTime())) return null
+  return parsed.getTime()
+}
+
+function filterIntradayBarsForDate(bars, dateKey) {
+  if (!Array.isArray(bars) || !dateKey) return []
+  return bars.filter((entry) => extractDateKey(entry?.date || entry?.time || entry?.timestamp) === dateKey)
+}
+
+function buildDailyBarsFromIntraday(bars) {
+  if (!Array.isArray(bars) || bars.length === 0) return []
+  const days = new Map()
+  bars.forEach((entry) => {
+    const timeRaw = entry?.date || entry?.time || entry?.timestamp
+    const dateKey = extractDateKey(timeRaw)
+    const timeMs = extractTimeMs(timeRaw)
+    if (!dateKey || !timeMs) return
+    const open = parseNumber(entry.open)
+    const high = parseNumber(entry.high)
+    const low = parseNumber(entry.low)
+    const close = parseNumber(entry.close)
+    if (open === undefined || high === undefined || low === undefined || close === undefined) return
+    const volume = parseNumber(entry.volume) || 0
+    const existing = days.get(dateKey)
+    if (!existing) {
+      days.set(dateKey, {
+        date: dateKey,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        firstTs: timeMs,
+        lastTs: timeMs,
+      })
+      return
+    }
+    if (timeMs < existing.firstTs) {
+      existing.firstTs = timeMs
+      existing.open = open
+    }
+    if (timeMs > existing.lastTs) {
+      existing.lastTs = timeMs
+      existing.close = close
+    }
+    existing.high = Math.max(existing.high, high)
+    existing.low = Math.min(existing.low, low)
+    existing.volume = (existing.volume || 0) + volume
+  })
+
+  return Array.from(days.values())
+    .sort((a, b) => (a.date < b.date ? 1 : -1))
+    .map(({ firstTs, lastTs, ...rest }) => rest)
+}
+
 function buildMarketauxIndex(items) {
   const index = new Map()
   items.forEach((item) => {
@@ -2791,8 +2984,66 @@ async function fetchFmpHistoricalBars(symbol, interval, fromDate, toDate) {
   url.searchParams.set("apikey", config.fmpKey)
   if (fromDate) url.searchParams.set("from", fromDate)
   if (toDate) url.searchParams.set("to", toDate)
-  const data = await fetchJsonWithRetry(url.toString())
-  return Array.isArray(data) ? data : []
+  try {
+    const data = await fetchJsonWithRetry(url.toString())
+    return Array.isArray(data) ? data : []
+  } catch (err) {
+    const message = err?.message ? String(err.message) : ""
+    if (message.includes("Request failed 404")) return []
+    throw err
+  }
+}
+
+async function fetchFmpHistoricalFull(symbol, fromDate, toDate) {
+  if (!config.fmpKey) throw new Error("FMP API key is not configured")
+  const buildUrl = (base, path, withSymbolParam = true) => {
+    const url = new URL(`${base}${path}`)
+    if (withSymbolParam) url.searchParams.set("symbol", symbol)
+    url.searchParams.set("apikey", config.fmpKey)
+    return url
+  }
+  const candidates = [
+    buildUrl(config.fmpStableBaseUrl, "/historical-price-full", true),
+    buildUrl(config.fmpStableBaseUrl, `/historical-price-full/${symbol}`, false),
+    buildUrl(config.fmpBaseUrl, "/api/v3/historical-price-full", true),
+    buildUrl(config.fmpBaseUrl, `/api/v3/historical-price-full/${symbol}`, false),
+  ]
+  let data = null
+  let historical = []
+  let lastErr = null
+  for (const candidate of candidates) {
+    try {
+      data = await fetchJsonWithRetry(candidate.toString())
+    } catch (err) {
+      const message = err?.message ? String(err.message) : ""
+      lastErr = err
+      if (message.includes("Request failed 404")) {
+        continue
+      }
+      throw err
+    }
+    historical = Array.isArray(data?.historical)
+      ? data.historical
+      : Array.isArray(data?.data)
+        ? data.data
+        : Array.isArray(data)
+          ? data
+          : []
+    if (historical.length) break
+  }
+  if (!historical.length && lastErr) throw lastErr
+  if (!historical.length || (!fromDate && !toDate)) return historical
+  const fromMs = fromDate ? new Date(fromDate).getTime() : null
+  const toMs = toDate ? new Date(toDate).getTime() : null
+  return historical.filter((entry) => {
+    const rawDate = entry?.date ?? entry?.timestamp ?? entry?.time
+    if (!rawDate) return false
+    const ms = typeof rawDate === "number" ? (rawDate > 1e12 ? rawDate : rawDate * 1000) : new Date(rawDate).getTime()
+    if (!Number.isFinite(ms)) return false
+    if (fromMs && ms < fromMs) return false
+    if (toMs && ms > toMs) return false
+    return true
+  })
 }
 
 async function fetchFmpProfileData(symbol) {
@@ -2803,6 +3054,15 @@ async function fetchFmpProfileData(symbol) {
   const data = await fetchJsonWithRetry(url.toString())
   if (!Array.isArray(data)) return null
   return data[0] || null
+}
+
+async function fetchFmpSharesFloatData(symbol) {
+  if (!config.fmpKey) throw new Error("FMP API key is not configured")
+  const url = new URL(`${config.fmpStableBaseUrl}/shares-float`)
+  url.searchParams.set("symbol", symbol)
+  url.searchParams.set("apikey", config.fmpKey)
+  const data = await fetchJsonWithRetry(url.toString())
+  return Array.isArray(data) ? data : []
 }
 
 async function fetchMarketauxNewsForSymbols(symbols, limit) {
@@ -2843,6 +3103,7 @@ async function handleReplayBuildTape(req, res, params) {
   const datasetId = params.get("datasetId") || body?.datasetId || date
   const assetClass = (body?.assetClass || params.get("assetClass") || "stock").toLowerCase()
   const includeProfile = body?.includeProfile !== false
+  const includeSharesFloat = body?.includeSharesFloat !== false
   const includeNews = body?.includeNews === true || params.get("includeNews") === "true"
   const lookbackDays = clamp(
     parseInt(body?.lookbackDays || params.get("lookbackDays") || config.replayBuildLookbackDays, 10),
@@ -2947,6 +3208,15 @@ async function handleReplayBuildTape(req, res, params) {
             console.error(`Profile fetch failed for ${rawSymbol}:`, err.message)
           }
         }
+        let sharesFloat = null
+        if (includeSharesFloat) {
+          try {
+            sharesFloat = await fetchFmpSharesFloatData(fmpSymbol)
+          } catch (err) {
+            console.error(`Shares float fetch failed for ${rawSymbol}:`, err.message)
+            sharesFloat = null
+          }
+        }
 
         const venueInfo = resolveVenueInfo(rawSymbol, exchangeHint)
         const normalizedSymbol = normalizeSymbolKeyV2(rawSymbol, venueInfo.venue)
@@ -2958,16 +3228,49 @@ async function handleReplayBuildTape(req, res, params) {
         let bars1m = null
         let bars1d = null
         try {
-          bars1m = await fetchFmpHistoricalBars(fmpSymbol, "1min", date, date)
-          bars1d = await fetchFmpHistoricalBars(fmpSymbol, "1day", fromDate, date)
+          const intradayRange = await fetchFmpHistoricalBars(fmpSymbol, "1min", fromDate, date)
+          bars1m = filterIntradayBarsForDate(intradayRange, date)
         } catch (err) {
           return { rawSymbol, legacyKey, symbolKeyV2, error: err.message || "FMP fetch failed" }
+        }
+
+        try {
+          let dailyRange = await fetchFmpHistoricalBars(fmpSymbol, "1day", fromDate, date)
+          if (!Array.isArray(dailyRange) || dailyRange.length <= 1) {
+            dailyRange = await fetchFmpHistoricalBars(fmpSymbol, "1day", null, null)
+          }
+          if (!Array.isArray(dailyRange) || dailyRange.length <= 1) {
+            try {
+              dailyRange = await fetchFmpHistoricalFull(fmpSymbol, null, null)
+            } catch (err) {
+              console.error(`Daily full fetch failed for ${rawSymbol}:`, err.message)
+            }
+          }
+          if (!Array.isArray(dailyRange) || dailyRange.length <= 1) {
+            try {
+              const hourlyRange = await fetchFmpHistoricalBars(fmpSymbol, "1hour", null, null)
+              dailyRange = buildDailyBarsFromIntraday(hourlyRange)
+            } catch (err) {
+              console.error(`Daily from hourly failed for ${rawSymbol}:`, err.message)
+            }
+          }
+          const fromMs = fromDate ? new Date(fromDate).getTime() : null
+          const toMs = date ? new Date(date).getTime() : null
+          bars1d = normalizeReplayCandles(dailyRange).filter((candle) => {
+            if (fromMs && candle.time < fromMs) return false
+            if (toMs && candle.time > toMs) return false
+            return true
+          })
+        } catch (err) {
+          console.error(`Daily bars fetch failed for ${rawSymbol}:`, err.message)
+          bars1d = null
         }
 
         const artifacts = {
           bars1m: Array.isArray(bars1m) && bars1m.length > 0,
           bars1d: Array.isArray(bars1d) && bars1d.length > 0,
           profile: Boolean(profile),
+          sharesFloat: Array.isArray(sharesFloat) && sharesFloat.length > 0,
           news: includeNews && Boolean(newsIndex),
         }
 
@@ -2990,6 +3293,13 @@ async function handleReplayBuildTape(req, res, params) {
           await writeReplayArtifact(
             `${config.replayPrefix}/tapes/profile/${symbolKeyV2}.json`,
             profile,
+            false
+          )
+        }
+        if (includeSharesFloat && Array.isArray(sharesFloat) && sharesFloat.length > 0) {
+          await writeReplayArtifact(
+            `${config.replayPrefix}/tapes/profile/${symbolKeyV2}.shares-float.json`,
+            sharesFloat,
             false
           )
         }
@@ -3091,6 +3401,7 @@ async function requestHandler(req, res) {
       "/v1/fmp/quotes",
       "/v1/fmp/candles",
       "/v1/fmp/profile",
+      "/v1/fmp/shares-float",
       "/v1/fmp/news",
     ])
 
@@ -3176,6 +3487,10 @@ async function requestHandler(req, res) {
     }
     if (path === "/v1/fmp/profile") {
       await handleFmpProfile(req, res, params, replayState)
+      return
+    }
+    if (path === "/v1/fmp/shares-float") {
+      await handleFmpSharesFloat(req, res, params, replayState)
       return
     }
     if (path === "/v1/fmp/news") {
