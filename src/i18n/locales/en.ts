@@ -61,6 +61,8 @@ const en = {
     unknown: "unknown",
     panelTitle: "Panel",
     panelDescription: "Side panel content",
+    dialogTitle: "Dialog",
+    dialogDescription: "Dialog content",
   },
   time: {
     day: "day",

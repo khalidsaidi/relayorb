@@ -56,6 +56,26 @@ function DialogContent({
   showCloseButton?: boolean
 }) {
   const { t } = useTranslation()
+  const hasChildOfType = (
+    node: React.ReactNode,
+    target: React.ElementType
+  ): boolean => {
+    let found = false
+    React.Children.forEach(node, (child) => {
+      if (found) return
+      if (!React.isValidElement(child)) return
+      if (child.type === target) {
+        found = true
+        return
+      }
+      if (child.props?.children) {
+        found = hasChildOfType(child.props.children, target)
+      }
+    })
+    return found
+  }
+  const hasTitle = hasChildOfType(children, DialogTitle)
+  const hasDescription = hasChildOfType(children, DialogDescription)
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay />
@@ -67,6 +87,16 @@ function DialogContent({
         )}
         {...props}
       >
+        {!hasTitle || !hasDescription ? (
+          <DialogHeader className="sr-only">
+            {!hasTitle ? (
+              <DialogTitle>{t("common.dialogTitle")}</DialogTitle>
+            ) : null}
+            {!hasDescription ? (
+              <DialogDescription>{t("common.dialogDescription")}</DialogDescription>
+            ) : null}
+          </DialogHeader>
+        ) : null}
         {children}
         {showCloseButton && (
           <DialogPrimitive.Close

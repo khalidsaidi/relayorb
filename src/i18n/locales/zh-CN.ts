@@ -60,6 +60,8 @@ const zhCN = {
     unknown: "未知",
     panelTitle: "面板",
     panelDescription: "侧边面板内容",
+    dialogTitle: "对话框",
+    dialogDescription: "对话框内容",
   },
   time: {
     day: "天",
