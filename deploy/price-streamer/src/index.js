@@ -497,7 +497,7 @@ async function tickReplayClock() {
         ...replayControlsCache.value,
         asOf: admin.firestore.Timestamp.fromDate(nextDate),
       }
-      replayControlsCache.expiresAt = Date.now() + config.replayControlsCacheMs
+      replayControlsCache.expiresAt = Date.now()
     }
   } catch (err) {
     console.error("Replay asOf update failed:", err.message)

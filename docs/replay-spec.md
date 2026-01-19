@@ -41,11 +41,11 @@ botsReplayEnabled: false
 ## Replay Run Storage (Additive)
 Firestore:
 ```
-replay/runs/{runId}
-replay/runs/{runId}/configSnapshot
-replay/runs/{runId}/market/*
-replay/runs/{runId}/symbolMap/{legacyKey}
-replay/consumers/{serviceName}
+replay/controls/runs/{runId}
+replay/controls/runs/{runId}/configSnapshot/meta
+replay/controls/runs/{runId}/market/*
+replay/controls/runs/{runId}/symbolMap/{legacyKey}
+replay/controls/consumers/{serviceName}
 ```
 
 GCS:
@@ -54,7 +54,7 @@ gs://<bucket>/replay/tapes/stocks/{tapeDate}/{symbolKeyV2}.bars.1m.json.gz
 gs://<bucket>/replay/tapes/stocks/{tapeDate}/{symbolKeyV2}.bars.1d.json.gz
 gs://<bucket>/replay/tapes/profile/{symbolKeyV2}.json
 gs://<bucket>/replay/tapes/news/{tapeDate}/by_symbol/{symbolKeyV2}.json.gz
-gs://<bucket>/replay/tapes/stocks/{tapeDate}/manifest.json
+gs://<bucket>/replay/tapes/stocks/{datasetId}/manifest.json
 gs://<bucket>/replay/runs/{runId}/resolved_symbols.json
 ```
 

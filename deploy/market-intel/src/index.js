@@ -1534,7 +1534,7 @@ async function readControls(db) {
 async function readReplayConfigSnapshot(db, runId) {
   if (!runId) return null
   const snap = await db
-    .doc(`replay/controls/runs/${runId}/configSnapshot`)
+    .doc(`replay/controls/runs/${runId}/configSnapshot/meta`)
     .get()
     .catch(() => null)
   if (!snap?.exists) return null
@@ -1544,7 +1544,7 @@ async function readReplayConfigSnapshot(db, runId) {
 async function writeReplayConfigSnapshot(db, runId, payload) {
   if (!runId) return
   try {
-    await db.doc(`replay/controls/runs/${runId}/configSnapshot`).set(
+    await db.doc(`replay/controls/runs/${runId}/configSnapshot/meta`).set(
       compactObject({
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         ...payload,

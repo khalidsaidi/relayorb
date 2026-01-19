@@ -410,7 +410,7 @@ function translateDetail(line: string, t: TFunction) {
   if (swingDistribution) {
     return t("analysis.lines.swingDistribution", {
       lookback: swingDistribution[1],
-      count: swingDistribution[2],
+      count: Number(swingDistribution[2]),
       max: swingDistribution[3],
     })
   }
@@ -495,7 +495,7 @@ function translateDetail(line: string, t: TFunction) {
   )
   if (prebreakoutNarrative) {
     return t("analysis.lines.prebreakoutNarrative", {
-      count: prebreakoutNarrative[1],
+      count: Number(prebreakoutNarrative[1]),
       max: prebreakoutNarrative[2],
     })
   }

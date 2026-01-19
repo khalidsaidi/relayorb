@@ -1,0 +1,1 @@
+{"missing":{"code":"REPLAY_TAPE_MISSING","legacyKey":"stock:MSFT","symbolKeyV2":null,"artifact":"symbolMap","tapeDate":"2024-01-16","runId":"replay-2024-01-test"},"outOfCoverage":{"code":"REPLAY_TAPE_MISSING","legacyKey":"stock:EMPTY","symbolKeyV2":"stock:US:EMPTY","artifact":"bars1m","tapeDate":"2024-01-16","runId":"replay-2024-01-test"}}
