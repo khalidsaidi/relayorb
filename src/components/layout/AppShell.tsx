@@ -34,8 +34,10 @@ import {
   Languages,
 } from "lucide-react"
 import { useAuth } from "@/features/auth/auth-context"
-import { auth, firebaseEnabled } from "@/lib/firebase"
+import { auth, db, firebaseEnabled } from "@/lib/firebase"
 import { signOut } from "firebase/auth"
+import { doc, setDoc } from "firebase/firestore"
+import { toast } from "sonner"
 import { SidebarPaperProfile } from "./SidebarPaperProfile"
 import { usePresence } from "@/features/presence/use-presence"
 import { PipelineHealthBadge } from "@/components/PipelineHealthBadge"
@@ -128,6 +130,21 @@ export function AppShell() {
     replayRequired,
     consumerMap,
   ])
+  const replayPlaybackLabel = useMemo(() => {
+    if (!replayActive) return t("replay.controls.playbackStopped")
+    return replayControls?.phase === "paused"
+      ? t("replay.controls.playbackPaused")
+      : t("replay.controls.playbackRunning")
+  }, [replayActive, replayControls?.phase, t])
+  const replayDesiredMode = replayControls?.desiredMode ?? "live"
+  const replayRunId = replayControls?.activeRunId ?? ""
+  const replayDatasetId = replayControls?.datasetId ?? ""
+  const replaySpeedScript =
+    Array.isArray(replayControls?.speedScript) && replayControls.speedScript.length
+      ? replayControls.speedScript
+      : [{ speed: 1 }]
+  const replayBotsEnabled = replayControls?.botsReplayEnabled === true
+  const canWriteReplayControls = Boolean(firebaseEnabled && db)
 
   const navItems: NavItem[] = [
     { to: "/", label: t("nav.tradeNow"), icon: <TrendingUp className="h-4 w-4" /> },
@@ -146,6 +163,8 @@ export function AppShell() {
     if (typeof window === "undefined") return false
     return localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1"
   })
+  const [replaySheetOpen, setReplaySheetOpen] = useState(false)
+  const [replayToggleBusy, setReplayToggleBusy] = useState(false)
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_STORAGE_KEY, sidebarCollapsed ? "1" : "0")
@@ -155,6 +174,61 @@ export function AppShell() {
     if (!firebaseEnabled || !auth) return
     await signOut(auth)
     navigate("/signin", { replace: true })
+  }
+
+  function nextReplayVersion() {
+    const current = typeof replayControls?.version === "number" ? replayControls.version : 0
+    return current + 1
+  }
+
+  async function updateReplayControls(patch: Record<string, unknown>, successMessage: string) {
+    if (!canWriteReplayControls || !db) {
+      toast.error(t("replay.controls.notAvailable"))
+      return
+    }
+    try {
+      const ref = doc(db, "replay", "controls")
+      await setDoc(ref, patch, { merge: true })
+      toast.success(successMessage)
+    } catch {
+      toast.error(t("replay.controls.updateFailed"))
+    }
+  }
+
+  async function handleReplayModeChange(nextMode: "live" | "replay") {
+    if (replayToggleBusy) return
+    if (nextMode === replayDesiredMode) return
+    if (nextMode === "replay" && (!replayRunId.trim() || !replayDatasetId.trim())) {
+      toast.error(t("replay.controls.runIdRequired"))
+      setReplaySheetOpen(true)
+      return
+    }
+    setReplayToggleBusy(true)
+    try {
+      if (nextMode === "replay") {
+        await updateReplayControls(
+          {
+            desiredMode: "replay",
+            phase: "running",
+            sessionId: `session-${Date.now()}`,
+            version: nextReplayVersion(),
+            activeRunId: replayRunId,
+            datasetId: replayDatasetId,
+            requiredServices: replayRequired,
+            speedScript: replaySpeedScript,
+            botsReplayEnabled: replayBotsEnabled,
+          },
+          t("replay.controls.switchQueued")
+        )
+      } else {
+        await updateReplayControls(
+          { desiredMode: "live", phase: "ready" },
+          t("replay.controls.stopped")
+        )
+      }
+    } finally {
+      setReplayToggleBusy(false)
+    }
   }
 
   const initials =
@@ -284,20 +358,45 @@ export function AppShell() {
               )}
 
               {firebaseEnabled && (
-                <Sheet>
-                  <SheetTrigger asChild>
-                    <Button variant={replayActive ? "secondary" : "outline"} size="sm">
-                      {t("replay.controls.title")}
+                <>
+                  <div className="flex items-center rounded-full border border-border/60 bg-background/80 p-0.5">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={replayDesiredMode === "live" ? "secondary" : "ghost"}
+                      onClick={() => handleReplayModeChange("live")}
+                      disabled={!canWriteReplayControls || replayToggleBusy}
+                      aria-pressed={replayDesiredMode === "live"}
+                    >
+                      {t("replay.controls.mode.live")}
                     </Button>
-                  </SheetTrigger>
-                  <SheetContent side="right" className="w-full max-w-lg overflow-y-auto">
-                    <SheetHeader className="sr-only">
-                      <SheetTitle>{t("replay.controls.title")}</SheetTitle>
-                      <SheetDescription>{t("replay.controls.subtitle")}</SheetDescription>
-                    </SheetHeader>
-                    <ReplayControlsPanel />
-                  </SheetContent>
-                </Sheet>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={replayDesiredMode === "replay" ? "secondary" : "ghost"}
+                      onClick={() => handleReplayModeChange("replay")}
+                      disabled={!canWriteReplayControls || replayToggleBusy}
+                      aria-pressed={replayDesiredMode === "replay"}
+                    >
+                      {t("replay.controls.mode.replay")}
+                    </Button>
+                  </div>
+
+                  <Sheet open={replaySheetOpen} onOpenChange={setReplaySheetOpen}>
+                    <SheetTrigger asChild>
+                      <Button variant={replayActive ? "secondary" : "outline"} size="sm">
+                        {t("replay.controls.title")}
+                      </Button>
+                    </SheetTrigger>
+                    <SheetContent side="right" className="w-full max-w-lg overflow-y-auto">
+                      <SheetHeader className="sr-only">
+                        <SheetTitle>{t("replay.controls.title")}</SheetTitle>
+                        <SheetDescription>{t("replay.controls.subtitle")}</SheetDescription>
+                      </SheetHeader>
+                      <ReplayControlsPanel />
+                    </SheetContent>
+                  </Sheet>
+                </>
               )}
 
               <DropdownMenu>
@@ -361,7 +460,7 @@ export function AppShell() {
                   {t("replay.asOf")}: {replayAsOfLabel}
                 </span>
                 <span className="text-amber-900/80">
-                  {t("replay.phase")}: {replayControls?.phase || t("common.na")}
+                  {t("replay.controls.playbackLabel")}: {replayPlaybackLabel}
                 </span>
               </div>
             </div>

@@ -77,5 +77,17 @@ export function formatNumber(value?: number | null) {
   return value.toLocaleString()
 }
 
+export function formatSessionTimeLabel(value?: string | null) {
+  if (!value) return "—"
+  const match = value.match(/^(\d{1,2}):(\d{2})$/)
+  if (!match) return value
+  const hours = Number(match[1])
+  if (!Number.isFinite(hours)) return value
+  const minutes = match[2]
+  const period = hours >= 12 ? "PM" : "AM"
+  const normalizedHours = ((hours + 11) % 12) + 1
+  return `${normalizedHours}:${minutes} ${period}`
+}
+
 // Re-export market-related formatting functions for convenience
 export { formatCountdown, getMarketHoursText } from "./marketHours"

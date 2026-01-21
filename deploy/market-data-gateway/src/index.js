@@ -4,6 +4,7 @@ const admin = require("firebase-admin")
 const { Storage } = require("@google-cloud/storage")
 const { createClient } = require("redis")
 const zlib = require("zlib")
+const { fromZonedTime } = require("date-fns-tz")
 
 const config = {
   projectId:
@@ -608,9 +609,13 @@ function getLocalDateParts(timestampMs, timezone) {
   const year = parseInt(lookup.year, 10)
   const month = parseInt(lookup.month, 10)
   const day = parseInt(lookup.day, 10)
-  const hour = parseInt(lookup.hour, 10)
+  let hour = parseInt(lookup.hour, 10)
   const minute = parseInt(lookup.minute, 10)
   const second = parseInt(lookup.second, 10)
+  if (hour === 24) {
+    // Some locales report 24:xx for midnight; normalize to 00:xx for tapeDate math.
+    hour = 0
+  }
   return {
     year,
     month,
@@ -886,13 +891,7 @@ function normalizeReplayCandle(entry) {
     entry.datetime ??
     entry.start ??
     null
-  let timeMs = null
-  if (typeof rawTime === "number") {
-    timeMs = rawTime > 1e12 ? rawTime : rawTime * 1000
-  } else if (rawTime) {
-    const parsed = new Date(rawTime).getTime()
-    timeMs = Number.isFinite(parsed) ? parsed : null
-  }
+  const timeMs = parseFmpTimestamp(rawTime)
   const open = parseNumber(entry.open ?? entry.o)
   const high = parseNumber(entry.high ?? entry.h)
   const low = parseNumber(entry.low ?? entry.l)
@@ -2887,8 +2886,25 @@ function extractDateKey(raw) {
 }
 
 function extractTimeMs(raw) {
+  return parseFmpTimestamp(raw)
+}
+
+function parseFmpTimestamp(raw, timezone = "America/New_York") {
   if (!raw) return null
-  const parsed = new Date(raw)
+  if (typeof raw === "number") {
+    return raw > 1e12 ? raw : raw * 1000
+  }
+  const str = String(raw)
+  if (!str) return null
+  const hasOffset = /Z|[+-]\d{2}:?\d{2}$/.test(str)
+  const naiveDateMatch = /^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?$/.test(str)
+  if (!hasOffset && naiveDateMatch) {
+    const iso = str.includes("T") ? str : str.replace(" ", "T")
+    const withTime = iso.length === 10 ? `${iso}T00:00:00` : iso
+    const zoned = fromZonedTime(withTime, timezone)
+    return Number.isNaN(zoned.getTime()) ? null : zoned.getTime()
+  }
+  const parsed = new Date(str)
   if (!Number.isFinite(parsed.getTime())) return null
   return parsed.getTime()
 }
@@ -3228,7 +3244,8 @@ async function handleReplayBuildTape(req, res, params) {
         let bars1m = null
         let bars1d = null
         try {
-          const intradayRange = await fetchFmpHistoricalBars(fmpSymbol, "1min", fromDate, date)
+          // Only fetch the target session for intraday bars; daily lookback is handled separately.
+          const intradayRange = await fetchFmpHistoricalBars(fmpSymbol, "1min", date, date)
           bars1m = filterIntradayBarsForDate(intradayRange, date)
         } catch (err) {
           return { rawSymbol, legacyKey, symbolKeyV2, error: err.message || "FMP fetch failed" }

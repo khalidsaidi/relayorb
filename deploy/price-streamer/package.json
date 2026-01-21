@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "firebase-admin": "^13.6.0",
-    "redis": "^4.7.1"
+    "redis": "^4.7.1",
+    "ws": "^8.18.1"
   }
 }

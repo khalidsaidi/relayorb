@@ -36,7 +36,7 @@ import type {
 } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { formatAssetPrice, formatRelativeTimestamp, formatTimestamp } from "@/lib/format"
+import { formatAssetPrice, formatRelativeTimestamp, formatSessionTimeLabel, formatTimestamp } from "@/lib/format"
 import { StatusBadge } from "@/components/StatusBadge"
 import { MarketStatusBadge } from "@/components/MarketStatusBadge"
 import { PaperTradeButton } from "@/components/paper/PaperTradeButton"
@@ -248,6 +248,7 @@ export default function DashboardPage() {
   const [prebreakout, setPrebreakout] = useState<MarketHotTrade[]>([])
   const [prebreakoutUpdatedAt, setPrebreakoutUpdatedAt] =
     useState<MarketPrebreakoutDoc["updatedAt"]>()
+  const [prebreakoutMeta, setPrebreakoutMeta] = useState<MarketPrebreakoutDoc["meta"]>()
   const [trending, setTrending] = useState<MarketTrendingDoc | null>(null)
   const [trendingUpdatedAt, setTrendingUpdatedAt] = useState<MarketTrendingDoc["updatedAt"]>()
   const [popular, setPopular] = useState<MarketPopularDoc | null>(null)
@@ -616,6 +617,7 @@ export default function DashboardPage() {
     if (e2eOverride) {
       setPrebreakout(e2eOverride.items ?? [])
       setPrebreakoutUpdatedAt(e2eOverride.updatedAt)
+      setPrebreakoutMeta(e2eOverride.meta ?? {})
       setLoadingPrebreakout(false)
       return
     }
@@ -636,16 +638,18 @@ export default function DashboardPage() {
       : doc(db, "market", "prebreakout")
     return onSnapshot(ref, (snap) => {
       if (!snap.exists()) {
-        setPrebreakout([])
-        setPrebreakoutUpdatedAt(undefined)
-        setLoadingPrebreakout(false)
-        return
-      }
-      const data = snap.data() as MarketPrebreakoutDoc
-      setPrebreakout(data.items ?? [])
-      setPrebreakoutUpdatedAt(data.updatedAt)
+      setPrebreakout([])
+      setPrebreakoutUpdatedAt(undefined)
+      setPrebreakoutMeta(undefined)
       setLoadingPrebreakout(false)
-    })
+      return
+    }
+    const data = snap.data() as MarketPrebreakoutDoc
+    setPrebreakout(data.items ?? [])
+    setPrebreakoutUpdatedAt(data.updatedAt)
+    setPrebreakoutMeta(data.meta ?? {})
+    setLoadingPrebreakout(false)
+  })
   }, [replayActive, replayRunId])
 
   useEffect(() => {
@@ -1831,6 +1835,29 @@ export default function DashboardPage() {
     () => prebreakout.filter((trade) => trade.assetClass === "stock"),
     [prebreakout]
   )
+  const prebreakoutEntryBadge = useMemo(() => {
+    if (!prebreakoutMeta || typeof prebreakoutMeta !== "object") return null
+    const meta = prebreakoutMeta as Record<string, unknown>
+    const entryWindow = meta.entryWindow as
+      | { start?: string; end?: string; close?: string; timezone?: string }
+      | undefined
+    if (!entryWindow?.start) return null
+    const timezone =
+      entryWindow.timezone === "America/New_York" ? "ET" : entryWindow.timezone || "ET"
+    const status = typeof meta.status === "string" ? meta.status : ""
+    const ready = meta.ready === true || status === "active"
+    if (ready) {
+      const end = entryWindow.end || entryWindow.close || entryWindow.start
+      return t("tradeNow.prebreakoutEntryWindowOpen", {
+        time: formatSessionTimeLabel(end),
+        tz: timezone,
+      })
+    }
+    return t("tradeNow.prebreakoutEntryWindowOpens", {
+      time: formatSessionTimeLabel(entryWindow.start),
+      tz: timezone,
+    })
+  }, [prebreakoutMeta, t])
 
   const paperMonitorItems = useMemo(
     () => [...hotTrades, ...swingOvernight, ...prebreakout],
@@ -4045,6 +4072,11 @@ export default function DashboardPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
+                      {prebreakoutEntryBadge && (
+                        <Badge variant="outline" className="text-[10px]">
+                          {prebreakoutEntryBadge}
+                        </Badge>
+                      )}
                       {prebreakoutUpdatedAt && (
                         <Badge variant="outline">
                           {t("tradeNow.updatedAt", {

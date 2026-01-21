@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { doc, setDoc, Timestamp } from "firebase/firestore"
 import { toast } from "sonner"
 import { useTranslation } from "react-i18next"
@@ -14,6 +14,7 @@ import { db, firebaseEnabled } from "@/lib/firebase"
 import { formatRelativeTimestamp, formatTimestamp } from "@/lib/format"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
 import { useReplayConsumers } from "@/features/replay/use-replay-consumers"
+import { ChevronDown } from "lucide-react"
 
 const DEFAULT_REQUIRED_SERVICES = [
   "mdg",
@@ -53,6 +54,7 @@ export function ReplayControlsPanel() {
   const { consumerMap } = useReplayConsumers()
 
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const advancedContentRef = useRef<HTMLDivElement | null>(null)
   const [runIdInput, setRunIdInput] = useState("")
   const [datasetIdInput, setDatasetIdInput] = useState("")
   const [requiredInput, setRequiredInput] = useState("")
@@ -106,6 +108,7 @@ export function ReplayControlsPanel() {
   const canWrite = Boolean(firebaseEnabled && db)
   const desiredMode = controls?.desiredMode || "live"
   const phase = controls?.phase || "ready"
+  const isReplay = desiredMode === "replay"
   const ackedCount = ackStatus.filter((item) => item.acked).length
   const totalRequired = requiredServices.length
   const allAcked = totalRequired > 0 && ackedCount === totalRequired
@@ -117,6 +120,16 @@ export function ReplayControlsPanel() {
     ? t("replay.controls.statusPending")
     : t("replay.controls.statusLive")
   const statusVariant = replayActive ? "default" : replayPending ? "secondary" : "outline"
+  const playbackLabel = isReplay
+    ? phase === "paused"
+      ? t("replay.controls.playbackPaused")
+      : t("replay.controls.playbackRunning")
+    : t("replay.controls.playbackStopped")
+
+  useEffect(() => {
+    if (!advancedOpen) return
+    advancedContentRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" })
+  }, [advancedOpen])
 
   async function updateControls(patch: Record<string, unknown>, successMessage: string) {
     if (!canWrite || !db) {
@@ -229,20 +242,30 @@ export function ReplayControlsPanel() {
               {t("replay.controls.statusLabel")}:{" "}
               <span className="font-semibold">{statusLabel}</span>
             </span>
-            <span>
-              {t("replay.controls.servicesReady", { ready: ackedCount, total: totalRequired })}
-            </span>
+            {isReplay ? (
+              <span>
+                {t("replay.controls.servicesReady", { ready: ackedCount, total: totalRequired })}
+              </span>
+            ) : null}
           </div>
-          <div className="mt-2 flex flex-wrap gap-3 text-muted-foreground">
-            <span>
-              {t("replay.controls.runId")}: {controls?.activeRunId || t("common.na")}
-            </span>
-            <span>
-              {t("replay.controls.datasetId")}: {controls?.datasetId || t("common.na")}
-            </span>
-            <span>
-              {t("replay.controls.asOf")}: {formatTimestamp(controls?.asOf)}
-            </span>
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-muted-foreground">
+            {isReplay ? (
+              <>
+                <span>
+                  {t("replay.controls.playbackLabel")}:{" "}
+                  <span className="font-semibold">{playbackLabel}</span>
+                </span>
+                <span>
+                  {t("replay.controls.datasetId")}: {controls?.datasetId || t("common.na")}
+                </span>
+                <span>
+                  {t("replay.controls.asOf")}:{" "}
+                  {formatTimestamp(controls?.asOf as Parameters<typeof formatTimestamp>[0])}
+                </span>
+              </>
+            ) : (
+              <span>{t("replay.controls.liveHint")}</span>
+            )}
           </div>
         </div>
 
@@ -273,103 +296,134 @@ export function ReplayControlsPanel() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button onClick={handleSwitchToReplay}>
-            {t("replay.controls.switch")}
-          </Button>
-          <Button variant="secondary" onClick={handleStop}>
-            {t("replay.controls.stop")}
-          </Button>
-          <Button variant="secondary" onClick={handleSeek} disabled={desiredMode !== "replay"}>
-            {t("replay.controls.seek")}
-          </Button>
+          {!isReplay ? (
+            <Button onClick={handleSwitchToReplay}>
+              {t("replay.controls.switch")}
+            </Button>
+          ) : (
+            <>
+              <Button variant="secondary" onClick={handleStop}>
+                {t("replay.controls.stop")}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={handleStart}
+                disabled={phase === "running"}
+              >
+                {t("replay.controls.start")}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={handlePause}
+                disabled={phase !== "running"}
+              >
+                {t("replay.controls.pause")}
+              </Button>
+              <Button variant="secondary" onClick={handleSeek}>
+                {t("replay.controls.seek")}
+              </Button>
+            </>
+          )}
         </div>
 
         <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-          <CollapsibleTrigger asChild>
-            <Button variant="ghost" size="sm">
-              {advancedOpen ? t("replay.controls.hideAdvanced") : t("replay.controls.advanced")}
-            </Button>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="space-y-4 pt-3">
-            <Separator />
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="replay-run-id">{t("replay.controls.runIdLabel")}</Label>
-                <Input
-                  id="replay-run-id"
-                  value={runIdValue}
-                  onChange={(e) => setRunIdInput(e.target.value)}
-                  placeholder={t("replay.controls.runIdPlaceholder")}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="replay-dataset-id">{t("replay.controls.datasetIdLabel")}</Label>
-                <Input
-                  id="replay-dataset-id"
-                  value={datasetIdValue}
-                  onChange={(e) => setDatasetIdInput(e.target.value)}
-                  placeholder={t("replay.controls.datasetIdPlaceholder")}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="replay-required-services">{t("replay.controls.requiredLabel")}</Label>
-                <Input
-                  id="replay-required-services"
-                  value={requiredInputValue}
-                  onChange={(e) => setRequiredInput(e.target.value)}
-                  placeholder={DEFAULT_REQUIRED_SERVICES.join(", ")}
-                />
-              </div>
-              <div className="flex items-end gap-2">
-                <Button
-                  variant={botsReplayEnabled ? "secondary" : "outline"}
-                  onClick={() => setBotsReplayEnabledInput((prev) => !(prev ?? botsReplayEnabled))}
-                >
-                  {botsReplayEnabled
-                    ? t("replay.controls.botsOn")
-                    : t("replay.controls.botsOff")}
-                </Button>
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className="group flex w-full items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-left text-sm transition hover:bg-muted/30 data-[state=open]:border-primary/30 data-[state=open]:bg-primary/5"
+          >
+            <div className="space-y-0.5">
+              <div className="font-medium">{t("replay.controls.advanced")}</div>
+              <div className="text-xs text-muted-foreground">
+                {t("replay.controls.advancedHint")}
               </div>
             </div>
+            <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="data-[state=closed]:hidden data-[state=open]:block">
+            <div
+              ref={advancedContentRef}
+              className="mt-3 space-y-4 rounded-lg border border-border/60 bg-muted/10 p-3"
+            >
+              <div className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                {t("replay.controls.advanced")}
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="replay-run-id">{t("replay.controls.runIdLabel")}</Label>
+                  <Input
+                    id="replay-run-id"
+                    value={runIdValue}
+                    onChange={(e) => setRunIdInput(e.target.value)}
+                    placeholder={t("replay.controls.runIdPlaceholder")}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="replay-dataset-id">{t("replay.controls.datasetIdLabel")}</Label>
+                  <Input
+                    id="replay-dataset-id"
+                    value={datasetIdValue}
+                    onChange={(e) => setDatasetIdInput(e.target.value)}
+                    placeholder={t("replay.controls.datasetIdPlaceholder")}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="replay-required-services">{t("replay.controls.requiredLabel")}</Label>
+                  <Input
+                    id="replay-required-services"
+                    value={requiredInputValue}
+                    onChange={(e) => setRequiredInput(e.target.value)}
+                    placeholder={DEFAULT_REQUIRED_SERVICES.join(", ")}
+                  />
+                </div>
+                <div className="flex items-end gap-2">
+                  <Button
+                    variant={botsReplayEnabled ? "secondary" : "outline"}
+                    onClick={() => setBotsReplayEnabledInput((prev) => !(prev ?? botsReplayEnabled))}
+                  >
+                    {botsReplayEnabled
+                      ? t("replay.controls.botsOn")
+                      : t("replay.controls.botsOff")}
+                  </Button>
+                </div>
+              </div>
 
-            <div className="flex flex-wrap gap-2">
-              <Button onClick={handleApplySettings}>{t("replay.controls.apply")}</Button>
-              <Button variant="secondary" onClick={handleStart} disabled={desiredMode !== "replay"}>
-                {t("replay.controls.start")}
-              </Button>
-              <Button variant="secondary" onClick={handlePause} disabled={desiredMode !== "replay"}>
-                {t("replay.controls.pause")}
-              </Button>
-            </div>
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={handleApplySettings}>{t("replay.controls.apply")}</Button>
+              </div>
 
-            <div className="grid gap-2 text-xs text-muted-foreground md:grid-cols-2">
-              <span>{t("replay.controls.phase")}: {phase}</span>
-              <span>{t("replay.controls.sessionId")}: {controls?.sessionId || t("common.na")}</span>
-              <span>{t("replay.controls.version")}: {controls?.version ?? t("common.na")}</span>
-            </div>
+              <Separator />
 
-            <div className="space-y-2">
-              <div className="text-sm font-medium">{t("replay.controls.acksTitle")}</div>
-              <div className="grid gap-2 md:grid-cols-2">
-                {ackStatus.map(({ serviceName, consumer, acked }) => (
-                  <div key={serviceName} className="flex items-center justify-between rounded-lg border px-3 py-2 text-xs">
-                    <div className="flex flex-col gap-1">
-                      <span className="font-semibold">{serviceName}</span>
-                      <span className="text-muted-foreground">
-                        {consumer?.lastHeartbeat
-                          ? t("replay.controls.lastHeartbeat", {
-                              time: formatRelativeTimestamp(
-                                consumer.lastHeartbeat as Parameters<typeof formatRelativeTimestamp>[0]
-                              ),
-                            })
-                          : t("replay.controls.noHeartbeat")}
-                      </span>
+              <div className="grid gap-2 text-xs text-muted-foreground md:grid-cols-2">
+                <span>{t("replay.controls.sessionId")}: {controls?.sessionId || t("common.na")}</span>
+                <span>{t("replay.controls.version")}: {controls?.version ?? t("common.na")}</span>
+                <span>{t("replay.controls.runId")}: {controls?.activeRunId || t("common.na")}</span>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-sm font-medium">{t("replay.controls.acksTitle")}</div>
+                <div className="grid gap-2 md:grid-cols-2">
+                  {ackStatus.map(({ serviceName, consumer, acked }) => (
+                    <div key={serviceName} className="flex items-center justify-between rounded-lg border px-3 py-2 text-xs">
+                      <div className="flex flex-col gap-1">
+                        <span className="font-semibold">{serviceName}</span>
+                        <span className="text-muted-foreground">
+                          {consumer?.lastHeartbeat
+                            ? t("replay.controls.lastHeartbeat", {
+                                time: formatRelativeTimestamp(
+                                  consumer.lastHeartbeat as Parameters<typeof formatRelativeTimestamp>[0]
+                                ),
+                              })
+                            : t("replay.controls.noHeartbeat")}
+                        </span>
+                      </div>
+                      <Badge variant={acked ? "default" : "outline"}>
+                        {acked ? t("replay.controls.acked") : t("replay.controls.pending")}
+                      </Badge>
                     </div>
-                    <Badge variant={acked ? "default" : "outline"}>
-                      {acked ? t("replay.controls.acked") : t("replay.controls.pending")}
-                    </Badge>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             </div>
           </CollapsibleContent>

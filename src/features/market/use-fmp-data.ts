@@ -4,7 +4,7 @@ import { fromZonedTime } from "date-fns-tz"
 
 const GATEWAY_BASE = (import.meta.env.VITE_MARKET_DATA_GATEWAY_URL || "").replace(/\/+$/, "")
 
-type FmpInterval = "5min" | "15min" | "30min" | "1hour" | "eod"
+type FmpInterval = "1min" | "5min" | "15min" | "30min" | "1hour" | "eod"
 
 export type FmpBar = {
   time: number // ms since epoch

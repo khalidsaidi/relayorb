@@ -500,8 +500,9 @@ function translateDetail(line: string, t: TFunction) {
     })
   }
 
-  if (line === "Entry timing: 15:55 ET (last 5m close).") {
-    return t("analysis.lines.prebreakoutEntry")
+  const prebreakoutEntry = line.match(/^Entry timing: last (\d+)m before close\.$/)
+  if (prebreakoutEntry) {
+    return t("analysis.lines.prebreakoutEntry", { minutes: prebreakoutEntry[1] })
   }
 
   const prebreakoutExit = line.match(

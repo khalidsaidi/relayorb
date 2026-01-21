@@ -7,6 +7,24 @@ import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
 
+function hasDialogElement(children: React.ReactNode, matchers: React.ElementType[]) {
+  let found = false
+  React.Children.forEach(children, (child) => {
+    if (found || !React.isValidElement(child)) return
+    const element = child as React.ReactElement<{ children?: React.ReactNode }>
+    if (matchers.includes(element.type as React.ElementType)) {
+      found = true
+      return
+    }
+    if (element.props?.children) {
+      if (hasDialogElement(element.props.children, matchers)) {
+        found = true
+      }
+    }
+  })
+  return found
+}
+
 function Dialog({
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Root>) {
@@ -56,26 +74,8 @@ function DialogContent({
   showCloseButton?: boolean
 }) {
   const { t } = useTranslation()
-  const hasChildOfType = (
-    node: React.ReactNode,
-    target: React.ElementType
-  ): boolean => {
-    let found = false
-    React.Children.forEach(node, (child) => {
-      if (found) return
-      if (!React.isValidElement(child)) return
-      if (child.type === target) {
-        found = true
-        return
-      }
-      if (child.props?.children) {
-        found = hasChildOfType(child.props.children, target)
-      }
-    })
-    return found
-  }
-  const hasTitle = hasChildOfType(children, DialogTitle)
-  const hasDescription = hasChildOfType(children, DialogDescription)
+  const hasTitle = hasDialogElement(children, [DialogTitle, DialogPrimitive.Title])
+  const hasDescription = hasDialogElement(children, [DialogDescription, DialogPrimitive.Description])
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay />
@@ -87,16 +87,16 @@ function DialogContent({
         )}
         {...props}
       >
-        {!hasTitle || !hasDescription ? (
-          <DialogHeader className="sr-only">
-            {!hasTitle ? (
-              <DialogTitle>{t("common.dialogTitle")}</DialogTitle>
-            ) : null}
-            {!hasDescription ? (
-              <DialogDescription>{t("common.dialogDescription")}</DialogDescription>
-            ) : null}
-          </DialogHeader>
-        ) : null}
+        {!hasTitle && (
+          <DialogPrimitive.Title className="sr-only">
+            {t("common.dialogTitle")}
+          </DialogPrimitive.Title>
+        )}
+        {!hasDescription && (
+          <DialogPrimitive.Description className="sr-only">
+            {t("common.dialogDescription")}
+          </DialogPrimitive.Description>
+        )}
         {children}
         {showCloseButton && (
           <DialogPrimitive.Close

@@ -2,8 +2,25 @@ import * as React from "react"
 import * as SheetPrimitive from "@radix-ui/react-dialog"
 import { XIcon } from "lucide-react"
 import { useTranslation } from "react-i18next"
-
 import { cn } from "@/lib/utils"
+
+function hasSheetElement(children: React.ReactNode, matchers: React.ElementType[]) {
+  let found = false
+  React.Children.forEach(children, (child) => {
+    if (found || !React.isValidElement(child)) return
+    const element = child as React.ReactElement<{ children?: React.ReactNode }>
+    if (matchers.includes(element.type as React.ElementType)) {
+      found = true
+      return
+    }
+    if (element.props?.children) {
+      if (hasSheetElement(element.props.children, matchers)) {
+        found = true
+      }
+    }
+  })
+  return found
+}
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
   return <SheetPrimitive.Root data-slot="sheet" {...props} />
@@ -52,26 +69,8 @@ function SheetContent({
   side?: "top" | "right" | "bottom" | "left"
 }) {
   const { t } = useTranslation()
-  const hasChildOfType = (
-    node: React.ReactNode,
-    target: React.ElementType
-  ): boolean => {
-    let found = false
-    React.Children.forEach(node, (child) => {
-      if (found) return
-      if (!React.isValidElement(child)) return
-      if (child.type === target) {
-        found = true
-        return
-      }
-      if (child.props?.children) {
-        found = hasChildOfType(child.props.children, target)
-      }
-    })
-    return found
-  }
-  const hasTitle = hasChildOfType(children, SheetTitle)
-  const hasDescription = hasChildOfType(children, SheetDescription)
+  const hasTitle = hasSheetElement(children, [SheetTitle, SheetPrimitive.Title])
+  const hasDescription = hasSheetElement(children, [SheetDescription, SheetPrimitive.Description])
   return (
     <SheetPortal>
       <SheetOverlay />
@@ -91,16 +90,16 @@ function SheetContent({
         )}
         {...props}
       >
-        {!hasTitle || !hasDescription ? (
-          <SheetHeader className="sr-only">
-            {!hasTitle ? (
-              <SheetTitle>{t("common.panelTitle")}</SheetTitle>
-            ) : null}
-            {!hasDescription ? (
-              <SheetDescription>{t("common.panelDescription")}</SheetDescription>
-            ) : null}
-          </SheetHeader>
-        ) : null}
+        {!hasTitle && (
+          <SheetPrimitive.Title className="sr-only">
+            {t("common.panelTitle")}
+          </SheetPrimitive.Title>
+        )}
+        {!hasDescription && (
+          <SheetPrimitive.Description className="sr-only">
+            {t("common.panelDescription")}
+          </SheetPrimitive.Description>
+        )}
         {children}
         <SheetPrimitive.Close className="ring-offset-background focus:ring-ring data-[state=open]:bg-secondary absolute top-4 right-4 rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
           <XIcon className="size-4" />

@@ -11,7 +11,7 @@ import type {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { formatAssetPrice, formatRelativeTimestamp } from "@/lib/format"
+import { formatAssetPrice, formatRelativeTimestamp, formatSessionTimeLabel } from "@/lib/format"
 import { toast } from "sonner"
 import { useAuth } from "@/features/auth/auth-context"
 import { useMarketPrices } from "@/features/market/use-market-prices"
@@ -112,6 +112,7 @@ function TradeList({
   items,
   title,
   meta,
+  metaBadges,
   empty,
   aiAdvice,
   aiLoading,
@@ -129,6 +130,7 @@ function TradeList({
   items: MarketHotTrade[]
   title: string
   meta?: string
+  metaBadges?: string[]
   empty: string
   aiAdvice: Record<string, AiAdvice>
   aiLoading: Record<string, boolean>
@@ -158,16 +160,21 @@ function TradeList({
     hourShort: t("common.hourShort"),
     minuteShort: t("common.minuteShort"),
   }
+  const badgeLabels = [meta, ...(metaBadges ?? [])].filter(Boolean)
 
   return (
     <Card className="border-border/60 bg-background/70">
       <CardHeader className="space-y-1">
         <div className="flex items-start justify-between gap-2">
           <CardTitle className="text-base">{title}</CardTitle>
-          {meta ? (
-            <Badge variant="outline" className="text-[10px]">
-              {meta}
-            </Badge>
+          {badgeLabels.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {badgeLabels.map((label) => (
+                <Badge key={label} variant="outline" className="text-[10px]">
+                  {label}
+                </Badge>
+              ))}
+            </div>
           ) : null}
         </div>
         <div className="text-xs text-muted-foreground">
@@ -433,6 +440,8 @@ export default function TradeNowPage() {
   const [prebreakout, setPrebreakout] = useState<MarketHotTrade[]>([])
   const [prebreakoutUpdatedAt, setPrebreakoutUpdatedAt] =
     useState<MarketPrebreakoutDoc["updatedAt"]>()
+  const [prebreakoutMeta, setPrebreakoutMeta] =
+    useState<MarketPrebreakoutDoc["meta"]>()
   const [loading, setLoading] = useState(true)
   const [assetFilter, setAssetFilter] = useState<"all" | "crypto" | "stock" | "forex">(
     "all"
@@ -497,6 +506,7 @@ export default function TradeNowPage() {
       if (prebreakoutOverride) {
         setPrebreakout(prebreakoutOverride.items ?? [])
         setPrebreakoutUpdatedAt(prebreakoutOverride.updatedAt)
+        setPrebreakoutMeta(prebreakoutOverride.meta ?? {})
       }
       setLoading(false)
       return
@@ -509,6 +519,7 @@ export default function TradeNowPage() {
       setSwingOvernightUpdatedAt(undefined)
       setPrebreakout([])
       setPrebreakoutUpdatedAt(undefined)
+      setPrebreakoutMeta(undefined)
       setLoading(false)
       return
     }
@@ -554,10 +565,11 @@ export default function TradeNowPage() {
       setSwingOvernightUpdatedAt(e2eOverride.updatedAt)
     }
     const prebreakoutOverride = getE2ePrebreakoutOverride()
-    if (prebreakoutOverride) {
-      setPrebreakout(prebreakoutOverride.items ?? [])
-      setPrebreakoutUpdatedAt(prebreakoutOverride.updatedAt)
-    }
+      if (prebreakoutOverride) {
+        setPrebreakout(prebreakoutOverride.items ?? [])
+        setPrebreakoutUpdatedAt(prebreakoutOverride.updatedAt)
+        setPrebreakoutMeta(prebreakoutOverride.meta ?? {})
+      }
     const unsubSwing = e2eOverride
       ? null
       : onSnapshot(swingRef, (snap) => {
@@ -576,11 +588,13 @@ export default function TradeNowPage() {
           if (!snap.exists()) {
             setPrebreakout([])
             setPrebreakoutUpdatedAt(undefined)
+            setPrebreakoutMeta(undefined)
             return
           }
           const data = snap.data() as MarketPrebreakoutDoc
           setPrebreakout(data.items ?? [])
           setPrebreakoutUpdatedAt(data.updatedAt)
+          setPrebreakoutMeta(data.meta ?? {})
         })
 
     return () => {
@@ -630,6 +644,29 @@ export default function TradeNowPage() {
   const prebreakoutUpdatedAtLabel = prebreakoutUpdatedAt
     ? t("tradeNow.updatedAt", { time: formatRelativeTimestamp(prebreakoutUpdatedAt) })
     : undefined
+  const prebreakoutEntryBadge = useMemo(() => {
+    if (!prebreakoutMeta || typeof prebreakoutMeta !== "object") return null
+    const meta = prebreakoutMeta as Record<string, unknown>
+    const entryWindow = meta.entryWindow as
+      | { start?: string; end?: string; close?: string; timezone?: string }
+      | undefined
+    if (!entryWindow?.start) return null
+    const timezone =
+      entryWindow.timezone === "America/New_York" ? "ET" : entryWindow.timezone || "ET"
+    const status = typeof meta.status === "string" ? meta.status : ""
+    const ready = meta.ready === true || status === "active"
+    if (ready) {
+      const end = entryWindow.end || entryWindow.close || entryWindow.start
+      return t("tradeNow.prebreakoutEntryWindowOpen", {
+        time: formatSessionTimeLabel(end),
+        tz: timezone,
+      })
+    }
+    return t("tradeNow.prebreakoutEntryWindowOpens", {
+      time: formatSessionTimeLabel(entryWindow.start),
+      tz: timezone,
+    })
+  }, [prebreakoutMeta, t])
   const assetLabel =
     assetFilter === "all"
       ? t("assets.all")
@@ -1001,6 +1038,7 @@ export default function TradeNowPage() {
               items={prebreakout}
               title={t("tradeNow.prebreakoutTitle")}
               meta={prebreakoutUpdatedAtLabel}
+              metaBadges={prebreakoutEntryBadge ? [prebreakoutEntryBadge] : undefined}
               empty={t("tradeNow.prebreakoutEmpty")}
               aiAdvice={aiAdvice}
               aiLoading={aiLoading}

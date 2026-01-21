@@ -1,6 +1,6 @@
 // Test if gateway returns changePercent for stocks
 
-const GATEWAY_URL = process.env.MARKET_DATA_GATEWAY_URL || 'https://market-data-gateway-650654182499.us-west1.run.app';
+const GATEWAY_URL = process.env.MARKET_DATA_GATEWAY_URL || 'https://relayorb-market-data-gateway-1071103469376.us-west1.run.app';
 
 async function testQuote() {
   const symbols = ['NVDA', 'AAPL', 'TSLA'];

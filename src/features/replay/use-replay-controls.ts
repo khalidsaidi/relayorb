@@ -58,11 +58,7 @@ export function useReplayControls() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (override) {
-      setControls(override)
-      setLoading(false)
-      return
-    }
+    if (override) return
     if (!firebaseEnabled || !db) return
     const ref = doc(db, "replay", "controls")
     const unsubscribe = onSnapshot(

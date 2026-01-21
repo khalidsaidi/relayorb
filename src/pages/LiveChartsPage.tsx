@@ -28,7 +28,7 @@ import {
 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
-type IntervalOption = "1m-tv" | "5m" | "15m" | "30m" | "1h" | "eod"
+type IntervalOption = "1m" | "5m" | "15m" | "30m" | "1h" | "eod"
 
 function normalizeSymbol(symbol: string, assetClass: string) {
   const trimmed = symbol.trim().toUpperCase()
@@ -115,8 +115,8 @@ export default function LiveChartsPage() {
   // Core data
   const { quote } = useFmpQuote(normalizedSymbol)
   const fmpInterval =
-    interval === "1m-tv"
-      ? "5min"
+    interval === "1m"
+      ? "1min"
       : interval === "eod"
         ? "eod"
         : interval === "1h"
@@ -152,19 +152,6 @@ export default function LiveChartsPage() {
         label: s.botId.substring(0, 8),
       }))
   }, [rawSignals])
-
-  const tvUrl = useMemo(() => {
-    if (!normalizedSymbol) return ""
-    const params = new URLSearchParams({
-      symbol: normalizedSymbol,
-      interval: "1",
-      theme: "dark",
-      style: "1",
-      locale: "en",
-      autosize: "true",
-    })
-    return `https://www.tradingview.com/widgetembed/?${params.toString()}`
-  }, [normalizedSymbol])
 
   const changePct =
     quote?.changePercentage ??
@@ -402,29 +389,14 @@ export default function LiveChartsPage() {
             {/* Chart tabs */}
             <Tabs value={interval} onValueChange={(v) => setInterval(v as IntervalOption)}>
             <TabsList className="flex flex-wrap justify-start gap-2">
-                <TabsTrigger value="1m-tv">{t("liveCharts.oneMinuteTvShort")}</TabsTrigger>
+                <TabsTrigger value="1m">{t("liveCharts.oneMinuteShort")}</TabsTrigger>
                 <TabsTrigger value="5m">{t("charts.timeframes.m5")}</TabsTrigger>
                 <TabsTrigger value="15m">{t("charts.timeframes.m15")}</TabsTrigger>
                 <TabsTrigger value="30m">{t("charts.timeframes.m30")}</TabsTrigger>
                 <TabsTrigger value="1h">{t("charts.timeframes.h1")}</TabsTrigger>
                 <TabsTrigger value="eod">{t("charts.eod")}</TabsTrigger>
               </TabsList>
-              <TabsContent value="1m-tv" className="m-0">
-                {tvUrl ? (
-                  <iframe
-                    src={tvUrl}
-                    className="h-[440px] w-full border-0 rounded-lg"
-                    title={t("charts.tradingViewTitle", { symbol: normalizedSymbol })}
-                    allow="clipboard-write"
-                    loading="lazy"
-                  />
-                ) : (
-                  <div className="flex h-[360px] items-center justify-center text-muted-foreground">
-                    {t("charts.noChartData")}
-                  </div>
-                )}
-              </TabsContent>
-              {["5m", "15m", "30m", "1h", "eod"].map((iv) => (
+              {["1m", "5m", "15m", "30m", "1h", "eod"].map((iv) => (
                 <TabsContent key={iv} value={iv} className="m-0">
                   <FmpCandleChart
                     bars={bars}
@@ -663,25 +635,15 @@ export default function LiveChartsPage() {
 
           {/* Fullscreen chart */}
           <div className="flex-1 p-2">
-            {interval === "1m-tv" && tvUrl ? (
-              <iframe
-                src={tvUrl}
-                className="h-full w-full border-0 rounded-lg"
-                title={t("charts.tradingViewTitle", { symbol: normalizedSymbol })}
-                allow="clipboard-write"
-                loading="lazy"
-              />
-            ) : (
-              <FmpCandleChart
-                bars={bars}
-                signals={signalMarkers}
-                showSma={showIndicators}
-                showEma={showIndicators}
-                showRsi={showIndicators}
-                height={window.innerHeight - 80}
-                data-testid="fmp-chart-fullscreen"
-              />
-            )}
+            <FmpCandleChart
+              bars={bars}
+              signals={signalMarkers}
+              showSma={showIndicators}
+              showEma={showIndicators}
+              showRsi={showIndicators}
+              height={window.innerHeight - 80}
+              data-testid="fmp-chart-fullscreen"
+            />
           </div>
 
           {/* Fullscreen footer with key stats */}

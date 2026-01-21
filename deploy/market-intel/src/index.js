@@ -324,26 +324,27 @@ const SWING_RULES = {
   profitTriggerPct: 0.5,
 }
 const PREBREAKOUT_RULES = {
-  entryWindowMinutes: 5,
+  entryWindowMinutes: 60,
   exitWindowMinutes: 120,
   minMarketCap: 5_000_000,
   maxMarketCap: 80_000_000,
   maxFloatShares: 5_000_000,
-  turnoverMinPct: 300,
-  turnoverMaxPct: 800,
-  rvolMin: 3,
-  rvolMax: 8,
-  closeNearHighMin: 0.85,
+  turnoverMinPct: 2,
+  turnoverMaxPct: 1200,
+  rvolMin: 1.2,
+  rvolMax: 12,
+  closeNearHighMin: 0.65,
   runUpLookback: 10,
-  maxRunUpPct: 70,
+  maxRunUpPct: 100,
   volumeLookbackSessions: 3,
-  maShort: 20,
-  maLong: 50,
+  maShort: 10,
+  maLong: 20,
   maSlopeLookback: 5,
-  maAlignmentMin: 0.9,
-  maAlignmentMax: 1.1,
-  atrPctMax: 0.2,
-  newsMaxCount: 8,
+  maSlopeMinPct: -0.06,
+  maAlignmentMin: 0.85,
+  maAlignmentMax: 1.35,
+  atrPctMax: 0.3,
+  newsMaxCount: 12,
   profitTriggerPct: 1.0,
   stopAtrMult: 1.0,
 }
@@ -4512,9 +4513,9 @@ function buildPrebreakoutAnalysis(metrics) {
     `RVOL: ${rvol}x (avg ${formatCompactNumber(metrics.avgVolume)}).`,
     `Close near high: ${rangePct}% of range (min ${Math.round(PREBREAKOUT_RULES.closeNearHighMin * 100)}%).`,
     `Run-up check: ${formatSignedPercent(runUpPct)} over ${PREBREAKOUT_RULES.runUpLookback}d (max +${PREBREAKOUT_RULES.maxRunUpPct}%).`,
-    `Base + lift: MA${PREBREAKOUT_RULES.maShort} slope ${metrics.ma20Slope.toFixed(4)}, ATR% ${atrPct} (<= ${Math.round(PREBREAKOUT_RULES.atrPctMax * 100)}%).`,
+    `Base + lift: MA${PREBREAKOUT_RULES.maShort} slope ${metrics.ma20Slope.toFixed(4)} (min ${Math.round(PREBREAKOUT_RULES.maSlopeMinPct * 100)}% of MA${PREBREAKOUT_RULES.maShort}), ATR% ${atrPct} (<= ${Math.round(PREBREAKOUT_RULES.atrPctMax * 100)}%).`,
     `Narrative saturation: ${metrics.newsCount} headlines (max ${PREBREAKOUT_RULES.newsMaxCount}).`,
-    `Entry timing: 15:55 ET (last 5m close).`,
+    `Entry timing: last ${PREBREAKOUT_RULES.entryWindowMinutes}m before close.`,
     `Exit plan: +${PREBREAKOUT_RULES.profitTriggerPct}% pop by ${PREBREAKOUT_RULES.exitWindowMinutes}m, else exit by 11:30 ET, stop ${PREBREAKOUT_RULES.stopAtrMult} ATR.`,
   ]
   return {
@@ -4536,6 +4537,7 @@ async function buildSwingOvernight({
     status: entryWindow.status,
     entryWindow: entryWindow.entryWindow,
     sessionClose: entryWindow.entryWindow?.close,
+    ready: entryWindow.active,
   }
 
   const symbolSet = new Set()
@@ -4559,7 +4561,17 @@ async function buildSwingOvernight({
     symbolSet.add(normalized)
     addOrigin(normalized, "trending")
   })
-  const symbols = Array.from(symbolSet)
+  const debugSymbols = parseList(process.env.PREBREAKOUT_DEBUG_SYMBOLS || "")
+    .map((symbol) => normalizeTicker(symbol))
+    .filter((symbol) => symbol && !isTsxSymbol(symbol))
+  if (debugSymbols.length > 0) {
+    debugSymbols.forEach((symbol) => {
+      if (!symbol) return
+      symbolSet.add(symbol)
+      addOrigin(symbol, "manual")
+    })
+  }
+  const symbols = debugSymbols.length > 0 ? debugSymbols : Array.from(symbolSet)
 
   const candidateMap = new Map()
   if (Array.isArray(candidates)) {
@@ -4571,7 +4583,7 @@ async function buildSwingOvernight({
       })
   }
 
-  if (!entryWindow.active) {
+  if (entryWindow.status === "weekend" || entryWindow.status === "holiday") {
     return {
       items: [],
       meta: { ...baseMeta, totalSymbols: symbols.length },
@@ -4814,6 +4826,7 @@ async function buildPrebreakout({
     runId: activeRunId || null,
     asOf: asOf.toISOString(),
     status: entryWindow.status,
+    ready: entryWindow.active,
     entryWindow: entryWindow.entryWindow,
     sessionClose: entryWindow.entryWindow?.close,
   }
@@ -4849,13 +4862,6 @@ async function buildPrebreakout({
         const key = normalizeTicker(candidate.symbol)
         if (key) candidateMap.set(key, candidate)
       })
-  }
-
-  if (!entryWindow.active) {
-    return {
-      items: [],
-      meta: { ...baseMeta, totalSymbols: symbols.length },
-    }
   }
 
   const items = await mapWithConcurrency(symbols, 4, async (symbol) => {
@@ -4955,6 +4961,7 @@ async function buildPrebreakout({
     const newsCount = Math.max(0, parseNumber(newsItem?.count) || 0)
 
     const ma20Slope = ma20 - ma20Prev
+    const maSlopeFloor = ma20 * PREBREAKOUT_RULES.maSlopeMinPct
     const maAlignment = ma20 / ma50
     const closeNearHigh = rangePosition >= PREBREAKOUT_RULES.closeNearHighMin
 
@@ -4966,7 +4973,7 @@ async function buildPrebreakout({
       !closeNearHigh ||
       runUpPct > PREBREAKOUT_RULES.maxRunUpPct ||
       newsCount > PREBREAKOUT_RULES.newsMaxCount ||
-      ma20Slope <= 0 ||
+      ma20Slope < maSlopeFloor ||
       maAlignment < PREBREAKOUT_RULES.maAlignmentMin ||
       maAlignment > PREBREAKOUT_RULES.maAlignmentMax ||
       atrPct > PREBREAKOUT_RULES.atrPctMax * 100
@@ -6031,6 +6038,10 @@ async function dispatchAutoPaperPrebreakout(db, prebreakoutResult, controls) {
   if (!controls?.prebreakoutAutoPaperEnabled) return
   const items = Array.isArray(prebreakoutResult?.items) ? prebreakoutResult.items : []
   if (items.length === 0) return
+  if (!prebreakoutResult?.meta?.ready) {
+    console.log("Pre-breakout auto paper skipped: outside entry window.")
+    return
+  }
 
   const botsSnap = await db.collection("bots").get()
   const paperBots = []
