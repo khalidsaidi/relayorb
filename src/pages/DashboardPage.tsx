@@ -36,10 +36,11 @@ import type {
 } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { formatAssetPrice, formatRelativeTimestamp, formatSessionTimeLabel, formatTimestamp } from "@/lib/format"
+import { formatAssetPrice, formatRelativeTimestamp, formatTimestamp } from "@/lib/format"
 import { StatusBadge } from "@/components/StatusBadge"
 import { MarketStatusBadge } from "@/components/MarketStatusBadge"
 import { PaperTradeButton } from "@/components/paper/PaperTradeButton"
+import { ExecuteTradeButton } from "@/components/ibkr/ExecuteTradeButton"
 import { ScoreBreakdownDialog } from "@/components/score/ScoreBreakdownDialog"
 
 import { Button } from "@/components/ui/button"
@@ -66,6 +67,7 @@ import { PipelineHealthBadge } from "@/components/PipelineHealthBadge"
 import { copyAiPrompt } from "@/features/ai/ai-prompt"
 import { findAnalysisNoteKind, getAnalysisNoteKind, localizeAnalysis } from "@/lib/analysis-localize"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
+import { useIbkrAccount } from "@/features/ibkr/use-ibkr-account"
 import {
   getE2eDisableFirestoreWrites,
   getE2ePrebreakoutOverride,
@@ -236,6 +238,12 @@ export default function DashboardPage() {
   const { prices, livePrices } = useMarketPrices()
   const { replayActive, controls: replayControls } = useReplayControls()
   const replayRunId = replayActive ? replayControls?.activeRunId || null : null
+  const { brokerAccountKey, brokerAccount, tradingControls } = useIbkrAccount(user?.uid)
+  const ibkrDisabledReason = replayActive
+    ? t("replay.actionsDisabled")
+    : tradingControls?.ibkrEnabled === false
+    ? t("ibkr.errors.ibkrDisabled")
+    : undefined
 
   const [bots, setBots] = useState<BotDoc[]>([])
   const [events, setEvents] = useState<BotEventDoc[]>([])
@@ -248,7 +256,6 @@ export default function DashboardPage() {
   const [prebreakout, setPrebreakout] = useState<MarketHotTrade[]>([])
   const [prebreakoutUpdatedAt, setPrebreakoutUpdatedAt] =
     useState<MarketPrebreakoutDoc["updatedAt"]>()
-  const [prebreakoutMeta, setPrebreakoutMeta] = useState<MarketPrebreakoutDoc["meta"]>()
   const [trending, setTrending] = useState<MarketTrendingDoc | null>(null)
   const [trendingUpdatedAt, setTrendingUpdatedAt] = useState<MarketTrendingDoc["updatedAt"]>()
   const [popular, setPopular] = useState<MarketPopularDoc | null>(null)
@@ -617,7 +624,6 @@ export default function DashboardPage() {
     if (e2eOverride) {
       setPrebreakout(e2eOverride.items ?? [])
       setPrebreakoutUpdatedAt(e2eOverride.updatedAt)
-      setPrebreakoutMeta(e2eOverride.meta ?? {})
       setLoadingPrebreakout(false)
       return
     }
@@ -638,18 +644,16 @@ export default function DashboardPage() {
       : doc(db, "market", "prebreakout")
     return onSnapshot(ref, (snap) => {
       if (!snap.exists()) {
-      setPrebreakout([])
-      setPrebreakoutUpdatedAt(undefined)
-      setPrebreakoutMeta(undefined)
+        setPrebreakout([])
+        setPrebreakoutUpdatedAt(undefined)
+        setLoadingPrebreakout(false)
+        return
+      }
+      const data = snap.data() as MarketPrebreakoutDoc
+      setPrebreakout(data.items ?? [])
+      setPrebreakoutUpdatedAt(data.updatedAt)
       setLoadingPrebreakout(false)
-      return
-    }
-    const data = snap.data() as MarketPrebreakoutDoc
-    setPrebreakout(data.items ?? [])
-    setPrebreakoutUpdatedAt(data.updatedAt)
-    setPrebreakoutMeta(data.meta ?? {})
-    setLoadingPrebreakout(false)
-  })
+    })
   }, [replayActive, replayRunId])
 
   useEffect(() => {
@@ -1835,29 +1839,6 @@ export default function DashboardPage() {
     () => prebreakout.filter((trade) => trade.assetClass === "stock"),
     [prebreakout]
   )
-  const prebreakoutEntryBadge = useMemo(() => {
-    if (!prebreakoutMeta || typeof prebreakoutMeta !== "object") return null
-    const meta = prebreakoutMeta as Record<string, unknown>
-    const entryWindow = meta.entryWindow as
-      | { start?: string; end?: string; close?: string; timezone?: string }
-      | undefined
-    if (!entryWindow?.start) return null
-    const timezone =
-      entryWindow.timezone === "America/New_York" ? "ET" : entryWindow.timezone || "ET"
-    const status = typeof meta.status === "string" ? meta.status : ""
-    const ready = meta.ready === true || status === "active"
-    if (ready) {
-      const end = entryWindow.end || entryWindow.close || entryWindow.start
-      return t("tradeNow.prebreakoutEntryWindowOpen", {
-        time: formatSessionTimeLabel(end),
-        tz: timezone,
-      })
-    }
-    return t("tradeNow.prebreakoutEntryWindowOpens", {
-      time: formatSessionTimeLabel(entryWindow.start),
-      tz: timezone,
-    })
-  }, [prebreakoutMeta, t])
 
   const paperMonitorItems = useMemo(
     () => [...hotTrades, ...swingOvernight, ...prebreakout],
@@ -4072,11 +4053,6 @@ export default function DashboardPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      {prebreakoutEntryBadge && (
-                        <Badge variant="outline" className="text-[10px]">
-                          {prebreakoutEntryBadge}
-                        </Badge>
-                      )}
                       {prebreakoutUpdatedAt && (
                         <Badge variant="outline">
                           {t("tradeNow.updatedAt", {
@@ -4114,9 +4090,6 @@ export default function DashboardPage() {
                                   <div className="text-sm font-semibold">{trade.symbol}</div>
                                   <Badge variant="outline" className="uppercase">
                                     {getAssetLabel(trade.assetClass, "short")}
-                                  </Badge>
-                                  <Badge variant="secondary">
-                                    {t("tradeNow.prebreakoutBadge")}
                                   </Badge>
                                   <div className="ml-auto flex items-center gap-1">
                                     <Button
@@ -4544,6 +4517,17 @@ export default function DashboardPage() {
                                   disabled={replayActive}
                                   disabledReason={t("replay.actionsDisabled")}
                                 />
+                                {brokerAccountKey && user?.uid && trade.assetClass === "stock" ? (
+                                  <ExecuteTradeButton
+                                    trade={trade}
+                                    brokerAccountKey={brokerAccountKey}
+                                    brokerAccount={brokerAccount}
+                                    requestedByUid={user.uid}
+                                    disabledReason={ibkrDisabledReason}
+                                    size="sm"
+                                    className="h-5 px-2 text-[10px] opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100"
+                                  />
+                                ) : null}
                               </div>
                               <div className="text-xs text-muted-foreground flex items-center gap-1">
                                 {(() => {
@@ -4667,6 +4651,17 @@ export default function DashboardPage() {
                                   disabled={replayActive}
                                   disabledReason={t("replay.actionsDisabled")}
                                 />
+                                {brokerAccountKey && user?.uid && trade.assetClass === "stock" ? (
+                                  <ExecuteTradeButton
+                                    trade={trade}
+                                    brokerAccountKey={brokerAccountKey}
+                                    brokerAccount={brokerAccount}
+                                    requestedByUid={user.uid}
+                                    disabledReason={ibkrDisabledReason}
+                                    size="sm"
+                                    className="h-5 px-2 text-[10px] opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100"
+                                  />
+                                ) : null}
                               </div>
                               <div className="text-xs text-muted-foreground flex items-center gap-1">
                                 {(() => {

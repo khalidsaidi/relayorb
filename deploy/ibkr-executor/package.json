@@ -1,0 +1,15 @@
+{
+  "name": "relayorb-ibkr-executor",
+  "version": "1.0.0",
+  "description": "IBKR executor service - one instance per broker account",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node test/claim-logic.test.js"
+  },
+  "dependencies": {
+    "@stoqey/ib": "^1.3.0",
+    "firebase-admin": "^12.0.0"
+  }
+}

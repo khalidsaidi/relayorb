@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react"
 import type { User } from "firebase/auth"
 import { onAuthStateChanged, signOut } from "firebase/auth"
 import { auth, firebaseEnabled } from "@/lib/firebase"
-import { isAllowedEmail } from "@/config/allowlist"
+import { isAllowedUid } from "@/config/allowlist"
 import { AuthContext } from "@/features/auth/auth-context"
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -17,7 +17,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const activeAuth = auth
     return onAuthStateChanged(activeAuth, (u) => {
-      if (u && !isAllowedEmail(u.email)) {
+      if (u && !isAllowedUid(u.uid)) {
         setBlockedEmail(u.email ?? "unknown")
         setUser(null)
         setLoading(false)

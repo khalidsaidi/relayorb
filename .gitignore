@@ -13,6 +13,7 @@ dist-ssr
 *.local
 .env
 .env.*
+.secrets/
 .ai/
 .firebase/
 relayorb-firebase-service-account.json

@@ -1,7 +1,7 @@
 import { Timestamp } from "firebase-admin/firestore"
 import { getAdmin } from "./utils/admin"
 
-const DEFAULT_TEST_EMAIL = "relayorb-admin-test@relayorb.local"
+const DEFAULT_TEST_EMAIL = "khalidsaidi66@gmail.com"
 const DEFAULT_TEST_PASSWORD = "relayorb-e2e"
 
 function resolveEnv(name: string, fallback: string) {

@@ -536,3 +536,145 @@ export type PipelineEvent = {
     stackShort?: string
   }
 }
+
+// ============================================================================
+// IBKR Broker Integration Types (Option A: 3 Accounts)
+// ============================================================================
+//
+// Firestore Collections:
+//   - brokerAccounts/{brokerAccountKey}    → BrokerAccountDoc
+//   - trading/controls                      → TradingControlsDoc
+//   - executionRequests/{requestId}         → ExecutionRequestDoc
+//   - brokerOrders/{requestId}              → BrokerOrderDoc
+//   - brokerInstruments/{assetKey}         → contract cache (conId, etc.)
+//   - executor_consumers/{brokerAccountKey} → executor heartbeat
+// ============================================================================
+
+export type BrokerAccountKey = "acct1" | "acct2" | "acct3"
+
+/** Firestore: brokerAccounts/{brokerAccountKey} */
+export type BrokerAccountDoc = {
+  brokerAccountKey: BrokerAccountKey
+  ibAccountCode: string
+  gatewayHost: string
+  gatewayPortPaper: number
+  gatewayPortLive: number
+  clientIdPaper: number
+  clientIdLive: number
+  enabled: boolean
+  paperEnabled: boolean
+  liveEnabled: boolean
+  allowedUids: string[]
+  notes?: string
+  updatedAt?: FirestoreTimestamp
+}
+
+export type TradingControlsCaps = {
+  maxNotionalPerTrade?: number
+  maxDailyNotional?: number
+  maxOrdersPerMinute?: number
+  maxOpenOrders?: number
+}
+
+export type TradingControlsDoc = {
+  ibkrEnabled: boolean
+  killSwitch: boolean
+  requireManualConfirm: boolean
+  requireBracket: boolean
+  limitOnly: boolean
+  caps: TradingControlsCaps
+  updatedAt?: FirestoreTimestamp
+}
+
+export type ExecutionMode = "paper" | "live"
+
+export type ExecutionStatus =
+  | "pending"
+  | "approved"
+  | "claimed"
+  | "submitted"
+  | "working"
+  | "filled"
+  | "partial"
+  | "cancelled"
+  | "rejected"
+  | "error"
+  | "expired"
+
+export type OrderSnapshot = {
+  symbol: string
+  assetClass: "crypto" | "stock" | "forex"
+  assetKey: string
+  side: "buy" | "sell"
+  quantity: number
+  orderType: "limit" | "market"
+  limitPrice?: number
+  stopLoss?: number
+  takeProfit?: number
+  timeInForce?: "DAY" | "GTC" | "IOC"
+}
+
+export type TradeProposalDoc = {
+  id: string
+  brokerAccountKey: BrokerAccountKey
+  symbol: string
+  assetClass: "crypto" | "stock" | "forex"
+  assetKey: string
+  side: "buy" | "sell"
+  quantity: number
+  price: number
+  stopLoss?: number
+  takeProfit?: number
+  orderDraft?: OrderSnapshot
+  score?: number
+  confidence?: number
+  profile?: string
+  analysis?: unknown
+  computedAt: FirestoreTimestamp
+  expiresAt: FirestoreTimestamp
+  updatedAt?: FirestoreTimestamp
+}
+
+export type ExecutionRequestDoc = {
+  id: string
+  brokerAccountKey: BrokerAccountKey
+  proposalId: string
+  requestedByUid: string
+  approvedByUid?: string
+  ibAccountCodeSnapshot?: string
+  approvedAt?: FirestoreTimestamp
+  mode: ExecutionMode
+  status: ExecutionStatus
+  statusReason?: string
+  orderSnapshot: OrderSnapshot
+  expiresAt: FirestoreTimestamp
+  claimedAt?: FirestoreTimestamp
+  claimedBy?: string
+  claimSessionId?: string
+  submittedAt?: FirestoreTimestamp
+  filledAt?: FirestoreTimestamp
+  cancelledAt?: FirestoreTimestamp
+  rejectedAt?: FirestoreTimestamp
+  createdAt: FirestoreTimestamp
+  updatedAt: FirestoreTimestamp
+}
+
+export type BrokerOrderDoc = {
+  id: string
+  brokerAccountKey: BrokerAccountKey
+  ibAccountCode: string
+  gatewayInstanceId?: string
+  executionRequestId: string
+  conId?: number
+  parentOrderId?: number
+  tpOrderId?: number
+  slOrderId?: number
+  orderIds: number[]
+  status: ExecutionStatus
+  filledQuantity?: number
+  avgFillPrice?: number
+  lastError?: string
+  submittedAt?: FirestoreTimestamp
+  lastUpdateAt?: FirestoreTimestamp
+  createdAt: FirestoreTimestamp
+}

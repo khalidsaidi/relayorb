@@ -1,0 +1,14 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "executionRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "brokerAccountKey", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "expiresAt", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

@@ -500,6 +500,11 @@ function translateDetail(line: string, t: TFunction) {
     })
   }
 
+  const prebreakoutEntryAnytime = line.match(/^Entry timing: any time \(no time window\)\.$/)
+  if (prebreakoutEntryAnytime) {
+    return t("analysis.lines.prebreakoutEntryAnytime")
+  }
+
   const prebreakoutEntry = line.match(/^Entry timing: last (\d+)m before close\.$/)
   if (prebreakoutEntry) {
     return t("analysis.lines.prebreakoutEntry", { minutes: prebreakoutEntry[1] })

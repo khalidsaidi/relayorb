@@ -4,17 +4,23 @@ import { XIcon } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { cn } from "@/lib/utils"
 
-function hasSheetElement(children: React.ReactNode, matchers: React.ElementType[]) {
+function hasSheetElement(
+  children: React.ReactNode,
+  matchers: React.ElementType[],
+  slots: string[]
+) {
   let found = false
   React.Children.forEach(children, (child) => {
     if (found || !React.isValidElement(child)) return
     const element = child as React.ReactElement<{ children?: React.ReactNode }>
-    if (matchers.includes(element.type as React.ElementType)) {
+    const props = element.props as Record<string, unknown>
+    const slot = typeof props["data-slot"] === "string" ? props["data-slot"] : null
+    if (matchers.includes(element.type as React.ElementType) || (slot && slots.includes(slot))) {
       found = true
       return
     }
     if (element.props?.children) {
-      if (hasSheetElement(element.props.children, matchers)) {
+      if (hasSheetElement(element.props.children, matchers, slots)) {
         found = true
       }
     }
@@ -69,8 +75,18 @@ function SheetContent({
   side?: "top" | "right" | "bottom" | "left"
 }) {
   const { t } = useTranslation()
-  const hasTitle = hasSheetElement(children, [SheetTitle, SheetPrimitive.Title])
-  const hasDescription = hasSheetElement(children, [SheetDescription, SheetPrimitive.Description])
+  const titleId = React.useId()
+  const descriptionId = React.useId()
+  const hasTitle = hasSheetElement(children, [SheetTitle, SheetPrimitive.Title], ["sheet-title"])
+  const hasDescription = hasSheetElement(
+    children,
+    [SheetDescription, SheetPrimitive.Description],
+    ["sheet-description"]
+  )
+  const ariaLabelledBy =
+    props["aria-labelledby"] ?? (!hasTitle ? titleId : undefined)
+  const ariaDescribedBy =
+    props["aria-describedby"] ?? (!hasDescription ? descriptionId : undefined)
   return (
     <SheetPortal>
       <SheetOverlay />
@@ -88,15 +104,17 @@ function SheetContent({
             "data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom inset-x-0 bottom-0 h-auto border-t",
           className
         )}
+        aria-labelledby={ariaLabelledBy}
+        aria-describedby={ariaDescribedBy}
         {...props}
       >
         {!hasTitle && (
-          <SheetPrimitive.Title className="sr-only">
+          <SheetPrimitive.Title id={titleId} className="sr-only">
             {t("common.panelTitle")}
           </SheetPrimitive.Title>
         )}
         {!hasDescription && (
-          <SheetPrimitive.Description className="sr-only">
+          <SheetPrimitive.Description id={descriptionId} className="sr-only">
             {t("common.panelDescription")}
           </SheetPrimitive.Description>
         )}

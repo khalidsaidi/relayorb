@@ -1,24 +1,78 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function isAdmin() {
-      return request.auth != null
-        && request.auth.token.email in [
-          "khalidsaidi66@gmail.com",
-          "zakliusaidi@gmail.com",
-          "liuqingrong666@gmail.com",
-          "relayorb-admin-test@relayorb.local"
-        ];
-    }
-
     function isServiceAccount() {
       return request.auth != null
         && request.auth.token.email != null
         && request.auth.token.email.matches('.*@relayorb.iam.gserviceaccount.com');
     }
 
+    function uidToAccount(uid) {
+      return uid == "enEopK5vNkMWZrXJAllC9bX4cgu1" ? "acct1" :
+        uid == "hhGFeCQGuwR32Jtswzik0k2v9rU2" ? "acct2" :
+        uid == "TpMgVF4dkfRoiiGPsntwHNdnQpd2" ? "acct3" :
+        null;
+    }
+
+    function isAllowedUser() {
+      return request.auth != null && uidToAccount(request.auth.uid) != null;
+    }
+
+    function isIbkrPath() {
+      return (request.resource != null && request.resource.name.matches('.*?/documents/tradeProposals/.*')) ||
+        (resource != null && resource.name.matches('.*?/documents/tradeProposals/.*')) ||
+        (request.resource != null && request.resource.name.matches('.*?/documents/executionRequests/.*')) ||
+        (resource != null && resource.name.matches('.*?/documents/executionRequests/.*')) ||
+        (request.resource != null && request.resource.name.matches('.*?/documents/brokerOrders/.*')) ||
+        (resource != null && resource.name.matches('.*?/documents/brokerOrders/.*')) ||
+        (request.resource != null && request.resource.name.matches('.*?/documents/brokerAccounts/.*')) ||
+        (resource != null && resource.name.matches('.*?/documents/brokerAccounts/.*')) ||
+        (request.resource != null && request.resource.name.matches('.*?/documents/brokerInstruments/.*')) ||
+        (resource != null && resource.name.matches('.*?/documents/brokerInstruments/.*')) ||
+        (request.resource != null && request.resource.name.matches('.*?/documents/trading/controls')) ||
+        (resource != null && resource.name.matches('.*?/documents/trading/controls'));
+    }
+
+    match /tradeProposals/{proposalId} {
+      allow read: if isAllowedUser()
+        && resource.data.brokerAccountKey == uidToAccount(request.auth.uid);
+      allow write: if isServiceAccount();
+    }
+
+    match /executionRequests/{requestId} {
+      allow read: if isAllowedUser()
+        && resource.data.brokerAccountKey == uidToAccount(request.auth.uid);
+      allow create: if isAllowedUser()
+        && request.resource.data.brokerAccountKey == uidToAccount(request.auth.uid)
+        && request.resource.data.status in ["draft", "approved"]
+        && request.resource.data.approvedByUid == request.auth.uid;
+      allow update, delete: if isServiceAccount();
+    }
+
+    match /brokerOrders/{requestId} {
+      allow read: if isAllowedUser()
+        && resource.data.brokerAccountKey == uidToAccount(request.auth.uid);
+      allow write: if isServiceAccount();
+    }
+
+    match /brokerAccounts/{brokerAccountKey} {
+      allow read: if isAllowedUser();
+      allow write: if isServiceAccount();
+    }
+
+    match /brokerInstruments/{assetKey} {
+      allow read: if isAllowedUser();
+      allow write: if isServiceAccount();
+    }
+
+    match /trading/controls {
+      allow read: if isAllowedUser() || isServiceAccount();
+      allow write: if isServiceAccount();
+    }
+
     match /{document=**} {
-      allow read, write: if isAdmin() || isServiceAccount();
+      allow read: if isAllowedUser() || isServiceAccount();
+      allow write: if isServiceAccount() || (isAllowedUser() && !isIbkrPath());
     }
   }
 }

@@ -1,11 +1,11 @@
-export const ADMIN_ALLOWLIST = [
-  "khalidsaidi66@gmail.com",
-  "zakliusaidi@gmail.com",
-  "liuqingrong666@gmail.com",
-  "relayorb-admin-test@relayorb.local",
-]
+import { BROKER_UID_MAP } from "@/lib/broker-accounts"
 
-export function isAllowedEmail(email?: string | null) {
-  if (!email) return false
-  return ADMIN_ALLOWLIST.map((item) => item.toLowerCase()).includes(email.toLowerCase())
+export const ADMIN_UID_ALLOWLIST = new Set(Object.values(BROKER_UID_MAP))
+const ALLOW_ALL =
+  import.meta.env.VITE_USE_EMULATORS === "true" || import.meta.env.VITE_E2E === "true"
+
+export function isAllowedUid(uid?: string | null) {
+  if (ALLOW_ALL) return true
+  if (!uid) return false
+  return ADMIN_UID_ALLOWLIST.has(uid)
 }

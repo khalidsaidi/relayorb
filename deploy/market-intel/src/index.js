@@ -70,6 +70,8 @@ const config = {
     process.env.MARKET_SIGNAL_BACKFILL_MINUTES || "0",
     10
   ),
+  ibkrProposalTtlMs: parseInt(process.env.IBKR_PROPOSAL_TTL_MS || "300000", 10),
+  ibkrProposalQuantity: parseFloat(process.env.IBKR_PROPOSAL_QUANTITY || "1"),
   fxPairs: parseList(
     process.env.FX_PAIRS,
     ["USD/JPY", "USD/EUR", "USD/GBP", "USD/CHF", "USD/CAD"]
@@ -4032,6 +4034,90 @@ async function buildRecommendations(trades, limit = 50) {
   return recommendations
 }
 
+const IBKR_ACCOUNT_KEYS = ["acct1", "acct2", "acct3"]
+
+function buildTradeProposalId(brokerAccountKey, assetClass, symbol) {
+  const safeSymbol = String(symbol || "")
+    .toUpperCase()
+    .replace(/[\\/]/g, "_")
+  return `${brokerAccountKey}_${assetClass}_${safeSymbol}`
+}
+
+function buildIbkrAssetKey(assetClass, symbol) {
+  const key = getAssetKey(assetClass, symbol)
+  if (!key) return null
+  return `${assetClass}:${key}`
+}
+
+function buildTradeProposals(actionBoard, now, ttlMs, quantity) {
+  const proposals = []
+  if (!actionBoard) return proposals
+  const items = [...(actionBoard.buys || []), ...(actionBoard.sells || [])]
+  const computedAt = admin.firestore.Timestamp.fromDate(now)
+  const expiresAt = admin.firestore.Timestamp.fromMillis(now.getTime() + ttlMs)
+  const safeQuantity = Number.isFinite(quantity) && quantity > 0 ? quantity : 1
+
+  items.forEach((trade) => {
+    if (!trade || trade.assetClass !== "stock") return
+    const symbol = trade.symbol
+    const price = parseNumber(trade.price)
+    if (!symbol || !price || !Number.isFinite(price)) return
+
+    const side = trade.side === "sell" ? "sell" : "buy"
+    const assetKey = buildIbkrAssetKey(trade.assetClass, symbol)
+    if (!assetKey) return
+
+    const stopLossPct = parseNumber(trade.recommendation?.stopLossPct)
+    const takeProfitPct = parseNumber(trade.recommendation?.takeProfitPct)
+    const stopLoss = stopLossPct
+      ? price * (side === "buy" ? 1 - stopLossPct / 100 : 1 + stopLossPct / 100)
+      : undefined
+    const takeProfit = takeProfitPct
+      ? price * (side === "buy" ? 1 + takeProfitPct / 100 : 1 - takeProfitPct / 100)
+      : undefined
+
+    IBKR_ACCOUNT_KEYS.forEach((brokerAccountKey) => {
+      const proposalId = buildTradeProposalId(
+        brokerAccountKey,
+        trade.assetClass,
+        symbol
+      )
+      proposals.push({
+        id: proposalId,
+        brokerAccountKey,
+        symbol,
+        assetClass: trade.assetClass,
+        assetKey,
+        side,
+        quantity: safeQuantity,
+        price,
+        stopLoss,
+        takeProfit,
+        orderDraft: {
+          symbol,
+          assetClass: trade.assetClass,
+          assetKey,
+          side,
+          quantity: safeQuantity,
+          orderType: "limit",
+          limitPrice: price,
+          stopLoss,
+          takeProfit,
+          timeInForce: "DAY",
+        },
+        score: parseNumber(trade.score),
+        confidence: parseNumber(trade.confidence),
+        profile: trade.profile,
+        analysis: trade.analysis || null,
+        computedAt,
+        expiresAt,
+      })
+    })
+  })
+
+  return proposals
+}
+
 function buildRationale(candidate, signalData, scoreDetail) {
   const parts = []
 
@@ -4344,16 +4430,6 @@ function resolveSwingEntryWindow(asOf) {
   if (isUsStockHoliday(dateKey)) {
     return { active: false, status: "holiday", dateKey, entryWindow, openMinutes, closeMinutes }
   }
-  const nowMinutes = getEtTimeMinutes(now)
-  if (nowMinutes < openMinutes) {
-    return { active: false, status: "pre_open", dateKey, entryWindow, openMinutes, closeMinutes }
-  }
-  if (nowMinutes > closeMinutes) {
-    return { active: false, status: "after_close", dateKey, entryWindow, openMinutes, closeMinutes }
-  }
-  if (nowMinutes < entryStartMinutes) {
-    return { active: false, status: "outside_window", dateKey, entryWindow, openMinutes, closeMinutes }
-  }
   return {
     active: true,
     status: "active",
@@ -4382,16 +4458,6 @@ function resolvePrebreakoutEntryWindow(asOf) {
   }
   if (isUsStockHoliday(dateKey)) {
     return { active: false, status: "holiday", dateKey, entryWindow, openMinutes, closeMinutes }
-  }
-  const nowMinutes = getEtTimeMinutes(now)
-  if (nowMinutes < openMinutes) {
-    return { active: false, status: "pre_open", dateKey, entryWindow, openMinutes, closeMinutes }
-  }
-  if (nowMinutes > closeMinutes) {
-    return { active: false, status: "after_close", dateKey, entryWindow, openMinutes, closeMinutes }
-  }
-  if (nowMinutes < entryStartMinutes) {
-    return { active: false, status: "outside_window", dateKey, entryWindow, openMinutes, closeMinutes }
   }
   return {
     active: true,
@@ -4515,7 +4581,7 @@ function buildPrebreakoutAnalysis(metrics) {
     `Run-up check: ${formatSignedPercent(runUpPct)} over ${PREBREAKOUT_RULES.runUpLookback}d (max +${PREBREAKOUT_RULES.maxRunUpPct}%).`,
     `Base + lift: MA${PREBREAKOUT_RULES.maShort} slope ${metrics.ma20Slope.toFixed(4)} (min ${Math.round(PREBREAKOUT_RULES.maSlopeMinPct * 100)}% of MA${PREBREAKOUT_RULES.maShort}), ATR% ${atrPct} (<= ${Math.round(PREBREAKOUT_RULES.atrPctMax * 100)}%).`,
     `Narrative saturation: ${metrics.newsCount} headlines (max ${PREBREAKOUT_RULES.newsMaxCount}).`,
-    `Entry timing: last ${PREBREAKOUT_RULES.entryWindowMinutes}m before close.`,
+    "Entry timing: any time (no time window).",
     `Exit plan: +${PREBREAKOUT_RULES.profitTriggerPct}% pop by ${PREBREAKOUT_RULES.exitWindowMinutes}m, else exit by 11:30 ET, stop ${PREBREAKOUT_RULES.stopAtrMult} ATR.`,
   ]
   return {
@@ -4561,7 +4627,7 @@ async function buildSwingOvernight({
     symbolSet.add(normalized)
     addOrigin(normalized, "trending")
   })
-  const debugSymbols = parseList(process.env.PREBREAKOUT_DEBUG_SYMBOLS || "")
+  const debugSymbols = parseList(process.env.SWING_DEBUG_SYMBOLS || "")
     .map((symbol) => normalizeTicker(symbol))
     .filter((symbol) => symbol && !isTsxSymbol(symbol))
   if (debugSymbols.length > 0) {
@@ -4593,7 +4659,15 @@ async function buildSwingOvernight({
   const items = await mapWithConcurrency(symbols, 4, async (symbol) => {
     const dailyCandles = await fetchFmpCandles(symbol, "stock", "1day", 80)
     const intradayCandles = await fetchFmpCandles(symbol, "stock", "30min", 500)
-    if (dailyCandles.length === 0 || intradayCandles.length === 0) return null
+    if (dailyCandles.length === 0 || intradayCandles.length === 0) {
+      if (debugRecord) {
+        debugRecord.metrics.dailyCandles = dailyCandles.length
+        debugRecord.metrics.intradayCandles = intradayCandles.length
+        debugRecord.reasons.push("missing_candles")
+        recordDebug(true)
+      }
+      return null
+    }
 
     const todayKey = entryWindow.dateKey
     const daily = dailyCandles
@@ -4852,7 +4926,19 @@ async function buildPrebreakout({
     symbolSet.add(normalized)
     addOrigin(normalized, "trending")
   })
-  const symbols = Array.from(symbolSet)
+  const debugSymbols = parseList(process.env.PREBREAKOUT_DEBUG_SYMBOLS || "")
+    .map((symbol) => normalizeTicker(symbol))
+    .filter((symbol) => symbol && !isTsxSymbol(symbol))
+  const debugSet = new Set(debugSymbols)
+  const debugMap = {}
+  if (debugSymbols.length > 0) {
+    debugSymbols.forEach((symbol) => {
+      if (!symbol) return
+      symbolSet.add(symbol)
+      addOrigin(symbol, "manual")
+    })
+  }
+  const symbols = debugSymbols.length > 0 ? debugSymbols : Array.from(symbolSet)
 
   const candidateMap = new Map()
   if (Array.isArray(candidates)) {
@@ -4865,15 +4951,47 @@ async function buildPrebreakout({
   }
 
   const items = await mapWithConcurrency(symbols, 4, async (symbol) => {
+    const debugRecord = debugSet.has(symbol)
+      ? {
+          symbol,
+          reasons: [],
+          checks: {},
+          metrics: {},
+          passed: false,
+          entryWindow: entryWindow.entryWindow,
+          status: entryWindow.status,
+        }
+      : null
+    const recordDebug = (finalize = false) => {
+      if (!debugRecord) return
+      if (finalize) {
+        debugRecord.passed = debugRecord.reasons.length === 0
+      }
+      debugMap[symbol] = debugRecord
+    }
     const profile = await fetchFmpProfile(symbol)
     const sharesFloat = await fetchFmpSharesFloat(symbol)
     const marketCap = resolveProfileMarketCap(profile)
     const floatShares = resolveProfileFloatShares(sharesFloat || profile)
+    if (debugRecord) {
+      debugRecord.metrics.marketCap = marketCap
+      debugRecord.metrics.floatShares = floatShares
+    }
     if (
       !Number.isFinite(marketCap) ||
       marketCap < PREBREAKOUT_RULES.minMarketCap ||
       marketCap > PREBREAKOUT_RULES.maxMarketCap
     ) {
+      if (debugRecord) {
+        debugRecord.checks.marketCap = {
+          pass: false,
+          value: marketCap,
+          min: PREBREAKOUT_RULES.minMarketCap,
+          max: PREBREAKOUT_RULES.maxMarketCap,
+        }
+        debugRecord.reasons.push("marketCap_out_of_range")
+        recordDebug(true)
+      }
       return null
     }
     if (
@@ -4881,12 +4999,29 @@ async function buildPrebreakout({
       floatShares <= 0 ||
       floatShares > PREBREAKOUT_RULES.maxFloatShares
     ) {
+      if (debugRecord) {
+        debugRecord.checks.floatShares = {
+          pass: false,
+          value: floatShares,
+          max: PREBREAKOUT_RULES.maxFloatShares,
+        }
+        debugRecord.reasons.push("float_out_of_range")
+        recordDebug(true)
+      }
       return null
     }
 
     const dailyCandles = await fetchFmpCandles(symbol, "stock", "1day", 90)
     const intradayCandles = await fetchFmpCandles(symbol, "stock", "5min", 200)
-    if (dailyCandles.length === 0 || intradayCandles.length === 0) return null
+    if (dailyCandles.length === 0 || intradayCandles.length === 0) {
+      if (debugRecord) {
+        debugRecord.metrics.dailyCandles = dailyCandles.length
+        debugRecord.metrics.intradayCandles = intradayCandles.length
+        debugRecord.reasons.push("missing_candles")
+        recordDebug(true)
+      }
+      return null
+    }
 
     const todayKey = entryWindow.dateKey
     const daily = dailyCandles
@@ -4900,12 +5035,23 @@ async function buildPrebreakout({
         ? daily.slice(0, -1)
         : daily
     if (cleanedDaily.length < PREBREAKOUT_RULES.maLong + PREBREAKOUT_RULES.maSlopeLookback) {
+      if (debugRecord) {
+        debugRecord.metrics.cleanedDaily = cleanedDaily.length
+        debugRecord.reasons.push("insufficient_daily_history")
+        recordDebug(true)
+      }
       return null
     }
 
     const closes = cleanedDaily.map((candle) => candle.close).filter(Number.isFinite)
     const volumes = cleanedDaily.map((candle) => candle.volume).filter(Number.isFinite)
     if (closes.length < PREBREAKOUT_RULES.maLong || volumes.length < PREBREAKOUT_RULES.volumeLookbackSessions) {
+      if (debugRecord) {
+        debugRecord.metrics.closes = closes.length
+        debugRecord.metrics.volumes = volumes.length
+        debugRecord.reasons.push("insufficient_daily_series")
+        recordDebug(true)
+      }
       return null
     }
 
@@ -4915,45 +5061,116 @@ async function buildPrebreakout({
       closes.slice(0, closes.length - PREBREAKOUT_RULES.maSlopeLookback),
       PREBREAKOUT_RULES.maShort
     )
-    if (!ma20 || !ma50 || !ma20Prev) return null
+    if (!ma20 || !ma50 || !ma20Prev) {
+      if (debugRecord) {
+        debugRecord.reasons.push("missing_moving_averages")
+        recordDebug(true)
+      }
+      return null
+    }
 
     const atr14 = computeAtr(cleanedDaily, 14)
-    if (!atr14) return null
+    if (!atr14) {
+      if (debugRecord) {
+        debugRecord.reasons.push("missing_atr")
+        recordDebug(true)
+      }
+      return null
+    }
     const atrPct = (atr14 / closes[closes.length - 1]) * 100
 
     const sessions = groupStockIntradaySessions(intradayCandles)
-    const todaySession = sessions.get(todayKey)
-    if (!todaySession || todaySession.length === 0) return null
+    const sessionKeys = Array.from(sessions.keys()).sort()
+    const sessionKey = sessions.has(todayKey)
+      ? todayKey
+      : sessionKeys.length > 0
+        ? sessionKeys[sessionKeys.length - 1]
+        : null
+    const todaySession = sessionKey ? sessions.get(sessionKey) : null
+    if (!todaySession || todaySession.length === 0) {
+      if (debugRecord) {
+        debugRecord.reasons.push("missing_session")
+        debugRecord.metrics.todayKey = todayKey
+        debugRecord.metrics.sessionKey = sessionKey
+        recordDebug(true)
+      }
+      return null
+    }
+    if (debugRecord && sessionKey && sessionKey !== todayKey) {
+      debugRecord.metrics.sessionKey = sessionKey
+    }
 
     const todayHigh = Math.max(...todaySession.map((candle) => candle.high || 0))
     const todayLow = Math.min(...todaySession.map((candle) => candle.low || Infinity))
     if (!Number.isFinite(todayHigh) || !Number.isFinite(todayLow) || todayHigh <= todayLow) {
+      if (debugRecord) {
+        debugRecord.metrics.todayHigh = todayHigh
+        debugRecord.metrics.todayLow = todayLow
+        debugRecord.reasons.push("invalid_day_range")
+        recordDebug(true)
+      }
       return null
     }
 
     const lastCandle = todaySession[todaySession.length - 1]
     const lastPrice = parseNumber(lastCandle?.close)
-    if (!Number.isFinite(lastPrice)) return null
+    if (!Number.isFinite(lastPrice)) {
+      if (debugRecord) {
+        debugRecord.reasons.push("missing_last_price")
+        recordDebug(true)
+      }
+      return null
+    }
 
     const todayVolume = computeSessionVolume(todaySession)
-    if (!todayVolume) return null
+    if (!todayVolume) {
+      if (debugRecord) {
+        debugRecord.reasons.push("missing_volume")
+        recordDebug(true)
+      }
+      return null
+    }
 
     const recentVolumes = volumes.slice(-PREBREAKOUT_RULES.volumeLookbackSessions)
     const avgVolume =
       recentVolumes.length > 0
         ? recentVolumes.reduce((sum, value) => sum + value, 0) / recentVolumes.length
         : null
-    if (!avgVolume) return null
+    if (!avgVolume) {
+      if (debugRecord) {
+        debugRecord.reasons.push("missing_avg_volume")
+        recordDebug(true)
+      }
+      return null
+    }
 
     const rvol = todayVolume / avgVolume
     const turnoverPct = (todayVolume / floatShares) * 100
     const rangePosition = (lastPrice - todayLow) / (todayHigh - todayLow)
-    if (!Number.isFinite(rangePosition)) return null
+    if (!Number.isFinite(rangePosition)) {
+      if (debugRecord) {
+        debugRecord.reasons.push("invalid_range_position")
+        recordDebug(true)
+      }
+      return null
+    }
 
     const lookbackIndex = cleanedDaily.length - PREBREAKOUT_RULES.runUpLookback - 1
-    if (lookbackIndex < 0) return null
+    if (lookbackIndex < 0) {
+      if (debugRecord) {
+        debugRecord.reasons.push("missing_runup_lookback")
+        recordDebug(true)
+      }
+      return null
+    }
     const baseClose = cleanedDaily[lookbackIndex]?.close
-    if (!baseClose) return null
+    if (!baseClose) {
+      if (debugRecord) {
+        debugRecord.reasons.push("missing_runup_base")
+        recordDebug(true)
+      }
+      return null
+    }
     const runUpPct = ((lastPrice - baseClose) / baseClose) * 100
 
     const newsKey = getAssetKey("stock", symbol)
@@ -4964,6 +5181,86 @@ async function buildPrebreakout({
     const maSlopeFloor = ma20 * PREBREAKOUT_RULES.maSlopeMinPct
     const maAlignment = ma20 / ma50
     const closeNearHigh = rangePosition >= PREBREAKOUT_RULES.closeNearHighMin
+
+    if (debugRecord) {
+      debugRecord.metrics = {
+        ...debugRecord.metrics,
+        lastPrice,
+        todayHigh,
+        todayLow,
+        todayVolume,
+        avgVolume,
+        rvol,
+        turnoverPct,
+        rangePosition,
+        runUpPct,
+        newsCount,
+        ma20,
+        ma50,
+        ma20Slope,
+        maSlopeFloor,
+        maAlignment,
+        atrPct,
+      }
+      debugRecord.checks = {
+        marketCap: {
+          pass: marketCap >= PREBREAKOUT_RULES.minMarketCap && marketCap <= PREBREAKOUT_RULES.maxMarketCap,
+          value: marketCap,
+          min: PREBREAKOUT_RULES.minMarketCap,
+          max: PREBREAKOUT_RULES.maxMarketCap,
+        },
+        floatShares: {
+          pass: floatShares > 0 && floatShares <= PREBREAKOUT_RULES.maxFloatShares,
+          value: floatShares,
+          max: PREBREAKOUT_RULES.maxFloatShares,
+        },
+        rvol: {
+          pass: rvol >= PREBREAKOUT_RULES.rvolMin && rvol <= PREBREAKOUT_RULES.rvolMax,
+          value: rvol,
+          min: PREBREAKOUT_RULES.rvolMin,
+          max: PREBREAKOUT_RULES.rvolMax,
+        },
+        turnover: {
+          pass: turnoverPct >= PREBREAKOUT_RULES.turnoverMinPct && turnoverPct <= PREBREAKOUT_RULES.turnoverMaxPct,
+          value: turnoverPct,
+          min: PREBREAKOUT_RULES.turnoverMinPct,
+          max: PREBREAKOUT_RULES.turnoverMaxPct,
+        },
+        closeNearHigh: {
+          pass: closeNearHigh,
+          value: rangePosition,
+          min: PREBREAKOUT_RULES.closeNearHighMin,
+        },
+        runUp: {
+          pass: runUpPct <= PREBREAKOUT_RULES.maxRunUpPct,
+          value: runUpPct,
+          max: PREBREAKOUT_RULES.maxRunUpPct,
+        },
+        news: {
+          pass: newsCount <= PREBREAKOUT_RULES.newsMaxCount,
+          value: newsCount,
+          max: PREBREAKOUT_RULES.newsMaxCount,
+        },
+        maSlope: {
+          pass: ma20Slope >= maSlopeFloor,
+          value: ma20Slope,
+          min: maSlopeFloor,
+        },
+        maAlignment: {
+          pass:
+            maAlignment >= PREBREAKOUT_RULES.maAlignmentMin &&
+            maAlignment <= PREBREAKOUT_RULES.maAlignmentMax,
+          value: maAlignment,
+          min: PREBREAKOUT_RULES.maAlignmentMin,
+          max: PREBREAKOUT_RULES.maAlignmentMax,
+        },
+        atrPct: {
+          pass: atrPct <= PREBREAKOUT_RULES.atrPctMax * 100,
+          value: atrPct,
+          max: PREBREAKOUT_RULES.atrPctMax * 100,
+        },
+      }
+    }
 
     if (
       rvol < PREBREAKOUT_RULES.rvolMin ||
@@ -4978,6 +5275,14 @@ async function buildPrebreakout({
       maAlignment > PREBREAKOUT_RULES.maAlignmentMax ||
       atrPct > PREBREAKOUT_RULES.atrPctMax * 100
     ) {
+      if (debugRecord) {
+        Object.entries(debugRecord.checks || {}).forEach(([key, entry]) => {
+          if (entry && entry.pass === false) {
+            debugRecord.reasons.push(key)
+          }
+        })
+        recordDebug(true)
+      }
       return null
     }
 
@@ -5083,6 +5388,9 @@ async function buildPrebreakout({
     const mergedOrigins = mergeOrigins(candidate?.origins, originMap.get(symbol))
     const resolvedOrigins = normalizeOrigins(mergedOrigins)
     const chartSymbol = normalizeSymbolForCharting(symbol, "stock")
+    if (debugRecord) {
+      recordDebug(true)
+    }
     return compactObject({
       assetClass: "stock",
       symbol: chartSymbol || symbol,
@@ -5143,6 +5451,7 @@ async function buildPrebreakout({
       totalSymbols: symbols.length,
       count: limited.length,
       origins: originBreakdown,
+      debug: Object.keys(debugMap).length > 0 ? debugMap : undefined,
     },
   }
 }
@@ -6038,10 +6347,6 @@ async function dispatchAutoPaperPrebreakout(db, prebreakoutResult, controls) {
   if (!controls?.prebreakoutAutoPaperEnabled) return
   const items = Array.isArray(prebreakoutResult?.items) ? prebreakoutResult.items : []
   if (items.length === 0) return
-  if (!prebreakoutResult?.meta?.ready) {
-    console.log("Pre-breakout auto paper skipped: outside entry window.")
-    return
-  }
 
   const botsSnap = await db.collection("bots").get()
   const paperBots = []
@@ -6939,6 +7244,27 @@ async function run() {
       sells: annotateBuckets(actionBoard.byAsset?.sells, analysisContext),
     },
   }
+  const tradeProposals =
+    !replayMode && analyzedActionBoard
+      ? buildTradeProposals(
+          analyzedActionBoard,
+          startedAt,
+          config.ibkrProposalTtlMs,
+          config.ibkrProposalQuantity
+        )
+      : []
+  const tradeProposalWrites =
+    tradeProposals.length > 0
+      ? tradeProposals.map((proposal) =>
+          db.collection("tradeProposals").doc(proposal.id).set(
+            {
+              ...proposal,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          )
+        )
+      : []
 
   const autoTuneWrite =
     autoTuneTriggered && !replayMode
@@ -7022,6 +7348,7 @@ async function run() {
       },
       { merge: true }
     ),
+    ...tradeProposalWrites,
     db.doc(marketDocPaths.trending).set(
       {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),

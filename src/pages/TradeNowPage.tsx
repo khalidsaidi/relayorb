@@ -7,11 +7,13 @@ import type {
   MarketHotTradesDoc,
   MarketSwingOvernightDoc,
   MarketPrebreakoutDoc,
+  BrokerAccountDoc,
+  BrokerAccountKey,
 } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { formatAssetPrice, formatRelativeTimestamp, formatSessionTimeLabel } from "@/lib/format"
+import { formatAssetPrice, formatRelativeTimestamp } from "@/lib/format"
 import { toast } from "sonner"
 import { useAuth } from "@/features/auth/auth-context"
 import { useMarketPrices } from "@/features/market/use-market-prices"
@@ -27,6 +29,8 @@ import { usePaperAutomation } from "@/features/paper/use-paper-monitor"
 import { buildAiPrompt } from "@/features/ai/ai-prompt"
 import { findAnalysisNoteKind, getAnalysisNoteKind, localizeAnalysis } from "@/lib/analysis-localize"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
+import { ExecuteTradeButton } from "@/components/ibkr/ExecuteTradeButton"
+import { useIbkrAccount } from "@/features/ibkr/use-ibkr-account"
 import {
   getE2eDisableFirestoreWrites,
   getE2ePrebreakoutOverride,
@@ -126,6 +130,10 @@ function TradeList({
   actionsDisabledReason,
   prices,
   livePrices,
+  brokerAccountKey,
+  brokerAccount,
+  requestedByUid,
+  ibkrDisabledReason,
 }: {
   items: MarketHotTrade[]
   title: string
@@ -144,6 +152,10 @@ function TradeList({
   actionsDisabledReason?: string
   prices: Record<string, number>
   livePrices: Record<string, number>
+  brokerAccountKey: BrokerAccountKey | null
+  brokerAccount: BrokerAccountDoc | null
+  requestedByUid?: string | null
+  ibkrDisabledReason?: string
 }) {
   const { t, i18n } = useTranslation()
   const naLabel = t("common.na")
@@ -208,11 +220,6 @@ function TradeList({
                       {item.profile === "swing_overnight" && (
                         <Badge variant="secondary" className="text-[10px]">
                           {t("tradeNow.swingOvernightBadge")}
-                        </Badge>
-                      )}
-                      {item.profile === "prebreakout" && (
-                        <Badge variant="secondary" className="text-[10px]">
-                          {t("tradeNow.prebreakoutBadge")}
                         </Badge>
                       )}
                       <div className="ml-auto flex items-center gap-1">
@@ -350,6 +357,15 @@ function TradeList({
                   >
                     {t("tradeNow.copyAiPrompt")}
                   </Button>
+                  {requestedByUid && brokerAccountKey && item.assetClass === "stock" ? (
+                    <ExecuteTradeButton
+                      trade={item}
+                      brokerAccountKey={brokerAccountKey}
+                      brokerAccount={brokerAccount}
+                      requestedByUid={requestedByUid}
+                      disabledReason={ibkrDisabledReason}
+                    />
+                  ) : null}
                   <span className="text-[11px] text-muted-foreground">
                     {t("tradeNow.aiHint")}
                   </span>
@@ -429,6 +445,7 @@ export default function TradeNowPage() {
   const { t } = useTranslation()
   const { replayActive, controls: replayControls } = useReplayControls()
   const replayRunId = replayActive ? replayControls?.activeRunId : null
+  const { brokerAccountKey, brokerAccount, tradingControls } = useIbkrAccount(user?.uid)
   const { prices, livePrices } = useMarketPrices()
   const [actionBoard, setActionBoard] = useState<MarketActionBoardDoc | null>(null)
   const [hotTrades, setHotTrades] = useState<MarketHotTrade[]>([])
@@ -440,8 +457,6 @@ export default function TradeNowPage() {
   const [prebreakout, setPrebreakout] = useState<MarketHotTrade[]>([])
   const [prebreakoutUpdatedAt, setPrebreakoutUpdatedAt] =
     useState<MarketPrebreakoutDoc["updatedAt"]>()
-  const [prebreakoutMeta, setPrebreakoutMeta] =
-    useState<MarketPrebreakoutDoc["meta"]>()
   const [loading, setLoading] = useState(true)
   const [assetFilter, setAssetFilter] = useState<"all" | "crypto" | "stock" | "forex">(
     "all"
@@ -454,6 +469,11 @@ export default function TradeNowPage() {
   const [breakdownAsset, setBreakdownAsset] = useState<MarketHotTrade | null>(null)
   const [breakdownOpen, setBreakdownOpen] = useState(false)
   const replayActionDisabledReason = t("replay.actionsDisabled")
+  const ibkrDisabledReason = replayActive
+    ? replayActionDisabledReason
+    : tradingControls?.ibkrEnabled === false
+    ? t("ibkr.errors.ibkrDisabled")
+    : undefined
 
   const streamItems = useMemo(() => {
     const items: MarketHotTrade[] = []
@@ -506,7 +526,6 @@ export default function TradeNowPage() {
       if (prebreakoutOverride) {
         setPrebreakout(prebreakoutOverride.items ?? [])
         setPrebreakoutUpdatedAt(prebreakoutOverride.updatedAt)
-        setPrebreakoutMeta(prebreakoutOverride.meta ?? {})
       }
       setLoading(false)
       return
@@ -519,7 +538,6 @@ export default function TradeNowPage() {
       setSwingOvernightUpdatedAt(undefined)
       setPrebreakout([])
       setPrebreakoutUpdatedAt(undefined)
-      setPrebreakoutMeta(undefined)
       setLoading(false)
       return
     }
@@ -565,11 +583,10 @@ export default function TradeNowPage() {
       setSwingOvernightUpdatedAt(e2eOverride.updatedAt)
     }
     const prebreakoutOverride = getE2ePrebreakoutOverride()
-      if (prebreakoutOverride) {
-        setPrebreakout(prebreakoutOverride.items ?? [])
-        setPrebreakoutUpdatedAt(prebreakoutOverride.updatedAt)
-        setPrebreakoutMeta(prebreakoutOverride.meta ?? {})
-      }
+    if (prebreakoutOverride) {
+      setPrebreakout(prebreakoutOverride.items ?? [])
+      setPrebreakoutUpdatedAt(prebreakoutOverride.updatedAt)
+    }
     const unsubSwing = e2eOverride
       ? null
       : onSnapshot(swingRef, (snap) => {
@@ -588,13 +605,11 @@ export default function TradeNowPage() {
           if (!snap.exists()) {
             setPrebreakout([])
             setPrebreakoutUpdatedAt(undefined)
-            setPrebreakoutMeta(undefined)
             return
           }
           const data = snap.data() as MarketPrebreakoutDoc
           setPrebreakout(data.items ?? [])
           setPrebreakoutUpdatedAt(data.updatedAt)
-          setPrebreakoutMeta(data.meta ?? {})
         })
 
     return () => {
@@ -644,29 +659,6 @@ export default function TradeNowPage() {
   const prebreakoutUpdatedAtLabel = prebreakoutUpdatedAt
     ? t("tradeNow.updatedAt", { time: formatRelativeTimestamp(prebreakoutUpdatedAt) })
     : undefined
-  const prebreakoutEntryBadge = useMemo(() => {
-    if (!prebreakoutMeta || typeof prebreakoutMeta !== "object") return null
-    const meta = prebreakoutMeta as Record<string, unknown>
-    const entryWindow = meta.entryWindow as
-      | { start?: string; end?: string; close?: string; timezone?: string }
-      | undefined
-    if (!entryWindow?.start) return null
-    const timezone =
-      entryWindow.timezone === "America/New_York" ? "ET" : entryWindow.timezone || "ET"
-    const status = typeof meta.status === "string" ? meta.status : ""
-    const ready = meta.ready === true || status === "active"
-    if (ready) {
-      const end = entryWindow.end || entryWindow.close || entryWindow.start
-      return t("tradeNow.prebreakoutEntryWindowOpen", {
-        time: formatSessionTimeLabel(end),
-        tz: timezone,
-      })
-    }
-    return t("tradeNow.prebreakoutEntryWindowOpens", {
-      time: formatSessionTimeLabel(entryWindow.start),
-      tz: timezone,
-    })
-  }, [prebreakoutMeta, t])
   const assetLabel =
     assetFilter === "all"
       ? t("assets.all")
@@ -982,6 +974,10 @@ export default function TradeNowPage() {
               actionsDisabledReason={replayActionDisabledReason}
               prices={prices}
               livePrices={livePrices}
+              brokerAccountKey={brokerAccountKey}
+              brokerAccount={brokerAccount}
+              requestedByUid={user?.uid ?? null}
+              ibkrDisabledReason={ibkrDisabledReason}
             />
             <TradeList
               items={sells}
@@ -1005,6 +1001,10 @@ export default function TradeNowPage() {
               actionsDisabledReason={replayActionDisabledReason}
               prices={prices}
               livePrices={livePrices}
+              brokerAccountKey={brokerAccountKey}
+              brokerAccount={brokerAccount}
+              requestedByUid={user?.uid ?? null}
+              ibkrDisabledReason={ibkrDisabledReason}
             />
           </div>
           {(assetFilter === "all" || assetFilter === "stock") && (
@@ -1031,6 +1031,10 @@ export default function TradeNowPage() {
               actionsDisabledReason={replayActionDisabledReason}
               prices={prices}
               livePrices={livePrices}
+              brokerAccountKey={brokerAccountKey}
+              brokerAccount={brokerAccount}
+              requestedByUid={user?.uid ?? null}
+              ibkrDisabledReason={ibkrDisabledReason}
             />
           )}
           {(assetFilter === "all" || assetFilter === "stock") && (
@@ -1038,7 +1042,6 @@ export default function TradeNowPage() {
               items={prebreakout}
               title={t("tradeNow.prebreakoutTitle")}
               meta={prebreakoutUpdatedAtLabel}
-              metaBadges={prebreakoutEntryBadge ? [prebreakoutEntryBadge] : undefined}
               empty={t("tradeNow.prebreakoutEmpty")}
               aiAdvice={aiAdvice}
               aiLoading={aiLoading}
@@ -1058,6 +1061,10 @@ export default function TradeNowPage() {
               actionsDisabledReason={replayActionDisabledReason}
               prices={prices}
               livePrices={livePrices}
+              brokerAccountKey={brokerAccountKey}
+              brokerAccount={brokerAccount}
+              requestedByUid={user?.uid ?? null}
+              ibkrDisabledReason={ibkrDisabledReason}
             />
           )}
         </div>

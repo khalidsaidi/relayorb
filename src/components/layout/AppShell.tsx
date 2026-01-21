@@ -43,8 +43,8 @@ import { usePresence } from "@/features/presence/use-presence"
 import { PipelineHealthBadge } from "@/components/PipelineHealthBadge"
 import { languageOptions, setStoredLanguage, type SupportedLanguage } from "@/i18n"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
-import { useReplayConsumers } from "@/features/replay/use-replay-consumers"
 import { ReplayControlsPanel } from "@/components/ReplayControlsPanel"
+import { useIbkrAccount } from "@/features/ibkr/use-ibkr-account"
 import { formatTimestamp } from "@/lib/format"
 
 type NavItem = {
@@ -101,7 +101,7 @@ export function AppShell() {
   const navigate = useNavigate()
   const pageTitle = useMemo(() => getPageTitle(pathname, t), [pathname, t])
   const { controls: replayControls, replayActive } = useReplayControls()
-  const { consumerMap } = useReplayConsumers()
+  const { brokerAccountKey } = useIbkrAccount(user?.uid)
   const replayAsOfLabel = useMemo(
     () => formatTimestamp(replayControls?.asOf as Parameters<typeof formatTimestamp>[0]),
     [replayControls?.asOf]
@@ -112,24 +112,6 @@ export function AppShell() {
       : []
     return list.length ? list : ["mdg", "price-streamer", "market-intel", "signal-evaluator", "ui"]
   }, [replayControls?.requiredServices])
-  const replayReady = useMemo(() => {
-    if (!replayActive) return false
-    if (!replayControls?.sessionId || typeof replayControls?.version !== "number") return false
-    return replayRequired.every((serviceName) => {
-      const consumer = consumerMap.get(serviceName)
-      return (
-        consumer?.effectiveMode === "replay" &&
-        consumer?.sessionId === replayControls.sessionId &&
-        consumer?.seenControlsVersion === replayControls.version
-      )
-    })
-  }, [
-    replayActive,
-    replayControls?.sessionId,
-    replayControls?.version,
-    replayRequired,
-    consumerMap,
-  ])
   const replayPlaybackLabel = useMemo(() => {
     if (!replayActive) return t("replay.controls.playbackStopped")
     return replayControls?.phase === "paused"
@@ -356,6 +338,11 @@ export function AppShell() {
               ) : (
                 <Badge variant="secondary">{t("app.privateAccess")}</Badge>
               )}
+              {brokerAccountKey ? (
+                <Badge variant="outline">
+                  {t("ibkr.accountLabel", { account: brokerAccountKey.toUpperCase() })}
+                </Badge>
+              ) : null}
 
               {firebaseEnabled && (
                 <>
@@ -439,7 +426,7 @@ export function AppShell() {
             </div>
           </header>
 
-          {replayReady && (
+          {replayActive && (
             <div
               data-testid="replay-banner"
               className="border-b border-amber-200/70 bg-amber-50/80 px-4 py-3 text-sm text-amber-950 md:px-6"

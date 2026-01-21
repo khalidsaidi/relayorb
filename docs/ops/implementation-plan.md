@@ -3,7 +3,7 @@ Implementation Plan (No Ops Graph)
 Scope
 - Complete FMP WebSocket integration and charting path, ensure polling skips when stream is healthy.
 - Clean up gateway URL consistency and refresh endpoint audit.
-- Make Pre-Breakout compute all day with a clear entry-window badge, keep auto-paper only in the final hour.
+- Make Pre-Breakout compute all day; manual entry and auto-paper allowed all day; no entry-window badge.
 - Make Replay mode intuitive with a simple Live/Replay toggle and real tape coverage for microcaps.
 - Implement IBKR Option A (3 accounts, 3 executors, manual-confirm only) exactly as specified.
 
@@ -39,18 +39,19 @@ Goal: all services call the same gateway URL; endpoint usage list is accurate.
 Tasks
 1) Standardize MARKED_DATA_GATEWAY_URL across:
    - price-streamer, market-intel, signal-evaluator, refresh.
-2) Refresh docs/ops/endpoint-audit.md
+2) Audit endpoint usage (no new docs)
    - Mark each endpoint: Active / Dormant / Deprecated.
    - Replace deprecated endpoints with stable equivalents.
 
 Workstream C — Pre-Breakout Watch (All-Day Compute)
-Goal: Pre-Breakout list is visible and computed all day; auto-paper ready only in final hour.
+Goal: Pre-Breakout list is visible and computed all day; manual entry and auto-paper allowed all day; no entry-window badge.
 
 Tasks
 1) Market Intel compute rule
    - Pre-Breakout compute runs all day.
-   - Add badge: “Entry window opens at 3:00 PM ET.”
-   - Auto-paper readiness only in final hour.
+   - Manual entry allowed all day.
+   - Auto-paper allowed all day.
+   - No entry-window badge.
 2) Verification
    - Pre-Breakout list appears in Dashboard + Trade Now.
    - Rule explanation shows why an item passed/failed.
@@ -81,7 +82,7 @@ Definitions (standardize)
   acct3 -> UID_ACCT3
 
 Firestore (additive)
-1) broker/accounts/{brokerAccountKey}
+1) brokerAccounts/{brokerAccountKey}
    - One doc each for acct1/acct2/acct3
    - Fields:
      brokerAccountKey, ibAccountCode
@@ -128,7 +129,7 @@ Checks (all required)
 4) approvedByUid in allowedUids
 5) trading/controls.ibkrEnabled==true
 6) trading/controls.killSwitch==false
-7) broker/accounts.enabled==true
+7) brokerAccounts.enabled==true
 8) mode live requires liveEnabled; mode paper requires paperEnabled
 9) Replay guard: reject if replay desiredMode or effectiveMode is replay
 If pass: status="claimed", claimedAt, claimedBy, claimSessionId.
@@ -140,7 +141,7 @@ Risk checks (at claim time)
 - Reject on any failure (no broker submit).
 
 Contract resolution
-- broker/instruments/{assetKey} cache for conId and contract details.
+- brokerInstruments/{assetKey} cache for conId and contract details.
 - Resolve missing via IBKR contractDetails, then upsert.
 
 Bracket submission
@@ -166,7 +167,7 @@ Acceptance tests (must pass)
 - UI always shows the active brokerAccountKey.
 
 Implementation order (must follow)
-1) Create broker/accounts/{acct1|acct2|acct3} (enabled=false, liveEnabled=false).
+1) Create brokerAccounts/{acct1|acct2|acct3} (enabled=false, liveEnabled=false).
 2) Create trading/controls with safe defaults (ibkrEnabled=false, killSwitch=true).
 3) Add brokerAccountKey fields to proposals/requests/orders writers.
 4) Update UI for brokerAccountKey mapping + replay guard.
@@ -178,6 +179,6 @@ Implementation order (must follow)
 Validation & Evidence (required)
 - Stream health (connected/authenticated/quoteCount fresh).
 - UI 1m charts show FMP candles.
-- Pre-Breakout list computed all day; badge shown; auto-paper only final hour.
+- Pre-Breakout list computed all day; manual entry + auto-paper allowed all day.
 - Replay produces non-empty swing + pre-breakout lists with selected tape.
 - IBKR paper flow passes all acceptance tests above.
