@@ -1,35 +1,11 @@
 "use client"
 
-import * as React from "react"
+import type * as React from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { XIcon } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
-
-function hasDialogElement(
-  children: React.ReactNode,
-  matchers: React.ElementType[],
-  slots: string[]
-) {
-  let found = false
-  React.Children.forEach(children, (child) => {
-    if (found || !React.isValidElement(child)) return
-    const element = child as React.ReactElement<{ children?: React.ReactNode }>
-    const props = element.props as Record<string, unknown>
-    const slot = typeof props["data-slot"] === "string" ? props["data-slot"] : null
-    if (matchers.includes(element.type as React.ElementType) || (slot && slots.includes(slot))) {
-      found = true
-      return
-    }
-    if (element.props?.children) {
-      if (hasDialogElement(element.props.children, matchers, slots)) {
-        found = true
-      }
-    }
-  })
-  return found
-}
 
 function Dialog({
   ...props
@@ -80,20 +56,6 @@ function DialogContent({
   showCloseButton?: boolean
 }) {
   const { t } = useTranslation()
-  const titleId = React.useId()
-  const descriptionId = React.useId()
-  const hasTitle = hasDialogElement(children, [DialogTitle, DialogPrimitive.Title], [
-    "dialog-title",
-  ])
-  const hasDescription = hasDialogElement(
-    children,
-    [DialogDescription, DialogPrimitive.Description],
-    ["dialog-description"]
-  )
-  const ariaLabelledBy =
-    props["aria-labelledby"] ?? (!hasTitle ? titleId : undefined)
-  const ariaDescribedBy =
-    props["aria-describedby"] ?? (!hasDescription ? descriptionId : undefined)
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay />
@@ -103,20 +65,8 @@ function DialogContent({
           "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] max-h-[calc(100vh-4rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border p-6 shadow-lg duration-200 outline-none overflow-y-auto sm:max-w-lg",
           className
         )}
-        aria-labelledby={ariaLabelledBy}
-        aria-describedby={ariaDescribedBy}
         {...props}
       >
-        {!hasTitle && (
-          <DialogPrimitive.Title id={titleId} className="sr-only">
-            {t("common.dialogTitle")}
-          </DialogPrimitive.Title>
-        )}
-        {!hasDescription && (
-          <DialogPrimitive.Description id={descriptionId} className="sr-only">
-            {t("common.dialogDescription")}
-          </DialogPrimitive.Description>
-        )}
         {children}
         {showCloseButton && (
           <DialogPrimitive.Close
