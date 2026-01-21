@@ -170,9 +170,6 @@ test.describe("RelayOrb authenticated flow", () => {
       .first()
     await expect(prebreakoutCard).toBeVisible({ timeout: 20000 })
     await expect(prebreakoutCard.getByText("MULN")).toBeVisible()
-    await expect(
-      prebreakoutCard.getByText("Pre-Breakout", { exact: true })
-    ).toBeVisible()
 
     await manageAssets.click()
     const dialog = page.getByRole("dialog")

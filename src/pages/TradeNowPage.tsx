@@ -222,11 +222,6 @@ function TradeList({
                           {t("tradeNow.swingOvernightBadge")}
                         </Badge>
                       )}
-                      {item.profile === "prebreakout" && (
-                        <Badge variant="secondary" className="text-[10px]">
-                          {t("tradeNow.prebreakoutBadge")}
-                        </Badge>
-                      )}
                       <div className="ml-auto flex items-center gap-1">
                         <Button
                           variant="ghost"
