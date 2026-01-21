@@ -1,6 +1,10 @@
 // Test if gateway returns changePercent for stocks
 
-const GATEWAY_URL = process.env.MARKET_DATA_GATEWAY_URL || 'https://relayorb-market-data-gateway-1071103469376.us-west1.run.app';
+const GATEWAY_URL = process.env.MARKET_DATA_GATEWAY_URL;
+if (!GATEWAY_URL) {
+  console.error('MARKET_DATA_GATEWAY_URL environment variable is required');
+  process.exit(1);
+}
 
 async function testQuote() {
   const symbols = ['NVDA', 'AAPL', 'TSLA'];
