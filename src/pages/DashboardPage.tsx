@@ -4091,6 +4091,9 @@ export default function DashboardPage() {
                                   <Badge variant="outline" className="uppercase">
                                     {getAssetLabel(trade.assetClass, "short")}
                                   </Badge>
+                                  <Badge variant="secondary">
+                                    {t("tradeNow.prebreakoutBadge")}
+                                  </Badge>
                                   <div className="ml-auto flex items-center gap-1">
                                     <Button
                                       variant="ghost"
