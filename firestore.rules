@@ -14,35 +14,27 @@ service cloud.firestore {
         null;
     }
 
-    function isAllowedUser() {
+    // IBKR broker users (can trade)
+    function isBrokerUser() {
       return request.auth != null && uidToAccount(request.auth.uid) != null;
     }
 
-    function isIbkrPath() {
-      return (request.resource != null && request.resource.name.matches('.*?/documents/tradeProposals/.*')) ||
-        (resource != null && resource.name.matches('.*?/documents/tradeProposals/.*')) ||
-        (request.resource != null && request.resource.name.matches('.*?/documents/executionRequests/.*')) ||
-        (resource != null && resource.name.matches('.*?/documents/executionRequests/.*')) ||
-        (request.resource != null && request.resource.name.matches('.*?/documents/brokerOrders/.*')) ||
-        (resource != null && resource.name.matches('.*?/documents/brokerOrders/.*')) ||
-        (request.resource != null && request.resource.name.matches('.*?/documents/brokerAccounts/.*')) ||
-        (resource != null && resource.name.matches('.*?/documents/brokerAccounts/.*')) ||
-        (request.resource != null && request.resource.name.matches('.*?/documents/brokerInstruments/.*')) ||
-        (resource != null && resource.name.matches('.*?/documents/brokerInstruments/.*')) ||
-        (request.resource != null && request.resource.name.matches('.*?/documents/trading/controls')) ||
-        (resource != null && resource.name.matches('.*?/documents/trading/controls'));
+    // Any authenticated user (for general read access)
+    function isAuthenticated() {
+      return request.auth != null;
     }
 
+    // IBKR-specific paths require broker user access
     match /tradeProposals/{proposalId} {
-      allow read: if isAllowedUser()
+      allow read: if isBrokerUser()
         && resource.data.brokerAccountKey == uidToAccount(request.auth.uid);
       allow write: if isServiceAccount();
     }
 
     match /executionRequests/{requestId} {
-      allow read: if isAllowedUser()
+      allow read: if isBrokerUser()
         && resource.data.brokerAccountKey == uidToAccount(request.auth.uid);
-      allow create: if isAllowedUser()
+      allow create: if isBrokerUser()
         && request.resource.data.brokerAccountKey == uidToAccount(request.auth.uid)
         && request.resource.data.status in ["draft", "approved"]
         && request.resource.data.approvedByUid == request.auth.uid;
@@ -50,29 +42,53 @@ service cloud.firestore {
     }
 
     match /brokerOrders/{requestId} {
-      allow read: if isAllowedUser()
+      allow read: if isBrokerUser()
         && resource.data.brokerAccountKey == uidToAccount(request.auth.uid);
       allow write: if isServiceAccount();
     }
 
     match /brokerAccounts/{brokerAccountKey} {
-      allow read: if isAllowedUser();
+      allow read: if isBrokerUser();
       allow write: if isServiceAccount();
     }
 
     match /brokerInstruments/{assetKey} {
-      allow read: if isAllowedUser();
+      allow read: if isBrokerUser();
       allow write: if isServiceAccount();
     }
 
     match /trading/controls {
-      allow read: if isAllowedUser() || isServiceAccount();
+      allow read: if isBrokerUser() || isServiceAccount();
       allow write: if isServiceAccount();
     }
 
+    // Paper trading: authenticated users can manage their own data
+    match /paper_wallets/{userId}/{document=**} {
+      allow read, write: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Presence: authenticated users can write their own presence
+    match /presence/{presenceId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Stream symbols: authenticated users can update watched symbols
+    match /market/streamSymbols {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Replay stream symbols
+    match /replay/controls/runs/{runId}/market/streamSymbols {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // General collections: any authenticated user can read, only service accounts can write
     match /{document=**} {
-      allow read: if isAllowedUser() || isServiceAccount();
-      allow write: if isServiceAccount() || (isAllowedUser() && !isIbkrPath());
+      allow read: if isAuthenticated() || isServiceAccount();
+      allow write: if isServiceAccount();
     }
   }
 }
