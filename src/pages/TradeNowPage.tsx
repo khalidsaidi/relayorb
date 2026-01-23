@@ -20,23 +20,14 @@ import { useMarketPrices } from "@/features/market/use-market-prices"
 import { useStreamSymbols } from "@/features/market/use-stream-symbols"
 import { MarketStatusBadge } from "@/components/MarketStatusBadge"
 import { MarketStatusBanner } from "@/components/MarketClosedOverlay"
-import { PaperTradeButton } from "@/components/paper/PaperTradeButton"
-import { executePaperTrade } from "@/features/paper/paper-service"
 import { AssetChartModal } from "@/components/charts/AssetChartModal"
 import { ScoreBreakdownDialog } from "@/components/score/ScoreBreakdownDialog"
 import { BarChart3, InfoIcon } from "lucide-react"
-import { usePaperAutomation } from "@/features/paper/use-paper-monitor"
 import { buildAiPrompt } from "@/features/ai/ai-prompt"
 import { findAnalysisNoteKind, getAnalysisNoteKind, localizeAnalysis } from "@/lib/analysis-localize"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
 import { ExecuteTradeButton } from "@/components/ibkr/ExecuteTradeButton"
 import { useIbkrAccount } from "@/features/ibkr/use-ibkr-account"
-import {
-  getE2eDisableFirestoreWrites,
-  getE2ePrebreakoutOverride,
-  getE2eRefreshUrlOverride,
-  getE2eSwingOvernightOverride,
-} from "@/lib/e2e-overrides"
 import { useTranslation } from "react-i18next"
 
 function scoreTone(score?: number) {
@@ -330,16 +321,16 @@ function TradeList({
 
 
                 <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <PaperTradeButton
-                    trade={item}
-                    size="sm"
-                    variant="default"
-                    className="gap-2"
-                    disabled={actionsDisabled}
-                    disabledReason={actionsDisabledReason}
-                  >
-                    <span>{t("tradeNow.trade")}</span>
-                  </PaperTradeButton>
+                  {requestedByUid && brokerAccountKey && item.assetClass === "stock" ? (
+                    <ExecuteTradeButton
+                      trade={item}
+                      brokerAccountKey={brokerAccountKey}
+                      brokerAccount={brokerAccount}
+                      requestedByUid={requestedByUid}
+                      disabledReason={ibkrDisabledReason}
+                      variant="default"
+                    />
+                  ) : null}
                   <Button
                     type="button"
                     size="sm"
@@ -357,15 +348,6 @@ function TradeList({
                   >
                     {t("tradeNow.copyAiPrompt")}
                   </Button>
-                  {requestedByUid && brokerAccountKey && item.assetClass === "stock" ? (
-                    <ExecuteTradeButton
-                      trade={item}
-                      brokerAccountKey={brokerAccountKey}
-                      brokerAccount={brokerAccount}
-                      requestedByUid={requestedByUid}
-                      disabledReason={ibkrDisabledReason}
-                    />
-                  ) : null}
                   <span className="text-[11px] text-muted-foreground">
                     {t("tradeNow.aiHint")}
                   </span>
@@ -485,48 +467,24 @@ export default function TradeNowPage() {
     return items
   }, [actionBoard, hotTrades, swingOvernight, prebreakout])
 
-  const paperMonitorItems = useMemo(() => {
-    const items: MarketHotTrade[] = []
-    if (hotTrades.length) items.push(...hotTrades)
-    if (swingOvernight.length) items.push(...swingOvernight)
-    if (prebreakout.length) items.push(...prebreakout)
-    return items
-  }, [hotTrades, swingOvernight, prebreakout])
-
   useStreamSymbols("trade-now", {
     items: streamItems,
     enabled: !loading,
   })
 
-  // Monitor paper positions for stop loss / take profit
-  usePaperAutomation(replayActive ? undefined : user?.uid, paperMonitorItems)
-
   const refreshEndpoint = useMemo(() => {
-    const override = getE2eRefreshUrlOverride()
-    const base = (override || import.meta.env.VITE_REFRESH_URL || "").trim()
+    const base = (import.meta.env.VITE_REFRESH_URL || "").trim()
     if (!base) return ""
     return `${base.replace(/\/+$/, "")}/refresh`
   }, [])
-  const e2eDisableWrites = getE2eDisableFirestoreWrites()
   const adviceEndpoint = useMemo(() => {
-    const override = getE2eRefreshUrlOverride()
-    const base = (override || import.meta.env.VITE_REFRESH_URL || "").trim()
+    const base = (import.meta.env.VITE_REFRESH_URL || "").trim()
     if (!base) return ""
     return `${base.replace(/\/+$/, "")}/advice`
   }, [])
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
-      const e2eOverride = getE2eSwingOvernightOverride()
-      if (e2eOverride) {
-        setSwingOvernight(e2eOverride.items ?? [])
-        setSwingOvernightUpdatedAt(e2eOverride.updatedAt)
-      }
-      const prebreakoutOverride = getE2ePrebreakoutOverride()
-      if (prebreakoutOverride) {
-        setPrebreakout(prebreakoutOverride.items ?? [])
-        setPrebreakoutUpdatedAt(prebreakoutOverride.updatedAt)
-      }
       setLoading(false)
       return
     }
@@ -577,46 +535,32 @@ export default function TradeNowPage() {
       setLoading(false)
     })
 
-    const e2eOverride = getE2eSwingOvernightOverride()
-    if (e2eOverride) {
-      setSwingOvernight(e2eOverride.items ?? [])
-      setSwingOvernightUpdatedAt(e2eOverride.updatedAt)
-    }
-    const prebreakoutOverride = getE2ePrebreakoutOverride()
-    if (prebreakoutOverride) {
-      setPrebreakout(prebreakoutOverride.items ?? [])
-      setPrebreakoutUpdatedAt(prebreakoutOverride.updatedAt)
-    }
-    const unsubSwing = e2eOverride
-      ? null
-      : onSnapshot(swingRef, (snap) => {
-          if (!snap.exists()) {
-            setSwingOvernight([])
-            setSwingOvernightUpdatedAt(undefined)
-            return
-          }
-          const data = snap.data() as MarketSwingOvernightDoc
-          setSwingOvernight(data.items ?? [])
-          setSwingOvernightUpdatedAt(data.updatedAt)
-        })
-    const unsubPrebreakout = prebreakoutOverride
-      ? null
-      : onSnapshot(prebreakoutRef, (snap) => {
-          if (!snap.exists()) {
-            setPrebreakout([])
-            setPrebreakoutUpdatedAt(undefined)
-            return
-          }
-          const data = snap.data() as MarketPrebreakoutDoc
-          setPrebreakout(data.items ?? [])
-          setPrebreakoutUpdatedAt(data.updatedAt)
-        })
+    const unsubSwing = onSnapshot(swingRef, (snap) => {
+      if (!snap.exists()) {
+        setSwingOvernight([])
+        setSwingOvernightUpdatedAt(undefined)
+        return
+      }
+      const data = snap.data() as MarketSwingOvernightDoc
+      setSwingOvernight(data.items ?? [])
+      setSwingOvernightUpdatedAt(data.updatedAt)
+    })
+    const unsubPrebreakout = onSnapshot(prebreakoutRef, (snap) => {
+      if (!snap.exists()) {
+        setPrebreakout([])
+        setPrebreakoutUpdatedAt(undefined)
+        return
+      }
+      const data = snap.data() as MarketPrebreakoutDoc
+      setPrebreakout(data.items ?? [])
+      setPrebreakoutUpdatedAt(data.updatedAt)
+    })
 
     return () => {
       unsubAction()
       unsubHotTrades()
-      if (unsubSwing) unsubSwing()
-      if (unsubPrebreakout) unsubPrebreakout()
+      unsubSwing()
+      unsubPrebreakout()
     }
   }, [replayActive, replayRunId])
 
@@ -817,51 +761,12 @@ export default function TradeNowPage() {
       toast.info(replayActionDisabledReason)
       return
     }
-    if (!user || !firebaseEnabled) {
-      toast.error(t("tradeNow.signInForAiApply"))
-      return
-    }
-
+    void item
     if (advice.action === "hold") {
       toast.info(t("tradeNow.aiHoldNoTrade"))
       return
     }
-
-    if (!item.price || !Number.isFinite(item.price)) {
-      toast.error(t("tradeNow.invalidPrice"))
-      return
-    }
-
-    // Use current live price if available, otherwise use item price
-    const currentPrice = prices[item.symbol] ?? item.price
-    
-    // Default to $1000 trade value
-    const tradeValue = 1000
-    const quantity = tradeValue / currentPrice
-
-    try {
-      await executePaperTrade(user.uid, {
-        symbol: item.symbol,
-        assetClass: item.assetClass,
-        side: advice.action,
-        price: currentPrice,
-        quantity: quantity,
-        stopLoss: advice.stopLossPrice || undefined,
-        takeProfit: advice.takeProfitPrice || undefined,
-      })
-      toast.success(
-        t("tradeNow.aiApplied", {
-          action: t(`trade.side.${advice.action}`).toUpperCase(),
-          symbol: item.symbol,
-          value: tradeValue.toFixed(2),
-          price: formatAssetPrice(currentPrice, item.assetClass),
-        })
-      )
-    } catch (err) {
-      const message = err instanceof Error ? err.message : t("tradeNow.aiApplyFailed")
-      toast.error(message)
-      console.error("Apply AI suggestion error:", err)
-    }
+    toast.info(t("tradeNow.aiApplyDisabled"))
   }
 
   return (
@@ -885,13 +790,12 @@ export default function TradeNowPage() {
               !firebaseEnabled ||
               refreshingJobs ||
               !refreshEndpoint ||
-              replayActive ||
-              e2eDisableWrites
+              replayActive
             }
             title={
               replayActive
                 ? replayActionDisabledReason
-                : refreshEndpoint && !e2eDisableWrites
+                : refreshEndpoint
                   ? t("tradeNow.refreshTitle")
                   : t("tradeNow.refreshDisabledTitle")
             }

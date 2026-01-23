@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from "react"
+import { createPortal } from "react-dom"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -24,7 +25,6 @@ import {
   Activity,
   ExternalLink,
   Maximize2,
-  X,
 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
@@ -72,6 +72,7 @@ export default function LiveChartsPage() {
   const [interval, setInterval] = useState<IntervalOption>("5m")
   const [showIndicators, setShowIndicators] = useState(true)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [showMatches, setShowMatches] = useState(false)
 
   // Handle Escape key to exit fullscreen
   useEffect(() => {
@@ -164,7 +165,200 @@ export default function LiveChartsPage() {
   const low52w = range52w?.[0]
   const high52w = range52w?.[1]
 
-  return (
+  const chartCardClassName = ["w-full", isFullscreen ? "" : "lg:col-span-3"]
+    .filter(Boolean)
+    .join(" ")
+
+  const chartCard = (
+    <Card className={chartCardClassName}>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-xl font-bold">{normalizedSymbol}</span>
+            <span className="text-xs uppercase text-muted-foreground bg-muted/50 px-2 py-0.5 rounded">
+              {assetLabel}
+            </span>
+            {profile?.companyName && (
+              <span className="text-sm text-muted-foreground hidden sm:inline">
+                {profile.companyName}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3 text-sm">
+            <div className="text-2xl font-semibold">
+              {quote?.price !== undefined
+                ? formatAssetPrice(quote.price, assetClass)
+                : naLabel}
+            </div>
+            <div
+              className={`flex items-center gap-1 font-medium ${
+                changePct !== undefined && changePct >= 0
+                  ? "text-emerald-600"
+                  : "text-rose-600"
+              }`}
+            >
+              {changePct !== undefined && changePct >= 0 ? (
+                <TrendingUp className="h-4 w-4" />
+              ) : (
+                <TrendingDown className="h-4 w-4" />
+              )}
+              {changePct !== undefined
+                ? `${changePct >= 0 ? "+" : ""}${changePct.toFixed(2)}%`
+                : ""}
+            </div>
+          </div>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {/* Key stats row */}
+        <div className="flex flex-wrap gap-2">
+          <StatCard
+            label={t("liveCharts.dayHigh")}
+            value={quote?.dayHigh ? formatAssetPrice(quote.dayHigh, assetClass) : undefined}
+            icon={TrendingUp}
+            color="text-emerald-600"
+            naLabel={naLabel}
+          />
+          <StatCard
+            label={t("liveCharts.dayLow")}
+            value={quote?.dayLow ? formatAssetPrice(quote.dayLow, assetClass) : undefined}
+            icon={TrendingDown}
+            color="text-rose-600"
+            naLabel={naLabel}
+          />
+          <StatCard
+            label={t("liveCharts.prevClose")}
+            value={
+              quote?.previousClose
+                ? formatAssetPrice(quote.previousClose, assetClass)
+                : undefined
+            }
+            naLabel={naLabel}
+          />
+          <StatCard
+            label={t("liveCharts.volume")}
+            value={quote?.volume ? formatNumber(quote.volume) : undefined}
+            icon={BarChart3}
+            naLabel={naLabel}
+          />
+          {assetClass === "stock" && (
+            <>
+              <StatCard
+                label={t("liveCharts.range52w")}
+                value={
+                  low52w && high52w
+                    ? `$${low52w.toFixed(0)} - $${high52w.toFixed(0)}`
+                    : undefined
+                }
+                naLabel={naLabel}
+              />
+              {priceTarget?.targetConsensus && (
+                <StatCard
+                  label={t("liveCharts.ptConsensus")}
+                  value={`$${priceTarget.targetConsensus.toFixed(2)}`}
+                  subValue={
+                    priceTarget.targetLow && priceTarget.targetHigh
+                      ? `$${priceTarget.targetLow.toFixed(0)}-$${priceTarget.targetHigh.toFixed(0)}`
+                      : undefined
+                  }
+                  icon={Target}
+                  color="text-blue-500"
+                  naLabel={naLabel}
+                />
+              )}
+              {rating?.ratingRecommendation && (
+                <StatCard
+                  label={t("liveCharts.rating")}
+                  value={rating.ratingRecommendation}
+                  subValue={t("liveCharts.ratingScore", {
+                    score: rating.ratingScore ?? naLabel,
+                  })}
+                  icon={Activity}
+                  color={
+                    rating.ratingRecommendation?.toLowerCase().includes("buy")
+                      ? "text-emerald-600"
+                      : rating.ratingRecommendation?.toLowerCase().includes("sell")
+                        ? "text-rose-600"
+                        : "text-amber-600"
+                  }
+                />
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Indicator toggle and fullscreen */}
+        <div className="flex items-center gap-4 text-xs">
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showIndicators}
+              onChange={(e) => setShowIndicators(e.target.checked)}
+              className="rounded border-border"
+            />
+            <span className="text-muted-foreground">{t("liveCharts.showIndicators")}</span>
+          </label>
+          {signalMarkers.length > 0 && (
+            <span className="text-muted-foreground">
+              {t("liveCharts.botSignalsOnChart", { count: signalMarkers.length })}
+            </span>
+          )}
+          <div className="flex-1" />
+          <div className="text-muted-foreground">
+            {quoteUpdated ? (
+              <span>{t("liveCharts.quoteUpdated", { time: quoteUpdated })}</span>
+            ) : null}
+            {barUpdated ? (
+              <span className="ml-2">
+                {t("liveCharts.barUpdated", { time: barUpdated })}
+              </span>
+            ) : null}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={toggleFullscreen}
+            className="h-7 px-2 gap-1"
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">
+              {isFullscreen ? t("liveCharts.exitFullscreen") : t("liveCharts.fullscreen")}
+            </span>
+          </Button>
+        </div>
+
+        {/* Chart tabs */}
+        <Tabs value={interval} onValueChange={(v) => setInterval(v as IntervalOption)}>
+          <TabsList className="flex flex-wrap justify-start gap-2">
+            <TabsTrigger value="1m">{t("liveCharts.oneMinuteShort")}</TabsTrigger>
+            <TabsTrigger value="5m">{t("charts.timeframes.m5")}</TabsTrigger>
+            <TabsTrigger value="15m">{t("charts.timeframes.m15")}</TabsTrigger>
+            <TabsTrigger value="30m">{t("charts.timeframes.m30")}</TabsTrigger>
+            <TabsTrigger value="1h">{t("charts.timeframes.h1")}</TabsTrigger>
+            <TabsTrigger value="eod">{t("charts.eod")}</TabsTrigger>
+          </TabsList>
+          {["1m", "5m", "15m", "30m", "1h", "eod"].map((iv) => (
+            <TabsContent key={iv} value={iv} className="m-0">
+              <FmpCandleChart
+                bars={bars}
+                signals={signalMarkers}
+                showSma={showIndicators}
+                showEma={showIndicators}
+                showRsi={showIndicators}
+                height={480}
+                data-testid="fmp-chart-live"
+              />
+              {chartError && (
+                <div className="mt-2 text-xs text-rose-600">{chartError}</div>
+              )}
+            </TabsContent>
+          ))}
+        </Tabs>
+      </CardContent>
+    </Card>
+  )
+
+  const content = (
     <div className="space-y-4">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -187,6 +381,7 @@ export default function LiveChartsPage() {
               const nextSymbol = defaultSymbols[nextClass]
               setSymbolInput(nextSymbol)
               setActiveSymbol(nextSymbol)
+              setShowMatches(false)
             }}
           >
             <option value="stock">{t("assets.stock")}</option>
@@ -195,12 +390,18 @@ export default function LiveChartsPage() {
           </select>
           <Input
             value={symbolInput}
-            onChange={(e) => setSymbolInput(e.target.value)}
+            onChange={(e) => {
+              setSymbolInput(e.target.value)
+              setShowMatches(true)
+            }}
             placeholder={t("liveCharts.symbolPlaceholder")}
             className="w-56"
           />
           <Button
-            onClick={() => setActiveSymbol(symbolInput || activeSymbol)}
+            onClick={() => {
+              setActiveSymbol(symbolInput || activeSymbol)
+              setShowMatches(false)
+            }}
             disabled={!symbolInput.trim()}
           >
             {t("liveCharts.load")}
@@ -209,7 +410,7 @@ export default function LiveChartsPage() {
       </div>
 
       {/* Symbol search results */}
-      {symbolMatches.length > 0 && (
+      {showMatches && symbolMatches.length > 0 && (
         <div className="w-full max-w-xl rounded-lg border border-border/60 bg-background/95 p-2 shadow-sm">
           <div className="text-xs uppercase text-muted-foreground px-1 pb-1">
             {t("liveCharts.matches")}
@@ -222,6 +423,7 @@ export default function LiveChartsPage() {
                 onClick={() => {
                   setSymbolInput(match.symbol)
                   setActiveSymbol(match.symbol)
+                  setShowMatches(false)
                 }}
               >
                 <span className="font-semibold">{match.symbol}</span>
@@ -236,185 +438,7 @@ export default function LiveChartsPage() {
 
       {/* Main content grid */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-        {/* Chart card - spans 3 columns */}
-        <Card className="lg:col-span-3">
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-xl font-bold">{normalizedSymbol}</span>
-                <span className="text-xs uppercase text-muted-foreground bg-muted/50 px-2 py-0.5 rounded">
-                  {assetLabel}
-                </span>
-                {profile?.companyName && (
-                  <span className="text-sm text-muted-foreground hidden sm:inline">
-                    {profile.companyName}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-3 text-sm">
-                <div className="text-2xl font-semibold">
-                  {quote?.price !== undefined
-                    ? formatAssetPrice(quote.price, assetClass)
-                    : naLabel}
-                </div>
-                <div
-                  className={`flex items-center gap-1 font-medium ${
-                    changePct !== undefined && changePct >= 0
-                      ? "text-emerald-600"
-                      : "text-rose-600"
-                  }`}
-                >
-                  {changePct !== undefined && changePct >= 0 ? (
-                    <TrendingUp className="h-4 w-4" />
-                  ) : (
-                    <TrendingDown className="h-4 w-4" />
-                  )}
-                  {changePct !== undefined
-                    ? `${changePct >= 0 ? "+" : ""}${changePct.toFixed(2)}%`
-                    : ""}
-                </div>
-              </div>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {/* Key stats row */}
-            <div className="flex flex-wrap gap-2">
-              <StatCard
-                label={t("liveCharts.dayHigh")}
-                value={quote?.dayHigh ? formatAssetPrice(quote.dayHigh, assetClass) : undefined}
-                icon={TrendingUp}
-                color="text-emerald-600"
-                naLabel={naLabel}
-              />
-              <StatCard
-                label={t("liveCharts.dayLow")}
-                value={quote?.dayLow ? formatAssetPrice(quote.dayLow, assetClass) : undefined}
-                icon={TrendingDown}
-                color="text-rose-600"
-                naLabel={naLabel}
-              />
-              <StatCard
-                label={t("liveCharts.prevClose")}
-                value={
-                  quote?.previousClose
-                    ? formatAssetPrice(quote.previousClose, assetClass)
-                    : undefined
-                }
-                naLabel={naLabel}
-              />
-              <StatCard
-                label={t("liveCharts.volume")}
-                value={quote?.volume ? formatNumber(quote.volume) : undefined}
-                icon={BarChart3}
-                naLabel={naLabel}
-              />
-              {assetClass === "stock" && (
-                <>
-                  <StatCard
-                    label={t("liveCharts.range52w")}
-                    value={
-                      low52w && high52w
-                        ? `$${low52w.toFixed(0)} - $${high52w.toFixed(0)}`
-                        : undefined
-                    }
-                    naLabel={naLabel}
-                  />
-                  {priceTarget?.targetConsensus && (
-                    <StatCard
-                      label={t("liveCharts.ptConsensus")}
-                      value={`$${priceTarget.targetConsensus.toFixed(2)}`}
-                      subValue={
-                        priceTarget.targetLow && priceTarget.targetHigh
-                          ? `$${priceTarget.targetLow.toFixed(0)}-$${priceTarget.targetHigh.toFixed(0)}`
-                          : undefined
-                      }
-                      icon={Target}
-                      color="text-blue-500"
-                      naLabel={naLabel}
-                    />
-                  )}
-                  {rating?.ratingRecommendation && (
-                    <StatCard
-                      label={t("liveCharts.rating")}
-                      value={rating.ratingRecommendation}
-                      subValue={t("liveCharts.ratingScore", {
-                        score: rating.ratingScore ?? naLabel,
-                      })}
-                      icon={Activity}
-                      color={
-                        rating.ratingRecommendation?.toLowerCase().includes("buy")
-                          ? "text-emerald-600"
-                          : rating.ratingRecommendation?.toLowerCase().includes("sell")
-                            ? "text-rose-600"
-                            : "text-amber-600"
-                      }
-                    />
-                  )}
-                </>
-              )}
-            </div>
-
-            {/* Indicator toggle and fullscreen */}
-            <div className="flex items-center gap-4 text-xs">
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={showIndicators}
-                  onChange={(e) => setShowIndicators(e.target.checked)}
-                  className="rounded border-border"
-                />
-                <span className="text-muted-foreground">{t("liveCharts.showIndicators")}</span>
-              </label>
-              {signalMarkers.length > 0 && (
-                <span className="text-muted-foreground">
-                  {t("liveCharts.botSignalsOnChart", { count: signalMarkers.length })}
-                </span>
-              )}
-              <div className="flex-1" />
-              <div className="text-muted-foreground">
-                {quoteUpdated ? <span>{t("liveCharts.quoteUpdated", { time: quoteUpdated })}</span> : null}
-                {barUpdated ? <span className="ml-2">{t("liveCharts.barUpdated", { time: barUpdated })}</span> : null}
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={toggleFullscreen}
-                className="h-7 px-2 gap-1"
-              >
-                <Maximize2 className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">{t("liveCharts.fullscreen")}</span>
-              </Button>
-            </div>
-
-            {/* Chart tabs */}
-            <Tabs value={interval} onValueChange={(v) => setInterval(v as IntervalOption)}>
-            <TabsList className="flex flex-wrap justify-start gap-2">
-                <TabsTrigger value="1m">{t("liveCharts.oneMinuteShort")}</TabsTrigger>
-                <TabsTrigger value="5m">{t("charts.timeframes.m5")}</TabsTrigger>
-                <TabsTrigger value="15m">{t("charts.timeframes.m15")}</TabsTrigger>
-                <TabsTrigger value="30m">{t("charts.timeframes.m30")}</TabsTrigger>
-                <TabsTrigger value="1h">{t("charts.timeframes.h1")}</TabsTrigger>
-                <TabsTrigger value="eod">{t("charts.eod")}</TabsTrigger>
-              </TabsList>
-              {["1m", "5m", "15m", "30m", "1h", "eod"].map((iv) => (
-                <TabsContent key={iv} value={iv} className="m-0">
-                  <FmpCandleChart
-                    bars={bars}
-                    signals={signalMarkers}
-                    showSma={showIndicators}
-                    showEma={showIndicators}
-                    showRsi={showIndicators}
-                    height={480}
-                    data-testid="fmp-chart-live"
-                  />
-                  {chartError && (
-                    <div className="mt-2 text-xs text-rose-600">{chartError}</div>
-                  )}
-                </TabsContent>
-              ))}
-            </Tabs>
-          </CardContent>
-        </Card>
+        {chartCard}
 
         {/* Side panel - news & signals */}
         <div className="space-y-4">
@@ -558,135 +582,22 @@ export default function LiveChartsPage() {
         </div>
       </div>
 
-      {/* Fullscreen overlay */}
-      {isFullscreen && (
-        <div className="fixed inset-0 z-50 bg-background flex flex-col">
-          {/* Fullscreen header */}
-          <div className="flex items-center justify-between px-4 py-2 border-b border-border/40 bg-card">
-            <div className="flex items-center gap-3">
-              <span className="text-xl font-bold">{normalizedSymbol}</span>
-              <span className="text-xs uppercase text-muted-foreground bg-muted/50 px-2 py-0.5 rounded">
-                {assetLabel}
-              </span>
-              {quote?.price !== undefined && (
-                <span className="text-lg font-semibold">
-                  {formatAssetPrice(quote.price, assetClass)}
-                </span>
-              )}
-              {changePct !== undefined && (
-                <span
-                  className={`flex items-center gap-1 text-sm font-medium ${
-                    changePct >= 0 ? "text-emerald-600" : "text-rose-600"
-                  }`}
-                >
-                  {changePct >= 0 ? (
-                    <TrendingUp className="h-4 w-4" />
-                  ) : (
-                    <TrendingDown className="h-4 w-4" />
-                  )}
-                  {changePct >= 0 ? "+" : ""}
-                  {changePct.toFixed(2)}%
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-3">
-              <Tabs
-                value={interval}
-                onValueChange={(v) => setInterval(v as IntervalOption)}
-                className="hidden sm:block"
-              >
-                <TabsList className="h-8">
-                  <TabsTrigger value="5m" className="h-7 px-2 text-xs">
-                    5m
-                  </TabsTrigger>
-                  <TabsTrigger value="15m" className="h-7 px-2 text-xs">
-                    15m
-                  </TabsTrigger>
-                  <TabsTrigger value="30m" className="h-7 px-2 text-xs">
-                    30m
-                  </TabsTrigger>
-                  <TabsTrigger value="1h" className="h-7 px-2 text-xs">
-                    1h
-                  </TabsTrigger>
-                  <TabsTrigger value="eod" className="h-7 px-2 text-xs">
-                    EOD
-                  </TabsTrigger>
-                </TabsList>
-              </Tabs>
-              <label className="flex items-center gap-1.5 cursor-pointer text-xs">
-                <input
-                  type="checkbox"
-                  checked={showIndicators}
-                  onChange={(e) => setShowIndicators(e.target.checked)}
-                  className="rounded border-border"
-                />
-                <span className="text-muted-foreground hidden sm:inline">{t("liveCharts.indicators")}</span>
-              </label>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={toggleFullscreen}
-                className="h-8 w-8 p-0"
-              >
-                <X className="h-5 w-5" />
-              </Button>
-            </div>
-          </div>
-
-          {/* Fullscreen chart */}
-          <div className="flex-1 p-2">
-            <FmpCandleChart
-              bars={bars}
-              signals={signalMarkers}
-              showSma={showIndicators}
-              showEma={showIndicators}
-              showRsi={showIndicators}
-              height={window.innerHeight - 80}
-              data-testid="fmp-chart-fullscreen"
-            />
-          </div>
-
-          {/* Fullscreen footer with key stats */}
-          <div className="flex items-center gap-4 px-4 py-2 border-t border-border/40 bg-card text-xs overflow-x-auto">
-            {quote?.dayHigh && (
-              <div className="flex items-center gap-1">
-                <span className="text-muted-foreground">{t("liveCharts.high")}:</span>
-                <span className="text-emerald-600 font-medium">
-                  {formatAssetPrice(quote.dayHigh, assetClass)}
-                </span>
-              </div>
-            )}
-            {quote?.dayLow && (
-              <div className="flex items-center gap-1">
-                <span className="text-muted-foreground">{t("liveCharts.low")}:</span>
-                <span className="text-rose-600 font-medium">
-                  {formatAssetPrice(quote.dayLow, assetClass)}
-                </span>
-              </div>
-            )}
-            {quote?.previousClose && (
-              <div className="flex items-center gap-1">
-                <span className="text-muted-foreground">{t("liveCharts.prevShort")}:</span>
-                <span>{formatAssetPrice(quote.previousClose, assetClass)}</span>
-              </div>
-            )}
-            {quote?.volume && (
-              <div className="flex items-center gap-1">
-                <span className="text-muted-foreground">{t("liveCharts.volumeShort")}:</span>
-                <span>{formatNumber(quote.volume)}</span>
-              </div>
-            )}
-            {signalMarkers.length > 0 && (
-              <div className="flex items-center gap-1">
-                <Activity className="h-3 w-3 text-blue-500" />
-                <span>{t("liveCharts.signalCount", { count: signalMarkers.length })}</span>
-              </div>
-            )}
-            <div className="flex-1" />
-            <span className="text-muted-foreground">{t("liveCharts.pressEsc")}</span>
-          </div>
-        </div>
-      )}
     </div>
   )
+
+  if (!isFullscreen) {
+    return content
+  }
+
+  const fullscreenContent = (
+    <div className="fixed inset-0 z-50 bg-background overflow-y-auto p-4 md:p-6">
+      <div className="mx-auto w-full max-w-7xl">{chartCard}</div>
+    </div>
+  )
+
+  if (typeof document === "undefined") {
+    return fullscreenContent
+  }
+
+  return createPortal(fullscreenContent, document.body)
 }

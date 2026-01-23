@@ -4,3 +4,4 @@ backtrader==1.9.78.123
 pandas==2.1.4
 numpy==1.26.2
 requests==2.31.0
+google-cloud-firestore==2.15.0

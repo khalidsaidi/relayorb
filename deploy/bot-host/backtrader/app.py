@@ -13,6 +13,11 @@ import logging
 from typing import Dict, List, Optional
 import os
 
+try:
+    from google.cloud import firestore
+except Exception:  # pragma: no cover - optional dependency
+    firestore = None
+
 from datafeeds import get_datafeed
 from strategies import create_strategy
 
@@ -29,6 +34,45 @@ strategy_signals: Dict[str, List[Dict]] = {}
 strategy_status: Dict[str, Dict] = {}
 strategy_configs: Dict[str, Dict] = {}
 
+def init_firestore():
+    if not firestore:
+        logger.warning("Firestore client not available; skipping backtrader heartbeat.")
+        return None
+    project_id = (
+        os.environ.get("FIREBASE_PROJECT_ID")
+        or os.environ.get("GOOGLE_CLOUD_PROJECT")
+        or os.environ.get("GCLOUD_PROJECT")
+        or "relayorb"
+    )
+    try:
+        return firestore.Client(project=project_id)
+    except Exception as err:
+        logger.warning("Failed to initialize Firestore client: %s", err)
+        return None
+
+def build_health_payload():
+    return {
+        "service": "backtrader",
+        "status": "ok",
+        "activeStrategies": len([s for s in strategy_status.values() if s.get("status") == "running"]),
+        "totalStrategies": len(strategy_status),
+    }
+
+def heartbeat_loop():
+    db = init_firestore()
+    if not db:
+        return
+    interval_s = int(os.environ.get("BACKTRADER_HEARTBEAT_SECONDS", "60"))
+    while True:
+        payload = build_health_payload()
+        try:
+            db.document("pipeline/backtrader").set(
+                {**payload, "heartbeatAt": firestore.SERVER_TIMESTAMP},
+                merge=True,
+            )
+        except Exception as err:
+            logger.warning("Backtrader heartbeat write failed: %s", err)
+        time.sleep(max(10, interval_s))
 
 def run_strategy(strategy_id: str, config: Dict):
     """Run a Backtrader strategy in a separate thread"""
@@ -224,5 +268,6 @@ def run():
 
 
 if __name__ == '__main__':
+    threading.Thread(target=heartbeat_loop, daemon=True).start()
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port, debug=False)

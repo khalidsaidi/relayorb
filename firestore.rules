@@ -9,14 +9,14 @@ service cloud.firestore {
 
     function uidToAccount(uid) {
       return uid == "enEopK5vNkMWZrXJAllC9bX4cgu1" ? "acct1" :
-        uid == "hhGFeCQGuwR32Jtswzik0k2v9rU2" ? "acct2" :
-        uid == "TpMgVF4dkfRoiiGPsntwHNdnQpd2" ? "acct3" :
-        null;
+        uid == "TpMgVF4dkfRoiiGPsntwHNdnQpd2" ? "acct2" :
+        uid == "hhGFeCQGuwR32Jtswzik0k2v9rU2" ? "acct3" :
+        "";
     }
 
     // IBKR broker users (can trade)
     function isBrokerUser() {
-      return request.auth != null && uidToAccount(request.auth.uid) != null;
+      return request.auth != null && uidToAccount(request.auth.uid) != "";
     }
 
     // Any authenticated user (for general read access)
@@ -47,9 +47,27 @@ service cloud.firestore {
       allow write: if isServiceAccount();
     }
 
+    match /brokerPositions/{positionId} {
+      allow read: if isBrokerUser()
+        && resource.data.brokerAccountKey == uidToAccount(request.auth.uid);
+      allow write: if isServiceAccount();
+    }
+
+    match /brokerAccountSummaries/{brokerAccountKey} {
+      allow read: if isBrokerUser()
+        && brokerAccountKey == uidToAccount(request.auth.uid);
+      allow write: if isServiceAccount();
+    }
+
     match /brokerAccounts/{brokerAccountKey} {
       allow read: if isBrokerUser();
-      allow write: if isServiceAccount();
+      allow create, delete: if isServiceAccount();
+      allow update: if isServiceAccount()
+        || (isBrokerUser()
+          && brokerAccountKey == uidToAccount(request.auth.uid)
+          && request.resource.data.diff(resource.data).changedKeys()
+            .hasOnly(["enabled", "paperEnabled", "ordersRefreshRequestedAt", "updatedAt"])
+          && request.resource.data.liveEnabled == resource.data.liveEnabled);
     }
 
     match /brokerInstruments/{assetKey} {
@@ -82,6 +100,22 @@ service cloud.firestore {
     // Replay stream symbols
     match /replay/controls/runs/{runId}/market/streamSymbols {
       allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    match /replay/controls {
+      allow read: if isAuthenticated() || isServiceAccount();
+      allow write: if isAuthenticated() || isServiceAccount();
+    }
+
+    // Market settings: allow authenticated dashboard edits
+    match /market/controls {
+      allow read: if isAuthenticated() || isServiceAccount();
+      allow write: if isAuthenticated();
+    }
+
+    match /market/universe {
+      allow read: if isAuthenticated() || isServiceAccount();
       allow write: if isAuthenticated();
     }
 

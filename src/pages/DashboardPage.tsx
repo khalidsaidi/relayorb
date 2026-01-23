@@ -39,7 +39,6 @@ import { Badge } from "@/components/ui/badge"
 import { formatAssetPrice, formatRelativeTimestamp, formatTimestamp } from "@/lib/format"
 import { StatusBadge } from "@/components/StatusBadge"
 import { MarketStatusBadge } from "@/components/MarketStatusBadge"
-import { PaperTradeButton } from "@/components/paper/PaperTradeButton"
 import { ExecuteTradeButton } from "@/components/ibkr/ExecuteTradeButton"
 import { ScoreBreakdownDialog } from "@/components/score/ScoreBreakdownDialog"
 
@@ -62,17 +61,11 @@ import { useMarketPrices } from "@/features/market/use-market-prices"
 import { useStreamSymbols } from "@/features/market/use-stream-symbols"
 import { X, BarChart3, InfoIcon, Clipboard, Sparkles } from "lucide-react"
 import { AssetChartModal } from "@/components/charts/AssetChartModal"
-import { usePaperAutomation } from "@/features/paper/use-paper-monitor"
 import { PipelineHealthBadge } from "@/components/PipelineHealthBadge"
 import { copyAiPrompt } from "@/features/ai/ai-prompt"
 import { findAnalysisNoteKind, getAnalysisNoteKind, localizeAnalysis } from "@/lib/analysis-localize"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
 import { useIbkrAccount } from "@/features/ibkr/use-ibkr-account"
-import {
-  getE2eDisableFirestoreWrites,
-  getE2ePrebreakoutOverride,
-  getE2eSwingOvernightOverride,
-} from "@/lib/e2e-overrides"
 import { useTranslation } from "react-i18next"
 
 function signalBadgeVariant(side?: string) {
@@ -91,6 +84,11 @@ function signalBadgeVariant(side?: string) {
 type AssetClass = MarketHotTrade["assetClass"]
 type DipHorizon = "1h" | "24h" | "7d"
 type RiskProfile = "conservative" | "balanced" | "aggressive"
+type TurnoverScope = {
+  movers: boolean
+  trending: boolean
+  hotTrades: boolean
+}
 
 const POPULAR_CRYPTO = [
   "BTC/USDT",
@@ -221,6 +219,12 @@ const UNIVERSE_MODE_OPTIONS: MarketUniverseMode[] = [
 const UNIVERSE_MODE_SET = new Set(UNIVERSE_MODE_OPTIONS)
 const BOT_WEIGHT_MIN = 0
 const BOT_WEIGHT_MAX = 5
+const DEFAULT_TURNOVER_MIN_PCT = 5
+const DEFAULT_TURNOVER_MAX_PCT = 300
+const TURNOVER_PCT_MAX = 1000
+const DEFAULT_MOVER_PRICE_MIN = 0
+const DEFAULT_MOVER_PRICE_MAX = 0
+const MOVER_PRICE_MAX = 500
 
 function clampBotWeight(value: number) {
   return Math.min(BOT_WEIGHT_MAX, Math.max(BOT_WEIGHT_MIN, value))
@@ -287,6 +291,15 @@ export default function DashboardPage() {
   const [swingOvernightAutoPaperEnabled, setSwingOvernightAutoPaperEnabled] = useState(false)
   const [prebreakoutEnabled, setPrebreakoutEnabled] = useState(false)
   const [prebreakoutAutoPaperEnabled, setPrebreakoutAutoPaperEnabled] = useState(false)
+  const [moverTurnoverMinPct, setMoverTurnoverMinPct] = useState(DEFAULT_TURNOVER_MIN_PCT)
+  const [moverTurnoverMaxPct, setMoverTurnoverMaxPct] = useState(DEFAULT_TURNOVER_MAX_PCT)
+  const [moverTurnoverScope, setMoverTurnoverScope] = useState<TurnoverScope>({
+    movers: true,
+    trending: false,
+    hotTrades: false,
+  })
+  const [moverPriceMin, setMoverPriceMin] = useState(DEFAULT_MOVER_PRICE_MIN)
+  const [moverPriceMax, setMoverPriceMax] = useState(DEFAULT_MOVER_PRICE_MAX)
   const [dipHorizon, setDipHorizon] = useState<DipHorizon>("24h")
   const [trendHorizon, setTrendHorizon] = useState<TrendHorizon>("15m")
   const [trendMomentumWeight, setTrendMomentumWeight] = useState(
@@ -337,13 +350,16 @@ export default function DashboardPage() {
   const [loadingPerformance, setLoadingPerformance] = useState(true)
   const [startingBots, setStartingBots] = useState(false)
   const [refreshingJobs, setRefreshingJobs] = useState(false)
+  const [refreshingMovers, setRefreshingMovers] = useState(false)
 
   const refreshEndpoint = useMemo(() => {
     const base = (import.meta.env.VITE_REFRESH_URL || "").trim()
     if (!base) return ""
     return `${base.replace(/\/+$/, "")}/refresh`
   }, [])
-  const e2eDisableWrites = getE2eDisableFirestoreWrites()
+  const marketIntelJob = useMemo(() => {
+    return (import.meta.env.VITE_MARKET_INTEL_JOB || "relayorb-market-intel").trim()
+  }, [])
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
@@ -433,6 +449,11 @@ export default function DashboardPage() {
         setSwingOvernightAutoPaperEnabled(false)
         setPrebreakoutEnabled(false)
         setPrebreakoutAutoPaperEnabled(false)
+        setMoverTurnoverMinPct(DEFAULT_TURNOVER_MIN_PCT)
+        setMoverTurnoverMaxPct(DEFAULT_TURNOVER_MAX_PCT)
+        setMoverTurnoverScope({ movers: true, trending: false, hotTrades: false })
+        setMoverPriceMin(DEFAULT_MOVER_PRICE_MIN)
+        setMoverPriceMax(DEFAULT_MOVER_PRICE_MAX)
         setDipHorizon("24h")
         setTrendHorizon("15m")
         setTrendMomentumWeight(DEFAULT_TREND_WEIGHTS.momentum)
@@ -472,6 +493,36 @@ export default function DashboardPage() {
       setSwingOvernightAutoPaperEnabled(data.swingOvernightAutoPaperEnabled === true)
       setPrebreakoutEnabled(data.prebreakoutEnabled === true)
       setPrebreakoutAutoPaperEnabled(data.prebreakoutAutoPaperEnabled === true)
+      const parsedTurnoverMin = Number(data.moverTurnoverMinPct)
+      setMoverTurnoverMinPct(
+        Number.isFinite(parsedTurnoverMin) && parsedTurnoverMin >= 0
+          ? parsedTurnoverMin
+          : DEFAULT_TURNOVER_MIN_PCT
+      )
+      const parsedTurnoverMax = Number(data.moverTurnoverMaxPct)
+      setMoverTurnoverMaxPct(
+        Number.isFinite(parsedTurnoverMax) && parsedTurnoverMax >= 0
+          ? parsedTurnoverMax
+          : DEFAULT_TURNOVER_MAX_PCT
+      )
+      const scope = data.moverTurnoverScope || {}
+      setMoverTurnoverScope({
+        movers: scope.movers ?? true,
+        trending: scope.trending ?? false,
+        hotTrades: scope.hotTrades ?? false,
+      })
+      const parsedPriceMin = Number(data.moverPriceMin)
+      setMoverPriceMin(
+        Number.isFinite(parsedPriceMin) && parsedPriceMin >= 0
+          ? parsedPriceMin
+          : DEFAULT_MOVER_PRICE_MIN
+      )
+      const parsedPriceMax = Number(data.moverPriceMax)
+      setMoverPriceMax(
+        Number.isFinite(parsedPriceMax) && parsedPriceMax >= 0
+          ? parsedPriceMax
+          : DEFAULT_MOVER_PRICE_MAX
+      )
       const nextHorizon =
         data.dipHorizon && DIP_HORIZON_OPTIONS.includes(data.dipHorizon)
           ? data.dipHorizon
@@ -583,13 +634,6 @@ export default function DashboardPage() {
   }, [replayActive, replayRunId])
 
   useEffect(() => {
-    const e2eOverride = getE2eSwingOvernightOverride()
-    if (e2eOverride) {
-      setSwingOvernight(e2eOverride.items ?? [])
-      setSwingOvernightUpdatedAt(e2eOverride.updatedAt)
-      setLoadingSwingOvernight(false)
-      return
-    }
     if (!firebaseEnabled || !db) {
       setLoadingSwingOvernight(false)
       return
@@ -620,13 +664,6 @@ export default function DashboardPage() {
   }, [replayActive, replayRunId])
 
   useEffect(() => {
-    const e2eOverride = getE2ePrebreakoutOverride()
-    if (e2eOverride) {
-      setPrebreakout(e2eOverride.items ?? [])
-      setPrebreakoutUpdatedAt(e2eOverride.updatedAt)
-      setLoadingPrebreakout(false)
-      return
-    }
     if (!firebaseEnabled || !db) {
       setLoadingPrebreakout(false)
       return
@@ -1085,6 +1122,60 @@ export default function DashboardPage() {
       toast.error(err instanceof Error ? err.message : t("tradeNow.refreshFailedGeneric"))
     } finally {
       setRefreshingJobs(false)
+    }
+  }
+
+  async function triggerMoversRefresh() {
+    if (replayActive) {
+      toast.info(t("replay.actionsDisabled"))
+      return
+    }
+    if (!firebaseEnabled || !db) {
+      toast.error(t("tradeNow.firebaseNotConfigured"))
+      return
+    }
+    if (!refreshEndpoint) {
+      toast.error(t("tradeNow.refreshNotConfigured"))
+      return
+    }
+    if (!user) {
+      toast.error(t("tradeNow.mustBeSignedIn"))
+      return
+    }
+    if (!marketIntelJob) {
+      toast.error(t("tradeNow.refreshNotConfigured"))
+      return
+    }
+
+    setRefreshingMovers(true)
+    try {
+      const token = await user.getIdToken(true)
+      const response = await fetch(refreshEndpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ jobs: [marketIntelJob] }),
+      })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok) {
+        throw new Error(
+          payload?.error || t("tradeNow.refreshFailed", { status: response.status })
+        )
+      }
+      const jobNames = Array.isArray(payload?.jobs)
+        ? payload.jobs.map((job: { job?: string }) => job.job).filter(Boolean)
+        : []
+      toast.success(
+        jobNames.length > 0
+          ? t("tradeNow.refreshMoversStartedWithJobs", { jobs: jobNames.join(", ") })
+          : t("tradeNow.refreshMoversStarted")
+      )
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t("tradeNow.refreshFailedGeneric"))
+    } finally {
+      setRefreshingMovers(false)
     }
   }
 
@@ -1840,15 +1931,6 @@ export default function DashboardPage() {
     [prebreakout]
   )
 
-  const paperMonitorItems = useMemo(
-    () => [...hotTrades, ...swingOvernight, ...prebreakout],
-    [hotTrades, swingOvernight, prebreakout]
-  )
-
-  // Monitor paper positions for stop loss / take profit
-  usePaperAutomation(replayActive ? undefined : user?.uid, paperMonitorItems)
-
-
   const trendFocusSet = useMemo(() => new Set(trendAssetFocus), [trendAssetFocus])
   const trendingBuckets = useMemo(() => {
     const byHorizon = trending?.byHorizon?.[trendHorizon] ?? {}
@@ -1961,6 +2043,38 @@ export default function DashboardPage() {
     return primarySets.crypto.has(normalizeSymbol(trade.symbol))
   }
 
+  function updateTurnoverMin(nextValue: number) {
+    const clamped = Math.max(0, Math.min(TURNOVER_PCT_MAX, nextValue))
+    setMoverTurnoverMinPct(clamped)
+    if (clamped > moverTurnoverMaxPct) {
+      setMoverTurnoverMaxPct(clamped)
+    }
+  }
+
+  function updateTurnoverMax(nextValue: number) {
+    const clamped = Math.max(0, Math.min(TURNOVER_PCT_MAX, nextValue))
+    setMoverTurnoverMaxPct(clamped)
+    if (clamped < moverTurnoverMinPct) {
+      setMoverTurnoverMinPct(clamped)
+    }
+  }
+
+  function updatePriceMin(nextValue: number) {
+    const clamped = Math.max(0, Math.min(MOVER_PRICE_MAX, nextValue))
+    setMoverPriceMin(clamped)
+    if (moverPriceMax > 0 && clamped > moverPriceMax) {
+      setMoverPriceMax(clamped)
+    }
+  }
+
+  function updatePriceMax(nextValue: number) {
+    const clamped = Math.max(0, Math.min(MOVER_PRICE_MAX, nextValue))
+    setMoverPriceMax(clamped)
+    if (clamped > 0 && clamped < moverPriceMin) {
+      setMoverPriceMin(clamped)
+    }
+  }
+
   async function savePreferences() {
     if (!firebaseEnabled || !db) {
       toast.error(t("tradeNow.firebaseNotConfigured"))
@@ -1970,11 +2084,6 @@ export default function DashboardPage() {
     const activeDb = db
     setPreferencesSaving(true)
     try {
-      if (getE2eDisableFirestoreWrites()) {
-        toast.success(t("dashboard.toasts.preferencesSaved"))
-        setUniverseOpen(false)
-        return
-      }
       const resolvedAssetFocus: AssetClass[] =
         assetFocus.length > 0 ? assetFocus : ["crypto", "stock", "forex"]
       const payload: MarketUniverseDoc = {
@@ -2002,6 +2111,11 @@ export default function DashboardPage() {
         swingOvernightAutoPaperEnabled,
         prebreakoutEnabled,
         prebreakoutAutoPaperEnabled,
+        moverTurnoverMinPct,
+        moverTurnoverMaxPct,
+        moverTurnoverScope,
+        moverPriceMin,
+        moverPriceMax,
         dipHorizon,
         trendHorizon,
         trendWeights: {
@@ -2264,19 +2378,37 @@ export default function DashboardPage() {
             {t("dashboard.actions.manageAssets")}
           </Button>
           <Button
+            variant="outline"
+            onClick={triggerMoversRefresh}
+            disabled={
+              !firebaseEnabled ||
+              refreshingMovers ||
+              !refreshEndpoint ||
+              replayActive
+            }
+            title={
+              replayActive
+                ? t("replay.actionsDisabled")
+                : refreshEndpoint
+                  ? t("tradeNow.refreshMoversTitle")
+                  : t("tradeNow.refreshMoversDisabledTitle")
+            }
+          >
+            {refreshingMovers ? t("tradeNow.refreshingMovers") : t("tradeNow.refreshMovers")}
+          </Button>
+          <Button
             variant="secondary"
             onClick={triggerRefresh}
             disabled={
               !firebaseEnabled ||
               refreshingJobs ||
               !refreshEndpoint ||
-              replayActive ||
-              e2eDisableWrites
+              replayActive
             }
             title={
               replayActive
                 ? t("replay.actionsDisabled")
-                : refreshEndpoint && !e2eDisableWrites
+                : refreshEndpoint
                   ? t("tradeNow.refreshTitle")
                   : t("tradeNow.refreshDisabledTitle")
             }
@@ -2471,6 +2603,173 @@ export default function DashboardPage() {
                           ? t("dashboard.prebreakoutControls.autoPaperOn")
                           : t("dashboard.prebreakoutControls.autoPaperOff")}
                       </Button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-border/60 bg-muted/30 p-4 md:col-span-2">
+                    <div className="text-sm font-medium">
+                      {t("dashboard.dip.moversTitle")}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {t("dashboard.dip.moversDescription")}
+                    </div>
+                    <div className="mt-3 space-y-3">
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">
+                            {t("dashboard.dip.moversMinPctLabel")}
+                          </Label>
+                          <Input
+                            type="number"
+                            inputMode="decimal"
+                            min={0}
+                            max={TURNOVER_PCT_MAX}
+                            step={0.1}
+                            value={moverTurnoverMinPct}
+                            onChange={(event) => {
+                              const next = Number(event.target.value)
+                              if (Number.isFinite(next)) {
+                                updateTurnoverMin(next)
+                              }
+                            }}
+                          />
+                          <input
+                            type="range"
+                            min={0}
+                            max={TURNOVER_PCT_MAX}
+                            step={0.1}
+                            value={moverTurnoverMinPct}
+                            onChange={(event) => {
+                              const next = Number(event.target.value)
+                              if (Number.isFinite(next)) {
+                                updateTurnoverMin(next)
+                              }
+                            }}
+                            className="h-2 w-full cursor-pointer accent-[hsl(var(--primary))]"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">
+                            {t("dashboard.dip.moversMaxPctLabel")}
+                          </Label>
+                          <Input
+                            type="number"
+                            inputMode="decimal"
+                            min={0}
+                            max={TURNOVER_PCT_MAX}
+                            step={0.1}
+                            value={moverTurnoverMaxPct}
+                            onChange={(event) => {
+                              const next = Number(event.target.value)
+                              if (Number.isFinite(next)) {
+                                updateTurnoverMax(next)
+                              }
+                            }}
+                          />
+                          <input
+                            type="range"
+                            min={0}
+                            max={TURNOVER_PCT_MAX}
+                            step={0.1}
+                            value={moverTurnoverMaxPct}
+                            onChange={(event) => {
+                              const next = Number(event.target.value)
+                              if (Number.isFinite(next)) {
+                                updateTurnoverMax(next)
+                              }
+                            }}
+                            className="h-2 w-full cursor-pointer accent-[hsl(var(--primary))]"
+                          />
+                        </div>
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {t("dashboard.dip.moversRangeHint", {
+                          min: moverTurnoverMinPct.toFixed(1),
+                          max: moverTurnoverMaxPct.toFixed(1),
+                        })}
+                      </div>
+                    </div>
+                    <div className="mt-4 border-t pt-4">
+                      <div className="text-sm font-medium">{t("dashboard.dip.priceFilterTitle")}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {t("dashboard.dip.priceFilterDescription")}
+                      </div>
+                      <div className="mt-3 grid gap-4 md:grid-cols-2">
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">
+                            {t("dashboard.dip.priceMinLabel")}
+                          </Label>
+                          <Input
+                            type="number"
+                            inputMode="decimal"
+                            min={0}
+                            max={MOVER_PRICE_MAX}
+                            step={1}
+                            value={moverPriceMin}
+                            onChange={(event) => {
+                              const next = Number(event.target.value)
+                              if (Number.isFinite(next)) {
+                                updatePriceMin(next)
+                              }
+                            }}
+                          />
+                          <input
+                            type="range"
+                            min={0}
+                            max={MOVER_PRICE_MAX}
+                            step={1}
+                            value={moverPriceMin}
+                            onChange={(event) => {
+                              const next = Number(event.target.value)
+                              if (Number.isFinite(next)) {
+                                updatePriceMin(next)
+                              }
+                            }}
+                            className="h-2 w-full cursor-pointer accent-[hsl(var(--primary))]"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">
+                            {t("dashboard.dip.priceMaxLabel")}
+                          </Label>
+                          <Input
+                            type="number"
+                            inputMode="decimal"
+                            min={0}
+                            max={MOVER_PRICE_MAX}
+                            step={1}
+                            value={moverPriceMax}
+                            onChange={(event) => {
+                              const next = Number(event.target.value)
+                              if (Number.isFinite(next)) {
+                                updatePriceMax(next)
+                              }
+                            }}
+                          />
+                          <input
+                            type="range"
+                            min={0}
+                            max={MOVER_PRICE_MAX}
+                            step={1}
+                            value={moverPriceMax}
+                            onChange={(event) => {
+                              const next = Number(event.target.value)
+                              if (Number.isFinite(next)) {
+                                updatePriceMax(next)
+                              }
+                            }}
+                            className="h-2 w-full cursor-pointer accent-[hsl(var(--primary))]"
+                          />
+                        </div>
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {moverPriceMin > 0 || moverPriceMax > 0
+                          ? t("dashboard.dip.priceRangeHint", {
+                              min: moverPriceMin.toFixed(0),
+                              max: moverPriceMax > 0 ? moverPriceMax.toFixed(0) : "∞",
+                            })
+                          : t("dashboard.dip.priceFilterDisabled")}
+                      </div>
                     </div>
                   </div>
 
@@ -4510,13 +4809,6 @@ export default function DashboardPage() {
                                 >
                                   <Clipboard className="h-3.5 w-3.5" />
                                 </Button>
-                                <PaperTradeButton
-                                  trade={trade}
-                                  size="icon"
-                                  className="h-5 w-5 opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100"
-                                  disabled={replayActive}
-                                  disabledReason={t("replay.actionsDisabled")}
-                                />
                                 {brokerAccountKey && user?.uid && trade.assetClass === "stock" ? (
                                   <ExecuteTradeButton
                                     trade={trade}
@@ -4644,13 +4936,6 @@ export default function DashboardPage() {
                                 >
                                   <Clipboard className="h-3.5 w-3.5" />
                                 </Button>
-                                <PaperTradeButton
-                                  trade={trade}
-                                  size="icon"
-                                  className="h-5 w-5 opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100"
-                                  disabled={replayActive}
-                                  disabledReason={t("replay.actionsDisabled")}
-                                />
                                 {brokerAccountKey && user?.uid && trade.assetClass === "stock" ? (
                                   <ExecuteTradeButton
                                     trade={trade}

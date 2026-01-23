@@ -51,6 +51,8 @@ function ServiceIcon({ name }: { name: string }) {
       return <Database className="h-4 w-4 text-blue-500" />
     case "relayorb_agent":
       return <Bot className="h-4 w-4 text-amber-500" />
+    case "backtrader":
+      return <Server className="h-4 w-4 text-emerald-600" />
     default:
       return <Server className="h-4 w-4 text-slate-500" />
   }
@@ -279,6 +281,7 @@ export function PipelineHealthPanel({ defaultExpanded = true, showTitle = true }
                 <ServiceCard name="market_intel" health={health.services.market_intel} />
                 <ServiceCard name="price_streamer" health={health.services.price_streamer} />
                 <ServiceCard name="relayorb_agent" health={health.services.relayorb_agent} />
+                <ServiceCard name="backtrader" health={health.services.backtrader} />
               </div>
 
               {/* Last Update */}

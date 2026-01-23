@@ -1,5 +1,7 @@
 const admin = require("firebase-admin")
 const crypto = require("crypto")
+const fs = require("fs")
+const { GoogleAuth } = require("google-auth-library")
 const { adjustEvaluationTime, isMarketOpen } = require("./marketHours")
 const { createClient } = require("redis")
 
@@ -45,6 +47,8 @@ const config = {
     process.env.GOOGLE_CLOUD_PROJECT ||
     "relayorb",
   marketDataGatewayUrl: process.env.MARKET_DATA_GATEWAY_URL || "",
+  marketDataGatewayAuth: process.env.MARKET_DATA_GATEWAY_AUTH !== "false",
+  marketDataGatewayAudience: process.env.MARKET_DATA_GATEWAY_AUDIENCE || "",
   redisUrl: process.env.REDIS_URL || "",
   redisPrefix: process.env.REDIS_PREFIX || "relayorb",
   redisLatestMaxAgeMs: parseInt(process.env.REDIS_LATEST_MAX_AGE_MS || "120000", 10),
@@ -68,6 +72,89 @@ const config = {
   replayControlsCacheMs: parseInt(process.env.REPLAY_CONTROLS_CACHE_MS || "1500", 10),
   replayAckIntervalMs: parseInt(process.env.REPLAY_ACK_INTERVAL_MS || "15000", 10),
 }
+
+const gatewayAuth = new GoogleAuth()
+let gatewayAuthClient = null
+
+const EXPECTED_REGION = "us-west1"
+const DMI_PRODUCT_PATHS = [
+  "/sys/class/dmi/id/product_name",
+  "/sys/devices/virtual/dmi/id/product_name",
+]
+const DMI_VENDOR_PATHS = [
+  "/sys/class/dmi/id/sys_vendor",
+  "/sys/devices/virtual/dmi/id/sys_vendor",
+]
+
+function assertRemoteOnly(serviceName) {
+  const isCloudRun = Boolean(
+    process.env.K_SERVICE ||
+      process.env.CLOUD_RUN_JOB ||
+      process.env.CLOUD_RUN_TASK_INDEX ||
+      process.env.CLOUD_RUN_TASK_ATTEMPT
+  )
+  const isGce = isGceVm()
+  if (!isCloudRun && !isGce) {
+    console.error(`Refusing to start ${serviceName} locally.`)
+    process.exit(1)
+  }
+}
+
+function readDmiValue(paths) {
+  for (const path of paths) {
+    try {
+      if (fs.existsSync(path)) {
+        return String(fs.readFileSync(path, "utf8")).trim()
+      }
+    } catch (_) {
+      continue
+    }
+  }
+  return ""
+}
+
+function isGceVm() {
+  const product = readDmiValue(DMI_PRODUCT_PATHS).toLowerCase()
+  const vendor = readDmiValue(DMI_VENDOR_PATHS).toLowerCase()
+  return product.includes("google") || vendor.includes("google")
+}
+
+function extractRegionFromResource(value) {
+  if (!value) return ""
+  const match = value.match(/\/locations\/([^/]+)/)
+  return match ? match[1] : ""
+}
+
+function resolveRuntimeRegion() {
+  return (
+    process.env.RUN_REGION ||
+    process.env.GOOGLE_CLOUD_REGION ||
+    process.env.CLOUD_RUN_REGION ||
+    process.env.GCP_REGION ||
+    process.env.FUNCTION_REGION ||
+    process.env.FUNCTIONS_REGION ||
+    process.env.LOCATION ||
+    process.env.REGION ||
+    extractRegionFromResource(process.env.EVENTARC_CLOUD_EVENT_SOURCE) ||
+    extractRegionFromResource(process.env.EVENTARC_EVENT_SOURCE) ||
+    ""
+  )
+}
+
+function assertUsWest1(serviceName) {
+  const region = resolveRuntimeRegion()
+  if (region !== EXPECTED_REGION) {
+    console.error(
+      `Refusing to start ${serviceName} outside ${EXPECTED_REGION} (got: ${
+        region || "unknown"
+      }).`
+    )
+    process.exit(1)
+  }
+}
+
+assertRemoteOnly("signal-evaluator")
+assertUsWest1("signal-evaluator")
 
 const caches = {
   fmpStocksDaily: new Map(),
@@ -429,6 +516,7 @@ function applyReplayControls(controls) {
 }
 
 async function ackReplayControls(db, note) {
+  if (!isReplayMode()) return
   if (!replayState.sessionId || replayState.version === null) return
   const now = Date.now()
   if (
@@ -459,13 +547,34 @@ async function ackReplayControls(db, note) {
   replayState.lastAckVersion = replayState.version
 }
 
-async function fetchJson(url) {
-  const res = await fetch(url)
+async function fetchJson(url, options) {
+  const res = await fetch(url, options)
   if (!res.ok) {
     const body = await res.text()
     throw new Error(`Request failed ${res.status}: ${body.slice(0, 200)}`)
   }
   return res.json()
+}
+
+function resolveGatewayAudience() {
+  if (config.marketDataGatewayAudience) return config.marketDataGatewayAudience
+  if (!config.marketDataGatewayUrl) return ""
+  return config.marketDataGatewayUrl.replace(/\/+$/, "")
+}
+
+async function getGatewayAuthHeaders() {
+  if (!config.marketDataGatewayUrl || !config.marketDataGatewayAuth) return null
+  const audience = resolveGatewayAudience()
+  if (!audience) return null
+  try {
+    if (!gatewayAuthClient) {
+      gatewayAuthClient = await gatewayAuth.getIdTokenClient(audience)
+    }
+    return await gatewayAuthClient.getRequestHeaders()
+  } catch (err) {
+    console.error("Gateway auth header fetch failed:", err?.message || err)
+    return null
+  }
 }
 
 function resolveGatewayBase() {
@@ -510,7 +619,8 @@ async function fetchGatewayJson(path, params) {
     )
   }
   try {
-    const data = await fetchJson(url)
+    const authHeaders = await getGatewayAuthHeaders()
+    const data = await fetchJson(url, authHeaders ? { headers: authHeaders } : undefined)
     if (shouldEmit) {
       await publishPipelineEvent(
         buildPipelineEvent({

@@ -9,10 +9,16 @@ import requests
 import os
 import logging
 import pandas as pd
+import base64
+import json
+import time
 
 logger = logging.getLogger(__name__)
 
 FMP_BASE_URL = "https://financialmodelingprep.com/stable"
+METADATA_IDENTITY_URL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity"
+METADATA_HEADERS = {"Metadata-Flavor": "Google"}
+_gateway_token = {"value": None, "exp": 0.0}
 
 def parse_fmp_datetime(value):
     if not value:
@@ -73,6 +79,47 @@ def normalize_fmp_symbol(symbol: str, asset_class: str):
     return cleaned
 
 
+def _decode_jwt_exp(token: str):
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return 0.0
+        payload = parts[1]
+        padding = "=" * (-len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload + padding)
+        data = json.loads(decoded.decode("utf-8"))
+        return float(data.get("exp", 0))
+    except Exception:
+        return 0.0
+
+
+def get_gateway_token(audience: str):
+    if not audience:
+        return None
+    now = time.time()
+    if _gateway_token["value"] and _gateway_token["exp"] - 60 > now:
+        return _gateway_token["value"]
+    try:
+        response = requests.get(
+            METADATA_IDENTITY_URL,
+            headers=METADATA_HEADERS,
+            params={"audience": audience, "format": "full"},
+            timeout=3,
+        )
+        if response.status_code != 200:
+            logger.error("Metadata identity token request failed: %s", response.status_code)
+            return None
+        token = response.text.strip()
+        if not token:
+            return None
+        _gateway_token["value"] = token
+        _gateway_token["exp"] = _decode_jwt_exp(token)
+        return token
+    except Exception as e:
+        logger.error("Metadata identity token fetch failed: %s", e)
+        return None
+
+
 def get_fmp_data(symbol: str, asset_class: str, timeframe: str = "1d", days: int = 100):
     interval = map_fmp_interval(timeframe)
     normalized = normalize_fmp_symbol(symbol, asset_class)
@@ -82,6 +129,10 @@ def get_fmp_data(symbol: str, asset_class: str, timeframe: str = "1d", days: int
     payload = None
     if gateway_url:
         try:
+            headers = {}
+            token = get_gateway_token(gateway_url)
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
             response = requests.get(
                 f"{gateway_url}/v1/fmp/candles",
                 params={
@@ -90,6 +141,7 @@ def get_fmp_data(symbol: str, asset_class: str, timeframe: str = "1d", days: int
                     "interval": interval,
                     "limit": days,
                 },
+                headers=headers,
                 timeout=10,
             )
             if response.status_code == 200:

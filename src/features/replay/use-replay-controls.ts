@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { doc, onSnapshot, type DocumentData } from "firebase/firestore"
 import { db, firebaseEnabled } from "@/lib/firebase"
-import { getE2eReplayControlsOverride } from "@/lib/e2e-overrides"
 
 export type ReplayControls = {
   desiredMode?: "live" | "replay"
@@ -14,14 +13,6 @@ export type ReplayControls = {
   requiredServices?: string[]
   botsReplayEnabled?: boolean
   speedScript?: Array<Record<string, unknown>>
-}
-
-let replayOverrideCache: ReplayControls | null = null
-const replayOverrideListeners = new Set<(value: ReplayControls | null) => void>()
-
-function setReplayOverrideCache(value: ReplayControls | null) {
-  replayOverrideCache = value
-  replayOverrideListeners.forEach((listener) => listener(value))
 }
 
 function normalizeControls(data?: DocumentData | null): ReplayControls | null {
@@ -47,18 +38,11 @@ function normalizeControls(data?: DocumentData | null): ReplayControls | null {
 }
 
 export function useReplayControls() {
-  const [override, setOverride] = useState<ReplayControls | null>(() =>
-    replayOverrideCache ??
-      normalizeControls((getE2eReplayControlsOverride() || null) as DocumentData)
-  )
-  const [controls, setControls] = useState<ReplayControls | null>(() => override)
-  const [loading, setLoading] = useState<boolean>(() =>
-    Boolean(firebaseEnabled && db && !override)
-  )
+  const [controls, setControls] = useState<ReplayControls | null>(null)
+  const [loading, setLoading] = useState<boolean>(() => Boolean(firebaseEnabled && db))
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (override) return
     if (!firebaseEnabled || !db) return
     const ref = doc(db, "replay", "controls")
     const unsubscribe = onSnapshot(
@@ -73,45 +57,12 @@ export function useReplayControls() {
       }
     )
     return () => unsubscribe()
-  }, [override])
-
-  useEffect(() => {
-    const onOverride = (value: ReplayControls | null) => {
-      setOverride(value)
-    }
-    replayOverrideListeners.add(onOverride)
-    const readOverride = () => {
-      const next = normalizeControls(
-        (getE2eReplayControlsOverride() || null) as DocumentData
-      )
-      setReplayOverrideCache(next)
-    }
-    readOverride()
-    window.addEventListener("relayorb:e2e-replay-update", readOverride)
-    const enableWindowSetter = import.meta.env.DEV || import.meta.env.VITE_E2E === "true"
-    if (enableWindowSetter) {
-      ;(window as Window & { __E2E_SET_REPLAY_CONTROLS__?: (value: unknown) => void })
-        .__E2E_SET_REPLAY_CONTROLS__ = (value: unknown) => {
-          setReplayOverrideCache(normalizeControls(value as DocumentData))
-        }
-    }
-    return () => {
-      window.removeEventListener("relayorb:e2e-replay-update", readOverride)
-      replayOverrideListeners.delete(onOverride)
-      if (enableWindowSetter) {
-        delete (window as Window & { __E2E_SET_REPLAY_CONTROLS__?: unknown })
-          .__E2E_SET_REPLAY_CONTROLS__
-      }
-    }
   }, [])
 
-  const effectiveOverride = override
-  const effectiveControls = effectiveOverride ?? controls
-  const effectiveLoading = effectiveOverride ? false : loading
   const replayActive = useMemo(
-    () => effectiveControls?.desiredMode === "replay",
-    [effectiveControls?.desiredMode]
+    () => controls?.desiredMode === "replay",
+    [controls?.desiredMode]
   )
 
-  return { controls: effectiveControls, loading: effectiveLoading, error, replayActive }
+  return { controls, loading, error, replayActive }
 }

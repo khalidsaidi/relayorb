@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { doc, onSnapshot } from "firebase/firestore"
 import { db } from "@/lib/firebase"
-import { getE2eMarketPricesOverride } from "@/lib/e2e-overrides"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
 
 export type MarketPrice = {
@@ -11,15 +10,12 @@ export type MarketPrice = {
 }
 
 export function useMarketPrices() {
-    const e2eOverride = getE2eMarketPricesOverride()
     const { replayActive, controls } = useReplayControls()
     const replayRunId = replayActive ? controls?.activeRunId : null
-    const initialLive = e2eOverride?.livePrices ?? {}
-    const initialSnapshot = e2eOverride?.prices ?? {}
-    const [livePrices, setLivePrices] = useState<Record<string, number>>(() => initialLive)
-    const [snapshotPrices, setSnapshotPrices] = useState<Record<string, number>>(() => initialSnapshot)
-    const [liveLoaded, setLiveLoaded] = useState(() => Boolean(e2eOverride))
-    const [snapshotLoaded, setSnapshotLoaded] = useState(() => Boolean(e2eOverride))
+    const [livePrices, setLivePrices] = useState<Record<string, number>>({})
+    const [snapshotPrices, setSnapshotPrices] = useState<Record<string, number>>({})
+    const [liveLoaded, setLiveLoaded] = useState(false)
+    const [snapshotLoaded, setSnapshotLoaded] = useState(false)
 
     const prices = useMemo(
         () => ({ ...snapshotPrices, ...livePrices }),
@@ -31,7 +27,6 @@ export function useMarketPrices() {
     const loading = !effectiveLiveLoaded && !effectiveSnapshotLoaded
 
     useEffect(() => {
-        if (e2eOverride) return
         if (!db) return
         if (replayBlocked) return
 
@@ -60,10 +55,9 @@ export function useMarketPrices() {
         })
 
         return () => unsub()
-    }, [e2eOverride, replayActive, replayRunId, replayBlocked])
+    }, [replayActive, replayRunId, replayBlocked])
 
     useEffect(() => {
-        if (e2eOverride) return
         if (!db) return
         if (replayBlocked) return
 
@@ -92,7 +86,7 @@ export function useMarketPrices() {
         })
 
         return () => unsub()
-    }, [e2eOverride, replayActive, replayRunId, replayBlocked])
+    }, [replayActive, replayRunId, replayBlocked])
 
     return { prices, livePrices, loading }
 }

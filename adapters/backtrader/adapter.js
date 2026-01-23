@@ -7,7 +7,14 @@
 class BacktraderAdapter {
   constructor(bot) {
     this.bot = bot;
-    this.baseUrl = bot.api?.baseUrl || 'http://localhost:8080';
+    const configuredBaseUrl = bot.api?.baseUrl || process.env.BACKTRADER_BASE_URL;
+    if (!configuredBaseUrl) {
+      throw new Error("Backtrader baseUrl is required (bot.api.baseUrl or BACKTRADER_BASE_URL).");
+    }
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(configuredBaseUrl)) {
+      throw new Error("Backtrader baseUrl must not point to localhost in production.");
+    }
+    this.baseUrl = configuredBaseUrl;
     this.signalDeduper = new Set();
     this.lastRunId = null;
     this.lastRunAt = 0;

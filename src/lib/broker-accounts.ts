@@ -2,8 +2,8 @@ import type { BrokerAccountKey, MarketHotTrade } from "@/lib/types"
 
 export const BROKER_UID_MAP: Record<BrokerAccountKey, string> = {
   acct1: "enEopK5vNkMWZrXJAllC9bX4cgu1",
-  acct2: "hhGFeCQGuwR32Jtswzik0k2v9rU2",
-  acct3: "TpMgVF4dkfRoiiGPsntwHNdnQpd2",
+  acct2: "TpMgVF4dkfRoiiGPsntwHNdnQpd2",
+  acct3: "hhGFeCQGuwR32Jtswzik0k2v9rU2",
 }
 
 const BROKER_UID_LOOKUP: Record<string, BrokerAccountKey> = {

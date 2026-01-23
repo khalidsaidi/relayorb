@@ -1,6 +1,7 @@
 const http = require("http")
 const crypto = require("crypto")
 const admin = require("firebase-admin")
+const fs = require("fs")
 const { GoogleAuth } = require("google-auth-library")
 const { createClient } = require("redis")
 
@@ -32,6 +33,9 @@ const config = {
   serpApiKey: process.env.SERP_API_KEY || "",
   redisUrl: process.env.REDIS_URL || "",
   redisPrefix: process.env.REDIS_PREFIX || "relayorb",
+  marketDataGatewayUrl: process.env.MARKET_DATA_GATEWAY_URL || "",
+  marketDataGatewayAuth: process.env.MARKET_DATA_GATEWAY_AUTH !== "false",
+  marketDataGatewayAudience: process.env.MARKET_DATA_GATEWAY_AUDIENCE || "",
   redisEventChannel: process.env.REDIS_EVENT_CHANNEL || "",
   redisEventEnabled: process.env.REDIS_EVENT_ENABLED !== "false",
   redisEventDebounceMs: parseInt(process.env.REDIS_EVENT_DEBOUNCE_MS || "60000", 10),
@@ -51,12 +55,93 @@ const config = {
   marketIntelJob: process.env.MARKET_INTEL_JOB || "relayorb-market-intel",
 }
 
+const EXPECTED_REGION = "us-west1"
+const DMI_PRODUCT_PATHS = [
+  "/sys/class/dmi/id/product_name",
+  "/sys/devices/virtual/dmi/id/product_name",
+]
+const DMI_VENDOR_PATHS = [
+  "/sys/class/dmi/id/sys_vendor",
+  "/sys/devices/virtual/dmi/id/sys_vendor",
+]
+
+function assertRemoteOnly(serviceName) {
+  const isCloudRun = Boolean(
+    process.env.K_SERVICE ||
+      process.env.CLOUD_RUN_JOB ||
+      process.env.CLOUD_RUN_TASK_INDEX ||
+      process.env.CLOUD_RUN_TASK_ATTEMPT
+  )
+  const isGce = isGceVm()
+  if (!isCloudRun && !isGce) {
+    console.error(`Refusing to start ${serviceName} locally.`)
+    process.exit(1)
+  }
+}
+
+function readDmiValue(paths) {
+  for (const path of paths) {
+    try {
+      if (fs.existsSync(path)) {
+        return String(fs.readFileSync(path, "utf8")).trim()
+      }
+    } catch (_) {
+      continue
+    }
+  }
+  return ""
+}
+
+function isGceVm() {
+  const product = readDmiValue(DMI_PRODUCT_PATHS).toLowerCase()
+  const vendor = readDmiValue(DMI_VENDOR_PATHS).toLowerCase()
+  return product.includes("google") || vendor.includes("google")
+}
+
+function extractRegionFromResource(value) {
+  if (!value) return ""
+  const match = value.match(/\/locations\/([^/]+)/)
+  return match ? match[1] : ""
+}
+
+function resolveRuntimeRegion() {
+  return (
+    process.env.RUN_REGION ||
+    process.env.GOOGLE_CLOUD_REGION ||
+    process.env.CLOUD_RUN_REGION ||
+    process.env.GCP_REGION ||
+    process.env.FUNCTION_REGION ||
+    process.env.FUNCTIONS_REGION ||
+    process.env.LOCATION ||
+    process.env.REGION ||
+    extractRegionFromResource(process.env.EVENTARC_CLOUD_EVENT_SOURCE) ||
+    extractRegionFromResource(process.env.EVENTARC_EVENT_SOURCE) ||
+    ""
+  )
+}
+
+function assertUsWest1(serviceName) {
+  const region = resolveRuntimeRegion()
+  if (region !== EXPECTED_REGION) {
+    console.error(
+      `Refusing to start ${serviceName} outside ${EXPECTED_REGION} (got: ${
+        region || "unknown"
+      }).`
+    )
+    process.exit(1)
+  }
+}
+
+assertRemoteOnly("refresh-service")
+assertUsWest1("refresh-service")
+
 if (!admin.apps.length) {
   admin.initializeApp({ projectId: config.projectId })
 }
 
 const db = admin.firestore()
 const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] })
+let gatewayAuthClient = null
 
 let pipelineRedis = null
 let pipelineRedisReady = false
@@ -129,7 +214,7 @@ function compactObject(obj) {
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", config.corsOrigin)
   res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type")
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS")
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 }
 
 function sendJson(res, status, payload) {
@@ -453,6 +538,59 @@ function parseRequestUrl(req) {
   try {
     return new URL(req.url || "", "http://localhost")
   } catch {
+    return null
+  }
+}
+
+function isGatewayPath(pathname) {
+  return pathname.startsWith("/v1/") || pathname.startsWith("/replay/")
+}
+
+function resolveGatewayBase() {
+  if (!config.marketDataGatewayUrl) {
+    throw new Error("MARKET_DATA_GATEWAY_URL is not configured")
+  }
+  return config.marketDataGatewayUrl.endsWith("/")
+    ? config.marketDataGatewayUrl
+    : `${config.marketDataGatewayUrl}/`
+}
+
+function resolveGatewayAudience() {
+  if (config.marketDataGatewayAudience) return config.marketDataGatewayAudience
+  if (!config.marketDataGatewayUrl) return ""
+  return config.marketDataGatewayUrl.replace(/\/+$/, "")
+}
+
+async function fetchMetadataIdToken(audience) {
+  const endpoint =
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity"
+  const url = `${endpoint}?audience=${encodeURIComponent(audience)}`
+  const res = await fetch(url, { headers: { "Metadata-Flavor": "Google" } })
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`Metadata token fetch failed ${res.status}: ${body.slice(0, 200)}`)
+  }
+  return res.text()
+}
+
+async function getGatewayAuthHeaders() {
+  if (!config.marketDataGatewayUrl || !config.marketDataGatewayAuth) return null
+  const audience = resolveGatewayAudience()
+  if (!audience) return null
+  try {
+    if (!gatewayAuthClient) {
+      gatewayAuthClient = await auth.getIdTokenClient(audience)
+    }
+    const headers = await gatewayAuthClient.getRequestHeaders()
+    if (headers?.Authorization || headers?.authorization) return headers
+  } catch (err) {
+    console.error("Gateway auth header fetch failed:", err?.message || err)
+  }
+  try {
+    const token = await fetchMetadataIdToken(audience)
+    return token ? { Authorization: `Bearer ${token}` } : null
+  } catch (err) {
+    console.error("Gateway metadata token fetch failed:", err?.message || err)
     return null
   }
 }
@@ -1215,6 +1353,64 @@ async function handleAdvice(req, res) {
   return sendJson(res, 200, { ok: true, advice })
 }
 
+async function handleGatewayProxy(req, res) {
+  const authResult = await verifyRequest(req)
+  if (!authResult.allowed) {
+    return sendJson(res, 403, { ok: false, error: authResult.error })
+  }
+
+  if (!config.marketDataGatewayUrl) {
+    return sendJson(res, 500, { ok: false, error: "MARKET_DATA_GATEWAY_URL is not configured." })
+  }
+
+  const url = parseRequestUrl(req)
+  if (!url) {
+    return sendJson(res, 400, { ok: false, error: "Invalid URL." })
+  }
+
+  const pathname = url.pathname || ""
+  if (!isGatewayPath(pathname)) {
+    return sendJson(res, 404, { ok: false, error: "Not found." })
+  }
+
+  let body = null
+  const method = req.method || "GET"
+  if (method !== "GET" && method !== "HEAD") {
+    body = await readBody(req)
+  }
+
+  let targetUrl
+  try {
+    const base = resolveGatewayBase()
+    targetUrl = new URL(pathname.replace(/^\/+/, ""), base)
+    targetUrl.search = url.searchParams.toString()
+  } catch (err) {
+    return sendJson(res, 400, { ok: false, error: "Invalid gateway URL." })
+  }
+
+  const authHeaders = await getGatewayAuthHeaders()
+  const headers = { ...(authHeaders || {}) }
+  const contentType = req.headers["content-type"]
+  if (contentType) {
+    headers["Content-Type"] = String(contentType)
+  }
+
+  const response = await fetch(targetUrl.toString(), {
+    method,
+    headers,
+    body: method === "GET" || method === "HEAD" ? undefined : JSON.stringify(body ?? {}),
+  })
+
+  const text = await response.text()
+  setCors(res)
+  res.statusCode = response.status
+  const upstreamType = response.headers.get("content-type")
+  if (upstreamType) {
+    res.setHeader("Content-Type", upstreamType)
+  }
+  res.end(text)
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     setCors(res)
@@ -1229,6 +1425,17 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && req.url === "/readyz") {
     return sendJson(res, 200, { ok: true })
+  }
+
+  const parsedUrl = parseRequestUrl(req)
+  if (parsedUrl && isGatewayPath(parsedUrl.pathname || "")) {
+    try {
+      await handleGatewayProxy(req, res)
+    } catch (err) {
+      console.error("Gateway proxy failed", err)
+      sendJson(res, 500, { ok: false, error: "Gateway proxy failed." })
+    }
+    return
   }
 
   if (req.method === "GET" && req.url?.startsWith("/ops/events/search")) {

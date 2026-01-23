@@ -15,7 +15,88 @@ import admin from "firebase-admin"
 import sgMail from "@sendgrid/mail"
 import { Logging } from "@google-cloud/logging"
 import { JobsClient } from "@google-cloud/run"
+import fs from "node:fs"
 import { createClient } from "redis"
+
+const EXPECTED_REGION = "us-west1"
+const DMI_PRODUCT_PATHS = [
+  "/sys/class/dmi/id/product_name",
+  "/sys/devices/virtual/dmi/id/product_name",
+]
+const DMI_VENDOR_PATHS = [
+  "/sys/class/dmi/id/sys_vendor",
+  "/sys/devices/virtual/dmi/id/sys_vendor",
+]
+
+function assertRemoteOnly(serviceName) {
+  const isCloudRun = Boolean(
+    process.env.K_SERVICE ||
+      process.env.CLOUD_RUN_JOB ||
+      process.env.CLOUD_RUN_TASK_INDEX ||
+      process.env.CLOUD_RUN_TASK_ATTEMPT
+  )
+  const isGce = isGceVm()
+  if (!isCloudRun && !isGce) {
+    console.error(`Refusing to start ${serviceName} locally.`)
+    process.exit(1)
+  }
+}
+
+function readDmiValue(paths) {
+  for (const path of paths) {
+    try {
+      if (fs.existsSync(path)) {
+        return String(fs.readFileSync(path, "utf8")).trim()
+      }
+    } catch (_) {
+      continue
+    }
+  }
+  return ""
+}
+
+function isGceVm() {
+  const product = readDmiValue(DMI_PRODUCT_PATHS).toLowerCase()
+  const vendor = readDmiValue(DMI_VENDOR_PATHS).toLowerCase()
+  return product.includes("google") || vendor.includes("google")
+}
+
+function extractRegionFromResource(value) {
+  if (!value) return ""
+  const match = value.match(/\/locations\/([^/]+)/)
+  return match ? match[1] : ""
+}
+
+function resolveRuntimeRegion() {
+  return (
+    process.env.RUN_REGION ||
+    process.env.GOOGLE_CLOUD_REGION ||
+    process.env.CLOUD_RUN_REGION ||
+    process.env.GCP_REGION ||
+    process.env.FUNCTION_REGION ||
+    process.env.FUNCTIONS_REGION ||
+    process.env.LOCATION ||
+    process.env.REGION ||
+    extractRegionFromResource(process.env.EVENTARC_CLOUD_EVENT_SOURCE) ||
+    extractRegionFromResource(process.env.EVENTARC_EVENT_SOURCE) ||
+    ""
+  )
+}
+
+function assertUsWest1(serviceName) {
+  const region = resolveRuntimeRegion()
+  if (region !== EXPECTED_REGION) {
+    console.error(
+      `Refusing to start ${serviceName} outside ${EXPECTED_REGION} (got: ${
+        region || "unknown"
+      }).`
+    )
+    process.exit(1)
+  }
+}
+
+assertRemoteOnly("pipeline-alerts")
+assertUsWest1("pipeline-alerts")
 
 // Configuration
 const config = {
@@ -46,9 +127,14 @@ const config = {
   // Services to monitor for errors
   monitoredServices: [
     "relayorb-market-data-gateway",
-    "price-streamer",
+    "relayorb-price-streamer",
+  ],
+
+  // Jobs to monitor for errors
+  monitoredJobs: [
     "relayorb-market-intel",
     "relayorb-signal-evaluator",
+    "pipeline-alerts",
   ],
 
   // Expected Cloud Run jobs that should be deployed (us-west1 production)
@@ -164,6 +250,69 @@ async function checkServiceErrors() {
     }
   }
   
+  return errors
+}
+
+async function checkJobErrors() {
+  const errors = []
+  const lookbackMs = config.thresholds.errorLookbackMinutes * 60 * 1000
+  const startTime = new Date(Date.now() - lookbackMs).toISOString()
+
+  for (const jobName of config.monitoredJobs || []) {
+    try {
+      const filter = `
+        resource.type="cloud_run_job"
+        resource.labels.job_name="${jobName}"
+        severity>=ERROR
+        timestamp>="${startTime}"
+      `.trim().replace(/\s+/g, " ")
+
+      const [entries] = await logging.getEntries({
+        filter,
+        pageSize: 50,
+        orderBy: "timestamp desc",
+      })
+
+      if (entries.length > 0) {
+        const errorPatterns = new Map()
+
+        for (const entry of entries) {
+          const payload = entry.data?.textPayload ||
+                          entry.data?.jsonPayload?.message ||
+                          entry.data?.httpRequest?.status?.toString() ||
+                          "Unknown error"
+
+          let pattern = String(payload).slice(0, 100).replace(/\d+/g, "N")
+
+          if (entry.data?.httpRequest?.status >= 400) {
+            const status = entry.data.httpRequest.status
+            const url = entry.data.httpRequest.requestUrl || ""
+            const path = url.split("?")[0].split("/").slice(-2).join("/")
+            pattern = `HTTP ${status} on ${path}`
+          }
+
+          if (!errorPatterns.has(pattern)) {
+            errorPatterns.set(pattern, { count: 0, sample: payload, status: entry.data?.httpRequest?.status })
+          }
+          errorPatterns.get(pattern).count++
+        }
+
+        errors.push({
+          job: jobName,
+          errorCount: entries.length,
+          patterns: Array.from(errorPatterns.entries()).map(([pattern, data]) => ({
+            pattern,
+            count: data.count,
+            sample: data.sample,
+            httpStatus: data.status,
+          })).sort((a, b) => b.count - a.count).slice(0, 3),
+        })
+      }
+    } catch (err) {
+      console.error(`Failed to check logs for job ${jobName}:`, err.message)
+    }
+  }
+
   return errors
 }
 
@@ -463,6 +612,27 @@ async function runVerification() {
       }
     }
 
+    // Check Cloud Run job logs for errors
+    console.log("Checking job logs for errors...")
+    const jobErrors = await checkJobErrors()
+
+    for (const jobError of jobErrors) {
+      if (jobError.errorCount >= config.thresholds.errorCountThreshold) {
+        const hasHttpErrors = jobError.patterns.some(p => p.httpStatus >= 500)
+        const topPattern = jobError.patterns[0]
+
+        const severity = hasHttpErrors ? "failed" : "warning"
+        const message = `${jobError.job} has ${jobError.errorCount} errors in last ${config.thresholds.errorLookbackMinutes}min`
+        const details = {
+          errorCount: jobError.errorCount,
+          topError: topPattern?.sample?.slice(0, 200),
+          patterns: jobError.patterns.map(p => `${p.pattern} (${p.count}x)`).join("; "),
+        }
+
+        addCheck("logs", `${jobError.job}_errors`, severity, message, details)
+      }
+    }
+
     // Check Redis pipeline stream for error events
     console.log("Checking pipeline stream for error events...")
     const pipelineErrors = await checkPipelineStreamErrors()
@@ -631,7 +801,7 @@ async function sendAlertEmail(results) {
     <h2>🔧 Recommended Actions</h2>
     <ul>
       ${errorAlerts.some(a => a.category === "services") ? "<li>Check Cloud Run service logs for errors</li>" : ""}
-      ${errorAlerts.some(a => a.category === "prices") ? "<li>Verify price-streamer is running and FMP API key is valid</li>" : ""}
+      ${errorAlerts.some(a => a.category === "prices") ? "<li>Verify relayorb-price-streamer is running and FMP API key is valid</li>" : ""}
       ${errorAlerts.some(a => a.name.includes("_stale")) ? "<li>Check if scheduled jobs are running on time</li>" : ""}
       <li>Run verification: <code>node scripts/verify-pipeline.cjs</code></li>
       <li>View logs: <a href="https://console.cloud.google.com/logs?project=relayorb">Cloud Console</a></li>

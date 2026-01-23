@@ -1,6 +1,7 @@
 const http = require("http")
 const crypto = require("crypto")
 const admin = require("firebase-admin")
+const fs = require("fs")
 const { Storage } = require("@google-cloud/storage")
 const { createClient } = require("redis")
 const zlib = require("zlib")
@@ -41,10 +42,90 @@ const config = {
   replayArtifactCacheMs: parseInt(process.env.REPLAY_ARTIFACT_CACHE_MS || "60000", 10),
   replayAckIntervalMs: parseInt(process.env.REPLAY_ACK_INTERVAL_MS || "15000", 10),
   replayBuildEnabled: process.env.REPLAY_BUILD_ENABLED === "true",
-  replayBuildMaxSymbols: parseInt(process.env.REPLAY_BUILD_MAX_SYMBOLS || "200", 10),
+  replayBuildMaxSymbols: parseInt(process.env.REPLAY_BUILD_MAX_SYMBOLS || "150", 10),
   replayBuildConcurrency: parseInt(process.env.REPLAY_BUILD_CONCURRENCY || "3", 10),
   replayBuildLookbackDays: parseInt(process.env.REPLAY_BUILD_LOOKBACK_DAYS || "120", 10),
 }
+
+const EXPECTED_REGION = "us-west1"
+const DMI_PRODUCT_PATHS = [
+  "/sys/class/dmi/id/product_name",
+  "/sys/devices/virtual/dmi/id/product_name",
+]
+const DMI_VENDOR_PATHS = [
+  "/sys/class/dmi/id/sys_vendor",
+  "/sys/devices/virtual/dmi/id/sys_vendor",
+]
+
+function assertRemoteOnly(serviceName) {
+  const isCloudRun = Boolean(
+    process.env.K_SERVICE ||
+      process.env.CLOUD_RUN_JOB ||
+      process.env.CLOUD_RUN_TASK_INDEX ||
+      process.env.CLOUD_RUN_TASK_ATTEMPT
+  )
+  const isGce = isGceVm()
+  if (!isCloudRun && !isGce) {
+    console.error(`Refusing to start ${serviceName} locally.`)
+    process.exit(1)
+  }
+}
+
+function readDmiValue(paths) {
+  for (const path of paths) {
+    try {
+      if (fs.existsSync(path)) {
+        return String(fs.readFileSync(path, "utf8")).trim()
+      }
+    } catch (_) {
+      continue
+    }
+  }
+  return ""
+}
+
+function isGceVm() {
+  const product = readDmiValue(DMI_PRODUCT_PATHS).toLowerCase()
+  const vendor = readDmiValue(DMI_VENDOR_PATHS).toLowerCase()
+  return product.includes("google") || vendor.includes("google")
+}
+
+function extractRegionFromResource(value) {
+  if (!value) return ""
+  const match = value.match(/\/locations\/([^/]+)/)
+  return match ? match[1] : ""
+}
+
+function resolveRuntimeRegion() {
+  return (
+    process.env.RUN_REGION ||
+    process.env.GOOGLE_CLOUD_REGION ||
+    process.env.CLOUD_RUN_REGION ||
+    process.env.GCP_REGION ||
+    process.env.FUNCTION_REGION ||
+    process.env.FUNCTIONS_REGION ||
+    process.env.LOCATION ||
+    process.env.REGION ||
+    extractRegionFromResource(process.env.EVENTARC_CLOUD_EVENT_SOURCE) ||
+    extractRegionFromResource(process.env.EVENTARC_EVENT_SOURCE) ||
+    ""
+  )
+}
+
+function assertUsWest1(serviceName) {
+  const region = resolveRuntimeRegion()
+  if (region !== EXPECTED_REGION) {
+    console.error(
+      `Refusing to start ${serviceName} outside ${EXPECTED_REGION} (got: ${
+        region || "unknown"
+      }).`
+    )
+    process.exit(1)
+  }
+}
+
+assertRemoteOnly("market-data-gateway")
+assertUsWest1("market-data-gateway")
 
 const cache = new Map()
 let pipelineRedis = null
@@ -1016,9 +1097,14 @@ function buildFmpQuotePayload(entry, symbol, assetClass) {
   const bid = parseNumber(entry.bid)
   const ask = parseNumber(entry.ask)
   const volume = parseNumber(entry.volume) ?? parseNumber(entry.avgVolume)
+  const change = parseNumber(entry.change)
   const changePercent = parsePercent(
     entry.changesPercentage ?? entry.changePercentage ?? entry.changePercent ?? entry.change
   )
+  const dayHigh = parseNumber(entry.dayHigh ?? entry.high)
+  const dayLow = parseNumber(entry.dayLow ?? entry.low)
+  const previousClose = parseNumber(entry.previousClose ?? entry.prevClose ?? entry.close)
+  const open = parseNumber(entry.open ?? entry.opening ?? entry.openPrice)
   const price =
     parseNumber(entry.price) ??
     parseNumber(entry.lastSale) ??
@@ -1029,13 +1115,21 @@ function buildFmpQuotePayload(entry, symbol, assetClass) {
   if (typeof price !== "number") return null
 
   return {
+    ...entry,
     symbol,
     assetClass,
     price,
     bid,
     ask,
     volume,
+    change,
     changePercent,
+    changePercentage: changePercent,
+    dayHigh,
+    dayLow,
+    previousClose,
+    open,
+    exchange: entry.exchange || entry.exchangeShortName || undefined,
     name: entry.name || entry.companyName || symbol,
     source: "fmp",
   }
@@ -3019,10 +3113,7 @@ async function fetchFmpHistoricalFull(symbol, fromDate, toDate) {
     return url
   }
   const candidates = [
-    buildUrl(config.fmpStableBaseUrl, "/historical-price-full", true),
-    buildUrl(config.fmpStableBaseUrl, `/historical-price-full/${symbol}`, false),
-    buildUrl(config.fmpBaseUrl, "/api/v3/historical-price-full", true),
-    buildUrl(config.fmpBaseUrl, `/api/v3/historical-price-full/${symbol}`, false),
+    buildUrl(config.fmpStableBaseUrl, "/historical-price-eod/full", true),
   ]
   let data = null
   let historical = []
@@ -3093,6 +3184,102 @@ async function fetchMarketauxNewsForSymbols(symbols, limit) {
   return Array.isArray(data?.data) ? data.data : []
 }
 
+async function discoverTapeSymbols(maxSymbols) {
+  if (!config.fmpKey) return []
+
+  const universeSymbols = new Set()
+
+  // 0. Fetch symbols from market/universe (the actual source algorithms use)
+  try {
+    const db = initFirestore()
+    const universeDoc = await db.doc("market/universe").get()
+    if (universeDoc.exists) {
+      const data = universeDoc.data()
+      // Extract stock symbols from universe
+      const stockSymbols = data?.stocks?.symbols || []
+      stockSymbols.forEach((s) => typeof s === "string" && universeSymbols.add(s.toUpperCase()))
+      // Also include crypto symbols if present
+      const cryptoSymbols = data?.crypto?.symbols || []
+      cryptoSymbols.forEach((s) => typeof s === "string" && universeSymbols.add(s.toUpperCase()))
+      console.log("tape_universe_symbols", { stocks: stockSymbols.length, crypto: cryptoSymbols.length, total: universeSymbols.size })
+    }
+  } catch (err) {
+    console.error("Failed to fetch market/universe:", err.message)
+  }
+
+  // Split target evenly: 50% small caps (prebreakout), 50% mid caps (swing overnight).
+  // The universe is always included and can expand the final tape size.
+  const screenerTarget = Math.max(0, maxSymbols)
+  const smallCapTarget = Math.ceil(screenerTarget / 2)
+  const midCapTarget = Math.floor(screenerTarget / 2)
+
+  const smallCaps = new Set()
+  const midCaps = new Set()
+
+  // 1. Small caps for prebreakout ($5M-$100M market cap)
+  try {
+    const screenerUrl = new URL(`${config.fmpStableBaseUrl}/company-screener`)
+    screenerUrl.searchParams.set("marketCapMoreThan", "5000000")
+    screenerUrl.searchParams.set("marketCapLowerThan", "80000000")
+    screenerUrl.searchParams.set("isActivelyTrading", "true")
+    screenerUrl.searchParams.set("volumeMoreThan", "50000")
+    screenerUrl.searchParams.set("limit", String(smallCapTarget + 20)) // Extra buffer for filtering
+    screenerUrl.searchParams.set("apikey", config.fmpKey)
+    const results = await fetchJsonWithRetry(screenerUrl.toString())
+    if (Array.isArray(results)) {
+      results.forEach((s) => s?.symbol && smallCaps.add(s.symbol))
+    }
+  } catch (err) {
+    console.error("Small cap screener failed:", err.message)
+  }
+
+  // 2. Mid caps for swing overnight ($1B-$50B market cap)
+  try {
+    const midCapUrl = new URL(`${config.fmpStableBaseUrl}/company-screener`)
+    midCapUrl.searchParams.set("marketCapMoreThan", "1000000000")
+    midCapUrl.searchParams.set("marketCapLowerThan", "50000000000")
+    midCapUrl.searchParams.set("isActivelyTrading", "true")
+    midCapUrl.searchParams.set("volumeMoreThan", "500000")
+    midCapUrl.searchParams.set("limit", String(midCapTarget + 20)) // Extra buffer for filtering
+    midCapUrl.searchParams.set("apikey", config.fmpKey)
+    const results = await fetchJsonWithRetry(midCapUrl.toString())
+    if (Array.isArray(results)) {
+      results.forEach((s) => s?.symbol && midCaps.add(s.symbol))
+    }
+  } catch (err) {
+    console.error("Mid cap screener failed:", err.message)
+  }
+
+  // Filter function for valid symbols
+  const isValidSymbol = (symbol) => {
+    if (!symbol || typeof symbol !== "string") return false
+    if (symbol.includes(".") && !symbol.endsWith(".V")) return false // TSX ok
+    if (symbol.length > 5) return false // Likely warrants or units
+    return true
+  }
+
+  // Filter and limit each category
+  const filteredSmallCaps = Array.from(smallCaps).filter(isValidSymbol).slice(0, smallCapTarget)
+  const filteredMidCaps = Array.from(midCaps).filter(isValidSymbol).slice(0, midCapTarget)
+
+  // Combine: always include the universe, then append screener results.
+  const allSymbols = new Set()
+  universeSymbols.forEach((s) => allSymbols.add(s))
+  filteredSmallCaps.forEach((s) => allSymbols.add(s))
+  filteredMidCaps.forEach((s) => allSymbols.add(s))
+
+  console.log("tape_discovery_split", {
+    universeSymbols: universeSymbols.size,
+    smallCapTarget,
+    midCapTarget,
+    smallCapsFound: filteredSmallCaps.length,
+    midCapsFound: filteredMidCaps.length,
+    totalUnique: allSymbols.size
+  })
+
+  return Array.from(allSymbols)
+}
+
 async function handleReplayBuildTape(req, res, params) {
   if (!config.replayBuildEnabled) {
     respondJson(res, 403, { error: "Replay tape build is disabled" })
@@ -3121,25 +3308,57 @@ async function handleReplayBuildTape(req, res, params) {
   const includeProfile = body?.includeProfile !== false
   const includeSharesFloat = body?.includeSharesFloat !== false
   const includeNews = body?.includeNews === true || params.get("includeNews") === "true"
+  if (includeNews && !config.marketauxKey) {
+    respondJson(res, 400, { error: "MARKETAUX_API_KEY is required when includeNews=true" })
+    return
+  }
   const lookbackDays = clamp(
     parseInt(body?.lookbackDays || params.get("lookbackDays") || config.replayBuildLookbackDays, 10),
     1,
     600
   )
-  const maxSymbols = clamp(
+  const intradayLookbackDays = clamp(
+    parseInt(body?.intradayLookbackDays || params.get("intradayLookbackDays") || "0", 10),
+    0,
+    60
+  )
+  const hardMaxSymbols = 2000
+  let maxSymbols = clamp(
     parseInt(body?.maxSymbols || params.get("maxSymbols") || config.replayBuildMaxSymbols, 10),
     1,
-    2000
+    hardMaxSymbols
   )
+  const autoDiscover = body?.autoDiscover === true || params.get("autoDiscover") === "true"
 
-  const symbols = normalizeSymbolList(body?.symbols || params.get("symbols"))
+  let symbols = normalizeSymbolList(body?.symbols || params.get("symbols"))
+
+  // Auto-discover symbols for algorithms if no symbols provided or autoDiscover is true
+  if (autoDiscover || !symbols.length) {
+    const discovered = await discoverTapeSymbols(maxSymbols)
+    symbols = [...new Set([...symbols, ...discovered])]
+    console.log("tape_auto_discover", {
+      requested: normalizeSymbolList(body?.symbols || params.get("symbols")).length,
+      discovered: discovered.length,
+      total: symbols.length
+    })
+  }
+
   if (!symbols.length) {
-    respondJson(res, 400, { error: "Missing symbols list" })
+    respondJson(res, 400, { error: "Missing symbols list and auto-discovery found none" })
+    return
+  }
+  if (symbols.length > hardMaxSymbols) {
+    respondJson(res, 400, { error: `Too many symbols (max ${hardMaxSymbols})` })
     return
   }
   if (symbols.length > maxSymbols) {
-    respondJson(res, 400, { error: `Too many symbols (max ${maxSymbols})` })
-    return
+    if (autoDiscover || !normalizeSymbolList(body?.symbols || params.get("symbols")).length) {
+      console.log("tape_max_symbols_bumped", { from: maxSymbols, to: symbols.length })
+      maxSymbols = symbols.length
+    } else {
+      respondJson(res, 400, { error: `Too many symbols (max ${maxSymbols})` })
+      return
+    }
   }
   if (!config.fmpKey) {
     respondJson(res, 400, { error: "FMP API key is required for tape build" })
@@ -3168,6 +3387,7 @@ async function handleReplayBuildTape(req, res, params) {
       },
     }
   }
+  const tapeTimezone = manifest?.timezone || "America/New_York"
 
   const existingByLegacyKey = new Map(
     Array.isArray(manifest.symbols)
@@ -3192,10 +3412,15 @@ async function handleReplayBuildTape(req, res, params) {
     datasetId,
     assetClass,
     lookbackDays,
+    intradayLookbackDays,
+    autoDiscover,
+    symbolCount: symbols.length,
     okSymbols: [],
     missingSymbols: [],
     errors: [],
   }
+  const failedLegacyKeys = new Set()
+  const failedSymbolKeyV2 = new Set()
 
   const chunks = chunkList(symbols, Math.max(config.replayBuildConcurrency, 1))
   for (const chunk of chunks) {
@@ -3244,9 +3469,10 @@ async function handleReplayBuildTape(req, res, params) {
         let bars1m = null
         let bars1d = null
         try {
-          // Only fetch the target session for intraday bars; daily lookback is handled separately.
-          const intradayRange = await fetchFmpHistoricalBars(fmpSymbol, "1min", date, date)
-          bars1m = filterIntradayBarsForDate(intradayRange, date)
+          // Fetch intraday bars for target date plus optional lookback period
+          const intradayFromDate = intradayLookbackDays > 0 ? shiftDateKey(date, -intradayLookbackDays) : date
+          const intradayRange = await fetchFmpHistoricalBars(fmpSymbol, "1min", intradayFromDate, date)
+          bars1m = normalizeReplayCandles(intradayRange)
         } catch (err) {
           return { rawSymbol, legacyKey, symbolKeyV2, error: err.message || "FMP fetch failed" }
         }
@@ -3289,6 +3515,26 @@ async function handleReplayBuildTape(req, res, params) {
           profile: Boolean(profile),
           sharesFloat: Array.isArray(sharesFloat) && sharesFloat.length > 0,
           news: includeNews && Boolean(newsIndex),
+        }
+        const hasTapeSession =
+          Array.isArray(bars1m) &&
+          bars1m.some((candle) => getLocalDateParts(candle.time, tapeTimezone).dateKey === date)
+        const missingReasons = []
+        if (!artifacts.bars1m) missingReasons.push("bars1m_missing")
+        if (!artifacts.bars1d) missingReasons.push("bars1d_missing")
+        if (artifacts.bars1m && !hasTapeSession) missingReasons.push("bars1m_no_tape_session")
+        if (includeProfile && !artifacts.profile) missingReasons.push("profile_missing")
+        if (includeSharesFloat && !artifacts.sharesFloat) missingReasons.push("shares_float_missing")
+        if (includeNews && !artifacts.news) missingReasons.push("news_missing")
+        if (missingReasons.length > 0) {
+          console.warn("tape_symbol_skipped", { symbol: rawSymbol, reasons: missingReasons })
+          return {
+            rawSymbol,
+            legacyKey,
+            symbolKeyV2,
+            error: "missing_required_artifacts",
+            missing: missingReasons,
+          }
         }
 
         const basePath = `${config.replayPrefix}/tapes/stocks/${date}`
@@ -3345,7 +3591,13 @@ async function handleReplayBuildTape(req, res, params) {
     processed.forEach((result) => {
       if (result.error) {
         results.missingSymbols.push(result.rawSymbol)
-        results.errors.push({ symbol: result.rawSymbol, error: result.error })
+        if (result.legacyKey) failedLegacyKeys.add(result.legacyKey)
+        if (result.symbolKeyV2) failedSymbolKeyV2.add(result.symbolKeyV2)
+        const errorEntry = { symbol: result.rawSymbol, error: result.error }
+        if (Array.isArray(result.missing) && result.missing.length > 0) {
+          errorEntry.missing = result.missing
+        }
+        results.errors.push(errorEntry)
         return
       }
       results.okSymbols.push(result.rawSymbol)
@@ -3369,6 +3621,27 @@ async function handleReplayBuildTape(req, res, params) {
         existingByLegacyKey.set(result.legacyKey, entry)
       }
     })
+  }
+
+  if (failedLegacyKeys.size > 0 || failedSymbolKeyV2.size > 0) {
+    if (Array.isArray(manifest.symbols)) {
+      manifest.symbols = manifest.symbols.filter(
+        (entry) =>
+          entry &&
+          !failedLegacyKeys.has(entry.legacyKey) &&
+          !failedSymbolKeyV2.has(entry.symbolKeyV2)
+      )
+    }
+    if (manifest.symbolMap) {
+      failedLegacyKeys.forEach((key) => {
+        delete manifest.symbolMap[key]
+      })
+    }
+    if (manifest.artifacts) {
+      failedSymbolKeyV2.forEach((key) => {
+        delete manifest.artifacts[key]
+      })
+    }
   }
 
   manifest.buildTs = new Date().toISOString()
@@ -3402,6 +3675,30 @@ async function requestHandler(req, res) {
         return
       }
       await handleReplayBuildTape(req, res, params)
+      return
+    }
+
+    if (path === "/replay/tapeSymbols") {
+      const datasetId = params.get("datasetId")
+      if (!datasetId) {
+        respondJson(res, 400, { error: "Missing datasetId parameter" })
+        return
+      }
+      try {
+        const manifestPath = `${config.replayPrefix}/tapes/stocks/${datasetId}/manifest.json`
+        const bucket = initStorage().bucket(config.replayBucket)
+        const [content] = await bucket.file(manifestPath).download()
+        const manifest = JSON.parse(content.toString("utf8"))
+        const symbolMap = manifest?.symbolMap || {}
+        // Extract stock symbols from the symbolMap keys (format: "stock:SYMBOL")
+        const symbols = Object.keys(symbolMap)
+          .filter((key) => key.startsWith("stock:"))
+          .map((key) => key.replace("stock:", ""))
+        respondJson(res, 200, { datasetId, symbols, count: symbols.length })
+      } catch (err) {
+        console.error("Failed to load tape symbols:", err.message)
+        respondJson(res, 404, { error: "Tape not found or invalid", datasetId })
+      }
       return
     }
 

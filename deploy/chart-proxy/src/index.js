@@ -1,14 +1,97 @@
 const crypto = require('crypto')
+const fs = require('fs')
+const { GoogleAuth } = require('google-auth-library')
 const { createClient } = require('redis')
 const { onRequest } = require('firebase-functions/v2/https')
 
+const EXPECTED_REGION = 'us-west1'
+const DMI_PRODUCT_PATHS = [
+  '/sys/class/dmi/id/product_name',
+  '/sys/devices/virtual/dmi/id/product_name',
+]
+const DMI_VENDOR_PATHS = [
+  '/sys/class/dmi/id/sys_vendor',
+  '/sys/devices/virtual/dmi/id/sys_vendor',
+]
+
 const MARKET_DATA_GATEWAY_URL = process.env.MARKET_DATA_GATEWAY_URL || ''
+const MARKET_DATA_GATEWAY_AUTH = process.env.MARKET_DATA_GATEWAY_AUTH !== 'false'
+const MARKET_DATA_GATEWAY_AUDIENCE = process.env.MARKET_DATA_GATEWAY_AUDIENCE || ''
 const REDIS_URL = process.env.REDIS_URL || ''
 const REDIS_PREFIX = process.env.REDIS_PREFIX || 'relayorb'
 const PIPELINE_EVENTS_ENABLED = process.env.PIPELINE_EVENTS_ENABLED !== 'false'
 const PIPELINE_EVENTS_STREAM = process.env.PIPELINE_EVENTS_STREAM || ''
 const PIPELINE_EVENTS_MAXLEN = parseInt(process.env.PIPELINE_EVENTS_MAXLEN || '20000', 10)
 const PIPELINE_EVENTS_RUN_ENV = process.env.PIPELINE_EVENTS_RUN_ENV || 'prod'
+const gatewayAuth = new GoogleAuth()
+let gatewayAuthClient = null
+
+function assertRemoteOnly(serviceName) {
+  const isCloudRun = Boolean(
+    process.env.K_SERVICE ||
+      process.env.CLOUD_RUN_JOB ||
+      process.env.CLOUD_RUN_TASK_INDEX ||
+      process.env.CLOUD_RUN_TASK_ATTEMPT
+  )
+  const isGce = isGceVm()
+  if (!isCloudRun && !isGce) {
+    console.error(`Refusing to start ${serviceName} locally.`)
+    process.exit(1)
+  }
+}
+
+function readDmiValue(paths) {
+  for (const path of paths) {
+    try {
+      if (fs.existsSync(path)) {
+        return String(fs.readFileSync(path, 'utf8')).trim()
+      }
+    } catch (_) {
+      continue
+    }
+  }
+  return ''
+}
+
+function isGceVm() {
+  const product = readDmiValue(DMI_PRODUCT_PATHS).toLowerCase()
+  const vendor = readDmiValue(DMI_VENDOR_PATHS).toLowerCase()
+  return product.includes('google') || vendor.includes('google')
+}
+
+function extractRegionFromResource(value) {
+  if (!value) return ''
+  const match = value.match(/\/locations\/([^/]+)/)
+  return match ? match[1] : ''
+}
+
+function resolveRuntimeRegion() {
+  return (
+    process.env.RUN_REGION ||
+    process.env.GOOGLE_CLOUD_REGION ||
+    process.env.CLOUD_RUN_REGION ||
+    process.env.GCP_REGION ||
+    process.env.FUNCTION_REGION ||
+    process.env.FUNCTIONS_REGION ||
+    process.env.LOCATION ||
+    process.env.REGION ||
+    extractRegionFromResource(process.env.EVENTARC_CLOUD_EVENT_SOURCE) ||
+    extractRegionFromResource(process.env.EVENTARC_EVENT_SOURCE) ||
+    ''
+  )
+}
+
+function assertUsWest1(serviceName) {
+  const region = resolveRuntimeRegion()
+  if (region !== EXPECTED_REGION) {
+    console.error(
+      `Refusing to start ${serviceName} outside ${EXPECTED_REGION} (got: ${
+        region || 'unknown'
+      }).`
+    )
+    process.exit(1)
+  }
+}
 
 let pipelineRedis = null
 let pipelineRedisReady = false
@@ -30,6 +113,27 @@ function hashParams(value) {
     const serialized = typeof value === 'string' ? value : JSON.stringify(value)
     return crypto.createHash('sha256').update(serialized).digest('hex').slice(0, 12)
   } catch (_) {
+    return null
+  }
+}
+
+function resolveGatewayAudience() {
+  if (MARKET_DATA_GATEWAY_AUDIENCE) return MARKET_DATA_GATEWAY_AUDIENCE
+  if (!MARKET_DATA_GATEWAY_URL) return ''
+  return MARKET_DATA_GATEWAY_URL.replace(/\/+$/, '')
+}
+
+async function getGatewayAuthHeaders() {
+  if (!MARKET_DATA_GATEWAY_URL || !MARKET_DATA_GATEWAY_AUTH) return null
+  const audience = resolveGatewayAudience()
+  if (!audience) return null
+  try {
+    if (!gatewayAuthClient) {
+      gatewayAuthClient = await gatewayAuth.getIdTokenClient(audience)
+    }
+    return await gatewayAuthClient.getRequestHeaders()
+  } catch (err) {
+    console.error('Gateway auth header fetch failed:', err?.message || err)
     return null
   }
 }
@@ -128,8 +232,11 @@ exports.chartProxy = onRequest(
   {
     cors: true,
     maxInstances: 10,
+    region: 'us-west1',
   },
   async (req, res) => {
+    assertRemoteOnly('chart-proxy')
+    assertUsWest1('chart-proxy')
     const startedAt = Date.now()
     try {
       const { symbol, assetClass = 'stock', interval = '15min' } = req.query
@@ -158,7 +265,8 @@ exports.chartProxy = onRequest(
       url.searchParams.set('interval', fmpInterval)
       url.searchParams.set('limit', '200')
 
-      const response = await fetch(url.toString())
+      const authHeaders = await getGatewayAuthHeaders()
+      const response = await fetch(url.toString(), authHeaders ? { headers: authHeaders } : undefined)
       const data = await response.json()
 
       if (!response.ok) {

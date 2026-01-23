@@ -10,6 +10,6 @@
   },
   "dependencies": {
     "@stoqey/ib": "^1.3.0",
-    "firebase-admin": "^12.0.0"
+    "firebase-admin": "^13.6.0"
   }
 }

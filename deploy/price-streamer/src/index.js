@@ -1,6 +1,8 @@
 const admin = require("firebase-admin")
 const http = require("http")
 const crypto = require("crypto")
+const fs = require("fs")
+const { GoogleAuth } = require("google-auth-library")
 const { createClient } = require("redis")
 const WebSocket = require("ws")
 const config = {
@@ -11,12 +13,24 @@ const config = {
     "relayorb",
   fmpKey: process.env.FMP_API_KEY || "",
   marketDataGatewayUrl: process.env.MARKET_DATA_GATEWAY_URL || "",
+  marketDataGatewayAuth: process.env.MARKET_DATA_GATEWAY_AUTH !== "false",
+  marketDataGatewayAudience: process.env.MARKET_DATA_GATEWAY_AUDIENCE || "",
   watchlistRefreshMs: parseInt(process.env.WATCHLIST_REFRESH_MS || "60000", 10),
   cryptoPollMs: parseInt(process.env.CRYPTO_POLL_MS || "30000", 10),
   stockPollMs: parseInt(process.env.STOCK_POLL_MS || "30000", 10),
+  stockExtendedPollMs: parseInt(process.env.STOCK_EXTENDED_POLL_MS || "300000", 10),
+  stockClosedPollMs: parseInt(process.env.STOCK_CLOSED_POLL_MS || "1800000", 10),
   forexPollMs: parseInt(process.env.FOREX_POLL_MS || "30000", 10),
+  forexClosedPollMs: parseInt(process.env.FOREX_CLOSED_POLL_MS || "1800000", 10),
   writeMs: parseInt(process.env.PRICE_WRITE_MS || "2000", 10),
   maxSymbols: parseInt(process.env.PRICE_STREAM_MAX_SYMBOLS || "120", 10),
+  stockStreamTarget: parseInt(process.env.PRICE_STREAM_STOCK_TARGET || "3000", 10),
+  stockPollTarget: parseInt(process.env.PRICE_STREAM_STOCK_POLL_TARGET || "600", 10),
+  stockUniverseLimit: parseInt(process.env.PRICE_STREAM_STOCK_UNIVERSE_LIMIT || "10000", 10),
+  stockUniverseRefreshMs: parseInt(
+    process.env.PRICE_STREAM_STOCK_UNIVERSE_REFRESH_MS || "21600000",
+    10
+  ),
   historyMinutes: parseInt(process.env.PRICE_HISTORY_MINUTES || "10", 10),
   quoteConcurrency: parseInt(process.env.PRICE_STREAM_CONCURRENCY || "5", 10),
   quoteBatchDelayMs: parseInt(process.env.PRICE_STREAM_BATCH_DELAY_MS || "200", 10),
@@ -56,6 +70,86 @@ const config = {
   ),
 }
 
+const EXPECTED_REGION = "us-west1"
+const DMI_PRODUCT_PATHS = [
+  "/sys/class/dmi/id/product_name",
+  "/sys/devices/virtual/dmi/id/product_name",
+]
+const DMI_VENDOR_PATHS = [
+  "/sys/class/dmi/id/sys_vendor",
+  "/sys/devices/virtual/dmi/id/sys_vendor",
+]
+
+function assertRemoteOnly(serviceName) {
+  const isCloudRun = Boolean(
+    process.env.K_SERVICE ||
+      process.env.CLOUD_RUN_JOB ||
+      process.env.CLOUD_RUN_TASK_INDEX ||
+      process.env.CLOUD_RUN_TASK_ATTEMPT
+  )
+  const isGce = isGceVm()
+  if (!isCloudRun && !isGce) {
+    console.error(`Refusing to start ${serviceName} locally.`)
+    process.exit(1)
+  }
+}
+
+function readDmiValue(paths) {
+  for (const path of paths) {
+    try {
+      if (fs.existsSync(path)) {
+        return String(fs.readFileSync(path, "utf8")).trim()
+      }
+    } catch (_) {
+      continue
+    }
+  }
+  return ""
+}
+
+function isGceVm() {
+  const product = readDmiValue(DMI_PRODUCT_PATHS).toLowerCase()
+  const vendor = readDmiValue(DMI_VENDOR_PATHS).toLowerCase()
+  return product.includes("google") || vendor.includes("google")
+}
+
+function extractRegionFromResource(value) {
+  if (!value) return ""
+  const match = value.match(/\/locations\/([^/]+)/)
+  return match ? match[1] : ""
+}
+
+function resolveRuntimeRegion() {
+  return (
+    process.env.RUN_REGION ||
+    process.env.GOOGLE_CLOUD_REGION ||
+    process.env.CLOUD_RUN_REGION ||
+    process.env.GCP_REGION ||
+    process.env.FUNCTION_REGION ||
+    process.env.FUNCTIONS_REGION ||
+    process.env.LOCATION ||
+    process.env.REGION ||
+    extractRegionFromResource(process.env.EVENTARC_CLOUD_EVENT_SOURCE) ||
+    extractRegionFromResource(process.env.EVENTARC_EVENT_SOURCE) ||
+    ""
+  )
+}
+
+function assertUsWest1(serviceName) {
+  const region = resolveRuntimeRegion()
+  if (region !== EXPECTED_REGION) {
+    console.error(
+      `Refusing to start ${serviceName} outside ${EXPECTED_REGION} (got: ${
+        region || "unknown"
+      }).`
+    )
+    process.exit(1)
+  }
+}
+
+assertRemoteOnly("price-streamer")
+assertUsWest1("price-streamer")
+
 const FMP_STABLE_BASE_URL = "https://financialmodelingprep.com/stable"
 const DEFAULT_UNIVERSE_MODE = "movers_plus_universe"
 const UNIVERSE_MODES = new Set([
@@ -72,47 +166,102 @@ const STREAM_SYMBOL_TTL_MS = 30 * 60 * 1000
 // MARKET HOURS SERVICE
 // ============================================================================
 
-/**
- * US Stock Market Hours (NYSE/NASDAQ) in Eastern Time
- * - Pre-market:  4:00 AM - 9:30 AM ET
- * - Regular:     9:30 AM - 4:00 PM ET  
- * - After-hours: 4:00 PM - 8:00 PM ET
- * - Closed:      8:00 PM - 4:00 AM ET + weekends + holidays
- */
-const US_MARKET_HOURS = {
-  preMarketStart: 4 * 60,      // 4:00 AM ET in minutes
-  regularStart: 9 * 60 + 30,   // 9:30 AM ET
-  regularEnd: 16 * 60,         // 4:00 PM ET
-  afterHoursEnd: 20 * 60,      // 8:00 PM ET
+const ET_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+})
+const ET_WEEKDAY_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  weekday: "short",
+})
+const ET_WEEKDAY_MAP = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
 }
-
-// NYSE holidays 2026 (add more years as needed)
-const US_MARKET_HOLIDAYS = new Set([
-  "2026-01-01", // New Year's Day
-  "2026-01-19", // MLK Day
-  "2026-02-16", // Presidents Day
-  "2026-04-03", // Good Friday
-  "2026-05-25", // Memorial Day
-  "2026-07-03", // Independence Day (observed)
-  "2026-09-07", // Labor Day
-  "2026-11-26", // Thanksgiving
-  "2026-12-25", // Christmas
+const US_STOCK_HOLIDAYS_2026_2027 = new Set([
+  "2026-01-01",
+  "2026-01-19",
+  "2026-02-16",
+  "2026-04-03",
+  "2026-05-25",
+  "2026-07-03",
+  "2026-09-07",
+  "2026-11-26",
+  "2026-12-25",
+  "2027-01-01",
+  "2027-01-18",
+  "2027-02-15",
+  "2027-03-26",
+  "2027-05-31",
+  "2027-07-05",
+  "2027-09-06",
+  "2027-11-25",
+  "2027-12-24",
+])
+const US_STOCK_EARLY_CLOSES_2026_2027 = new Set([
+  "2026-07-02",
+  "2026-11-27",
+  "2026-12-24",
+  "2027-07-02",
+  "2027-11-26",
 ])
 
-/**
- * Get current time in Eastern Time
- */
-function getEasternTime() {
-  const now = new Date()
-  // Convert to ET (handles DST automatically)
-  const etString = now.toLocaleString("en-US", { timeZone: "America/New_York" })
-  const etDate = new Date(etString)
-  return {
-    date: etDate,
-    dayOfWeek: etDate.getDay(), // 0=Sunday, 6=Saturday
-    minuteOfDay: etDate.getHours() * 60 + etDate.getMinutes(),
-    dateString: etDate.toISOString().split("T")[0],
-  }
+function getEtParts(date) {
+  const parts = ET_FORMATTER.formatToParts(date)
+  const map = {}
+  parts.forEach((part) => {
+    if (part.type !== "literal") {
+      map[part.type] = part.value
+    }
+  })
+  const year = Number(map.year)
+  const month = Number(map.month)
+  const day = Number(map.day)
+  const hour = Number(map.hour)
+  const minute = Number(map.minute)
+  return { year, month, day, hour, minute }
+}
+
+function getEtDateKey(date) {
+  const { year, month, day } = getEtParts(date)
+  const yyyy = String(year).padStart(4, "0")
+  const mm = String(month).padStart(2, "0")
+  const dd = String(day).padStart(2, "0")
+  return `${yyyy}-${mm}-${dd}`
+}
+
+function getEtTimeMinutes(date) {
+  const { hour, minute } = getEtParts(date)
+  return hour * 60 + minute
+}
+
+function getEtWeekday(date) {
+  const key = ET_WEEKDAY_FORMATTER.format(date)
+  return ET_WEEKDAY_MAP[key] ?? 0
+}
+
+function isEtWeekend(dateKey) {
+  const date = new Date(`${dateKey}T12:00:00Z`)
+  const day = getEtWeekday(date)
+  return day === 0 || day === 6
+}
+
+function isUsStockHoliday(dateKey) {
+  return US_STOCK_HOLIDAYS_2026_2027.has(dateKey)
+}
+
+function resolveStockSessionCloseMinutes(dateKey) {
+  return US_STOCK_EARLY_CLOSES_2026_2027.has(dateKey) ? 13 * 60 : 16 * 60
 }
 
 /**
@@ -126,15 +275,18 @@ function getMarketStatus(assetClass) {
     return { status: "open", isOpen: true, nextChange: null }
   }
 
-  const et = getEasternTime()
+  const now = new Date()
+  const dateKey = getEtDateKey(now)
+  const minute = getEtTimeMinutes(now)
+  const dayOfWeek = getEtWeekday(now)
   
   if (assetClass === "forex") {
     // Forex: Sunday 5pm ET - Friday 5pm ET
-    const isWeekend = et.dayOfWeek === 0 || et.dayOfWeek === 6
-    const isFridayAfter5pm = et.dayOfWeek === 5 && et.minuteOfDay >= 17 * 60
-    const isSundayBefore5pm = et.dayOfWeek === 0 && et.minuteOfDay < 17 * 60
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6
+    const isFridayAfter5pm = dayOfWeek === 5 && minute >= 17 * 60
+    const isSundayBefore5pm = dayOfWeek === 0 && minute < 17 * 60
     
-    if (isWeekend && !isSundayBefore5pm && et.dayOfWeek !== 0) {
+    if (isWeekend && !isSundayBefore5pm && dayOfWeek !== 0) {
       return { status: "closed", isOpen: false, nextChange: null }
     }
     if (isFridayAfter5pm || isSundayBefore5pm) {
@@ -144,15 +296,17 @@ function getMarketStatus(assetClass) {
   }
 
   // US Stock market
-  const isWeekend = et.dayOfWeek === 0 || et.dayOfWeek === 6
-  const isHoliday = US_MARKET_HOLIDAYS.has(et.dateString)
+  const isWeekend = isEtWeekend(dateKey)
+  const isHoliday = isUsStockHoliday(dateKey)
   
   if (isWeekend || isHoliday) {
     return { status: "closed", isOpen: false, nextChange: null }
   }
 
-  const { preMarketStart, regularStart, regularEnd, afterHoursEnd } = US_MARKET_HOURS
-  const minute = et.minuteOfDay
+  const preMarketStart = 4 * 60
+  const regularStart = 9 * 60 + 30
+  const regularEnd = resolveStockSessionCloseMinutes(dateKey)
+  const afterHoursEnd = 20 * 60
 
   if (minute < preMarketStart) {
     return { status: "closed", isOpen: false, nextChange: null }
@@ -160,13 +314,19 @@ function getMarketStatus(assetClass) {
   if (minute < regularStart) {
     return { status: "pre", isOpen: false, nextChange: null }
   }
-  if (minute < regularEnd) {
+  if (minute <= regularEnd) {
     return { status: "open", isOpen: true, nextChange: null }
   }
   if (minute < afterHoursEnd) {
     return { status: "after", isOpen: false, nextChange: null }
   }
   return { status: "closed", isOpen: false, nextChange: null }
+}
+
+function isMarketOpenForAsset(assetClass, status) {
+  if (!status) return false
+  if (assetClass === "stock") return status === "open"
+  return status === "open"
 }
 
 // ============================================================================
@@ -232,6 +392,69 @@ function getRateLimitStatus() {
   }
 }
 
+function getRateLimitRemaining() {
+  if (!Number.isFinite(config.rateLimitPerMinute) || config.rateLimitPerMinute <= 0) {
+    return 0
+  }
+  resetRateLimitIfNeeded()
+  return Math.max(0, config.rateLimitPerMinute - rateLimit.callsThisMinute)
+}
+
+function isPollerActive(assetClass) {
+  const watchlist = state?.watchlist?.[assetClass]
+  if (!watchlist || watchlist.size === 0) return false
+  if (shouldUseStreamFor(assetClass)) return false
+  if (assetClass === "stock" || assetClass === "forex") {
+    const marketStatus = getMarketStatus(assetClass).status
+    if (shouldThrottlePolling(assetClass, marketStatus)) return false
+  }
+  return true
+}
+
+function getActivePollerCount() {
+  let count = 0
+  for (const assetClass of ["crypto", "stock", "forex"]) {
+    if (isPollerActive(assetClass)) count += 1
+  }
+  return count || 1
+}
+
+function getPollBudget(assetClass, pollMs) {
+  if (isReplayMode()) return Number.MAX_SAFE_INTEGER
+  const limitPerMinute = config.rateLimitPerMinute
+  if (!Number.isFinite(limitPerMinute) || limitPerMinute <= 0) return 0
+  const pollerCount = getActivePollerCount()
+  const perMinute = Math.max(1, Math.floor(limitPerMinute / pollerCount))
+  const intervalMs = Math.max(1000, pollMs || 0)
+  const pollsPerMinute = Math.max(1, Math.floor(60000 / intervalMs))
+  const perPoll = Math.max(1, Math.floor(perMinute / pollsPerMinute))
+  return Math.min(perPoll, getRateLimitRemaining())
+}
+
+function getPollSlice(assetClass, allSymbols, pollMs) {
+  const total = Array.isArray(allSymbols) ? allSymbols.length : 0
+  const cursor = state.pollCursor?.[assetClass] || 0
+  if (total === 0) return { symbols: [], total, budget: 0, cursor }
+  if (isReplayMode()) {
+    return { symbols: allSymbols, total, budget: total, cursor }
+  }
+  const budget = getPollBudget(assetClass, pollMs)
+  if (budget <= 0) return { symbols: [], total, budget: 0, cursor }
+  if (budget >= total) return { symbols: allSymbols, total, budget, cursor }
+  const symbols = []
+  for (let i = 0; i < budget; i += 1) {
+    symbols.push(allSymbols[(cursor + i) % total])
+  }
+  return { symbols, total, budget, cursor }
+}
+
+function advancePollCursor(assetClass, total, advancedBy) {
+  if (!total || total <= 0) return
+  if (!Number.isFinite(advancedBy) || advancedBy <= 0) return
+  const current = state.pollCursor?.[assetClass] || 0
+  state.pollCursor[assetClass] = (current + advancedBy) % total
+}
+
 if (!admin.apps.length) {
   admin.initializeApp({ projectId: config.projectId })
 }
@@ -240,6 +463,8 @@ const db = admin.firestore()
 const runId =
   config.runId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 const replayControlsCache = { value: null, expiresAt: 0 }
+const gatewayAuth = new GoogleAuth()
+let gatewayAuthClient = null
 
 function resolvePipelineStream() {
   if (state?.replay?.mode === "replay" && state.replay.runId) {
@@ -551,10 +776,25 @@ const state = {
     stock: null,
     forex: null,
   },
+  pollInFlight: {
+    crypto: false,
+    stock: false,
+    forex: false,
+  },
+  pollCursor: {
+    crypto: 0,
+    stock: 0,
+    forex: 0,
+  },
   pollErrors: {
     crypto: 0,
     stock: 0,
     forex: 0,
+  },
+  stockUniverse: {
+    symbols: [],
+    updatedAt: 0,
+    cursor: 0,
   },
   stream: {
     enabled: config.fmpStreamEnabled,
@@ -628,6 +868,25 @@ function parseNumber(value) {
   if (value === undefined || value === null) return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function resolveTurnoverFilter(controls) {
+  const minRaw = parseNumber(controls?.moverTurnoverMinPct)
+  const maxRaw = parseNumber(controls?.moverTurnoverMaxPct)
+  const minPct = Number.isFinite(minRaw) && minRaw > 0 ? minRaw : null
+  const maxPct = Number.isFinite(maxRaw) && maxRaw > 0 ? maxRaw : null
+  const scope = controls?.moverTurnoverScope || {}
+  const apply = scope.movers !== false && (minPct !== null || maxPct !== null)
+  return { minPct, maxPct, apply }
+}
+
+function resolveMoverPriceFilter(controls) {
+  const minRaw = parseNumber(controls?.moverPriceMin)
+  const maxRaw = parseNumber(controls?.moverPriceMax)
+  const minPrice = Number.isFinite(minRaw) && minRaw > 0 ? minRaw : null
+  const maxPrice = Number.isFinite(maxRaw) && maxRaw > 0 ? maxRaw : null
+  const apply = minPrice !== null || maxPrice !== null
+  return { minPrice, maxPrice, apply }
 }
 
 function resolveRedisKey(suffix, replayState = state.replay) {
@@ -720,6 +979,62 @@ function shouldUseStreamFor(assetClass) {
   return isStreamHealthyFor(assetClass)
 }
 
+function getSymbolCap(assetClass) {
+  if (assetClass === "stock") {
+    if (state.stream?.enabled && isStreamHealthyFor("stock")) {
+      return Math.max(1, config.stockStreamTarget || config.maxSymbols)
+    }
+    return Math.max(1, config.stockPollTarget || config.maxSymbols)
+  }
+  return Math.max(1, config.maxSymbols)
+}
+
+async function refreshStockUniverseCache() {
+  if (isReplayMode()) return
+  if (!config.marketDataGatewayUrl || config.stockUniverseLimit <= 0) return
+  const now = Date.now()
+  if (
+    state.stockUniverse.updatedAt &&
+    now - state.stockUniverse.updatedAt < config.stockUniverseRefreshMs
+  ) {
+    return
+  }
+  try {
+    const data = await fetchGatewayJson("/v1/fmp/stock-list")
+    const items = Array.isArray(data?.items) ? data.items : []
+    const symbols = items
+      .map((item) => normalizeSymbolForKey(item?.symbol, "stock"))
+      .filter(Boolean)
+      .slice(0, Math.max(1, config.stockUniverseLimit))
+    if (symbols.length === 0) return
+    state.stockUniverse.symbols = symbols
+    state.stockUniverse.updatedAt = now
+    state.stockUniverse.cursor = 0
+    console.log("ps_stock_universe_refreshed", { count: symbols.length })
+  } catch (err) {
+    console.error("Stock universe refresh failed:", err.message)
+  }
+}
+
+function fillFromStockUniverse(targetSet, cap) {
+  if (!targetSet || targetSet.size >= cap) return
+  const symbols = state.stockUniverse.symbols
+  if (!Array.isArray(symbols) || symbols.length === 0) return
+  let cursor = state.stockUniverse.cursor || 0
+  let added = 0
+  const maxAdds = Math.max(0, cap - targetSet.size)
+  for (let i = 0; i < symbols.length && added < maxAdds; i += 1) {
+    const index = (cursor + i) % symbols.length
+    const symbol = symbols[index]
+    if (!symbol) continue
+    if (!targetSet.has(symbol)) {
+      targetSet.add(symbol)
+      added += 1
+    }
+  }
+  state.stockUniverse.cursor = (cursor + added) % symbols.length
+}
+
 function handleFmpStreamQuote(quote, streamName) {
   if (!quote || typeof quote !== "object") return
   const rawSymbol = quote.symbol || quote.s || quote.ticker || quote.sym
@@ -761,6 +1076,7 @@ function handleFmpStreamQuote(quote, streamName) {
   if (Number.isFinite(ask)) extra.ask = ask
   if (Number.isFinite(volume)) extra.volume = volume
   if (Number.isFinite(changePct)) extra.change24h = changePct
+  if (typeof quote.exchange === "string") extra.exchange = quote.exchange
 
   updatePrice(assetClass, normalizedSymbol, Number(price), "fmp_stream", extra)
 
@@ -1120,7 +1436,7 @@ function shouldIncludeUniverse(mode) {
   return mode === "movers_plus_universe" || mode === "universe_only" || mode === "weighted_union"
 }
 
-async function fetchJson(url, timeoutMs = 15000, retries = 2) {
+async function fetchJson(url, options = {}, timeoutMs = 15000, retries = 2) {
   let lastError = null
   
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -1128,7 +1444,7 @@ async function fetchJson(url, timeoutMs = 15000, retries = 2) {
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
     
     try {
-      const res = await fetch(url, { signal: controller.signal })
+      const res = await fetch(url, { ...options, signal: controller.signal })
       clearTimeout(timeoutId)
       
       if (!res.ok) {
@@ -1155,6 +1471,27 @@ async function fetchJson(url, timeoutMs = 15000, retries = 2) {
     throw new Error(`Request timed out after ${timeoutMs}ms`)
   }
   throw lastError
+}
+
+function resolveGatewayAudience() {
+  if (config.marketDataGatewayAudience) return config.marketDataGatewayAudience
+  if (!config.marketDataGatewayUrl) return ""
+  return config.marketDataGatewayUrl.replace(/\/+$/, "")
+}
+
+async function getGatewayAuthHeaders() {
+  if (!config.marketDataGatewayUrl || !config.marketDataGatewayAuth) return null
+  const audience = resolveGatewayAudience()
+  if (!audience) return null
+  try {
+    if (!gatewayAuthClient) {
+      gatewayAuthClient = await gatewayAuth.getIdTokenClient(audience)
+    }
+    return await gatewayAuthClient.getRequestHeaders()
+  } catch (err) {
+    console.error("Gateway auth header fetch failed:", err?.message || err)
+    return null
+  }
 }
 
 function resolveGatewayBase() {
@@ -1198,7 +1535,8 @@ async function fetchGatewayJson(path, params) {
     )
   }
   try {
-    const data = await fetchJson(url)
+    const authHeaders = await getGatewayAuthHeaders()
+    const data = await fetchJson(url, authHeaders ? { headers: authHeaders } : undefined)
     if (shouldEmit) {
       await publishPipelineEvent(
         buildPipelineEvent({
@@ -1287,6 +1625,7 @@ async function fetchFmpQuote(symbol, assetClass = "stock") {
         ask: parseNumber(data.ask),
         volume: parseNumber(data.volume),
         change24h: parseNumber(data.changePercent),
+        exchange: data.exchange || data.exchangeShortName,
         source: "gateway",
       }
     } catch (err) {
@@ -1316,7 +1655,16 @@ async function fetchFmpQuote(symbol, assetClass = "stock") {
       (bid !== undefined && ask !== undefined ? (bid + ask) / 2 : bid ?? ask)
     if (typeof price !== "number") return null
     const change24h = parseNumber(entry.changesPercentage) ?? parseNumber(entry.changePercentage)
-    return { symbol, price, bid, ask, volume, change24h, source: "fmp" }
+    return {
+      symbol,
+      price,
+      bid,
+      ask,
+      volume,
+      change24h,
+      exchange: entry.exchange || entry.exchangeShortName,
+      source: "fmp",
+    }
   } catch (err) {
     const message = err?.message ? String(err.message) : "Unknown error"
     if (message.includes("429") || message.includes("Limit Reach")) {
@@ -1415,6 +1763,7 @@ async function fetchExtendedHoursQuote(symbol) {
       ask,
       volume: parseNumber(entry.volume),
       change24h: parseNumber(entry.changesPercentage) ?? parseNumber(entry.changePercentage),
+      exchange: entry.exchange || entry.exchangeShortName,
       source: "fmp_extended",
     }
   } catch (err) {
@@ -1478,25 +1827,28 @@ async function fetchStockQuotesWithExtendedHours(symbols) {
 /**
  * Fetch FMP biggest-gainers/losers/most-actives endpoints (only returns data during market hours)
  * Returns top 10 from each category for a total of up to 30 discovery symbols
+ * @param {Object} priceFilter - Optional price filter { minPrice, maxPrice, apply }
  */
-async function fetchStockMovers() {
+async function fetchStockMovers(priceFilter = {}) {
   if (isReplayMode()) return []
   const marketStatus = getMarketStatus("stock")
-  
+
   // Only fetch during regular market hours - these endpoints return empty otherwise
   if (marketStatus.status !== "open") {
-    console.log("ps_discovery_skip", { 
-      reason: "market_closed", 
-      marketStatus: marketStatus.status 
+    console.log("ps_discovery_skip", {
+      reason: "market_closed",
+      marketStatus: marketStatus.status
     })
     return []
   }
-  
+
   if (!canMakeApiCall()) {
     console.log("ps_discovery_skip", { reason: "rate_limit" })
     return []
   }
-  
+
+  const { minPrice, maxPrice, apply: applyPriceFilter } = priceFilter
+
   const discoveredSymbols = new Set()
   const endpoints = [
     { path: "/v1/fmp/biggest-gainers", name: "gainers" },
@@ -1507,19 +1859,38 @@ async function fetchStockMovers() {
   for (const { path, name } of endpoints) {
     try {
       trackApiCall()
-      const url = new URL(path, config.marketDataGatewayUrl)
-      const response = await fetchJson(url.toString())
-      const data = response?.data || []
-      
+      const response = await fetchGatewayJson(path)
+      const data = Array.isArray(response?.data)
+        ? response.data
+        : Array.isArray(response)
+          ? response
+          : []
+
       if (!Array.isArray(data)) continue
-      
-      // Take top 10 from each category
-      const symbols = data.slice(0, 10).map((item) => item?.symbol).filter(Boolean)
+
+      // Take top 10 from each category, filtered by price if configured
+      let filtered = data.slice(0, 10)
+      let priceFilteredCount = 0
+
+      if (applyPriceFilter) {
+        const beforeCount = filtered.length
+        filtered = filtered.filter((item) => {
+          const price = item?.price
+          if (typeof price !== "number") return true // keep items without price data
+          if (minPrice !== null && price < minPrice) return false
+          if (maxPrice !== null && price > maxPrice) return false
+          return true
+        })
+        priceFilteredCount = beforeCount - filtered.length
+      }
+
+      const symbols = filtered.map((item) => item?.symbol).filter(Boolean)
       symbols.forEach((s) => discoveredSymbols.add(s))
-      
-      console.log("ps_discovery", { 
-        endpoint: name, 
+
+      console.log("ps_discovery", {
+        endpoint: name,
         found: symbols.length,
+        priceFiltered: priceFilteredCount,
         symbols: symbols.slice(0, 5).join(",") + (symbols.length > 5 ? "..." : "")
       })
     } catch (err) {
@@ -1535,7 +1906,7 @@ async function fetchStockMovers() {
   return Array.from(discoveredSymbols)
 }
 
-async function fetchMarketIntelMovers() {
+async function fetchMarketIntelMovers(turnoverConfig, priceConfig) {
   try {
     const moversSnap = await db.doc("market/movers").get()
     if (!moversSnap.exists) {
@@ -1551,30 +1922,83 @@ async function fetchMarketIntelMovers() {
       return []
     }
 
+    const applyTurnoverFilter =
+      turnoverConfig?.apply &&
+      (Number.isFinite(turnoverConfig.minPct) || Number.isFinite(turnoverConfig.maxPct))
+    const applyPriceFilter = priceConfig?.apply
+    const { minPrice, maxPrice } = priceConfig || {}
+
+    const filterItems = (items) => {
+      if (!Array.isArray(items)) return []
+      let filtered = items
+
+      // Apply turnover filter
+      if (applyTurnoverFilter) {
+        filtered = filtered.filter((item) => {
+          const turnoverPct = parseNumber(item?.turnoverPct)
+          if (!Number.isFinite(turnoverPct)) return false
+          if (Number.isFinite(turnoverConfig.minPct) && turnoverPct < turnoverConfig.minPct) {
+            return false
+          }
+          if (Number.isFinite(turnoverConfig.maxPct) && turnoverPct > turnoverConfig.maxPct) {
+            return false
+          }
+          return true
+        })
+      }
+
+      // Apply price filter
+      if (applyPriceFilter) {
+        filtered = filtered.filter((item) => {
+          const price = parseNumber(item?.price)
+          if (!Number.isFinite(price)) return true // keep items without price
+          if (minPrice !== null && price < minPrice) return false
+          if (maxPrice !== null && price > maxPrice) return false
+          return true
+        })
+      }
+
+      return filtered
+    }
+
     // Combine gainers, losers, and actives - use Set to deduplicate
     const symbolSet = new Set()
+    let priceFilteredCount = 0
 
     // Top 10 gainers
-    const gainers = usMarket.gainers || []
-    gainers.slice(0, 10).forEach(item => {
+    const gainersRaw = usMarket.gainers || []
+    const gainers = filterItems(gainersRaw)
+    priceFilteredCount += gainersRaw.slice(0, 10).length - gainers.slice(0, 10).length
+    gainers.slice(0, 10).forEach((item) => {
+      if (item?.symbol) symbolSet.add(item.symbol)
+    })
+
+    // Top 10 losers
+    const losersRaw = usMarket.losers || []
+    const losers = filterItems(losersRaw)
+    priceFilteredCount += losersRaw.slice(0, 10).length - losers.slice(0, 10).length
+    losers.slice(0, 10).forEach((item) => {
       if (item?.symbol) symbolSet.add(item.symbol)
     })
 
     // Top 10 actives (by volume)
-    const actives = usMarket.actives || []
-    actives.slice(0, 10).forEach(item => {
+    const activesRaw = usMarket.actives || []
+    const actives = filterItems(activesRaw)
+    priceFilteredCount += activesRaw.slice(0, 10).length - actives.slice(0, 10).length
+    actives.slice(0, 10).forEach((item) => {
       if (item?.symbol) symbolSet.add(item.symbol)
     })
 
     const symbols = Array.from(symbolSet)
 
     if (symbols.length === 0) {
-      console.log("ps_intel_movers_skip", { reason: "no_stock_movers" })
+      console.log("ps_intel_movers_skip", { reason: "no_stock_movers", priceFiltered: priceFilteredCount })
       return []
     }
 
     console.log("ps_intel_movers", {
       found: symbols.length,
+      priceFiltered: priceFilteredCount,
       symbols: symbols.slice(0, 5).join(",") + (symbols.length > 5 ? "..." : "")
     })
 
@@ -1690,6 +2114,7 @@ function updatePrice(assetClass, symbol, price, source, extra = {}) {
   if (typeof extra.ask === "number") next.ask = extra.ask
   if (typeof extra.volume === "number") next.volume = extra.volume
   if (typeof extra.change24h === "number") next.change24h = extra.change24h
+  if (typeof extra.exchange === "string") next.exchange = extra.exchange
 
   const historyUpdated = recordPriceHistory(key, next.price, now)
   const changed =
@@ -1717,7 +2142,6 @@ function prunePriceCache(allowedKeys) {
 function buildHealthPayload() {
   const now = Date.now()
   const priceAge = state.lastFlushAt ? now - state.lastFlushAt : null
-  const isPriceStale = priceAge !== null && priceAge > STALENESS_THRESHOLDS.price
   
   // Get market status for each asset class
   const marketStatus = {
@@ -1725,17 +2149,35 @@ function buildHealthPayload() {
     stock: getMarketStatus("stock").status,
     forex: getMarketStatus("forex").status,
   }
+
+  const activeAssets = {
+    crypto: state.watchlist.crypto.size > 0,
+    stock: state.watchlist.stock.size > 0,
+    forex: state.watchlist.forex.size > 0,
+  }
+
+  const activeOpenAssets = ["crypto", "stock", "forex"].filter(
+    (asset) => activeAssets[asset] && isMarketOpenForAsset(asset, marketStatus[asset])
+  )
+  const isPriceStale =
+    activeOpenAssets.length > 0 &&
+    priceAge !== null &&
+    priceAge > STALENESS_THRESHOLDS.price
   
   // Check poll staleness per asset class
   const pollHealth = {}
   for (const asset of ["crypto", "stock", "forex"]) {
     const lastPoll = state.lastPollAt[asset]
     const pollAge = lastPoll ? now - lastPoll : null
-    const isStale = pollAge !== null && pollAge > STALENESS_THRESHOLDS.poll
+    const isActive = activeAssets[asset]
+    const isOpen = isMarketOpenForAsset(asset, marketStatus[asset])
+    const shouldCheck = isActive && isOpen
+    const isStale = shouldCheck && pollAge !== null && pollAge > STALENESS_THRESHOLDS.poll
     pollHealth[asset] = {
       lastPollAt: lastPoll ? new Date(lastPoll).toISOString() : null,
       ageMs: pollAge,
       isStale,
+      active: isActive,
       errors: state.pollErrors[asset] || 0,
       marketStatus: marketStatus[asset],
     }
@@ -1910,15 +2352,23 @@ async function refreshWatchlist() {
     const streamSymbolsPath = isReplay
       ? `replay/controls/runs/${state.replay.runId}/market/streamSymbols`
       : "market/streamSymbols"
-    const [universeSnap, hotTradesSnap, actionBoardSnap, positionsSnap, streamSnap] =
-      await Promise.all([
+    const [
+      universeSnap,
+      controlsSnap,
+      hotTradesSnap,
+      actionBoardSnap,
+      positionsSnap,
+      streamSnap,
+    ] = await Promise.all([
       db.doc("market/universe").get(),
+      db.doc("market/controls").get(),
       db.doc(hotTradesPath).get(),
       db.doc(actionBoardPath).get(),
       isReplay ? Promise.resolve({ empty: true, docs: [] }) : db.collectionGroup("positions").get(),
       db.doc(streamSymbolsPath).get(),
     ])
     const universe = universeSnap.exists ? universeSnap.data() : {}
+    const controls = controlsSnap.exists ? controlsSnap.data() : {}
     const hotTrades = hotTradesSnap.exists ? hotTradesSnap.data()?.items || [] : []
     const actionBoard = actionBoardSnap.exists ? actionBoardSnap.data() : {}
     const actionBoardItems = [
@@ -1952,6 +2402,7 @@ async function refreshWatchlist() {
     const stockMode = resolveUniverseMode(universe?.stocks?.mode || globalMode)
     const forexMode = resolveUniverseMode(universe?.forex?.mode || globalMode)
 
+    await refreshStockUniverseCache()
     const next = {
       crypto: new Set(),
       stock: new Set(),
@@ -2003,7 +2454,8 @@ async function refreshWatchlist() {
             if (!universeSet || !universeSet.has(normalized)) return
           }
         }
-        if (next[assetClass].size < config.maxSymbols) {
+        const cap = getSymbolCap(assetClass)
+        if (next[assetClass].size < cap) {
           next[assetClass].add(normalized)
         }
       })
@@ -2014,7 +2466,8 @@ async function refreshWatchlist() {
       symbols.forEach((symbol) => {
         const normalized = normalizeSymbolForKey(symbol, assetClass)
         if (!normalized) return
-        if (next[assetClass].size < config.maxSymbols) {
+        const cap = getSymbolCap(assetClass)
+        if (next[assetClass].size < cap) {
           next[assetClass].add(normalized)
         }
       })
@@ -2026,17 +2479,17 @@ async function refreshWatchlist() {
 
     if (shouldIncludeUniverse(cryptoMode)) {
       universeSets.crypto.forEach((symbol) => {
-        if (next.crypto.size < config.maxSymbols) next.crypto.add(symbol)
+        if (next.crypto.size < getSymbolCap("crypto")) next.crypto.add(symbol)
       })
     }
     if (shouldIncludeUniverse(stockMode)) {
       universeSets.stock.forEach((symbol) => {
-        if (next.stock.size < config.maxSymbols) next.stock.add(symbol)
+        if (next.stock.size < getSymbolCap("stock")) next.stock.add(symbol)
       })
     }
     if (shouldIncludeUniverse(forexMode)) {
       universeSets.forex.forEach((symbol) => {
-        if (next.forex.size < config.maxSymbols) next.forex.add(symbol)
+        if (next.forex.size < getSymbolCap("forex")) next.forex.add(symbol)
       })
     }
 
@@ -2063,7 +2516,14 @@ async function refreshWatchlist() {
     // Stock Discovery: Add gainers/losers/actives during market hours
     // This runs only when US stock market is open
     if (config.fmpKey && !isReplayMode()) {
-      const discoveredStocks = await fetchStockMovers()
+      const priceFilter = resolveMoverPriceFilter(controls)
+      if (priceFilter.apply) {
+        console.log("ps_discovery_price_filter", {
+          minPrice: priceFilter.minPrice,
+          maxPrice: priceFilter.maxPrice
+        })
+      }
+      const discoveredStocks = await fetchStockMovers(priceFilter)
       if (discoveredStocks.length > 0) {
         addSymbols(discoveredStocks, "stock")
         console.log("ps_discovery_added", {
@@ -2074,13 +2534,22 @@ async function refreshWatchlist() {
     }
 
     // Also add movers from market-intel pipeline
-    const intelMovers = await fetchMarketIntelMovers()
+    const turnoverFilter = resolveTurnoverFilter(controls)
+    const intelPriceFilter = resolveMoverPriceFilter(controls)
+    const intelMovers = await fetchMarketIntelMovers(turnoverFilter, intelPriceFilter)
     if (intelMovers.length > 0) {
       addSymbols(intelMovers, "stock")
       console.log("ps_intel_movers_added", {
         count: intelMovers.length,
+        priceFilterActive: intelPriceFilter.apply,
         stocksTotal: next.stock.size
       })
+    }
+
+    const allowStockDiscovery =
+      stockMode !== "universe_only" && stockMode !== "movers_filtered_by_universe"
+    if (allowStockDiscovery) {
+      fillFromStockUniverse(next.stock, getSymbolCap("stock"))
     }
 
     const nextHash = buildWatchHash(next)
@@ -2106,25 +2575,70 @@ async function refreshWatchlist() {
   }
 }
 
+function shouldThrottlePolling(assetClass, marketStatus) {
+  if (isReplayMode()) return false
+  let minIntervalMs = null
+
+  if (assetClass === "stock") {
+    if (marketStatus === "pre" || marketStatus === "after") {
+      minIntervalMs = config.stockExtendedPollMs
+    } else if (marketStatus === "closed") {
+      minIntervalMs = config.stockClosedPollMs
+    }
+  } else if (assetClass === "forex") {
+    if (marketStatus === "closed") {
+      minIntervalMs = config.forexClosedPollMs
+    }
+  }
+
+  if (!Number.isFinite(minIntervalMs)) return false
+  if (minIntervalMs <= 0) return true
+  const lastPollAt = state.lastPollAt[assetClass]
+  if (!lastPollAt) return false
+  return Date.now() - lastPollAt < minIntervalMs
+}
+
 
 async function pollCryptoPrices() {
   if (isReplayMode()) return
+  if (state.pollInFlight.crypto) {
+    console.log("ps_poll_skip", { assetClass: "crypto", reason: "in_flight" })
+    return
+  }
   if (shouldUseStreamFor("crypto")) return
-  const symbols = Array.from(state.watchlist.crypto)
-  if ((!config.fmpKey && !config.marketDataGatewayUrl) || symbols.length === 0) return
+  const allSymbols = Array.from(state.watchlist.crypto)
+  if ((!config.fmpKey && !config.marketDataGatewayUrl) || allSymbols.length === 0) return
+
+  const slice = getPollSlice("crypto", allSymbols, config.cryptoPollMs)
+  if (slice.symbols.length === 0) {
+    if (slice.total > 0) {
+      console.warn("ps_poll_skip", {
+        assetClass: "crypto",
+        reason: "rate_limit",
+        total: slice.total,
+        rateLimit: getRateLimitStatus().utilizationPct + "%",
+      })
+    }
+    return
+  }
   
+  state.pollInFlight.crypto = true
   const marketStatus = getMarketStatus("crypto")
   console.log("ps_ingest", { 
     runId, 
     assetClass: "crypto", 
-    count: symbols.length,
+    count: slice.symbols.length,
+    total: slice.total,
+    budget: slice.budget,
     marketStatus: marketStatus.status,
     rateLimit: getRateLimitStatus().utilizationPct + "%"
   })
   
+  let processed = 0
   try {
     // Use parallel single quotes instead of batch
-    const results = await fetchQuotesParallel(symbols, "crypto")
+    const results = await fetchQuotesParallel(slice.symbols, "crypto")
+    processed = results.length
     let successCount = 0
     let errorCount = 0
     
@@ -2150,46 +2664,76 @@ async function pollCryptoPrices() {
     console.log("ps_ingest_complete", { 
       runId, 
       assetClass: "crypto", 
-      requested: symbols.length,
+      requested: slice.symbols.length,
+      processed,
       success: successCount,
       errors: errorCount,
     })
     
-    state.lastPollAt.crypto = getEffectiveNow()
+    if (processed > 0) {
+      advancePollCursor("crypto", slice.total, processed)
+      state.lastPollAt.crypto = getEffectiveNow()
+    }
     state.pollErrors.crypto = errorCount > 0 ? errorCount : 0
   } catch (err) {
     state.pollErrors.crypto = (state.pollErrors.crypto || 0) + 1
     console.error("ps_poll_error", { assetClass: "crypto", error: err.message, consecutiveErrors: state.pollErrors.crypto })
+  } finally {
+    state.pollInFlight.crypto = false
   }
 }
 
 async function pollStockPrices() {
   if (isReplayMode() && state.replay.phase !== "running") return
   if (isReplayMode() && !Number.isFinite(state.replay.asOfMs)) return
+  if (state.pollInFlight.stock) {
+    console.log("ps_poll_skip", { assetClass: "stock", reason: "in_flight" })
+    return
+  }
   if (!isReplayMode() && shouldUseStreamFor("stock")) return
-  const symbols = Array.from(state.watchlist.stock)
-  if ((!config.fmpKey && !config.marketDataGatewayUrl) || symbols.length === 0) return
+  const allSymbols = Array.from(state.watchlist.stock)
+  if ((!config.fmpKey && !config.marketDataGatewayUrl) || allSymbols.length === 0) return
   if (isReplayMode() && !config.marketDataGatewayUrl) {
     console.error("Replay mode requires MARKET_DATA_GATEWAY_URL for price polling")
     return
   }
   
   const marketStatus = getMarketStatus("stock")
+  if (!isReplayMode() && shouldThrottlePolling("stock", marketStatus.status)) return
+  const slice = getPollSlice("stock", allSymbols, config.stockPollMs)
+  if (slice.symbols.length === 0) {
+    if (slice.total > 0) {
+      console.warn("ps_poll_skip", {
+        assetClass: "stock",
+        reason: "rate_limit",
+        total: slice.total,
+        marketStatus: marketStatus.status,
+        rateLimit: getRateLimitStatus().utilizationPct + "%",
+      })
+    }
+    return
+  }
+
+  state.pollInFlight.stock = true
   const useExtendedHours = marketStatus.status === "pre" || marketStatus.status === "after"
   
   console.log("ps_ingest", { 
     runId, 
     assetClass: "stock", 
-    count: symbols.length,
+    count: slice.symbols.length,
+    total: slice.total,
+    budget: slice.budget,
     marketStatus: marketStatus.status,
     extendedHours: useExtendedHours,
     rateLimit: getRateLimitStatus().utilizationPct + "%"
   })
   
+  let processed = 0
   try {
     // Use extended hours fetching which tries regular quotes first,
     // then falls back to aftermarket-quote during pre/after market hours
-    const results = await fetchStockQuotesWithExtendedHours(symbols)
+    const results = await fetchStockQuotesWithExtendedHours(slice.symbols)
+    processed = results.length
     let successCount = 0
     let errorCount = 0
     let extendedCount = 0
@@ -2212,45 +2756,76 @@ async function pollStockPrices() {
         ask: quote.ask,
         volume: quote.volume,
         change24h: quote.change24h,
+        exchange: quote.exchange || quote.exchangeShortName,
       })
     })
     
     console.log("ps_ingest_complete", { 
       runId, 
       assetClass: "stock", 
-      requested: symbols.length,
+      requested: slice.symbols.length,
+      processed,
       success: successCount,
       extendedHours: extendedCount,
       errors: errorCount,
       marketStatus: marketStatus.status,
     })
     
-    state.lastPollAt.stock = getEffectiveNow()
+    if (processed > 0) {
+      advancePollCursor("stock", slice.total, processed)
+      state.lastPollAt.stock = getEffectiveNow()
+    }
     state.pollErrors.stock = errorCount > 0 ? errorCount : 0
   } catch (err) {
     state.pollErrors.stock = (state.pollErrors.stock || 0) + 1
     console.error("ps_poll_error", { assetClass: "stock", error: err.message, consecutiveErrors: state.pollErrors.stock })
+  } finally {
+    state.pollInFlight.stock = false
   }
 }
 
 async function pollForexPrices() {
   if (isReplayMode()) return
+  if (state.pollInFlight.forex) {
+    console.log("ps_poll_skip", { assetClass: "forex", reason: "in_flight" })
+    return
+  }
   if (shouldUseStreamFor("forex")) return
-  const symbols = Array.from(state.watchlist.forex)
-  if ((!config.fmpKey && !config.marketDataGatewayUrl) || symbols.length === 0) return
+  const allSymbols = Array.from(state.watchlist.forex)
+  if ((!config.fmpKey && !config.marketDataGatewayUrl) || allSymbols.length === 0) return
   
   const marketStatus = getMarketStatus("forex")
+  if (shouldThrottlePolling("forex", marketStatus.status)) return
+  const slice = getPollSlice("forex", allSymbols, config.forexPollMs)
+  if (slice.symbols.length === 0) {
+    if (slice.total > 0) {
+      console.warn("ps_poll_skip", {
+        assetClass: "forex",
+        reason: "rate_limit",
+        total: slice.total,
+        marketStatus: marketStatus.status,
+        rateLimit: getRateLimitStatus().utilizationPct + "%",
+      })
+    }
+    return
+  }
+
+  state.pollInFlight.forex = true
   console.log("ps_ingest", { 
     runId, 
     assetClass: "forex", 
-    count: symbols.length,
+    count: slice.symbols.length,
+    total: slice.total,
+    budget: slice.budget,
     marketStatus: marketStatus.status,
     rateLimit: getRateLimitStatus().utilizationPct + "%"
   })
   
+  let processed = 0
   try {
     // Use parallel single quotes instead of batch
-    const results = await fetchQuotesParallel(symbols, "forex")
+    const results = await fetchQuotesParallel(slice.symbols, "forex")
+    processed = results.length
     let successCount = 0
     let errorCount = 0
     
@@ -2276,16 +2851,22 @@ async function pollForexPrices() {
     console.log("ps_ingest_complete", { 
       runId, 
       assetClass: "forex", 
-      requested: symbols.length,
+      requested: slice.symbols.length,
+      processed,
       success: successCount,
       errors: errorCount,
     })
     
-    state.lastPollAt.forex = getEffectiveNow()
+    if (processed > 0) {
+      advancePollCursor("forex", slice.total, processed)
+      state.lastPollAt.forex = getEffectiveNow()
+    }
     state.pollErrors.forex = errorCount > 0 ? errorCount : 0
   } catch (err) {
     state.pollErrors.forex = (state.pollErrors.forex || 0) + 1
     console.error("ps_poll_error", { assetClass: "forex", error: err.message, consecutiveErrors: state.pollErrors.forex })
+  } finally {
+    state.pollInFlight.forex = false
   }
 }
 

@@ -9,6 +9,14 @@
       ]
     },
     {
+      "collectionGroup": "presence",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "active", "order": "ASCENDING" },
+        { "fieldPath": "lastSeen", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "executionRequests",
       "queryScope": "COLLECTION",
       "fields": [

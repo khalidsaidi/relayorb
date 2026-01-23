@@ -404,6 +404,15 @@ export type MarketControlsDoc = {
   autoTuneHorizon?: "1h" | "24h" | "7d"
   autoTuneHitRate?: number
   autoTuneSignals?: number
+  moverTurnoverMinPct?: number
+  moverTurnoverMaxPct?: number
+  moverTurnoverScope?: {
+    movers?: boolean
+    trending?: boolean
+    hotTrades?: boolean
+  }
+  moverPriceMin?: number
+  moverPriceMax?: number
   primaryAssets?: {
     crypto?: string[]
     stocks?: string[]
@@ -469,41 +478,6 @@ export type SignalPerformanceDoc = {
   meta?: Record<string, unknown>
 }
 
-export type PaperWallet = {
-  userId: string
-  balance: number
-  currency: string // "USD"
-  createdAt: Timestamp
-  updatedAt: Timestamp
-}
-
-export type PaperTransaction = {
-  id: string
-  userId: string
-  botId?: string // if triggered by a bot
-  symbol: string
-  assetClass: "crypto" | "stock" | "forex"
-  side: "buy" | "sell"
-  amount: number // quantity
-  price: number
-  cost: number // total cost
-  timestamp: Timestamp
-  type: "open" | "close"
-  stopLoss?: number
-  takeProfit?: number
-}
-
-export type PaperPosition = {
-  symbol: string
-  assetClass: "crypto" | "stock" | "forex"
-  avgEntryPrice: number
-  quantity: number
-  currentPrice?: number
-  unrealizedPnL?: number
-  stopLoss?: number
-  takeProfit?: number
-}
-
 export type PipelineEvent = {
   ts: string
   eventId: string
@@ -566,7 +540,29 @@ export type BrokerAccountDoc = {
   liveEnabled: boolean
   allowedUids: string[]
   notes?: string
+  ordersRefreshRequestedAt?: FirestoreTimestamp
   updatedAt?: FirestoreTimestamp
+}
+
+/** Firestore: executor_consumers/{brokerAccountKey} */
+export type ExecutorConsumerDoc = {
+  brokerAccountKey: BrokerAccountKey
+  sessionId?: string
+  lastHeartbeat?: FirestoreTimestamp
+  lastConnectAttemptAt?: FirestoreTimestamp
+  lastConnectionAt?: FirestoreTimestamp
+  lastConnectError?: string
+  status?: "listening" | "idle"
+  ibConnected?: boolean
+  ibAccount?: string
+  ibMode?: ExecutionMode
+  stats?: {
+    claimed?: number
+    submitted?: number
+    filled?: number
+    rejected?: number
+    errors?: number
+  }
 }
 
 export type TradingControlsCaps = {
@@ -605,6 +601,8 @@ export type OrderSnapshot = {
   symbol: string
   assetClass: "crypto" | "stock" | "forex"
   assetKey: string
+  exchange?: string
+  primaryExchange?: string
   side: "buy" | "sell"
   quantity: number
   orderType: "limit" | "market"
@@ -621,6 +619,8 @@ export type TradeProposalDoc = {
   assetClass: "crypto" | "stock" | "forex"
   assetKey: string
   side: "buy" | "sell"
+  exchange?: string
+  primaryExchange?: string
   quantity: number
   price: number
   stopLoss?: number
@@ -665,6 +665,14 @@ export type BrokerOrderDoc = {
   ibAccountCode: string
   gatewayInstanceId?: string
   executionRequestId: string
+  symbol?: string
+  assetKey?: string
+  side?: "buy" | "sell"
+  quantity?: number
+  orderType?: "limit" | "market"
+  limitPrice?: number
+  stopLoss?: number
+  takeProfit?: number
   conId?: number
   parentOrderId?: number
   tpOrderId?: number
@@ -677,4 +685,40 @@ export type BrokerOrderDoc = {
   submittedAt?: FirestoreTimestamp
   lastUpdateAt?: FirestoreTimestamp
   createdAt: FirestoreTimestamp
+}
+
+export type BrokerPositionDoc = {
+  id: string
+  brokerAccountKey: BrokerAccountKey
+  assetKey: string
+  symbol: string
+  assetClass?: "stock" | "forex"
+  exchange?: string
+  primaryExchange?: string
+  currency?: string
+  position: number
+  avgCost?: number
+  marketPrice?: number
+  marketValue?: number
+  unrealizedPnl?: number
+  realizedPnl?: number
+  account?: string
+  isOpen?: boolean
+  updatedAt?: FirestoreTimestamp
+}
+
+export type BrokerAccountSummaryDoc = {
+  id: string
+  brokerAccountKey: BrokerAccountKey
+  account?: string
+  currency?: string
+  values?: {
+    netLiquidation?: number
+    totalCash?: number
+    availableFunds?: number
+    buyingPower?: number
+    unrealizedPnl?: number
+    realizedPnl?: number
+  }
+  updatedAt?: FirestoreTimestamp
 }

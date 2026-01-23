@@ -1,12 +1,9 @@
-import { useState } from "react"
 import { useLocation, Navigate } from "react-router-dom"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { firebaseEnabled, auth } from "@/lib/firebase"
 import {
   GoogleAuthProvider,
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
   signInWithPopup,
 } from "firebase/auth"
 import { useAuth } from "@/features/auth/auth-context"
@@ -17,39 +14,14 @@ export default function SignInPage() {
   const { user, blockedEmail } = useAuth()
   const location = useLocation()
   const { t } = useTranslation()
-  const [testError, setTestError] = useState<"missingE2EEnv" | "testSignInFailed" | null>(null)
 
   const redirectTo = (location.state as { from?: string } | null)?.from || "/"
-  const isE2E = import.meta.env.VITE_E2E === "true"
-  const testEmail = import.meta.env.VITE_E2E_TEST_EMAIL as string | undefined
-  const testPassword = import.meta.env.VITE_E2E_TEST_PASSWORD as string | undefined
 
   if (user) return <Navigate to={redirectTo} replace />
 
   async function signInGoogle() {
     if (!firebaseEnabled || !auth) return
     await signInWithPopup(auth, new GoogleAuthProvider())
-  }
-
-  async function signInTestUser() {
-    if (!firebaseEnabled || !auth) return
-    setTestError(null)
-    if (!testEmail || !testPassword) {
-      setTestError("missingE2EEnv")
-      return
-    }
-
-    try {
-      await createUserWithEmailAndPassword(auth, testEmail, testPassword)
-    } catch (err) {
-      const code = typeof err === "object" && err && "code" in err ? String(err.code) : ""
-      if (code !== "auth/email-already-in-use") {
-        setTestError("testSignInFailed")
-        return
-      }
-    }
-
-    await signInWithEmailAndPassword(auth, testEmail, testPassword)
   }
 
   return (
@@ -94,16 +66,6 @@ export default function SignInPage() {
               </div>
             ) : (
               <>
-                {isE2E && (
-                  <div className="space-y-2">
-                    <Button variant="secondary" className="w-full" onClick={signInTestUser}>
-                      {t("auth.testSignIn")}
-                    </Button>
-                    {testError && (
-                      <div className="text-xs text-destructive">{t(`auth.errors.${testError}`)}</div>
-                    )}
-                  </div>
-                )}
                 <Button className="w-full" onClick={signInGoogle}>
                   {t("auth.signInWithGoogle")}
                 </Button>

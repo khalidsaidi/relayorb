@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "firebase-admin": "^13.6.0",
+    "google-auth-library": "^10.5.0",
     "redis": "^4.7.1"
   }
 }

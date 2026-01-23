@@ -1,10 +1,25 @@
 import { useEffect, useMemo, useState } from "react"
 import { parse } from "date-fns"
 import { fromZonedTime } from "date-fns-tz"
+import type { User } from "firebase/auth"
+import { useAuth } from "@/features/auth/auth-context"
 
-const GATEWAY_BASE = (import.meta.env.VITE_MARKET_DATA_GATEWAY_URL || "").replace(/\/+$/, "")
+const GATEWAY_URL = (import.meta.env.VITE_MARKET_DATA_GATEWAY_URL || "").replace(/\/+$/, "")
+const PROXY_URL = (import.meta.env.VITE_MARKET_DATA_PROXY_URL || "").replace(/\/+$/, "")
+const GATEWAY_BASE = (PROXY_URL || GATEWAY_URL || "").replace(/\/+$/, "")
+const GATEWAY_AUTH_ENABLED = (() => {
+  const flag = import.meta.env.VITE_MARKET_DATA_GATEWAY_AUTH
+  if (flag === "true") return true
+  if (flag === "false") return false
+  return Boolean(PROXY_URL && GATEWAY_BASE === PROXY_URL)
+})()
 
 type FmpInterval = "1min" | "5min" | "15min" | "30min" | "1hour" | "eod"
+
+const MISSING_GATEWAY_MESSAGE =
+  "Market data endpoint missing (set VITE_MARKET_DATA_PROXY_URL or VITE_MARKET_DATA_GATEWAY_URL)"
+const AUTH_REQUIRED_MESSAGE = "Sign in required to access market data."
+const AUTH_TOKEN_MESSAGE = "Auth token unavailable. Sign out/in and retry."
 
 export type FmpBar = {
   time: number // ms since epoch
@@ -35,10 +50,22 @@ function normalizeFmpSymbol(symbol: string) {
 
 function buildUrl(path: string) {
   if (!GATEWAY_BASE) {
-    throw new Error("Market data gateway URL missing (set VITE_MARKET_DATA_GATEWAY_URL)")
+    throw new Error(MISSING_GATEWAY_MESSAGE)
   }
   const normalized = path.startsWith("/") ? path : `/${path}`
   return `${GATEWAY_BASE}${normalized}`
+}
+
+async function buildGatewayHeaders(user: User | null): Promise<Record<string, string>> {
+  if (!GATEWAY_AUTH_ENABLED) return {}
+  if (!user) throw new Error(AUTH_REQUIRED_MESSAGE)
+  try {
+    const token = await user.getIdToken()
+    if (!token) throw new Error(AUTH_TOKEN_MESSAGE)
+    return { Authorization: `Bearer ${token}` }
+  } catch {
+    throw new Error(AUTH_TOKEN_MESSAGE)
+  }
 }
 
 type RawBar = {
@@ -114,11 +141,12 @@ function mapBars(raw: unknown[], timeZone?: string): FmpBar[] {
 export function useFmpQuote(symbol?: string) {
   const [quote, setQuote] = useState<FmpQuote | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const { user } = useAuth()
 
   useEffect(() => {
     if (!symbol) return
     if (!GATEWAY_BASE) {
-      setError("Market data gateway URL missing (set VITE_MARKET_DATA_GATEWAY_URL)")
+      setError(MISSING_GATEWAY_MESSAGE)
       return
     }
     const resolvedSymbol = symbol
@@ -128,7 +156,8 @@ export function useFmpQuote(symbol?: string) {
       try {
         const normalized = normalizeFmpSymbol(resolvedSymbol)
         const url = buildUrl(`/v1/fmp/quote?symbol=${encodeURIComponent(normalized)}`)
-        const resp = await fetch(url)
+        const headers = await buildGatewayHeaders(user)
+        const resp = await fetch(url, { headers })
         if (!resp.ok) {
           const text = await resp.text()
           throw new Error(`Quote fetch failed (${resp.status}): ${text || resp.statusText}`)
@@ -164,7 +193,7 @@ export function useFmpQuote(symbol?: string) {
       cancelled = true
       clearInterval(id)
     }
-  }, [symbol])
+  }, [symbol, user])
 
   return { quote, error }
 }
@@ -177,11 +206,12 @@ export function useFmpChart(
 ) {
   const [bars, setBars] = useState<FmpBar[]>([])
   const [error, setError] = useState<string | null>(null)
+  const { user } = useAuth()
 
   useEffect(() => {
     if (!symbol) return
     if (!GATEWAY_BASE) {
-      setError("Market data gateway URL missing (set VITE_MARKET_DATA_GATEWAY_URL)")
+      setError(MISSING_GATEWAY_MESSAGE)
       return
     }
     const resolvedSymbol = symbol
@@ -198,7 +228,8 @@ export function useFmpChart(
           intervalParam
         )}&limit=${limit}${assetParam}`
         const url = buildUrl(path)
-        const resp = await fetch(url)
+        const headers = await buildGatewayHeaders(user)
+        const resp = await fetch(url, { headers })
         if (!resp.ok) {
           const text = await resp.text()
           throw new Error(`Chart fetch failed (${resp.status}): ${text || resp.statusText}`)
@@ -229,7 +260,7 @@ export function useFmpChart(
       cancelled = true
       clearInterval(id)
     }
-  }, [symbol, interval, limit, assetClass])
+  }, [symbol, interval, limit, assetClass, user])
 
   const latest = useMemo(() => (bars.length ? bars[bars.length - 1] : null), [bars])
 
@@ -298,6 +329,7 @@ export function useFmpSymbolSearch(query: string, assetClass?: string) {
   const [results, setResults] = useState<FmpSearchResult[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { user } = useAuth()
 
   useEffect(() => {
     const trimmed = query.trim()
@@ -308,7 +340,7 @@ export function useFmpSymbolSearch(query: string, assetClass?: string) {
       return
     }
     if (!GATEWAY_BASE) {
-      setError("Market data gateway URL missing (set VITE_MARKET_DATA_GATEWAY_URL)")
+      setError(MISSING_GATEWAY_MESSAGE)
       setLoading(false)
       return
     }
@@ -318,10 +350,11 @@ export function useFmpSymbolSearch(query: string, assetClass?: string) {
       try {
         const symbolNeedle = normalizeSymbolQuery(trimmed)
         const nameNeedle = normalizeSearchQuery(trimmed)
+        const headers = await buildGatewayHeaders(user)
         const [symbolRowsResult, nameRowsResult] = await Promise.allSettled([
           (async () => {
             const url = buildUrl(`/v1/fmp/search-symbol?query=${encodeURIComponent(symbolNeedle)}`)
-            const resp = await fetch(url)
+            const resp = await fetch(url, { headers })
             if (!resp.ok) {
               const text = await resp.text()
               throw new Error(`Symbol search failed (${resp.status}): ${text || resp.statusText}`)
@@ -340,7 +373,7 @@ export function useFmpSymbolSearch(query: string, assetClass?: string) {
           })(),
           (async () => {
             const url = buildUrl(`/v1/fmp/search-name?query=${encodeURIComponent(trimmed)}`)
-            const resp = await fetch(url)
+            const resp = await fetch(url, { headers })
             if (!resp.ok) {
               const text = await resp.text()
               throw new Error(`Name search failed (${resp.status}): ${text || resp.statusText}`)
@@ -406,7 +439,7 @@ export function useFmpSymbolSearch(query: string, assetClass?: string) {
       cancelled = true
       clearTimeout(id)
     }
-  }, [query, assetClass])
+  }, [query, assetClass, user])
 
   return { results, loading, error }
 }
@@ -441,11 +474,12 @@ export function useFmpIndicator(
   const [data, setData] = useState<IndicatorDataPoint[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { user } = useAuth()
 
   useEffect(() => {
     if (!symbol) return
     if (!GATEWAY_BASE) {
-      setError("Market data gateway URL missing")
+      setError(MISSING_GATEWAY_MESSAGE)
       return
     }
     let cancelled = false
@@ -459,7 +493,8 @@ export function useFmpIndicator(
             indicator
           )}&period=${period}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`
         )
-        const resp = await fetch(url)
+        const headers = await buildGatewayHeaders(user)
+        const resp = await fetch(url, { headers })
         if (!resp.ok) throw new Error(`Indicator fetch failed: ${resp.status}`)
         const payload = await resp.json()
         if (cancelled) return
@@ -476,7 +511,7 @@ export function useFmpIndicator(
 
     load()
     return () => { cancelled = true }
-  }, [symbol, indicator, period, timeframe, limit])
+  }, [symbol, indicator, period, timeframe, limit, user])
 
   return { data, loading, error }
 }
@@ -519,11 +554,12 @@ export function useFmpProfile(symbol?: string) {
   const [profile, setProfile] = useState<CompanyProfile | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { user } = useAuth()
 
   useEffect(() => {
     if (!symbol) return
     if (!GATEWAY_BASE) {
-      setError("Market data gateway URL missing")
+      setError(MISSING_GATEWAY_MESSAGE)
       return
     }
     let cancelled = false
@@ -533,7 +569,8 @@ export function useFmpProfile(symbol?: string) {
       try {
         const normalized = normalizeFmpSymbol(symbol!)
         const url = buildUrl(`/v1/fmp/profile?symbol=${encodeURIComponent(normalized)}`)
-        const resp = await fetch(url)
+        const headers = await buildGatewayHeaders(user)
+        const resp = await fetch(url, { headers })
         if (!resp.ok) throw new Error(`Profile fetch failed: ${resp.status}`)
         const payload = await resp.json()
         if (cancelled) return
@@ -549,7 +586,7 @@ export function useFmpProfile(symbol?: string) {
 
     load()
     return () => { cancelled = true }
-  }, [symbol])
+  }, [symbol, user])
 
   return { profile, loading, error }
 }
@@ -572,11 +609,12 @@ export function useFmpNews(symbol?: string, limit = 10) {
   const [news, setNews] = useState<StockNewsItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { user } = useAuth()
 
   useEffect(() => {
     if (!symbol) return
     if (!GATEWAY_BASE) {
-      setError("Market data gateway URL missing")
+      setError(MISSING_GATEWAY_MESSAGE)
       return
     }
     let cancelled = false
@@ -588,7 +626,8 @@ export function useFmpNews(symbol?: string, limit = 10) {
         const url = buildUrl(
           `/v1/fmp/news?symbol=${encodeURIComponent(normalized)}&limit=${limit}`
         )
-        const resp = await fetch(url)
+        const headers = await buildGatewayHeaders(user)
+        const resp = await fetch(url, { headers })
         if (!resp.ok) throw new Error(`News fetch failed: ${resp.status}`)
         const payload = await resp.json()
         if (cancelled) return
@@ -604,7 +643,7 @@ export function useFmpNews(symbol?: string, limit = 10) {
 
     load()
     return () => { cancelled = true }
-  }, [symbol, limit])
+  }, [symbol, limit, user])
 
   return { news, loading, error }
 }
@@ -625,11 +664,12 @@ export function useFmpPriceTarget(symbol?: string) {
   const [priceTarget, setPriceTarget] = useState<PriceTarget | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { user } = useAuth()
 
   useEffect(() => {
     if (!symbol) return
     if (!GATEWAY_BASE) {
-      setError("Market data gateway URL missing")
+      setError(MISSING_GATEWAY_MESSAGE)
       return
     }
     let cancelled = false
@@ -639,7 +679,8 @@ export function useFmpPriceTarget(symbol?: string) {
       try {
         const normalized = normalizeFmpSymbol(symbol!)
         const url = buildUrl(`/v1/fmp/price-target?symbol=${encodeURIComponent(normalized)}`)
-        const resp = await fetch(url)
+        const headers = await buildGatewayHeaders(user)
+        const resp = await fetch(url, { headers })
         if (!resp.ok) throw new Error(`Price target fetch failed: ${resp.status}`)
         const payload = await resp.json()
         if (cancelled) return
@@ -655,7 +696,7 @@ export function useFmpPriceTarget(symbol?: string) {
 
     load()
     return () => { cancelled = true }
-  }, [symbol])
+  }, [symbol, user])
 
   return { priceTarget, loading, error }
 }
@@ -688,11 +729,12 @@ export function useFmpRating(symbol?: string) {
   const [rating, setRating] = useState<AnalystRating | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { user } = useAuth()
 
   useEffect(() => {
     if (!symbol) return
     if (!GATEWAY_BASE) {
-      setError("Market data gateway URL missing")
+      setError(MISSING_GATEWAY_MESSAGE)
       return
     }
     let cancelled = false
@@ -702,7 +744,8 @@ export function useFmpRating(symbol?: string) {
       try {
         const normalized = normalizeFmpSymbol(symbol!)
         const url = buildUrl(`/v1/fmp/ratings-snapshot?symbol=${encodeURIComponent(normalized)}`)
-        const resp = await fetch(url)
+        const headers = await buildGatewayHeaders(user)
+        const resp = await fetch(url, { headers })
         if (!resp.ok) throw new Error(`Rating fetch failed: ${resp.status}`)
         const payload = await resp.json()
         if (cancelled) return
@@ -719,7 +762,7 @@ export function useFmpRating(symbol?: string) {
 
     load()
     return () => { cancelled = true }
-  }, [symbol])
+  }, [symbol, user])
 
   return { rating, loading, error }
 }

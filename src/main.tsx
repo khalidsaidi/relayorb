@@ -1,5 +1,4 @@
 import React from "react"
-import "@/features/ops/reactflow-dev-warnings"
 import "@/i18n"
 import ReactDOM from "react-dom/client"
 import { BrowserRouter } from "react-router-dom"

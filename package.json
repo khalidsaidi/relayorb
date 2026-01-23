@@ -7,13 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview",
-    "test:e2e": "VITE_E2E=true RELAYORB_E2E_TARGET=prod playwright test",
-    "test:e2e:emulator": "VITE_USE_EMULATORS=true VITE_E2E=true VITE_FIRESTORE_EMULATOR_PORT=8081 RELAYORB_E2E_TARGET=emulator firebase emulators:exec --only auth,firestore --project relayorb \"playwright test\""
+    "preview": "vite preview"
   },
   "dependencies": {
-    "@antv/x6": "^3.1.4",
-    "@antv/x6-react-shape": "^3.0.1",
     "@radix-ui/react-avatar": "^1.1.11",
     "@radix-ui/react-collapsible": "^1.1.12",
     "@radix-ui/react-dialog": "^1.1.15",
@@ -42,14 +38,12 @@
     "react-dom": "^19.2.0",
     "react-i18next": "^16.5.3",
     "react-router-dom": "^7.11.0",
-    "reactflow": "^11.11.4",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.4.0",
     "tailwindcss": "^4.1.18"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
-    "@playwright/test": "^1.57.0",
     "@types/node": "^24.10.4",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",

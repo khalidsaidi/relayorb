@@ -1,0 +1,214 @@
+{
+  "id": 204548,
+  "date": "2024-04-05T10:17:57",
+  "date_gmt": "2024-04-05T14:17:57",
+  "guid": {
+    "rendered": "https://ibkrcampus.com/?post_type=ibkr-api-page&#038;p=204548"
+  },
+  "modified": "2025-01-06T16:05:23",
+  "modified_gmt": "2025-01-06T21:05:23",
+  "slug": "prospective-integrations",
+  "status": "publish",
+  "type": "ibkr-api-page",
+  "link": "https://www.interactivebrokers.com/campus/ibkr-api-page/prospective-integrations/",
+  "title": {
+    "rendered": "Prospective Integrations"
+  },
+  "content": {
+    "rendered": "\n<p>Interactive Brokers&#8217; Web API is the primary interface used by third-party software integrations. However, all of our programming interfaces &#8212; Web API, TWS API, and FIX &#8212; are available to third-party developers. Each API has its own onboarding process for third-party vendors, and we invite you to consult the respective documentation for each API for more detail:</p>\n\n\n\n<p><a href=\"https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/#third-party-oauth\">Web API for Third-Party Developers</a></p>\n\n\n\n<p><a href=\"https://www.interactivebrokers.com/campus/ibkr-api-page/twsapi-doc/#third-party-platforms\">TWS API for Third-Party Developers</a></p>\n\n\n\n<p><a href=\"https://www.interactivebrokers.com/campus/ibkr-api-page/fix/\">FIX for Third-Party Developers</a></p>\n\n\n\n<p></p>\n",
+    "protected": false
+  },
+  "excerpt": {
+    "rendered": "<p>Interactive Brokers&#8217; Web API is the primary interface used by third-party software integrations. However, all of our programming interfaces &#8212; Web API, TWS API, and FIX &#8212; are available to third-party developers. Each API has its own onboarding process for third-party vendors, and we invite you to consult the respective documentation for each API for [&hellip;]</p>\n",
+    "protected": false
+  },
+  "featured_media": 0,
+  "parent": 0,
+  "template": "",
+  "meta": {
+    "_acf_changed": true,
+    "footnotes": ""
+  },
+  "ibkr-api": [
+    17521
+  ],
+  "ibkr-reporting": [],
+  "class_list": {
+    "0": "post-204548",
+    "1": "ibkr-api-page",
+    "2": "type-ibkr-api-page",
+    "3": "status-publish",
+    "5": "ibkr-api-third-parties"
+  },
+  "pp_statuses_selecting_workflow": false,
+  "pp_workflow_action": "current",
+  "pp_status_selection": "publish",
+  "acf": [],
+  "yoast_head": "<!-- This site is optimized with the Yoast SEO Premium plugin v26.8 (Yoast SEO v26.8) - https://yoast.com/product/yoast-seo-premium-wordpress/ -->\n<title>Archives | IBKR API | IBKR Campus</title>\n<meta name=\"robots\" content=\"index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1\" />\n<link rel=\"canonical\" href=\"https://www.interactivebrokers.com/campus/wp-json/wp/v2/ibkr-api-page/\" />\n<meta property=\"og:locale\" content=\"en_US\" />\n<meta property=\"og:type\" content=\"article\" />\n<meta property=\"og:title\" content=\"Prospective Integrations | IBKR Campus US\" />\n<meta property=\"og:description\" content=\"Interactive Brokers&#8217; Web API is the primary interface used by third-party software integrations. However, all of our programming interfaces &#8212; Web API, TWS API, and FIX &#8212; are available to third-party developers. Each API has its own onboarding process for third-party vendors, and we invite you to consult the respective documentation for each API for [&hellip;]\" />\n<meta property=\"og:url\" content=\"https://www.interactivebrokers.com/campus/ibkr-api-page/prospective-integrations/\" />\n<meta property=\"og:site_name\" content=\"IBKR Campus US\" />\n<meta property=\"article:modified_time\" content=\"2025-01-06T21:05:23+00:00\" />\n<meta name=\"twitter:card\" content=\"summary_large_image\" />\n<meta name=\"twitter:label1\" content=\"Est. reading time\" />\n\t<meta name=\"twitter:data1\" content=\"1 minute\" />\n<script type=\"application/ld+json\" class=\"yoast-schema-graph\">{\n\t    \"@context\": \"https://schema.org\",\n\t    \"@graph\": [\n\t        {\n\t            \"@type\": \"WebPage\",\n\t            \"@id\": \"https://www.interactivebrokers.com/campus/ibkr-api-page/prospective-integrations/\",\n\t            \"url\": \"https://www.interactivebrokers.com/campus/ibkr-api-page/prospective-integrations/\",\n\t            \"name\": \"Prospective Integrations | IBKR Campus US\",\n\t            \"isPartOf\": {\n\t                \"@id\": \"https://ibkrcampus.com/campus/#website\"\n\t            },\n\t            \"datePublished\": \"2024-04-05T14:17:57+00:00\",\n\t            \"dateModified\": \"2025-01-06T21:05:23+00:00\",\n\t            \"breadcrumb\": {\n\t                \"@id\": \"https://www.interactivebrokers.com/campus/ibkr-api-page/prospective-integrations/#breadcrumb\"\n\t            },\n\t            \"inLanguage\": \"en-US\",\n\t            \"potentialAction\": [\n\t                {\n\t                    \"@type\": \"ReadAction\",\n\t                    \"target\": [\n\t                        \"https://www.interactivebrokers.com/campus/ibkr-api-page/prospective-integrations/\"\n\t                    ]\n\t                }\n\t            ]\n\t        },\n\t        {\n\t            \"@type\": \"BreadcrumbList\",\n\t            \"@id\": \"https://www.interactivebrokers.com/campus/ibkr-api-page/prospective-integrations/#breadcrumb\",\n\t            \"itemListElement\": [\n\t                {\n\t                    \"@type\": \"ListItem\",\n\t                    \"position\": 1,\n\t                    \"name\": \"API\",\n\t                    \"item\": \"https://ibkrcampus.com/campus/ibkr-api-page/\"\n\t                },\n\t                {\n\t                    \"@type\": \"ListItem\",\n\t                    \"position\": 2,\n\t                    \"name\": \"Prospective Integrations\"\n\t                }\n\t            ]\n\t        },\n\t        {\n\t            \"@type\": \"WebSite\",\n\t            \"@id\": \"https://ibkrcampus.com/campus/#website\",\n\t            \"url\": \"https://ibkrcampus.com/campus/\",\n\t            \"name\": \"IBKR Campus US\",\n\t            \"description\": \"Financial Education from Interactive Brokers\",\n\t            \"publisher\": {\n\t                \"@id\": \"https://ibkrcampus.com/campus/#organization\"\n\t            },\n\t            \"potentialAction\": [\n\t                {\n\t                    \"@type\": \"SearchAction\",\n\t                    \"target\": {\n\t                        \"@type\": \"EntryPoint\",\n\t                        \"urlTemplate\": \"https://ibkrcampus.com/campus/?s={search_term_string}\"\n\t                    },\n\t                    \"query-input\": {\n\t                        \"@type\": \"PropertyValueSpecification\",\n\t                        \"valueRequired\": true,\n\t                        \"valueName\": \"search_term_string\"\n\t                    }\n\t                }\n\t            ],\n\t            \"inLanguage\": \"en-US\"\n\t        },\n\t        {\n\t            \"@type\": \"Organization\",\n\t            \"@id\": \"https://ibkrcampus.com/campus/#organization\",\n\t            \"name\": \"Interactive Brokers\",\n\t            \"alternateName\": \"IBKR\",\n\t            \"url\": \"https://ibkrcampus.com/campus/\",\n\t            \"logo\": {\n\t                \"@type\": \"ImageObject\",\n\t                \"inLanguage\": \"en-US\",\n\t                \"@id\": \"https://ibkrcampus.com/campus/#/schema/logo/image/\",\n\t                \"url\": \"https://www.interactivebrokers.com/campus/wp-content/uploads/sites/2/2024/05/ibkr-campus-logo.jpg\",\n\t                \"contentUrl\": \"https://www.interactivebrokers.com/campus/wp-content/uploads/sites/2/2024/05/ibkr-campus-logo.jpg\",\n\t                \"width\": 669,\n\t                \"height\": 669,\n\t                \"caption\": \"Interactive Brokers\"\n\t            },\n\t            \"image\": {\n\t                \"@id\": \"https://ibkrcampus.com/campus/#/schema/logo/image/\"\n\t            },\n\t            \"publishingPrinciples\": \"https://www.interactivebrokers.com/campus/about-ibkr-campus/\",\n\t            \"ethicsPolicy\": \"https://www.interactivebrokers.com/campus/cyber-security-notice/\"\n\t        }\n\t    ]\n\t}</script>\n<!-- / Yoast SEO Premium plugin. -->",
+  "yoast_head_json": {
+    "title": "Archives | IBKR API | IBKR Campus",
+    "robots": {
+      "index": "index",
+      "follow": "follow",
+      "max-snippet": "max-snippet:-1",
+      "max-image-preview": "max-image-preview:large",
+      "max-video-preview": "max-video-preview:-1"
+    },
+    "canonical": "https://www.interactivebrokers.com/campus/wp-json/wp/v2/ibkr-api-page/",
+    "og_locale": "en_US",
+    "og_type": "article",
+    "og_title": "Prospective Integrations | IBKR Campus US",
+    "og_description": "Interactive Brokers&#8217; Web API is the primary interface used by third-party software integrations. However, all of our programming interfaces &#8212; Web API, TWS API, and FIX &#8212; are available to third-party developers. Each API has its own onboarding process for third-party vendors, and we invite you to consult the respective documentation for each API for [&hellip;]",
+    "og_url": "https://www.interactivebrokers.com/campus/ibkr-api-page/prospective-integrations/",
+    "og_site_name": "IBKR Campus US",
+    "article_modified_time": "2025-01-06T21:05:23+00:00",
+    "twitter_card": "summary_large_image",
+    "twitter_misc": {
+      "Est. reading time": "1 minute"
+    },
+    "schema": {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "WebPage",
+          "@id": "https://www.interactivebrokers.com/campus/ibkr-api-page/prospective-integrations/",
+          "url": "https://www.interactivebrokers.com/campus/ibkr-api-page/prospective-integrations/",
+          "name": "Prospective Integrations | IBKR Campus US",
+          "isPartOf": {
+            "@id": "https://ibkrcampus.com/campus/#website"
+          },
+          "datePublished": "2024-04-05T14:17:57+00:00",
+          "dateModified": "2025-01-06T21:05:23+00:00",
+          "breadcrumb": {
+            "@id": "https://www.interactivebrokers.com/campus/ibkr-api-page/prospective-integrations/#breadcrumb"
+          },
+          "inLanguage": "en-US",
+          "potentialAction": [
+            {
+              "@type": "ReadAction",
+              "target": [
+                "https://www.interactivebrokers.com/campus/ibkr-api-page/prospective-integrations/"
+              ]
+            }
+          ]
+        },
+        {
+          "@type": "BreadcrumbList",
+          "@id": "https://www.interactivebrokers.com/campus/ibkr-api-page/prospective-integrations/#breadcrumb",
+          "itemListElement": [
+            {
+              "@type": "ListItem",
+              "position": 1,
+              "name": "API",
+              "item": "https://ibkrcampus.com/campus/ibkr-api-page/"
+            },
+            {
+              "@type": "ListItem",
+              "position": 2,
+              "name": "Prospective Integrations"
+            }
+          ]
+        },
+        {
+          "@type": "WebSite",
+          "@id": "https://ibkrcampus.com/campus/#website",
+          "url": "https://ibkrcampus.com/campus/",
+          "name": "IBKR Campus US",
+          "description": "Financial Education from Interactive Brokers",
+          "publisher": {
+            "@id": "https://ibkrcampus.com/campus/#organization"
+          },
+          "potentialAction": [
+            {
+              "@type": "SearchAction",
+              "target": {
+                "@type": "EntryPoint",
+                "urlTemplate": "https://ibkrcampus.com/campus/?s={search_term_string}"
+              },
+              "query-input": {
+                "@type": "PropertyValueSpecification",
+                "valueRequired": true,
+                "valueName": "search_term_string"
+              }
+            }
+          ],
+          "inLanguage": "en-US"
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://ibkrcampus.com/campus/#organization",
+          "name": "Interactive Brokers",
+          "alternateName": "IBKR",
+          "url": "https://ibkrcampus.com/campus/",
+          "logo": {
+            "@type": "ImageObject",
+            "inLanguage": "en-US",
+            "@id": "https://ibkrcampus.com/campus/#/schema/logo/image/",
+            "url": "https://www.interactivebrokers.com/campus/wp-content/uploads/sites/2/2024/05/ibkr-campus-logo.jpg",
+            "contentUrl": "https://www.interactivebrokers.com/campus/wp-content/uploads/sites/2/2024/05/ibkr-campus-logo.jpg",
+            "width": 669,
+            "height": 669,
+            "caption": "Interactive Brokers"
+          },
+          "image": {
+            "@id": "https://ibkrcampus.com/campus/#/schema/logo/image/"
+          },
+          "publishingPrinciples": "https://www.interactivebrokers.com/campus/about-ibkr-campus/",
+          "ethicsPolicy": "https://www.interactivebrokers.com/campus/cyber-security-notice/"
+        }
+      ]
+    }
+  },
+  "_links": {
+    "self": [
+      {
+        "href": "https://ibkrcampus.com/campus/wp-json/wp/v2/ibkr-api-page/204548",
+        "targetHints": {
+          "allow": [
+            "GET"
+          ]
+        }
+      }
+    ],
+    "collection": [
+      {
+        "href": "https://ibkrcampus.com/campus/wp-json/wp/v2/ibkr-api-page"
+      }
+    ],
+    "about": [
+      {
+        "href": "https://ibkrcampus.com/campus/wp-json/wp/v2/types/ibkr-api-page"
+      }
+    ],
+    "version-history": [
+      {
+        "count": 0,
+        "href": "https://ibkrcampus.com/campus/wp-json/wp/v2/ibkr-api-page/204548/revisions"
+      }
+    ],
+    "wp:attachment": [
+      {
+        "href": "https://ibkrcampus.com/campus/wp-json/wp/v2/media?parent=204548"
+      }
+    ],
+    "wp:term": [
+      {
+        "taxonomy": "ibkr-api",
+        "embeddable": true,
+        "href": "https://ibkrcampus.com/campus/wp-json/wp/v2/ibkr-api?post=204548"
+      },
+      {
+        "taxonomy": "ibkr-reporting",
+        "embeddable": true,
+        "href": "https://ibkrcampus.com/campus/wp-json/wp/v2/ibkr-reporting?post=204548"
+      }
+    ],
+    "curies": [
+      {
+        "name": "wp",
+        "href": "https://api.w.org/{rel}",
+        "templated": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,207 @@
+{
+  "id": 213272,
+  "date": "2024-10-07T14:27:22",
+  "date_gmt": "2024-10-07T18:27:22",
+  "guid": {
+    "rendered": "https://ibkrcampus.com/campus/?post_type=ibkr-api-page&#038;p=213272"
+  },
+  "modified": "2024-12-17T09:35:12",
+  "modified_gmt": "2024-12-17T14:35:12",
+  "slug": "web-api-trading",
+  "status": "publish",
+  "type": "ibkr-api-page",
+  "link": "https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-trading/",
+  "title": {
+    "rendered": "Trading Web API"
+  },
+  "content": {
+    "rendered": "",
+    "protected": false
+  },
+  "excerpt": {
+    "rendered": "",
+    "protected": false
+  },
+  "featured_media": 0,
+  "parent": 0,
+  "template": "templates-api/template-web-api-trading.php",
+  "meta": {
+    "_acf_changed": false,
+    "footnotes": ""
+  },
+  "ibkr-api": [],
+  "ibkr-reporting": [],
+  "class_list": [
+    "post-213272",
+    "ibkr-api-page",
+    "type-ibkr-api-page",
+    "status-publish"
+  ],
+  "pp_statuses_selecting_workflow": false,
+  "pp_workflow_action": "current",
+  "pp_status_selection": "publish",
+  "acf": [],
+  "yoast_head": "<!-- This site is optimized with the Yoast SEO Premium plugin v26.8 (Yoast SEO v26.8) - https://yoast.com/product/yoast-seo-premium-wordpress/ -->\n<title>Archives | IBKR API | IBKR Campus</title>\n<meta name=\"robots\" content=\"index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1\" />\n<link rel=\"canonical\" href=\"https://www.interactivebrokers.com/campus/wp-json/wp/v2/ibkr-api-page/\" />\n<meta property=\"og:locale\" content=\"en_US\" />\n<meta property=\"og:type\" content=\"article\" />\n<meta property=\"og:title\" content=\"Trading Web API | IBKR Campus US\" />\n<meta property=\"og:url\" content=\"https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-trading/\" />\n<meta property=\"og:site_name\" content=\"IBKR Campus US\" />\n<meta property=\"article:modified_time\" content=\"2024-12-17T14:35:12+00:00\" />\n<meta name=\"twitter:card\" content=\"summary_large_image\" />\n<script type=\"application/ld+json\" class=\"yoast-schema-graph\">{\n\t    \"@context\": \"https://schema.org\",\n\t    \"@graph\": [\n\t        {\n\t            \"@type\": \"WebPage\",\n\t            \"@id\": \"https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-trading/\",\n\t            \"url\": \"https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-trading/\",\n\t            \"name\": \"Trading Web API | IBKR Campus US\",\n\t            \"isPartOf\": {\n\t                \"@id\": \"https://ibkrcampus.com/campus/#website\"\n\t            },\n\t            \"datePublished\": \"2024-10-07T18:27:22+00:00\",\n\t            \"dateModified\": \"2024-12-17T14:35:12+00:00\",\n\t            \"breadcrumb\": {\n\t                \"@id\": \"https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-trading/#breadcrumb\"\n\t            },\n\t            \"inLanguage\": \"en-US\",\n\t            \"potentialAction\": [\n\t                {\n\t                    \"@type\": \"ReadAction\",\n\t                    \"target\": [\n\t                        \"https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-trading/\"\n\t                    ]\n\t                }\n\t            ]\n\t        },\n\t        {\n\t            \"@type\": \"BreadcrumbList\",\n\t            \"@id\": \"https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-trading/#breadcrumb\",\n\t            \"itemListElement\": [\n\t                {\n\t                    \"@type\": \"ListItem\",\n\t                    \"position\": 1,\n\t                    \"name\": \"API\",\n\t                    \"item\": \"https://ibkrcampus.com/campus/ibkr-api-page/\"\n\t                },\n\t                {\n\t                    \"@type\": \"ListItem\",\n\t                    \"position\": 2,\n\t                    \"name\": \"Trading Web API\"\n\t                }\n\t            ]\n\t        },\n\t        {\n\t            \"@type\": \"WebSite\",\n\t            \"@id\": \"https://ibkrcampus.com/campus/#website\",\n\t            \"url\": \"https://ibkrcampus.com/campus/\",\n\t            \"name\": \"IBKR Campus US\",\n\t            \"description\": \"Financial Education from Interactive Brokers\",\n\t            \"publisher\": {\n\t                \"@id\": \"https://ibkrcampus.com/campus/#organization\"\n\t            },\n\t            \"potentialAction\": [\n\t                {\n\t                    \"@type\": \"SearchAction\",\n\t                    \"target\": {\n\t                        \"@type\": \"EntryPoint\",\n\t                        \"urlTemplate\": \"https://ibkrcampus.com/campus/?s={search_term_string}\"\n\t                    },\n\t                    \"query-input\": {\n\t                        \"@type\": \"PropertyValueSpecification\",\n\t                        \"valueRequired\": true,\n\t                        \"valueName\": \"search_term_string\"\n\t                    }\n\t                }\n\t            ],\n\t            \"inLanguage\": \"en-US\"\n\t        },\n\t        {\n\t            \"@type\": \"Organization\",\n\t            \"@id\": \"https://ibkrcampus.com/campus/#organization\",\n\t            \"name\": \"Interactive Brokers\",\n\t            \"alternateName\": \"IBKR\",\n\t            \"url\": \"https://ibkrcampus.com/campus/\",\n\t            \"logo\": {\n\t                \"@type\": \"ImageObject\",\n\t                \"inLanguage\": \"en-US\",\n\t                \"@id\": \"https://ibkrcampus.com/campus/#/schema/logo/image/\",\n\t                \"url\": \"https://www.interactivebrokers.com/campus/wp-content/uploads/sites/2/2024/05/ibkr-campus-logo.jpg\",\n\t                \"contentUrl\": \"https://www.interactivebrokers.com/campus/wp-content/uploads/sites/2/2024/05/ibkr-campus-logo.jpg\",\n\t                \"width\": 669,\n\t                \"height\": 669,\n\t                \"caption\": \"Interactive Brokers\"\n\t            },\n\t            \"image\": {\n\t                \"@id\": \"https://ibkrcampus.com/campus/#/schema/logo/image/\"\n\t            },\n\t            \"publishingPrinciples\": \"https://www.interactivebrokers.com/campus/about-ibkr-campus/\",\n\t            \"ethicsPolicy\": \"https://www.interactivebrokers.com/campus/cyber-security-notice/\"\n\t        }\n\t    ]\n\t}</script>\n<!-- / Yoast SEO Premium plugin. -->",
+  "yoast_head_json": {
+    "title": "Archives | IBKR API | IBKR Campus",
+    "robots": {
+      "index": "index",
+      "follow": "follow",
+      "max-snippet": "max-snippet:-1",
+      "max-image-preview": "max-image-preview:large",
+      "max-video-preview": "max-video-preview:-1"
+    },
+    "canonical": "https://www.interactivebrokers.com/campus/wp-json/wp/v2/ibkr-api-page/",
+    "og_locale": "en_US",
+    "og_type": "article",
+    "og_title": "Trading Web API | IBKR Campus US",
+    "og_url": "https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-trading/",
+    "og_site_name": "IBKR Campus US",
+    "article_modified_time": "2024-12-17T14:35:12+00:00",
+    "twitter_card": "summary_large_image",
+    "schema": {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "WebPage",
+          "@id": "https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-trading/",
+          "url": "https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-trading/",
+          "name": "Trading Web API | IBKR Campus US",
+          "isPartOf": {
+            "@id": "https://ibkrcampus.com/campus/#website"
+          },
+          "datePublished": "2024-10-07T18:27:22+00:00",
+          "dateModified": "2024-12-17T14:35:12+00:00",
+          "breadcrumb": {
+            "@id": "https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-trading/#breadcrumb"
+          },
+          "inLanguage": "en-US",
+          "potentialAction": [
+            {
+              "@type": "ReadAction",
+              "target": [
+                "https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-trading/"
+              ]
+            }
+          ]
+        },
+        {
+          "@type": "BreadcrumbList",
+          "@id": "https://www.interactivebrokers.com/campus/ibkr-api-page/web-api-trading/#breadcrumb",
+          "itemListElement": [
+            {
+              "@type": "ListItem",
+              "position": 1,
+              "name": "API",
+              "item": "https://ibkrcampus.com/campus/ibkr-api-page/"
+            },
+            {
+              "@type": "ListItem",
+              "position": 2,
+              "name": "Trading Web API"
+            }
+          ]
+        },
+        {
+          "@type": "WebSite",
+          "@id": "https://ibkrcampus.com/campus/#website",
+          "url": "https://ibkrcampus.com/campus/",
+          "name": "IBKR Campus US",
+          "description": "Financial Education from Interactive Brokers",
+          "publisher": {
+            "@id": "https://ibkrcampus.com/campus/#organization"
+          },
+          "potentialAction": [
+            {
+              "@type": "SearchAction",
+              "target": {
+                "@type": "EntryPoint",
+                "urlTemplate": "https://ibkrcampus.com/campus/?s={search_term_string}"
+              },
+              "query-input": {
+                "@type": "PropertyValueSpecification",
+                "valueRequired": true,
+                "valueName": "search_term_string"
+              }
+            }
+          ],
+          "inLanguage": "en-US"
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://ibkrcampus.com/campus/#organization",
+          "name": "Interactive Brokers",
+          "alternateName": "IBKR",
+          "url": "https://ibkrcampus.com/campus/",
+          "logo": {
+            "@type": "ImageObject",
+            "inLanguage": "en-US",
+            "@id": "https://ibkrcampus.com/campus/#/schema/logo/image/",
+            "url": "https://www.interactivebrokers.com/campus/wp-content/uploads/sites/2/2024/05/ibkr-campus-logo.jpg",
+            "contentUrl": "https://www.interactivebrokers.com/campus/wp-content/uploads/sites/2/2024/05/ibkr-campus-logo.jpg",
+            "width": 669,
+            "height": 669,
+            "caption": "Interactive Brokers"
+          },
+          "image": {
+            "@id": "https://ibkrcampus.com/campus/#/schema/logo/image/"
+          },
+          "publishingPrinciples": "https://www.interactivebrokers.com/campus/about-ibkr-campus/",
+          "ethicsPolicy": "https://www.interactivebrokers.com/campus/cyber-security-notice/"
+        }
+      ]
+    }
+  },
+  "_links": {
+    "self": [
+      {
+        "href": "https://ibkrcampus.com/campus/wp-json/wp/v2/ibkr-api-page/213272",
+        "targetHints": {
+          "allow": [
+            "GET"
+          ]
+        }
+      }
+    ],
+    "collection": [
+      {
+        "href": "https://ibkrcampus.com/campus/wp-json/wp/v2/ibkr-api-page"
+      }
+    ],
+    "about": [
+      {
+        "href": "https://ibkrcampus.com/campus/wp-json/wp/v2/types/ibkr-api-page"
+      }
+    ],
+    "version-history": [
+      {
+        "count": 0,
+        "href": "https://ibkrcampus.com/campus/wp-json/wp/v2/ibkr-api-page/213272/revisions"
+      }
+    ],
+    "wp:attachment": [
+      {
+        "href": "https://ibkrcampus.com/campus/wp-json/wp/v2/media?parent=213272"
+      }
+    ],
+    "wp:term": [
+      {
+        "taxonomy": "ibkr-api",
+        "embeddable": true,
+        "href": "https://ibkrcampus.com/campus/wp-json/wp/v2/ibkr-api?post=213272"
+      },
+      {
+        "taxonomy": "ibkr-reporting",
+        "embeddable": true,
+        "href": "https://ibkrcampus.com/campus/wp-json/wp/v2/ibkr-reporting?post=213272"
+      }
+    ],
+    "curies": [
+      {
+        "name": "wp",
+        "href": "https://api.w.org/{rel}",
+        "templated": true
+      }
+    ]
+  }
+}

@@ -1,4 +1,8 @@
 services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
   relayorb-agent:
     image: gcr.io/relayorb/relayorb-agent:latest
     pull_policy: always
@@ -7,7 +11,7 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
       - RELAYORB_CONFIG_PATH=/config/config.json
       - NODE_ENV=production
-      - REDIS_URL=${REDIS_URL:-redis://10.19.89.107:6379}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - REDIS_PREFIX=${REDIS_PREFIX:-relayorb}
       - PIPELINE_EVENTS_ENABLED=${PIPELINE_EVENTS_ENABLED:-true}
       - PIPELINE_EVENTS_STREAM=${PIPELINE_EVENTS_STREAM:-relayorb:pipeline_events}
@@ -17,10 +21,12 @@ services:
       - RELAYORB_EVENT_BATCH_LIMIT=${RELAYORB_EVENT_BATCH_LIMIT:-25}
       - RELAYORB_EVENT_DEBOUNCE_MS=${RELAYORB_EVENT_DEBOUNCE_MS:-60000}
       - STRUCTURED_LOGGING=${STRUCTURED_LOGGING:-true}
+      - RUN_REGION=us-west1
     volumes:
       - ./agent-config/config.json:/config/config.json:ro
       - ./secrets/service-account.json:/secrets/service-account.json:ro
     depends_on:
+      - redis
       - backtrader
 
   relayorb-updater:
@@ -33,6 +39,7 @@ services:
       - RELAYORB_COMPOSE_PATH=/host/docker-compose.yml
       - RELAYORB_COMPOSE_PROJECT=relayorb
       - RELAYORB_AGENT_SERVICE=relayorb-agent
+      - RUN_REGION=us-west1
     volumes:
       - ./agent-config/config.json:/config/config.json:ro
       - ./secrets/service-account.json:/secrets/service-account.json:ro
@@ -49,7 +56,56 @@ services:
       - MARKET_DATA_GATEWAY_URL=${MARKET_DATA_GATEWAY_URL:-}
       - FMP_API_KEY=${FMP_API_KEY:-}
       - POLYGON_API_KEY=${POLYGON_API_KEY:-}
+      - FIREBASE_PROJECT_ID=relayorb
+      - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
+      - RUN_REGION=us-west1
     volumes:
       - ./backtrader/data:/app/data
+      - ./secrets/service-account.json:/secrets/service-account.json:ro
+
+  ibkr-executor-acct1:
+    image: gcr.io/relayorb/relayorb-ibkr-executor:latest
+    pull_policy: always
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - BROKER_ACCOUNT_KEY=acct1
+      - FIREBASE_PROJECT_ID=relayorb
+      - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
+      - NODE_ENV=production
+      - PORT=8081
+      - RUN_REGION=us-west1
+    volumes:
+      - ./secrets/service-account.json:/secrets/service-account.json:ro
+
+  ibkr-executor-acct2:
+    image: gcr.io/relayorb/relayorb-ibkr-executor:latest
+    pull_policy: always
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - BROKER_ACCOUNT_KEY=acct2
+      - FIREBASE_PROJECT_ID=relayorb
+      - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
+      - NODE_ENV=production
+      - PORT=8082
+      - RUN_REGION=us-west1
+    volumes:
+      - ./secrets/service-account.json:/secrets/service-account.json:ro
+
+  ibkr-executor-acct3:
+    image: gcr.io/relayorb/relayorb-ibkr-executor:latest
+    pull_policy: always
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - BROKER_ACCOUNT_KEY=acct3
+      - FIREBASE_PROJECT_ID=relayorb
+      - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
+      - NODE_ENV=production
+      - PORT=8083
+      - RUN_REGION=us-west1
+    volumes:
+      - ./secrets/service-account.json:/secrets/service-account.json:ro
 
 volumes: {}

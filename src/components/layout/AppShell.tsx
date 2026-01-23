@@ -29,8 +29,8 @@ import {
   PanelRight,
   TrendingUp,
   BarChart3,
-  Share2,
   LineChart,
+  BadgeDollarSign,
   Languages,
 } from "lucide-react"
 import { useAuth } from "@/features/auth/auth-context"
@@ -38,9 +38,10 @@ import { auth, db, firebaseEnabled } from "@/lib/firebase"
 import { signOut } from "firebase/auth"
 import { doc, setDoc } from "firebase/firestore"
 import { toast } from "sonner"
-import { SidebarPaperProfile } from "./SidebarPaperProfile"
+import { SidebarBrokerProfile } from "./SidebarPaperProfile"
 import { usePresence } from "@/features/presence/use-presence"
 import { PipelineHealthBadge } from "@/components/PipelineHealthBadge"
+import { AuthDebugBadge } from "@/components/AuthDebugBadge"
 import { languageOptions, setStoredLanguage, type SupportedLanguage } from "@/i18n"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
 import { ReplayControlsPanel } from "@/components/ReplayControlsPanel"
@@ -60,11 +61,10 @@ function getPageTitle(pathname: string, t: (key: string) => string) {
   if (pathname.startsWith("/bots/")) return t("nav.botDetail")
   if (pathname.startsWith("/bots")) return t("nav.bots")
   if (pathname.startsWith("/signals")) return t("nav.signals")
+  if (pathname.startsWith("/ibkr")) return t("nav.ibkrOrder")
   if (pathname.startsWith("/charts")) return t("nav.liveCharts")
   if (pathname.startsWith("/portfolio")) return t("nav.portfolio")
   if (pathname.startsWith("/dashboard")) return t("nav.dashboard")
-  if (pathname.startsWith("/ops/graph")) return t("nav.opsGraph")
-  if (pathname.startsWith("/ops")) return t("nav.opsGraph")
   return t("nav.dashboard")
 }
 
@@ -101,7 +101,7 @@ export function AppShell() {
   const navigate = useNavigate()
   const pageTitle = useMemo(() => getPageTitle(pathname, t), [pathname, t])
   const { controls: replayControls, replayActive } = useReplayControls()
-  const { brokerAccountKey } = useIbkrAccount(user?.uid)
+  const { brokerAccountKey, brokerAccount, tradingControls } = useIbkrAccount(user?.uid)
   const replayAsOfLabel = useMemo(
     () => formatTimestamp(replayControls?.asOf as Parameters<typeof formatTimestamp>[0]),
     [replayControls?.asOf]
@@ -132,10 +132,10 @@ export function AppShell() {
     { to: "/", label: t("nav.tradeNow"), icon: <TrendingUp className="h-4 w-4" /> },
     { to: "/dashboard", label: t("nav.dashboard"), icon: <LayoutDashboard className="h-4 w-4" /> },
     { to: "/charts", label: t("nav.liveCharts"), icon: <LineChart className="h-4 w-4" /> },
+    { to: "/ibkr", label: t("nav.ibkrOrder"), icon: <BadgeDollarSign className="h-4 w-4" /> },
     { to: "/signals", label: t("nav.signals"), icon: <Activity className="h-4 w-4" /> },
     { to: "/bots", label: t("nav.bots"), icon: <Bot className="h-4 w-4" /> },
     { to: "/portfolio", label: t("nav.portfolio"), icon: <BarChart3 className="h-4 w-4" /> },
-    { to: "/ops/graph", label: t("nav.opsGraph"), icon: <Share2 className="h-4 w-4" /> },
   ]
   
   // Track user presence for activity-based refresh
@@ -204,7 +204,15 @@ export function AppShell() {
         )
       } else {
         await updateReplayControls(
-          { desiredMode: "live", phase: "ready" },
+          {
+            desiredMode: "live",
+            mode: "live",
+            phase: "idle",
+            activeRunId: null,
+            datasetId: null,
+            sessionId: null,
+            version: null,
+          },
           t("replay.controls.stopped")
         )
       }
@@ -259,7 +267,12 @@ export function AppShell() {
           </nav>
 
           {user && (
-            <SidebarPaperProfile userId={user.uid} collapsed={sidebarCollapsed} />
+            <SidebarBrokerProfile
+              brokerAccountKey={brokerAccountKey}
+              brokerAccount={brokerAccount}
+              tradingControls={tradingControls}
+              collapsed={sidebarCollapsed}
+            />
           )}
 
           <div className="mt-auto px-4 pb-4">
@@ -304,7 +317,12 @@ export function AppShell() {
 
                   {user && (
                     <div className="mt-4 border-t border-border/40 pt-4">
-                      <SidebarPaperProfile userId={user.uid} collapsed={false} />
+                      <SidebarBrokerProfile
+                        brokerAccountKey={brokerAccountKey}
+                        brokerAccount={brokerAccount}
+                        tradingControls={tradingControls}
+                        collapsed={false}
+                      />
                     </div>
                   )}
                 </SheetContent>
@@ -375,7 +393,10 @@ export function AppShell() {
                         {t("replay.controls.title")}
                       </Button>
                     </SheetTrigger>
-                    <SheetContent side="right" className="w-full max-w-lg overflow-y-auto">
+                    <SheetContent
+                      side="right"
+                      className="w-full overflow-y-auto p-4 sm:max-w-2xl sm:p-6 lg:max-w-3xl xl:max-w-4xl"
+                    >
                       <SheetHeader className="sr-only">
                         <SheetTitle>{t("replay.controls.title")}</SheetTitle>
                         <SheetDescription>{t("replay.controls.subtitle")}</SheetDescription>
@@ -460,6 +481,7 @@ export function AppShell() {
           </div>
         </main>
       </div>
+      <AuthDebugBadge />
     </div>
   )
 }

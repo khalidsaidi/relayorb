@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react"
 import type { User } from "firebase/auth"
 import { onAuthStateChanged, signOut } from "firebase/auth"
 import { auth, firebaseEnabled } from "@/lib/firebase"
-import { isAllowedUid } from "@/config/allowlist"
+import { isAllowedUser } from "@/config/allowlist"
 import { AuthContext } from "@/features/auth/auth-context"
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -17,7 +17,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const activeAuth = auth
     return onAuthStateChanged(activeAuth, (u) => {
-      if (u && !isAllowedUid(u.uid)) {
+      if (u && !isAllowedUser(u)) {
         setBlockedEmail(u.email ?? "unknown")
         setUser(null)
         setLoading(false)
@@ -27,15 +27,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       setBlockedEmail(null)
       setUser(u)
-
-      if (u) {
-        // Init paper wallet lazily
-        import("@/features/paper/paper-service").then(({ ensurePaperWallet }) => {
-          ensurePaperWallet(u.uid).catch((err) =>
-            console.error("Failed to ensure paper wallet", err)
-          )
-        })
-      }
 
       setLoading(false)
     })

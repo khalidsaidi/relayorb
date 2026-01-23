@@ -164,11 +164,13 @@ export function FmpCandleChart({
   const smaSeriesRef = useRef<ISeriesApi<"Line"> | null>(null)
   const emaSeriesRef = useRef<ISeriesApi<"Line"> | null>(null)
   const rsiSeriesRef = useRef<ISeriesApi<"Line"> | null>(null)
+  const userInteractedRef = useRef(false)
   const [chartError, setChartError] = useState<string | null>(null)
 
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
+    userInteractedRef.current = false
 
     let chart: IChartApi | null = null
     let series: ISeriesApi<"Candlestick"> | null = null
@@ -346,6 +348,27 @@ export function FmpCandleChart({
   }, [height, showSma, showEma, showRsi, t])
 
   useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    const markInteracted = () => {
+      userInteractedRef.current = true
+    }
+
+    container.addEventListener("wheel", markInteracted, { passive: true })
+    container.addEventListener("pointerdown", markInteracted)
+    container.addEventListener("mousedown", markInteracted)
+    container.addEventListener("touchstart", markInteracted, { passive: true })
+
+    return () => {
+      container.removeEventListener("wheel", markInteracted)
+      container.removeEventListener("pointerdown", markInteracted)
+      container.removeEventListener("mousedown", markInteracted)
+      container.removeEventListener("touchstart", markInteracted)
+    }
+  }, [])
+
+  useEffect(() => {
     if (!seriesRef.current) return
     const closes = bars.map((bar) => bar.close)
 
@@ -448,7 +471,7 @@ export function FmpCandleChart({
       macdHistSeriesRef.current?.setData(histData)
     }
 
-    if (bars.length && chartRef.current) {
+    if (bars.length && chartRef.current && !userInteractedRef.current) {
       chartRef.current.timeScale().fitContent()
     }
   }, [bars, signals, smaPeriod, emaPeriod, rsiPeriod])
@@ -457,7 +480,8 @@ export function FmpCandleChart({
     <div
       ref={containerRef}
       data-testid={testId}
-      className="relative h-[420px] w-full rounded-lg border border-border/40 bg-muted/20"
+      className="relative w-full rounded-lg border border-border/40 bg-muted/20"
+      style={{ height }}
     >
       {chartError ? (
         <div className="absolute inset-0 flex items-center justify-center text-sm text-rose-500">

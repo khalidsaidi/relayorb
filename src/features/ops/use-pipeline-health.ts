@@ -17,6 +17,7 @@ export type PipelineHealthStatus = {
     market_intel: ServiceHealth
     price_streamer: ServiceHealth
     relayorb_agent: ServiceHealth
+    backtrader: ServiceHealth
   }
   summary: {
     ok: number
@@ -38,6 +39,7 @@ const DEFAULT_HEALTH: PipelineHealthStatus = {
     market_intel: { status: "unknown", isStale: true, lastSeen: null, ageMs: null },
     price_streamer: { status: "unknown", isStale: true, lastSeen: null, ageMs: null },
     relayorb_agent: { status: "unknown", isStale: true, lastSeen: null, ageMs: null },
+    backtrader: { status: "unknown", isStale: true, lastSeen: null, ageMs: null },
   },
   summary: { ok: 0, degraded: 0, stale: 0, error: 0 },
 }
@@ -68,6 +70,7 @@ export function usePipelineHealth() {
               market_intel: parseServiceHealth(data.services?.market_intel),
               price_streamer: parseServiceHealth(data.services?.price_streamer),
               relayorb_agent: parseServiceHealth(data.services?.relayorb_agent),
+              backtrader: parseServiceHealth(data.services?.backtrader),
             },
             summary: data.summary || { ok: 0, degraded: 0, stale: 0, error: 0 },
             thresholds: data.thresholds,

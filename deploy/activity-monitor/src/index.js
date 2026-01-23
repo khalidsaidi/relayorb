@@ -1,12 +1,120 @@
 const { onSchedule } = require('firebase-functions/v2/scheduler')
+const { onDocumentUpdated } = require('firebase-functions/v2/firestore')
 const admin = require('firebase-admin')
-const { CloudRunJobsClient } = require('@google-cloud/run').v2
+const fs = require('fs')
+const { JobsClient } = require('@google-cloud/run')
+
+const EXPECTED_REGION = 'us-west1'
+const DMI_PRODUCT_PATHS = [
+  '/sys/class/dmi/id/product_name',
+  '/sys/devices/virtual/dmi/id/product_name',
+]
+const DMI_VENDOR_PATHS = [
+  '/sys/class/dmi/id/sys_vendor',
+  '/sys/devices/virtual/dmi/id/sys_vendor',
+]
+
+function assertRemoteOnly(serviceName) {
+  const isCloudRun = Boolean(
+    process.env.K_SERVICE ||
+      process.env.CLOUD_RUN_JOB ||
+      process.env.CLOUD_RUN_TASK_INDEX ||
+      process.env.CLOUD_RUN_TASK_ATTEMPT
+  )
+  const isGce = isGceVm()
+  if (!isCloudRun && !isGce) {
+    console.error(`Refusing to start ${serviceName} locally.`)
+    process.exit(1)
+  }
+}
+
+function readDmiValue(paths) {
+  for (const path of paths) {
+    try {
+      if (fs.existsSync(path)) {
+        return String(fs.readFileSync(path, 'utf8')).trim()
+      }
+    } catch (_) {
+      continue
+    }
+  }
+  return ''
+}
+
+function isGceVm() {
+  const product = readDmiValue(DMI_PRODUCT_PATHS).toLowerCase()
+  const vendor = readDmiValue(DMI_VENDOR_PATHS).toLowerCase()
+  return product.includes('google') || vendor.includes('google')
+}
+
+function extractRegionFromResource(value) {
+  if (!value) return ''
+  const match = value.match(/\/locations\/([^/]+)/)
+  return match ? match[1] : ''
+}
+
+function resolveRuntimeRegion() {
+  return (
+    process.env.RUN_REGION ||
+    process.env.GOOGLE_CLOUD_REGION ||
+    process.env.CLOUD_RUN_REGION ||
+    process.env.GCP_REGION ||
+    process.env.FUNCTION_REGION ||
+    process.env.FUNCTIONS_REGION ||
+    process.env.LOCATION ||
+    process.env.REGION ||
+    extractRegionFromResource(process.env.EVENTARC_CLOUD_EVENT_SOURCE) ||
+    extractRegionFromResource(process.env.EVENTARC_EVENT_SOURCE) ||
+    ''
+  )
+}
+
+function assertUsWest1(serviceName) {
+  const region = resolveRuntimeRegion()
+  if (region !== EXPECTED_REGION) {
+    console.error(
+      `Refusing to start ${serviceName} outside ${EXPECTED_REGION} (got: ${
+        region || 'unknown'
+      }).`
+    )
+    process.exit(1)
+  }
+}
+
+function toFiniteNumber(value) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function normalizeTurnoverScope(scope) {
+  return {
+    movers: scope?.movers !== false,
+    trending: scope?.trending !== false,
+    hotTrades: scope?.hotTrades !== false,
+  }
+}
+
+function hasTurnoverChange(before, after) {
+  const beforeMin = toFiniteNumber(before?.moverTurnoverMinPct)
+  const beforeMax = toFiniteNumber(before?.moverTurnoverMaxPct)
+  const afterMin = toFiniteNumber(after?.moverTurnoverMinPct)
+  const afterMax = toFiniteNumber(after?.moverTurnoverMaxPct)
+  if (beforeMin !== afterMin || beforeMax !== afterMax) return true
+
+  const beforeScope = normalizeTurnoverScope(before?.moverTurnoverScope)
+  const afterScope = normalizeTurnoverScope(after?.moverTurnoverScope)
+  return (
+    beforeScope.movers !== afterScope.movers ||
+    beforeScope.trending !== afterScope.trending ||
+    beforeScope.hotTrades !== afterScope.hotTrades
+  )
+}
 
 if (!admin.apps.length) {
   admin.initializeApp()
 }
 const db = admin.firestore()
-const runJobsClient = new CloudRunJobsClient()
+const runJobsClient = new JobsClient()
 
 const PROJECT_ID = process.env.GCLOUD_PROJECT || 'relayorb'
 const LOCATION = process.env.LOCATION || 'us-west1'
@@ -129,8 +237,40 @@ exports.activityMonitor = onSchedule(
     timeZone: 'UTC',
     memory: '256MiB',
     timeoutSeconds: 60,
+    region: 'us-west1',
   },
   async (event) => {
+    assertRemoteOnly('activity-monitor')
+    assertUsWest1('activity-monitor')
     return handleActivityCheck()
+  }
+)
+
+exports.turnoverControlsTrigger = onDocumentUpdated(
+  {
+    document: 'market/controls',
+    region: 'us-west1',
+  },
+  async (event) => {
+    assertRemoteOnly('turnover-controls-trigger')
+    assertUsWest1('turnover-controls-trigger')
+    const before = event?.data?.before?.data() || {}
+    const after = event?.data?.after?.data() || {}
+    if (!hasTurnoverChange(before, after)) return null
+
+    console.log('turnover_controls_changed', {
+      before: {
+        min: toFiniteNumber(before?.moverTurnoverMinPct),
+        max: toFiniteNumber(before?.moverTurnoverMaxPct),
+        scope: normalizeTurnoverScope(before?.moverTurnoverScope),
+      },
+      after: {
+        min: toFiniteNumber(after?.moverTurnoverMinPct),
+        max: toFiniteNumber(after?.moverTurnoverMaxPct),
+        scope: normalizeTurnoverScope(after?.moverTurnoverScope),
+      },
+    })
+
+    return triggerMarketIntel()
   }
 )
