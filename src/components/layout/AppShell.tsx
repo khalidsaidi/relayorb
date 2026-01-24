@@ -31,6 +31,7 @@ import {
   BarChart3,
   LineChart,
   BadgeDollarSign,
+  Target,
   Languages,
 } from "lucide-react"
 import { useAuth } from "@/features/auth/auth-context"
@@ -62,6 +63,7 @@ function getPageTitle(pathname: string, t: (key: string) => string) {
   if (pathname.startsWith("/bots")) return t("nav.bots")
   if (pathname.startsWith("/signals")) return t("nav.signals")
   if (pathname.startsWith("/ibkr")) return t("nav.ibkrOrder")
+  if (pathname.startsWith("/orb")) return t("nav.orbRobot")
   if (pathname.startsWith("/charts")) return t("nav.liveCharts")
   if (pathname.startsWith("/portfolio")) return t("nav.portfolio")
   if (pathname.startsWith("/dashboard")) return t("nav.dashboard")
@@ -133,6 +135,7 @@ export function AppShell() {
     { to: "/dashboard", label: t("nav.dashboard"), icon: <LayoutDashboard className="h-4 w-4" /> },
     { to: "/charts", label: t("nav.liveCharts"), icon: <LineChart className="h-4 w-4" /> },
     { to: "/ibkr", label: t("nav.ibkrOrder"), icon: <BadgeDollarSign className="h-4 w-4" /> },
+    { to: "/orb", label: t("nav.orbRobot"), icon: <Target className="h-4 w-4" /> },
     { to: "/signals", label: t("nav.signals"), icon: <Activity className="h-4 w-4" /> },
     { to: "/bots", label: t("nav.bots"), icon: <Bot className="h-4 w-4" /> },
     { to: "/portfolio", label: t("nav.portfolio"), icon: <BarChart3 className="h-4 w-4" /> },

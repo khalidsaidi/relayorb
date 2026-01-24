@@ -444,8 +444,11 @@
             <path class="flow" data-step="5" d="M 570 330 L 570 360"></path>
             <path class="flow" data-step="5" d="M 740 440 L 780 440"></path>
             <path class="flow loop" data-step="4" d="M 780 300 C 640 520, 380 520, 320 180"></path>
+            <path class="flow" data-step="4" d="M 640 130 L 640 520 L 570 520"></path>
+            <path class="flow doc" data-step="4" d="M 700 520 L 780 535"></path>
+            <path class="flow doc" data-step="4" d="M 700 520 L 780 625"></path>
 
-            <path class="pipe" d="M 740 220 L 740 460"></path>
+            <path class="pipe" d="M 740 220 L 740 660"></path>
             <path class="pipe" d="M 320 235 L 740 235"></path>
             <path class="pipe" d="M 320 345 L 740 345"></path>
             <path class="pipe" d="M 320 435 L 740 435"></path>
@@ -457,6 +460,9 @@
             <text class="label" data-step="3" x="715" y="278">writes market docs</text>
             <text class="label" data-step="5" x="750" y="418">health aggregate</text>
             <text class="label" data-step="4" x="470" y="566">movers to watchlist</text>
+            <text class="label" data-step="4" x="650" y="500">orb reads mdg</text>
+            <text class="label" data-step="4" x="715" y="520">writes orbStates/{account}</text>
+            <text class="label" data-step="4" x="715" y="610">writes executionRequests</text>
           </g>
 
           <g class="gate" data-step="3">
@@ -507,6 +513,12 @@
             <text class="sub" x="570" y="305" text-anchor="middle">computes movers and signals</text>
           </g>
 
+          <g class="node service" data-step="4">
+            <rect x="440" y="480" width="260" height="80"></rect>
+            <text x="570" y="515" text-anchor="middle">orb-runner</text>
+            <text class="sub" x="570" y="535" text-anchor="middle">opening range + execution</text>
+          </g>
+
           <g class="node health" data-step="5">
             <rect x="440" y="360" width="260" height="70"></rect>
             <text x="570" y="392" text-anchor="middle">pipeline/market_intel</text>
@@ -525,6 +537,18 @@
             <rect x="780" y="400" width="360" height="80"></rect>
             <text x="960" y="435" text-anchor="middle">pipeline/status</text>
             <text class="sub" x="960" y="455" text-anchor="middle">aggregate health</text>
+          </g>
+
+          <g class="node doc" data-step="4">
+            <rect x="780" y="500" width="360" height="70"></rect>
+            <text x="960" y="535" text-anchor="middle">orbStates/{account}</text>
+            <text class="sub" x="960" y="553" text-anchor="middle">universe/symbol, ORB range, status</text>
+          </g>
+
+          <g class="node doc" data-step="4">
+            <rect x="780" y="590" width="360" height="70"></rect>
+            <text x="960" y="625" text-anchor="middle">executionRequests</text>
+            <text class="sub" x="960" y="643" text-anchor="middle">ibkr paper orders</text>
           </g>
           </g>
         </svg>
@@ -556,7 +580,7 @@
           {
             title: "Step 4 of 6",
             text:
-              "market-intel reads prices plus news and writes market docs: movers, trending, hot trades, swing, prebreakout.",
+              "market-intel reads prices plus news and writes market docs. orb-runner reads mdg data to write orbStates/{account} and executionRequests.",
           },
           {
             title: "Step 5 of 6",

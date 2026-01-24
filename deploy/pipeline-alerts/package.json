@@ -4,6 +4,9 @@
   "description": "Email alerts for RelayOrb pipeline failures",
   "main": "index.js",
   "type": "module",
+  "engines": {
+    "node": "20"
+  },
   "scripts": {
     "start": "node index.js"
   },
@@ -12,7 +15,6 @@
     "@google-cloud/run": "^3.1.0",
     "@sendgrid/mail": "^8.1.6",
     "firebase-admin": "^13.6.0",
-    "nodemailer": "^6.9.8",
     "redis": "^4.7.1"
   }
 }

@@ -451,9 +451,11 @@ export default function IbkrOrderPage() {
 
   const requestPending = Boolean(requestId) && !requestDoc
   const statusLabel = requestDoc?.status ? t(`ibkr.status.${requestDoc.status}`) : null
-  const brokerStatusLabel = brokerOrder?.status
-    ? t(`ibkr.status.${brokerOrder.status}`)
-    : t("common.na")
+  const brokerStatusLabel = brokerOrder?.ibStatus
+    ? brokerOrder.ibStatus
+    : brokerOrder?.status
+      ? t(`ibkr.status.${brokerOrder.status}`)
+      : t("common.na")
   const statusTrailLabel = statusTrail.length
     ? statusTrail.map((item) => t(`ibkr.status.${item}`)).join(" -> ")
     : t("common.na")

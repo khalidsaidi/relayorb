@@ -91,10 +91,18 @@ export function SidebarBrokerProfile({
     : t("ibkr.sidebar.title")
   const lastSnapshot = lastRequestDoc?.orderSnapshot ?? lastExecution?.orderSnapshot
   const lastStatus = lastRequestDoc?.status ?? lastBrokerOrder?.status
-  const lastStatusLabel = lastStatus ? t(`ibkr.status.${lastStatus}`) : t("ibkr.status.pending")
-  const lastBrokerStatusLabel = lastBrokerOrder?.status
-    ? t(`ibkr.status.${lastBrokerOrder.status}`)
-    : t("common.na")
+  const lastStatusLabel = lastRequestDoc?.status
+    ? t(`ibkr.status.${lastRequestDoc.status}`)
+    : lastBrokerOrder?.ibStatus
+      ? lastBrokerOrder.ibStatus
+      : lastStatus
+        ? t(`ibkr.status.${lastStatus}`)
+        : t("ibkr.status.pending")
+  const lastBrokerStatusLabel = lastBrokerOrder?.ibStatus
+    ? lastBrokerOrder.ibStatus
+    : lastBrokerOrder?.status
+      ? t(`ibkr.status.${lastBrokerOrder.status}`)
+      : t("common.na")
   const lastSideLabel = lastSnapshot?.side ? t(`trade.side.${lastSnapshot.side}`) : t("common.na")
   const lastOrderSummary = lastSnapshot
     ? `${lastSnapshot.symbol ?? t("common.na")} · ${lastSideLabel} · ${

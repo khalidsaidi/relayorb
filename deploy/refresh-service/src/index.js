@@ -53,6 +53,9 @@ const config = {
   batchPollIntervalMs: parseInt(process.env.BATCH_POLL_INTERVAL_MS || "15000", 10),
   batchPollLimit: parseInt(process.env.BATCH_POLL_LIMIT || "3", 10),
   marketIntelJob: process.env.MARKET_INTEL_JOB || "relayorb-market-intel",
+  orbRunnerUrl: process.env.ORB_RUNNER_URL || "",
+  orbRunnerAuth: process.env.ORB_RUNNER_AUTH !== "false",
+  orbRunnerAudience: process.env.ORB_RUNNER_AUDIENCE || "",
 }
 
 const EXPECTED_REGION = "us-west1"
@@ -142,6 +145,7 @@ if (!admin.apps.length) {
 const db = admin.firestore()
 const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] })
 let gatewayAuthClient = null
+let orbRunnerAuthClient = null
 
 let pipelineRedis = null
 let pipelineRedisReady = false
@@ -546,6 +550,10 @@ function isGatewayPath(pathname) {
   return pathname.startsWith("/v1/") || pathname.startsWith("/replay/")
 }
 
+function isOrbRunnerPath(pathname) {
+  return pathname.startsWith("/orb/")
+}
+
 function resolveGatewayBase() {
   if (!config.marketDataGatewayUrl) {
     throw new Error("MARKET_DATA_GATEWAY_URL is not configured")
@@ -559,6 +567,21 @@ function resolveGatewayAudience() {
   if (config.marketDataGatewayAudience) return config.marketDataGatewayAudience
   if (!config.marketDataGatewayUrl) return ""
   return config.marketDataGatewayUrl.replace(/\/+$/, "")
+}
+
+function resolveOrbRunnerBase() {
+  if (!config.orbRunnerUrl) {
+    throw new Error("ORB_RUNNER_URL is not configured")
+  }
+  return config.orbRunnerUrl.endsWith("/")
+    ? config.orbRunnerUrl
+    : `${config.orbRunnerUrl}/`
+}
+
+function resolveOrbRunnerAudience() {
+  if (config.orbRunnerAudience) return config.orbRunnerAudience
+  if (!config.orbRunnerUrl) return ""
+  return config.orbRunnerUrl.replace(/\/+$/, "")
 }
 
 async function fetchMetadataIdToken(audience) {
@@ -591,6 +614,28 @@ async function getGatewayAuthHeaders() {
     return token ? { Authorization: `Bearer ${token}` } : null
   } catch (err) {
     console.error("Gateway metadata token fetch failed:", err?.message || err)
+    return null
+  }
+}
+
+async function getOrbRunnerAuthHeaders() {
+  if (!config.orbRunnerUrl || !config.orbRunnerAuth) return null
+  const audience = resolveOrbRunnerAudience()
+  if (!audience) return null
+  try {
+    if (!orbRunnerAuthClient) {
+      orbRunnerAuthClient = await auth.getIdTokenClient(audience)
+    }
+    const headers = await orbRunnerAuthClient.getRequestHeaders()
+    if (headers?.Authorization || headers?.authorization) return headers
+  } catch (err) {
+    console.error("ORB runner auth header fetch failed:", err?.message || err)
+  }
+  try {
+    const token = await fetchMetadataIdToken(audience)
+    return token ? { Authorization: `Bearer ${token}` } : null
+  } catch (err) {
+    console.error("ORB runner metadata token fetch failed:", err?.message || err)
     return null
   }
 }
@@ -1411,6 +1456,65 @@ async function handleGatewayProxy(req, res) {
   res.end(text)
 }
 
+async function handleOrbRunnerProxy(req, res) {
+  const authResult = await verifyRequest(req)
+  if (!authResult.allowed) {
+    return sendJson(res, 403, { ok: false, error: authResult.error })
+  }
+
+  if (!config.orbRunnerUrl) {
+    return sendJson(res, 500, { ok: false, error: "ORB_RUNNER_URL is not configured." })
+  }
+
+  const url = parseRequestUrl(req)
+  if (!url) {
+    return sendJson(res, 400, { ok: false, error: "Invalid URL." })
+  }
+
+  const pathname = url.pathname || ""
+  if (!isOrbRunnerPath(pathname)) {
+    return sendJson(res, 404, { ok: false, error: "Not found." })
+  }
+
+  let body = null
+  const method = req.method || "GET"
+  if (method !== "GET" && method !== "HEAD") {
+    body = await readBody(req)
+  }
+
+  let targetUrl
+  try {
+    const base = resolveOrbRunnerBase()
+    const orbPath = pathname.replace(/^\/orb\/?/, "")
+    targetUrl = new URL(orbPath, base)
+    targetUrl.search = url.searchParams.toString()
+  } catch (err) {
+    return sendJson(res, 400, { ok: false, error: "Invalid orb runner URL." })
+  }
+
+  const authHeaders = await getOrbRunnerAuthHeaders()
+  const headers = { ...(authHeaders || {}) }
+  const contentType = req.headers["content-type"]
+  if (contentType) {
+    headers["Content-Type"] = String(contentType)
+  }
+
+  const response = await fetch(targetUrl.toString(), {
+    method,
+    headers,
+    body: method === "GET" || method === "HEAD" ? undefined : JSON.stringify(body ?? {}),
+  })
+
+  const text = await response.text()
+  setCors(res)
+  res.statusCode = response.status
+  const upstreamType = response.headers.get("content-type")
+  if (upstreamType) {
+    res.setHeader("Content-Type", upstreamType)
+  }
+  res.end(text)
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     setCors(res)
@@ -1434,6 +1538,16 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       console.error("Gateway proxy failed", err)
       sendJson(res, 500, { ok: false, error: "Gateway proxy failed." })
+    }
+    return
+  }
+
+  if (parsedUrl && isOrbRunnerPath(parsedUrl.pathname || "")) {
+    try {
+      await handleOrbRunnerProxy(req, res)
+    } catch (err) {
+      console.error("ORB runner proxy failed", err)
+      sendJson(res, 500, { ok: false, error: "ORB runner proxy failed." })
     }
     return
   }

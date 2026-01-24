@@ -128,6 +128,7 @@ const config = {
   monitoredServices: [
     "relayorb-market-data-gateway",
     "relayorb-price-streamer",
+    "relayorb-refresh",
   ],
 
   // Jobs to monitor for errors

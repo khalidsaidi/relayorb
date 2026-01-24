@@ -4,7 +4,7 @@ export const ADMIN_UID_ALLOWLIST = new Set(Object.values(BROKER_UID_MAP))
 const ADMIN_EMAIL_ALLOWLIST = new Set(
   (import.meta.env.VITE_ADMIN_ALLOWLIST || "")
     .split(",")
-    .map((entry) => entry.trim().toLowerCase())
+    .map((entry: string) => entry.trim().toLowerCase())
     .filter(Boolean)
 )
 const ALLOW_ALL = import.meta.env.VITE_USE_EMULATORS === "true"

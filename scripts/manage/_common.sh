@@ -98,6 +98,7 @@ deploy_run_service() {
   local image="$2"
   local region="$3"
   local allow_unauth="${4:-false}"
+  local extra_env="${5:-}"
   require_cmd gcloud
   if [ "$region" != "$EXPECTED_REGION" ]; then
     echo "Refusing to deploy $service outside $EXPECTED_REGION (got: $region)." >&2
@@ -111,7 +112,11 @@ deploy_run_service() {
   else
     args+=(--no-allow-unauthenticated)
   fi
-  args+=(--update-env-vars "RUN_REGION=$EXPECTED_REGION")
+  local envs="RUN_REGION=$EXPECTED_REGION"
+  if [ -n "$extra_env" ]; then
+    envs="${envs},${extra_env}"
+  fi
+  args+=(--update-env-vars "$envs")
 
   gcloud "${args[@]}"
 }

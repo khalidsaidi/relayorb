@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { useAuth } from "@/features/auth/auth-context"
 
 const PROXY_URL = (import.meta.env.VITE_MARKET_DATA_PROXY_URL || "").replace(/\/+$/, "")
@@ -13,11 +14,16 @@ const GATEWAY_AUTH_ENABLED = (() => {
 })()
 
 type TokenState = "unknown" | "ok" | "missing" | "error" | "disabled"
+const DISMISS_KEY = "relayorb:auth-debug-dismissed"
 
 export function AuthDebugBadge() {
   const { user, loading } = useAuth()
   const [tokenState, setTokenState] = useState<TokenState>("unknown")
   const [tokenError, setTokenError] = useState("")
+  const [dismissed, setDismissed] = useState(() => {
+    if (typeof window === "undefined") return false
+    return window.localStorage.getItem(DISMISS_KEY) === "true"
+  })
 
   useEffect(() => {
     let active = true
@@ -66,8 +72,9 @@ export function AuthDebugBadge() {
     if (!user) return "signed out"
     return user.email || "signed in"
   }, [loading, user])
+  const uidLabel = user?.uid || ""
 
-  if (!debugEnabled) return null
+  if (!debugEnabled || dismissed) return null
 
   const gatewayLabel = PROXY_URL ? "proxy" : GATEWAY_URL ? "gateway" : "unset"
   const tokenBadgeVariant =
@@ -79,12 +86,34 @@ export function AuthDebugBadge() {
         <span className="font-semibold uppercase tracking-[0.2em] text-muted-foreground">
           Debug Auth
         </span>
-        <Badge variant={tokenBadgeVariant}>{tokenState}</Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant={tokenBadgeVariant}>{tokenState}</Badge>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon-sm"
+            className="h-6 w-6 text-[10px]"
+            onClick={() => {
+              setDismissed(true)
+              if (typeof window !== "undefined") {
+                window.localStorage.setItem(DISMISS_KEY, "true")
+              }
+            }}
+            aria-label="Close debug auth"
+          >
+            X
+          </Button>
+        </div>
       </div>
       <div className="mt-2 space-y-1 text-muted-foreground">
         <div>
           <span className="text-foreground">User:</span> {authLabel}
         </div>
+        {uidLabel ? (
+          <div>
+            <span className="text-foreground">UID:</span> {uidLabel}
+          </div>
+        ) : null}
         <div>
           <span className="text-foreground">Gateway:</span> {gatewayLabel}
         </div>

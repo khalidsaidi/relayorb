@@ -655,6 +655,10 @@ export type ExecutionRequestDoc = {
   filledAt?: FirestoreTimestamp
   cancelledAt?: FirestoreTimestamp
   rejectedAt?: FirestoreTimestamp
+  source?: string
+  strategy?: string
+  note?: string
+  meta?: Record<string, unknown>
   createdAt: FirestoreTimestamp
   updatedAt: FirestoreTimestamp
 }
@@ -665,11 +669,15 @@ export type BrokerOrderDoc = {
   ibAccountCode: string
   gatewayInstanceId?: string
   executionRequestId: string
+  requestedByUid?: string | null
+  requestSource?: string | null
+  requestStrategy?: string | null
   symbol?: string
   assetKey?: string
   side?: "buy" | "sell"
   quantity?: number
   orderType?: "limit" | "market"
+  timeInForce?: string
   limitPrice?: number
   stopLoss?: number
   takeProfit?: number
@@ -679,9 +687,23 @@ export type BrokerOrderDoc = {
   slOrderId?: number
   orderIds: number[]
   status: ExecutionStatus
+  ibStatus?: string
   filledQuantity?: number
+  remainingQuantity?: number
   avgFillPrice?: number
+  lastFillPrice?: number
+  whyHeld?: string
+  mktCapPrice?: number
+  ibOrder?: Record<string, unknown>
+  ibContract?: Record<string, unknown>
+  ibOrderState?: Record<string, unknown>
   lastError?: string
+  cancelRequested?: boolean
+  cancelRequestedAt?: FirestoreTimestamp
+  cancelRequestedBy?: string
+  cancelInProgressAt?: FirestoreTimestamp
+  cancelSubmittedAt?: FirestoreTimestamp
+  cancelError?: string
   submittedAt?: FirestoreTimestamp
   lastUpdateAt?: FirestoreTimestamp
   createdAt: FirestoreTimestamp
@@ -720,5 +742,128 @@ export type BrokerAccountSummaryDoc = {
     unrealizedPnl?: number
     realizedPnl?: number
   }
+  updatedAt?: FirestoreTimestamp
+}
+
+export type OrbUniverseEntry = {
+  symbol: string
+  price?: number | null
+  volume?: number | null
+  dollarVolume?: number | null
+  exchange?: string | null
+  name?: string | null
+}
+
+export type OrbStrategyProfile = {
+  mode: "daily_universe" | "single_symbol"
+  universe: {
+    price_min: number
+    price_max: number
+    min_dollar_volume: number
+    max_symbols: number
+  }
+  symbols: {
+    include: string[]
+    exclude: string[]
+  }
+  session: {
+    type: "RTH"
+    include_premarket: boolean
+    include_afterhours: boolean
+  }
+  orb: {
+    range_minutes: number
+    entry_delay_minutes: number
+    breakout_check_interval_minutes?: number | null
+  }
+  entry: {
+    type: "ORB_RAW" | "ORB_VWAP" | "ORB_ATR_BUFFER" | "ORB_MULTI_BAR"
+    atr_buffer_pct: number
+    confirmation_bars: number
+  }
+  exit: {
+    type: "FIXED_STOP" | "TRAILING_STOP" | "REMEMBERED_ORB_STOP" | "TIME_STOP"
+    stop_pct: number
+    time_stop_minutes: number | null
+    force_flat_minutes_before_close: number
+  }
+  risk: {
+    max_trades_per_day: number
+    max_trades_per_symbol_per_day?: number | null
+    reentry_cooldown_minutes?: number | null
+    position_pct: number
+    max_daily_loss_pct: number
+  }
+}
+
+export type OrbControlDoc = {
+  enabled: boolean
+  brokerAccountKey: BrokerAccountKey
+  mode: ExecutionMode
+  strategyProfile?: OrbStrategyProfile
+  priceMin?: number
+  priceMax?: number
+  minDollarVolume?: number
+  maxSymbols?: number
+  openingRangeMinutes?: number
+  breakoutDelayMinutes?: number
+  liquidateMinutesBeforeClose?: number
+  positionSizePct?: number
+  orderType?: "limit" | "market"
+  stopLossPct?: number
+  takeProfitPct?: number
+  breakoutBufferPct?: number
+  maxBreakouts?: number | null
+  singleSymbolMode?: boolean
+  singleSymbol?: string | null
+  updatedAt?: FirestoreTimestamp
+  updatedByUid?: string
+}
+
+export type OrbStateDoc = {
+  brokerAccountKey?: BrokerAccountKey
+  status?: "idle" | "running" | "error"
+  sessionKey?: string
+  mode?: "daily_universe" | "single_symbol"
+  symbol?: string | null
+  orbRange?: {
+    high?: number | null
+    low?: number | null
+    startMinute?: number
+    endMinute?: number
+  }
+  lastPrice?: number | null
+  vwap?: number | null
+  atr?: number | null
+  barsSinceBreakout?: number
+  inPosition?: boolean
+  entryPending?: boolean
+  exitPending?: boolean
+  entryPrice?: number | null
+  entryTimeMs?: number | null
+  activeStop?: number | null
+  tradesToday?: number
+  sessionStartNetLiq?: number
+  universe?: OrbUniverseEntry[]
+  universeDateKey?: string | null
+  orbHighs?: Record<string, number>
+  orbLows?: Record<string, number | null>
+  tradePlaced?: string[]
+  tradeCounts?: Record<string, number>
+  lastTradeMinutes?: Record<string, number>
+  lastBreakoutCheckMinute?: number | null
+  lastUniverseAt?: FirestoreTimestamp
+  lastOpenRangeAt?: FirestoreTimestamp
+  lastBreakoutAt?: FirestoreTimestamp
+  lastLiquidationAt?: FirestoreTimestamp
+  lastEntryCheckAt?: FirestoreTimestamp
+  lastEntryAt?: FirestoreTimestamp
+  lastExitAt?: FirestoreTimestamp
+  lastForceFlatAt?: FirestoreTimestamp
+  nextOpenRangeLabel?: string
+  nextBreakoutLabel?: string
+  nextEntryLabel?: string
+  nextLiquidationLabel?: string
+  lastError?: string
   updatedAt?: FirestoreTimestamp
 }

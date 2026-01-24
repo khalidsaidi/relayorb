@@ -283,8 +283,11 @@ export function ExecuteTradeDialog({
 
     const status = requestDoc?.status
     const statusLabel = status ? t(`ibkr.status.${status}`) : t("ibkr.status.pending")
-    const brokerStatus = brokerOrder?.status
-    const brokerStatusLabel = brokerStatus ? t(`ibkr.status.${brokerStatus}`) : t("common.na")
+    const brokerStatusLabel = brokerOrder?.ibStatus
+      ? brokerOrder.ibStatus
+      : brokerOrder?.status
+        ? t(`ibkr.status.${brokerOrder.status}`)
+        : t("common.na")
     const snapshot =
       requestDoc?.orderSnapshot ??
       statusSnapshot ?? {
@@ -454,6 +457,7 @@ export function ExecuteTradeDialog({
         status: "approved",
         orderSnapshot: sanitizedSnapshot,
         expiresAt,
+        source: "manual",
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       }

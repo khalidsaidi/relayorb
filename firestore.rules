@@ -80,6 +80,19 @@ service cloud.firestore {
       allow write: if isServiceAccount();
     }
 
+    match /orbControls/{brokerAccountKey} {
+      allow read: if isServiceAccount()
+        || (isBrokerUser() && brokerAccountKey == uidToAccount(request.auth.uid));
+      allow write: if isServiceAccount()
+        || (isBrokerUser() && brokerAccountKey == uidToAccount(request.auth.uid));
+    }
+
+    match /orbStates/{brokerAccountKey} {
+      allow read: if isServiceAccount()
+        || (isBrokerUser() && brokerAccountKey == uidToAccount(request.auth.uid));
+      allow write: if isServiceAccount();
+    }
+
     // Paper trading: authenticated users can manage their own data
     match /paper_wallets/{userId}/{document=**} {
       allow read, write: if isAuthenticated() && request.auth.uid == userId;

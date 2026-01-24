@@ -161,6 +161,10 @@ const state = {
   ordersRefreshInterval: null,
   portfolioSubscribed: false,
   portfolioAccount: null,
+  cancelListening: false,
+  cancelUnsubscribe: null,
+  cancelInFlight: new Set(),
+  requestMetaCache: new Map(),
   accountSummaryReqId: null,
   accountSummary: {},
   ibMode: null,
@@ -288,6 +292,152 @@ function buildPositionDocId(assetKey) {
   return `${config.brokerAccountKey}:${safeKey}`
 }
 
+function snapshotIbValue(value, seen = new WeakSet()) {
+  if (value === null) return null
+  if (value === undefined) return undefined
+
+  const valueType = typeof value
+  if (valueType === "number") {
+    return Number.isFinite(value) ? value : String(value)
+  }
+  if (valueType === "bigint") {
+    return value.toString()
+  }
+  if (valueType === "string" || valueType === "boolean") return value
+  if (valueType === "function" || valueType === "symbol") return undefined
+
+  if (value instanceof Date) {
+    return value.toISOString()
+  }
+
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return undefined
+    seen.add(value)
+    return value
+      .map((entry) => snapshotIbValue(entry, seen))
+      .filter((entry) => entry !== undefined)
+  }
+
+  if (valueType === "object") {
+    if (seen.has(value)) return undefined
+    seen.add(value)
+    const output = {}
+    for (const [key, entry] of Object.entries(value)) {
+      const cleaned = snapshotIbValue(entry, seen)
+      if (cleaned !== undefined) {
+        output[key] = cleaned
+      }
+    }
+    return Object.keys(output).length > 0 ? output : undefined
+  }
+
+  return undefined
+}
+
+function parseNumber(value) {
+  if (value === null || value === undefined) return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+async function loadRequestMeta(requestId) {
+  if (!requestId) return null
+  if (state.requestMetaCache.has(requestId)) {
+    return state.requestMetaCache.get(requestId)
+  }
+  try {
+    const snap = await db.doc(`executionRequests/${requestId}`).get()
+    if (!snap.exists) {
+      state.requestMetaCache.set(requestId, null)
+      return null
+    }
+    const data = snap.data() || {}
+    const meta = {
+      requestedByUid: data.requestedByUid || null,
+      source: data.source || null,
+      strategy: data.strategy || null,
+    }
+    state.requestMetaCache.set(requestId, meta)
+    return meta
+  } catch (err) {
+    console.warn(`Failed to load request meta for ${requestId}: ${err.message}`)
+    return null
+  }
+}
+
+function countDecimals(value) {
+  if (!Number.isFinite(value)) return 0
+  const text = value.toString()
+  if (text.includes("e-")) {
+    const exponent = Number.parseInt(text.split("e-")[1] || "0", 10)
+    return Number.isFinite(exponent) ? exponent : 0
+  }
+  const parts = text.split(".")
+  return parts[1] ? parts[1].length : 0
+}
+
+function roundToTick(value, minTick, mode = "nearest") {
+  const numeric = parseNumber(value)
+  const tick = parseNumber(minTick)
+  if (!Number.isFinite(numeric) || !Number.isFinite(tick) || tick <= 0) {
+    return numeric
+  }
+  const scaled = numeric / tick
+  let rounded
+  if (mode === "down") {
+    rounded = Math.floor(scaled + 1e-9)
+  } else if (mode === "up") {
+    rounded = Math.ceil(scaled - 1e-9)
+  } else {
+    rounded = Math.round(scaled)
+  }
+  const result = rounded * tick
+  const decimals = countDecimals(tick)
+  return Number(result.toFixed(decimals))
+}
+
+function applyTickAdjustments(snapshot, contract) {
+  if (!snapshot) return snapshot
+  const minTick = parseNumber(contract?.minTick)
+  if (!minTick) return snapshot
+  const side = snapshot.side === "sell" ? "sell" : "buy"
+  const limitMode = side === "buy" ? "down" : "up"
+  const takeProfitMode = side === "buy" ? "up" : "down"
+  const stopLossMode = side === "buy" ? "down" : "up"
+  const limitPrice =
+    snapshot.orderType === "limit"
+      ? roundToTick(snapshot.limitPrice, minTick, limitMode)
+      : snapshot.limitPrice
+  const takeProfit =
+    typeof snapshot.takeProfit === "number"
+      ? roundToTick(snapshot.takeProfit, minTick, takeProfitMode)
+      : snapshot.takeProfit
+  const stopLoss =
+    typeof snapshot.stopLoss === "number"
+      ? roundToTick(snapshot.stopLoss, minTick, stopLossMode)
+      : snapshot.stopLoss
+  return { ...snapshot, limitPrice, takeProfit, stopLoss }
+}
+
+function readTimestampMillis(value) {
+  return value && typeof value.toMillis === "function" ? value.toMillis() : 0
+}
+
+function buildIbOrderSnapshot(order) {
+  if (!order) return undefined
+  return snapshotIbValue(order)
+}
+
+function buildIbContractSnapshot(contract) {
+  if (!contract) return undefined
+  return snapshotIbValue(contract)
+}
+
+function buildIbOrderStateSnapshot(orderState) {
+  if (!orderState) return undefined
+  return snapshotIbValue(orderState)
+}
+
 async function upsertBrokerPosition({
   contract,
   position,
@@ -363,9 +513,11 @@ function getIbPort(mode) {
 
 function getIbClientId(mode) {
   if (!state.brokerAccount) return 1
+  const liveId = state.brokerAccount.clientIdLive
+  const paperId = state.brokerAccount.clientIdPaper
   return mode === "live"
-    ? state.brokerAccount.clientIdLive || 1
-    : state.brokerAccount.clientIdPaper || 1
+    ? Number.isFinite(liveId) ? liveId : 1
+    : Number.isFinite(paperId) ? paperId : 1
 }
 
 function connectToIb(mode = "paper") {
@@ -452,9 +604,12 @@ function connectToIb(mode = "paper") {
     const pending = state.pendingContracts.get(reqId)
     if (pending) {
       const contract = contractDetails.contract
+      const minTick = parseNumber(contractDetails.minTick)
+      const resolvedContract =
+        Number.isFinite(minTick) ? { ...contract, minTick } : contract
       console.log(`IBKR: Contract resolved for ${pending.symbol}: conId=${contract.conId}`)
-      state.contractCache.set(pending.cacheKey, contract)
-      pending.resolve(contract)
+      state.contractCache.set(pending.cacheKey, resolvedContract)
+      pending.resolve(resolvedContract)
       state.pendingContracts.delete(reqId)
     }
   })
@@ -475,7 +630,18 @@ function connectToIb(mode = "paper") {
     const docId = pending?.requestId || state.orderIdToDocId.get(orderId)
     const requestId = pending?.requestId || null
     if (docId) {
-      updateOrderStatus(docId, orderId, status, filled, avgFillPrice, requestId).catch(err => {
+      updateOrderStatus(
+        docId,
+        orderId,
+        status,
+        filled,
+        remaining,
+        avgFillPrice,
+        requestId,
+        lastFillPrice,
+        whyHeld,
+        mktCapPrice
+      ).catch(err => {
         console.error(`Failed to update order status: ${err.message}`)
       })
     }
@@ -633,8 +799,9 @@ function startOrderStreams() {
         if (!state.ibConnected) return
         try {
           state.ib.reqAllOpenOrders()
+          state.ib.reqCompletedOrders(false)
         } catch (err) {
-          console.warn(`IBKR: open orders refresh failed: ${err.message}`)
+          console.warn(`IBKR: orders refresh failed: ${err.message}`)
         }
       }, config.ibOpenOrdersRefreshMs)
     }
@@ -717,6 +884,7 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
   const parsed = parseAssetKey(assetKey, fallbackSymbol)
   const symbol = parsed.symbol
   const assetClass = parsed.assetClass
+  const requireMinTick = options.requireMinTick === true
   if (!symbol) {
     throw new Error("Missing symbol for contract resolution")
   }
@@ -740,7 +908,10 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
   // Check cache first
   const cached = state.contractCache.get(cacheKey)
   if (cached) {
-    return cached
+    const cachedMinTick = parseNumber(cached.minTick)
+    if (!requireMinTick || Number.isFinite(cachedMinTick)) {
+      return cached
+    }
   }
 
   // Check Firestore cache
@@ -750,6 +921,7 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
   if (cacheSnap.exists) {
     const data = cacheSnap.data()
     if (data.conId) {
+      const minTick = parseNumber(data.minTick)
       const contract = {
         conId: data.conId,
         symbol: data.symbol || symbol,
@@ -757,9 +929,12 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
         exchange: data.exchange || (assetClass === "forex" ? "IDEALPRO" : "SMART"),
         currency: data.currency || "USD",
         primaryExch: data.primaryExch,
+        minTick: Number.isFinite(minTick) ? minTick : undefined,
       }
-      state.contractCache.set(cacheKey, contract)
-      return contract
+      if (!requireMinTick || Number.isFinite(minTick)) {
+        state.contractCache.set(cacheKey, contract)
+        return contract
+      }
     }
   }
 
@@ -789,25 +964,31 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
         cacheKey,
         resolve: (resolvedContract) => {
           clearTimeout(timeout)
+          const resolvedMinTick = parseNumber(resolvedContract.minTick)
+          const cachePayload = {
+            assetKey: cacheKeyBase,
+            symbol: pairLabel,
+            conId: resolvedContract.conId,
+            secType: resolvedContract.secType,
+            exchange: resolvedContract.exchange,
+            currency: resolvedContract.currency,
+            primaryExch: resolvedContract.primaryExch,
+            cachedAt: FieldValue.serverTimestamp(),
+          }
+          if (Number.isFinite(resolvedMinTick)) {
+            cachePayload.minTick = resolvedMinTick
+          }
+          const cachedContract =
+            Number.isFinite(resolvedMinTick)
+              ? { ...resolvedContract, minTick: resolvedMinTick }
+              : resolvedContract
           cacheRef
-            .set(
-              {
-                assetKey: cacheKeyBase,
-                symbol: pairLabel,
-                conId: resolvedContract.conId,
-                secType: resolvedContract.secType,
-                exchange: resolvedContract.exchange,
-                currency: resolvedContract.currency,
-                primaryExch: resolvedContract.primaryExch,
-                cachedAt: FieldValue.serverTimestamp(),
-              },
-              { merge: true }
-            )
+            .set(cachePayload, { merge: true })
             .catch((err) => {
               console.warn(`Failed to cache contract: ${err.message}`)
             })
-          state.contractCache.set(cacheKey, resolvedContract)
-          resolve(resolvedContract)
+          state.contractCache.set(cacheKey, cachedContract)
+          resolve(cachedContract)
         },
         reject: (err) => {
           clearTimeout(timeout)
@@ -845,8 +1026,8 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
       cacheKey,
       resolve: (resolvedContract) => {
         clearTimeout(timeout)
-        // Cache to Firestore
-        cacheRef.set({
+        const resolvedMinTick = parseNumber(resolvedContract.minTick)
+        const cachePayload = {
           assetKey: cacheKeyBase,
           symbol,
           conId: resolvedContract.conId,
@@ -855,11 +1036,20 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
           currency: resolvedContract.currency,
           primaryExch: resolvedContract.primaryExch,
           cachedAt: FieldValue.serverTimestamp(),
-        }, { merge: true }).catch(err => {
+        }
+        if (Number.isFinite(resolvedMinTick)) {
+          cachePayload.minTick = resolvedMinTick
+        }
+        const cachedContract =
+          Number.isFinite(resolvedMinTick)
+            ? { ...resolvedContract, minTick: resolvedMinTick }
+            : resolvedContract
+        // Cache to Firestore
+        cacheRef.set(cachePayload, { merge: true }).catch(err => {
           console.warn(`Failed to cache contract: ${err.message}`)
         })
-        state.contractCache.set(cacheKey, resolvedContract)
-        resolve(resolvedContract)
+        state.contractCache.set(cacheKey, cachedContract)
+        resolve(cachedContract)
       },
       reject: (err) => {
         clearTimeout(timeout)
@@ -876,19 +1066,24 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
 // ============================================================================
 
 function mapIbStatus(status) {
+  const normalized = status ? String(status) : ""
   const statusMap = {
     PreSubmitted: "working",
     Submitted: "working",
     Filled: "filled",
     Cancelled: "cancelled",
+    Canceled: "cancelled",
+    ApiCancelled: "cancelled",
     Inactive: "error",
     PendingSubmit: "submitted",
     PendingCancel: "working",
     ApiCanceled: "cancelled",
     ApiPending: "submitted",
+    Expired: "expired",
+    Rejected: "rejected",
   }
 
-  return statusMap[status] || "working"
+  return statusMap[normalized] || "working"
 }
 
 function mapIbOrderType(orderType) {
@@ -905,33 +1100,100 @@ function mapIbOrderType(orderType) {
   }
 }
 
-async function updateOrderStatus(docId, orderId, status, filledQty, avgPrice, requestId) {
+const EXECUTION_TERMINAL_STATUSES = new Set([
+  "filled",
+  "cancelled",
+  "expired",
+  "rejected",
+  "error",
+])
+
+const IB_TERMINAL_STATUSES = new Set([
+  "Filled",
+  "Cancelled",
+  "Canceled",
+  "ApiCancelled",
+  "ApiCanceled",
+  "Expired",
+  "Rejected",
+  "Inactive",
+])
+
+async function updateOrderStatus(
+  docId,
+  orderId,
+  status,
+  filledQty,
+  remainingQty,
+  avgPrice,
+  requestId,
+  lastFillPrice,
+  whyHeld,
+  mktCapPrice
+) {
   const mappedStatus = mapIbStatus(status)
+  const ibStatus = status ? String(status) : null
+  const filledValue = parseNumber(filledQty)
+  const remainingValue = parseNumber(remainingQty)
+  const avgFillValue = parseNumber(avgPrice)
+  let finalStatus = mappedStatus
+  if (
+    (mappedStatus === "working" || mappedStatus === "submitted") &&
+    Number.isFinite(filledValue) &&
+    filledValue > 0
+  ) {
+    if (Number.isFinite(remainingValue)) {
+      finalStatus = remainingValue > 0 ? "partial" : "filled"
+    } else {
+      finalStatus = "partial"
+    }
+  }
   const brokerOrderRef = db.doc(`brokerOrders/${docId}`)
 
   const orderUpdate = {
-    status: mappedStatus,
-    filledQuantity: filledQty,
-    avgFillPrice: avgPrice,
+    status: finalStatus,
     lastUpdateAt: FieldValue.serverTimestamp(),
+  }
+  if (Number.isFinite(filledValue)) {
+    orderUpdate.filledQuantity = filledValue
+  }
+  if (Number.isFinite(remainingValue)) {
+    orderUpdate.remainingQuantity = remainingValue
+  }
+  if (Number.isFinite(avgFillValue)) {
+    orderUpdate.avgFillPrice = avgFillValue
+  }
+  if (ibStatus) {
+    orderUpdate.ibStatus = ibStatus
+  }
+  const lastFillValue = Number(lastFillPrice)
+  if (Number.isFinite(lastFillValue)) {
+    orderUpdate.lastFillPrice = lastFillValue
+  }
+  if (whyHeld) {
+    orderUpdate.whyHeld = String(whyHeld)
+  }
+  const mktCapValue = Number(mktCapPrice)
+  if (Number.isFinite(mktCapValue)) {
+    orderUpdate.mktCapPrice = mktCapValue
   }
 
   const writes = [
     brokerOrderRef.set(orderUpdate, { merge: true }),
   ]
 
-  if (mappedStatus === "filled") {
+  if (finalStatus === "filled") {
     state.stats.filled++
   }
 
   if (requestId) {
     const requestRef = db.doc(`executionRequests/${requestId}`)
     const requestUpdate = {
-      status: mappedStatus,
+      status: finalStatus,
       updatedAt: FieldValue.serverTimestamp(),
     }
 
-    if (mappedStatus === "filled") {
+    if (finalStatus === "filled") {
       requestUpdate.filledAt = FieldValue.serverTimestamp()
     }
 
@@ -967,9 +1229,14 @@ async function resolveBrokerOrderDocId(orderId, orderRef) {
 async function upsertBrokerOrderFromIb({ orderId, contract, order, orderState, source }) {
   const orderRef = order?.orderRef?.trim()
   const docId = await resolveBrokerOrderDocId(orderId, orderRef)
-  const status = mapIbStatus(orderState?.status || order?.status)
+  const ibStatus = orderState?.status || order?.status
+  const status = mapIbStatus(ibStatus)
+  const ibOrderSnapshot = buildIbOrderSnapshot(order)
+  const ibContractSnapshot = buildIbContractSnapshot(contract)
+  const ibOrderStateSnapshot = buildIbOrderStateSnapshot(orderState)
   const isFirstSeen = !state.seenOrderDocs.has(docId)
   const asset = buildAssetFromContract(contract)
+  const requestMeta = orderRef ? await loadRequestMeta(orderRef) : null
 
   state.orderIdToDocId.set(orderId, docId)
   if (isFirstSeen) state.seenOrderDocs.add(docId)
@@ -980,23 +1247,57 @@ async function upsertBrokerOrderFromIb({ orderId, contract, order, orderState, s
     brokerAccountKey: config.brokerAccountKey,
     ibAccountCode: state.ibAccount || state.brokerAccount?.ibAccountCode,
     gatewayInstanceId: `${config.brokerAccountKey}:${state.ibMode || "paper"}`,
-    symbol: asset?.symbol || contract?.symbol || order?.symbol,
-    assetKey: asset?.assetKey || undefined,
-    side: order?.action ? order.action.toLowerCase() : undefined,
-    quantity: order?.totalQuantity,
-    orderType: mapIbOrderType(order?.orderType),
-    limitPrice: order?.lmtPrice ?? undefined,
-    stopLoss: order?.orderType === OrderType.STP ? order?.auxPrice ?? undefined : undefined,
-    takeProfit: order?.orderType === OrderType.LMT && order?.parentId ? order?.lmtPrice ?? undefined : undefined,
-    conId: contract?.conId,
-    parentOrderId: order?.parentId ?? undefined,
     orderIds: FieldValue.arrayUnion(orderId),
     status,
     lastUpdateAt: FieldValue.serverTimestamp(),
     source: source || "ibkr",
   }
+  const symbol = asset?.symbol || contract?.symbol || order?.symbol
+  if (symbol) payload.symbol = symbol
+  if (asset?.assetKey) payload.assetKey = asset.assetKey
+  if (order?.action) payload.side = order.action.toLowerCase()
+  if (order?.totalQuantity !== undefined) payload.quantity = order.totalQuantity
+  const orderType = mapIbOrderType(order?.orderType)
+  if (orderType) payload.orderType = orderType
+  const ibOrderType = order?.orderType ? String(order.orderType).toUpperCase() : ""
+  const isStopLimitOrder = ibOrderType === "STP LMT"
+  const isStopOrder = ibOrderType === "STP" || isStopLimitOrder
+  const isLimitOrder = ibOrderType === "LMT" || isStopLimitOrder
+  if (isLimitOrder && order?.lmtPrice !== undefined) {
+    payload.limitPrice = order.lmtPrice
+  }
+  const parentId = Number(order?.parentId || 0)
+  if (Number.isFinite(parentId) && parentId > 0) {
+    payload.parentOrderId = parentId
+  }
+  if (isStopOrder && order?.auxPrice !== undefined) {
+    payload.stopLoss = order.auxPrice
+  }
+  if (ibOrderType === "LMT" && parentId > 0 && order?.lmtPrice !== undefined) {
+    payload.takeProfit = order.lmtPrice
+  }
+  const conId = parseNumber(contract?.conId)
+  if (conId !== undefined) payload.conId = conId
+  if (ibStatus) {
+    payload.ibStatus = String(ibStatus)
+  }
+  if (!Number.isNaN(parentId) && parentId <= 0 && order?.tif) {
+    payload.timeInForce = order.tif
+  }
+  if (ibOrderSnapshot) {
+    payload.ibOrder = ibOrderSnapshot
+  }
+  if (ibContractSnapshot) {
+    payload.ibContract = ibContractSnapshot
+  }
+  if (ibOrderStateSnapshot) {
+    payload.ibOrderState = ibOrderStateSnapshot
+  }
   if (orderRef) {
     payload.executionRequestId = orderRef
+    if (requestMeta?.requestedByUid) payload.requestedByUid = requestMeta.requestedByUid
+    if (requestMeta?.source) payload.requestSource = requestMeta.source
+    if (requestMeta?.strategy) payload.requestStrategy = requestMeta.strategy
   }
 
   if (isFirstSeen) {
@@ -1015,8 +1316,9 @@ function getNextOrderId() {
   return orderId
 }
 
-async function submitBracketOrder(request, contract) {
-  const snapshot = request.orderSnapshot
+async function submitBracketOrder(request, contract, orderSnapshot) {
+  const snapshot = orderSnapshot || request.orderSnapshot
+  const orderTif = snapshot.timeInForce || "DAY"
   const parentOrderId = getNextOrderId()
   const tpOrderId = getNextOrderId()
   const slOrderId = getNextOrderId()
@@ -1041,7 +1343,7 @@ async function submitBracketOrder(request, contract) {
     orderRef: request.id,
     account: state.ibAccount || state.brokerAccount?.ibAccountCode,
     transmit: false, // Don't transmit until all orders are placed
-    tif: snapshot.timeInForce || "DAY",
+    tif: orderTif,
   }
   if (snapshot.orderType === "limit" && typeof snapshot.limitPrice === "number") {
     parentOrder.lmtPrice = snapshot.limitPrice
@@ -1058,7 +1360,7 @@ async function submitBracketOrder(request, contract) {
     orderRef: request.id,
     account: state.ibAccount || state.brokerAccount?.ibAccountCode,
     transmit: false,
-    tif: "GTC",
+    tif: orderTif,
   }
 
   // Stop loss order
@@ -1072,7 +1374,7 @@ async function submitBracketOrder(request, contract) {
     orderRef: request.id,
     account: state.ibAccount || state.brokerAccount?.ibAccountCode,
     transmit: true, // This triggers transmission of all orders
-    tif: "GTC",
+    tif: orderTif,
   }
 
   console.log(`Submitting bracket order for ${snapshot.symbol}:`)
@@ -1114,35 +1416,37 @@ async function submitOrder(request) {
   const contract = await resolveContract(snapshot.assetKey, snapshot.symbol, {
     exchange: snapshot.exchange,
     primaryExchange: snapshot.primaryExchange,
+    requireMinTick: true,
   })
+  const orderSnapshot = applyTickAdjustments(snapshot, contract)
 
   // Check if bracket order is required
   const requireBracket = state.tradingControls?.requireBracket
-  if (requireBracket && (!snapshot.stopLoss || !snapshot.takeProfit)) {
+  if (requireBracket && (!orderSnapshot.stopLoss || !orderSnapshot.takeProfit)) {
     throw new Error("Bracket required but SL/TP not provided")
   }
 
   let orderResult
-  if (snapshot.stopLoss && snapshot.takeProfit) {
-    orderResult = await submitBracketOrder(request, contract)
+  if (orderSnapshot.stopLoss && orderSnapshot.takeProfit) {
+    orderResult = await submitBracketOrder(request, contract, orderSnapshot)
   } else {
     // Simple order without bracket
     const orderId = getNextOrderId()
-    const action = snapshot.side === "buy" ? OrderAction.BUY : OrderAction.SELL
+    const action = orderSnapshot.side === "buy" ? OrderAction.BUY : OrderAction.SELL
 
-  const order = {
-    orderId,
-    action,
-    orderType: snapshot.orderType === "limit" ? OrderType.LMT : OrderType.MKT,
-    totalQuantity: snapshot.quantity,
-    orderRef: request.id,
-    account: state.ibAccount || state.brokerAccount?.ibAccountCode,
-    transmit: true,
-    tif: snapshot.timeInForce || "DAY",
-  }
-  if (snapshot.orderType === "limit" && typeof snapshot.limitPrice === "number") {
-    order.lmtPrice = snapshot.limitPrice
-  }
+    const order = {
+      orderId,
+      action,
+      orderType: orderSnapshot.orderType === "limit" ? OrderType.LMT : OrderType.MKT,
+      totalQuantity: orderSnapshot.quantity,
+      orderRef: request.id,
+      account: state.ibAccount || state.brokerAccount?.ibAccountCode,
+      transmit: true,
+      tif: orderSnapshot.timeInForce || "DAY",
+    }
+    if (orderSnapshot.orderType === "limit" && typeof orderSnapshot.limitPrice === "number") {
+      order.lmtPrice = orderSnapshot.limitPrice
+    }
 
     state.pendingOrders.set(orderId, { requestId: request.id, type: "single" })
     state.orderIdToDocId.set(orderId, request.id)
@@ -1166,14 +1470,18 @@ async function submitOrder(request) {
     ibAccountCode: state.ibAccount || state.brokerAccount?.ibAccountCode,
     gatewayInstanceId: `${config.brokerAccountKey}:${state.ibMode || mode}`,
     executionRequestId: request.id,
-    symbol: snapshot.symbol,
-    assetKey: snapshot.assetKey,
-    side: snapshot.side,
-    quantity: snapshot.quantity,
-    orderType: snapshot.orderType,
-    limitPrice: snapshot.limitPrice || null,
-    stopLoss: snapshot.stopLoss || null,
-    takeProfit: snapshot.takeProfit || null,
+    requestedByUid: request.requestedByUid || null,
+    requestSource: request.source || null,
+    requestStrategy: request.strategy || null,
+    symbol: orderSnapshot.symbol,
+    assetKey: orderSnapshot.assetKey,
+    side: orderSnapshot.side,
+    quantity: orderSnapshot.quantity,
+    orderType: orderSnapshot.orderType,
+    timeInForce: orderSnapshot.timeInForce || "DAY",
+    limitPrice: orderSnapshot.limitPrice || null,
+    stopLoss: orderSnapshot.stopLoss || null,
+    takeProfit: orderSnapshot.takeProfit || null,
     conId: contract.conId,
     parentOrderId: orderResult.parentOrderId,
     tpOrderId: orderResult.tpOrderId || null,
@@ -1186,6 +1494,135 @@ async function submitOrder(request) {
   })
 
   return { success: true, ...orderResult }
+}
+
+// ============================================================================
+// Cancel Requests
+// ============================================================================
+
+async function processCancelRequest(orderDocId, orderData) {
+  if (state.cancelInFlight.has(orderDocId)) return
+  state.cancelInFlight.add(orderDocId)
+  const brokerOrderRef = db.doc(`brokerOrders/${orderDocId}`)
+
+  try {
+    const requestedAtMs = readTimestampMillis(orderData.cancelRequestedAt)
+    const submittedAtMs = readTimestampMillis(orderData.cancelSubmittedAt)
+    if (submittedAtMs && requestedAtMs && submittedAtMs >= requestedAtMs) return
+    if (!orderData.cancelRequested) return
+
+    const terminalStatus =
+      (orderData.status && EXECUTION_TERMINAL_STATUSES.has(orderData.status)) ||
+      (orderData.ibStatus && IB_TERMINAL_STATUSES.has(orderData.ibStatus))
+    if (terminalStatus) {
+      await brokerOrderRef.set(
+        {
+          cancelRequested: false,
+          cancelSubmittedAt: FieldValue.serverTimestamp(),
+          cancelError: "already_terminal",
+          lastUpdateAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      )
+      return
+    }
+
+    const orderIds = Array.isArray(orderData.orderIds) ? orderData.orderIds : []
+    if (!state.ib || !state.ibConnected) {
+      await brokerOrderRef.set(
+        {
+          cancelRequested: false,
+          cancelSubmittedAt: FieldValue.serverTimestamp(),
+          cancelError: "ib_not_connected",
+          lastUpdateAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      )
+      return
+    }
+    if (!orderIds.length) {
+      await brokerOrderRef.set(
+        {
+          cancelRequested: false,
+          cancelSubmittedAt: FieldValue.serverTimestamp(),
+          cancelError: "missing_order_ids",
+          lastUpdateAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      )
+      return
+    }
+
+    await brokerOrderRef.set(
+      {
+        cancelInProgressAt: FieldValue.serverTimestamp(),
+        lastUpdateAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+
+    const errors = []
+    for (const orderId of orderIds) {
+      try {
+        state.ib.cancelOrder(orderId)
+      } catch (err) {
+        errors.push(`${orderId}:${err.message}`)
+      }
+    }
+
+    const update = {
+      cancelRequested: false,
+      cancelSubmittedAt: FieldValue.serverTimestamp(),
+      lastUpdateAt: FieldValue.serverTimestamp(),
+    }
+    if (errors.length) {
+      update.cancelError = errors.join("; ")
+    }
+    await brokerOrderRef.set(update, { merge: true })
+  } finally {
+    state.cancelInFlight.delete(orderDocId)
+  }
+}
+
+function startCancelListening() {
+  if (state.cancelListening) return
+
+  const cancelQuery = db
+    .collection("brokerOrders")
+    .where("brokerAccountKey", "==", config.brokerAccountKey)
+    .where("cancelRequested", "==", true)
+
+  state.cancelUnsubscribe = cancelQuery.onSnapshot(
+    (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type !== "added" && change.type !== "modified") return
+        const orderData = change.doc.data()
+        const requestedAtMs = readTimestampMillis(orderData.cancelRequestedAt)
+        const submittedAtMs = readTimestampMillis(orderData.cancelSubmittedAt)
+        if (submittedAtMs && requestedAtMs && submittedAtMs >= requestedAtMs) return
+        if (orderData.cancelInProgressAt) return
+        processCancelRequest(change.doc.id, orderData).catch((err) => {
+          console.error(`Cancel request failed for ${change.doc.id}:`, err.message)
+        })
+      })
+    },
+    (error) => {
+      console.error("Cancel listener error:", error.message)
+      state.cancelListening = false
+      setTimeout(startCancelListening, 5000)
+    }
+  )
+
+  state.cancelListening = true
+  console.log(`Listening for cancel requests for account: ${config.brokerAccountKey}`)
+}
+
+function stopCancelListening() {
+  if (state.cancelUnsubscribe) {
+    state.cancelUnsubscribe()
+    state.cancelUnsubscribe = null
+  }
+  state.cancelListening = false
 }
 
 // ============================================================================
@@ -1543,6 +1980,7 @@ async function run() {
 
   // Start listening for requests
   startListening()
+  startCancelListening()
 
   // Periodic heartbeat
   setInterval(writeHeartbeat, config.heartbeatIntervalMs)

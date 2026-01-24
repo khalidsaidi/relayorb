@@ -8,6 +8,7 @@ import BotDetailPage from "@/pages/BotDetailPage"
 import PaperPage from "@/pages/PaperPage"
 import LiveChartsPage from "@/pages/LiveChartsPage"
 import IbkrOrderPage from "@/pages/IbkrOrderPage"
+import OrbRobotPage from "@/pages/OrbRobotPage"
 import { RequireAuth } from "@/features/auth/RequireAuth"
 import { AppShell } from "@/components/layout/AppShell"
 import { Toaster } from "@/components/ui/sonner"
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="/bots/:botId" element={<BotDetailPage />} />
             <Route path="/portfolio" element={<PaperPage />} />
             <Route path="/ibkr" element={<IbkrOrderPage />} />
+            <Route path="/orb" element={<OrbRobotPage />} />
             <Route path="/charts" element={<LiveChartsPage />} />
           </Route>
         </Route>

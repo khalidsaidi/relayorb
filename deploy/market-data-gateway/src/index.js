@@ -709,6 +709,49 @@ function getLocalDateParts(timestampMs, timezone) {
   }
 }
 
+function buildClockPayload(replayState) {
+  const serverNow = new Date()
+  const mode = replayState?.mode === "replay" ? "replay" : "live"
+  let now = serverNow
+  let replay = null
+
+  if (mode === "replay") {
+    if (!replayState?.asOf) {
+      return {
+        ok: false,
+        mode,
+        error: "Replay asOf missing",
+        runId: replayState?.runId || null,
+        sessionId: replayState?.sessionId || null,
+      }
+    }
+    now = replayState.asOf
+    replay = {
+      runId: replayState.runId || null,
+      sessionId: replayState.sessionId || null,
+      phase: replayState.phase || null,
+      datasetId: replayState.datasetId || null,
+      asOf: now.toISOString(),
+      asOfMs: now.getTime(),
+    }
+  }
+
+  const nowMs = now.getTime()
+  const timezone = "America/New_York"
+  const local = getLocalDateParts(nowMs, timezone)
+  return {
+    ok: true,
+    mode,
+    now: now.toISOString(),
+    nowMs,
+    serverTime: serverNow.toISOString(),
+    timezone,
+    dateKey: local.dateKey,
+    minutesOfDay: local.minutesOfDay,
+    replay,
+  }
+}
+
 function shiftDateKey(dateKey, deltaDays) {
   if (!dateKey) return null
   const [year, month, day] = dateKey.split("-").map((value) => parseInt(value, 10))
@@ -3709,6 +3752,16 @@ async function requestHandler(req, res) {
 
     const replayState = await resolveReplayState()
     await maybeAckReplayState(replayState)
+
+    if (path === "/clock") {
+      const payload = buildClockPayload(replayState)
+      if (!payload.ok) {
+        respondJson(res, 500, payload)
+        return
+      }
+      respondJson(res, 200, payload)
+      return
+    }
 
     const replaySupportedPaths = new Set([
       "/v1/fmp/quote",

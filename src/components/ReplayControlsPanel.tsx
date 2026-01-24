@@ -95,7 +95,7 @@ function parseSymbolsInput(value: string) {
           )
         )
       }
-    } catch (_) {
+    } catch {
       // Fall back to parsing as a delimiter-separated string.
     }
   }
@@ -245,7 +245,7 @@ export function ReplayControlsPanel() {
           const joined = list.map((item: unknown) => String(item)).join(", ")
           setTapeSymbolsInput(joined)
         }
-      } catch (_) {
+      } catch {
         // Ignore default symbol load errors.
       } finally {
         if (!cancelled) setTapeSymbolsLoaded(true)
@@ -413,7 +413,7 @@ export function ReplayControlsPanel() {
       try {
         const token = await user.getIdToken()
         if (token) headers.Authorization = `Bearer ${token}`
-      } catch (_) {
+      } catch {
         // Allow request to proceed without auth header.
       }
       const response = await fetch(`${gatewayBase}/replay/buildTape`, {

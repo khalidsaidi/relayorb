@@ -27,11 +27,27 @@
     },
     {
       "collectionGroup": "executionRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "brokerAccountKey", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "executionRequests",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
         { "fieldPath": "brokerAccountKey", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "expiresAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "executionRequests",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "brokerAccountKey", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     }
   ],
