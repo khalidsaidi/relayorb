@@ -6,6 +6,7 @@ const { Storage } = require("@google-cloud/storage")
 const { createClient } = require("redis")
 const zlib = require("zlib")
 const { fromZonedTime } = require("date-fns-tz")
+const { attachRequestId, createRequestLogger } = require("../../shared/request-id")
 
 const config = {
   projectId:
@@ -38,6 +39,7 @@ const config = {
   replayBucket: process.env.REPLAY_GCS_BUCKET || process.env.REPLAY_BUCKET || "",
   replayPrefix: process.env.REPLAY_GCS_PREFIX || "replay",
   replayControlsCacheMs: parseInt(process.env.REPLAY_CONTROLS_CACHE_MS || "1500", 10),
+  replayRunCacheMs: parseInt(process.env.REPLAY_RUN_CACHE_MS || "10000", 10),
   replayManifestCacheMs: parseInt(process.env.REPLAY_MANIFEST_CACHE_MS || "10000", 10),
   replayArtifactCacheMs: parseInt(process.env.REPLAY_ARTIFACT_CACHE_MS || "60000", 10),
   replayAckIntervalMs: parseInt(process.env.REPLAY_ACK_INTERVAL_MS || "15000", 10),
@@ -133,6 +135,7 @@ let pipelineRedisReady = false
 let firestore = null
 let storage = null
 const replayControlsCache = { value: null, expiresAt: 0 }
+const replayRunCache = new Map()
 const replayManifestCache = { value: null, expiresAt: 0, key: "" }
 const replayArtifactCache = new Map()
 const replayAckState = { lastSentAt: 0, lastSessionId: null, lastVersion: null, lastMode: null }
@@ -826,6 +829,49 @@ function normalizeLegacySymbol(symbol, assetClass) {
   return normalizeSymbol(symbol) || normalizeTicker(symbol)
 }
 
+function normalizeRunId(value) {
+  if (!value) return null
+  const cleaned = String(value).trim()
+  if (!cleaned) return null
+  const normalized = cleaned.replace(/[\\/]/g, "-").replace(/\s+/g, "-")
+  return normalized.slice(0, 120)
+}
+
+function normalizeRunLabel(value, fallback) {
+  if (typeof value === "string" && value.trim()) return value.trim().slice(0, 160)
+  if (typeof fallback === "string" && fallback.trim()) return fallback.trim().slice(0, 160)
+  return "Replay run"
+}
+
+function normalizeTapeDate(value) {
+  if (!value) return null
+  const trimmed = String(value).trim()
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : null
+}
+
+function normalizeTagList(value) {
+  if (!value) return []
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean).slice(0, 12)
+  }
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 12)
+  }
+  return []
+}
+
+function buildReplayRunId(tapeDate) {
+  const dateKey = normalizeTapeDate(tapeDate) || new Date().toISOString().slice(0, 10)
+  const suffix = crypto.randomUUID
+    ? crypto.randomUUID().replace(/-/g, "").slice(0, 8)
+    : Math.random().toString(36).slice(2, 10)
+  return `replay-${dateKey}-${suffix}`
+}
+
 function buildLegacyKey(symbol, assetClass) {
   const normalized = normalizeLegacySymbol(symbol, assetClass)
   if (!normalized) return null
@@ -850,6 +896,109 @@ async function readReplayControls() {
   }
 }
 
+function formatReplayRun(runId, data) {
+  const createdAt = typeof data?.createdAt?.toDate === "function"
+    ? data.createdAt.toDate().toISOString()
+    : null
+  const updatedAt = typeof data?.updatedAt?.toDate === "function"
+    ? data.updatedAt.toDate().toISOString()
+    : null
+  return {
+    runId,
+    label: typeof data?.label === "string" ? data.label : undefined,
+    datasetId: typeof data?.datasetId === "string" ? data.datasetId : undefined,
+    tapeDate: typeof data?.tapeDate === "string" ? data.tapeDate : undefined,
+    symbolCount: typeof data?.symbolCount === "number" ? data.symbolCount : undefined,
+    manifestPath: typeof data?.manifestPath === "string" ? data.manifestPath : undefined,
+    notes: typeof data?.notes === "string" ? data.notes : undefined,
+    tags: Array.isArray(data?.tags) ? data.tags : undefined,
+    createdAt,
+    updatedAt,
+  }
+}
+
+async function loadReplayRunInfo(runId) {
+  if (!runId) return null
+  const cached = replayRunCache.get(runId)
+  if (cached && cached.expiresAt > Date.now()) return cached.value
+  try {
+    const db = initFirestore()
+    const snap = await db.doc(`replay/controls/runs/${runId}`).get()
+    const data = snap.exists ? snap.data() : null
+    replayRunCache.set(runId, {
+      value: data,
+      expiresAt: Date.now() + config.replayRunCacheMs,
+    })
+    return data
+  } catch (err) {
+    console.error("Replay run read failed:", err.message)
+    return null
+  }
+}
+
+async function registerReplayRun(payload) {
+  const datasetId = typeof payload?.datasetId === "string" ? payload.datasetId.trim() : ""
+  if (!datasetId) {
+    throw new Error("Missing datasetId")
+  }
+  const tapeDate = normalizeTapeDate(payload?.tapeDate) || normalizeTapeDate(datasetId)
+  const runId = normalizeRunId(payload?.runId) || buildReplayRunId(tapeDate)
+  const label = normalizeRunLabel(payload?.label, datasetId)
+  const symbolCount = Number.isFinite(Number(payload?.symbolCount))
+    ? Math.max(0, Math.round(Number(payload.symbolCount)))
+    : undefined
+  const manifestPath = typeof payload?.manifestPath === "string" ? payload.manifestPath.trim() : ""
+  const notes = typeof payload?.notes === "string" ? payload.notes.trim() : ""
+  const tags = normalizeTagList(payload?.tags)
+  const source = typeof payload?.source === "string" ? payload.source.trim() : "ui"
+
+  const db = initFirestore()
+  const ref = db.doc(`replay/controls/runs/${runId}`)
+  const existing = await ref.get().catch(() => null)
+  const response = {
+    runId,
+    label,
+    datasetId,
+    source,
+  }
+  if (tapeDate) response.tapeDate = tapeDate
+  if (typeof symbolCount === "number") response.symbolCount = symbolCount
+  if (manifestPath) response.manifestPath = manifestPath
+  if (notes) response.notes = notes
+  if (tags.length) response.tags = tags
+  const patch = {
+    ...response,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }
+  if (!existing?.exists) {
+    patch.createdAt = admin.firestore.FieldValue.serverTimestamp()
+  }
+  await ref.set(patch, { merge: true })
+  replayRunCache.delete(runId)
+  const now = new Date().toISOString()
+  return {
+    ...response,
+    createdAt: existing?.exists ? undefined : now,
+    updatedAt: now,
+  }
+}
+
+async function listReplayRuns(limit) {
+  const safeLimit = clamp(Number(limit) || 50, 1, 200)
+  try {
+    const db = initFirestore()
+    const snap = await db
+      .collection("replay/controls/runs")
+      .orderBy("createdAt", "desc")
+      .limit(safeLimit)
+      .get()
+    return snap.docs.map((doc) => formatReplayRun(doc.id, doc.data()))
+  } catch (err) {
+    console.error("Replay run list failed:", err.message)
+    return []
+  }
+}
+
 async function resolveReplayState() {
   const controls = await readReplayControls()
   const desiredMode = controls?.desiredMode === "replay" ? "replay" : "live"
@@ -857,11 +1006,21 @@ async function resolveReplayState() {
     lastReplayState = { mode: "live", runId: null, sessionId: null }
     return { mode: "live", controls }
   }
+  const runId = controls?.activeRunId || null
+  let datasetId = controls?.datasetId || null
+  let runInfo = null
+  if (runId) {
+    runInfo = await loadReplayRunInfo(runId)
+    if (!datasetId && runInfo?.datasetId) {
+      datasetId = runInfo.datasetId
+    }
+  }
   const state = {
     mode: "replay",
     controls,
-    runId: controls?.activeRunId || null,
-    datasetId: controls?.datasetId || null,
+    runId,
+    datasetId,
+    runInfo,
     sessionId: controls?.sessionId || null,
     version: controls?.version ?? null,
     phase: controls?.phase || null,
@@ -923,14 +1082,14 @@ async function loadReplayManifest(state) {
   if (!config.replayBucket) return null
 
   const db = initFirestore()
-  let runInfo = null
-  try {
-    if (state.runId) {
+  let runInfo = state.runInfo || null
+  if (!runInfo && state.runId) {
+    try {
       const snap = await db.doc(`replay/controls/runs/${state.runId}`).get()
       runInfo = snap.exists ? snap.data() : null
+    } catch (err) {
+      console.error("Replay run read failed:", err.message)
     }
-  } catch (err) {
-    console.error("Replay run read failed:", err.message)
   }
 
   const datasetId = runInfo?.datasetId || state.datasetId
@@ -1743,6 +1902,129 @@ async function handleFmpQuote(req, res, params, replayState) {
       endpointName: "quote",
       assetClass,
       paramsHash: hashParams({ symbol: normalized, assetClass }),
+      httpStatus: 200,
+    },
+  })
+}
+
+async function handleFmpAftermarketQuote(req, res, params) {
+  if (!config.fmpKey) {
+    respondJson(res, 500, { error: "FMP API key is not configured" })
+    return
+  }
+  const symbol = params.get("symbol") || ""
+  if (!symbol) {
+    respondJson(res, 400, { error: "Symbol is required" })
+    return
+  }
+  const normalized = symbol.toUpperCase().trim()
+  const cacheKey = `fmp:aftermarket:${normalized}`
+  const cached = getCached(cacheKey)
+  if (cached) {
+    respondJson(res, 200, cached)
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "end",
+      meta: {
+        providerId: "fmp",
+        endpointName: "aftermarket-quote",
+        cacheHit: true,
+        paramsHash: hashParams({ symbol: normalized }),
+        httpStatus: 200,
+      },
+    })
+    return
+  }
+
+  const startedAt = Date.now()
+  const url = new URL(`${config.fmpStableBaseUrl}/aftermarket-quote`)
+  url.searchParams.set("symbol", normalized)
+  url.searchParams.set("apikey", config.fmpKey)
+  let entry = null
+  try {
+    const data = await fetchJson(url.toString())
+    entry = Array.isArray(data) ? data[0] : data
+  } catch (err) {
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "error",
+      startMs: startedAt,
+      meta: {
+        providerId: "fmp",
+        endpointName: "aftermarket-quote",
+        paramsHash: hashParams({ symbol: normalized }),
+      },
+      error: { message: err?.message ? String(err.message) : "Request failed" },
+    })
+    throw err
+  }
+  if (!entry) {
+    respondJson(res, 404, { error: "Aftermarket quote not found" })
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "end",
+      startMs: startedAt,
+      meta: {
+        providerId: "fmp",
+        endpointName: "aftermarket-quote",
+        paramsHash: hashParams({ symbol: normalized }),
+        httpStatus: 404,
+      },
+    })
+    return
+  }
+
+  const bid = typeof entry.bidPrice === "number" ? entry.bidPrice : entry.bid
+  const ask = typeof entry.askPrice === "number" ? entry.askPrice : entry.ask
+  const price =
+    typeof entry.price === "number"
+      ? entry.price
+      : typeof bid === "number" && typeof ask === "number"
+        ? (bid + ask) / 2
+        : null
+
+  if (price === null) {
+    respondJson(res, 502, { error: "Invalid aftermarket price response" })
+    await emitProviderEvent({
+      stationId: "provider:fmp",
+      status: "error",
+      startMs: startedAt,
+      meta: {
+        providerId: "fmp",
+        endpointName: "aftermarket-quote",
+        paramsHash: hashParams({ symbol: normalized }),
+        httpStatus: 502,
+      },
+      error: { message: "Invalid aftermarket price response" },
+    })
+    return
+  }
+
+  const payload = {
+    symbol: normalized,
+    price,
+    bid: typeof bid === "number" ? bid : null,
+    ask: typeof ask === "number" ? ask : null,
+    volume: typeof entry.volume === "number" ? entry.volume : null,
+    change24h:
+      typeof entry.changesPercentage === "number"
+        ? entry.changesPercentage
+        : typeof entry.changePercentage === "number"
+          ? entry.changePercentage
+          : null,
+    exchange: entry.exchange || entry.exchangeShortName || null,
+    source: "fmp_extended",
+  }
+  setCached(cacheKey, payload, config.cacheDefaultMs)
+  respondJson(res, 200, payload)
+  await emitProviderEvent({
+    stationId: "provider:fmp",
+    status: "end",
+    startMs: startedAt,
+    meta: {
+      providerId: "fmp",
+      endpointName: "aftermarket-quote",
+      paramsHash: hashParams({ symbol: normalized }),
       httpStatus: 200,
     },
   })
@@ -3227,27 +3509,62 @@ async function fetchMarketauxNewsForSymbols(symbols, limit) {
   return Array.isArray(data?.data) ? data.data : []
 }
 
-async function discoverTapeSymbols(maxSymbols) {
+const DEFAULT_TAPE_DISCOVERY = {
+  includeUniverse: true,
+  smallCapMinMarketCap: 5_000_000,
+  smallCapMaxMarketCap: 80_000_000,
+  smallCapMinVolume: 50_000,
+  midCapMinMarketCap: 1_000_000_000,
+  midCapMaxMarketCap: 50_000_000_000,
+  midCapMinVolume: 500_000,
+}
+
+async function discoverTapeSymbols(maxSymbols, options = {}) {
   if (!config.fmpKey) return []
+
+  const settings = {
+    includeUniverse:
+      typeof options.includeUniverse === "boolean"
+        ? options.includeUniverse
+        : DEFAULT_TAPE_DISCOVERY.includeUniverse,
+    smallCapMinMarketCap:
+      parseNumber(options.smallCapMinMarketCap) ?? DEFAULT_TAPE_DISCOVERY.smallCapMinMarketCap,
+    smallCapMaxMarketCap:
+      parseNumber(options.smallCapMaxMarketCap) ?? DEFAULT_TAPE_DISCOVERY.smallCapMaxMarketCap,
+    smallCapMinVolume:
+      parseNumber(options.smallCapMinVolume) ?? DEFAULT_TAPE_DISCOVERY.smallCapMinVolume,
+    midCapMinMarketCap:
+      parseNumber(options.midCapMinMarketCap) ?? DEFAULT_TAPE_DISCOVERY.midCapMinMarketCap,
+    midCapMaxMarketCap:
+      parseNumber(options.midCapMaxMarketCap) ?? DEFAULT_TAPE_DISCOVERY.midCapMaxMarketCap,
+    midCapMinVolume:
+      parseNumber(options.midCapMinVolume) ?? DEFAULT_TAPE_DISCOVERY.midCapMinVolume,
+  }
 
   const universeSymbols = new Set()
 
   // 0. Fetch symbols from market/universe (the actual source algorithms use)
-  try {
-    const db = initFirestore()
-    const universeDoc = await db.doc("market/universe").get()
-    if (universeDoc.exists) {
-      const data = universeDoc.data()
-      // Extract stock symbols from universe
-      const stockSymbols = data?.stocks?.symbols || []
-      stockSymbols.forEach((s) => typeof s === "string" && universeSymbols.add(s.toUpperCase()))
-      // Also include crypto symbols if present
-      const cryptoSymbols = data?.crypto?.symbols || []
-      cryptoSymbols.forEach((s) => typeof s === "string" && universeSymbols.add(s.toUpperCase()))
-      console.log("tape_universe_symbols", { stocks: stockSymbols.length, crypto: cryptoSymbols.length, total: universeSymbols.size })
+  if (settings.includeUniverse) {
+    try {
+      const db = initFirestore()
+      const universeDoc = await db.doc("market/universe").get()
+      if (universeDoc.exists) {
+        const data = universeDoc.data()
+        // Extract stock symbols from universe
+        const stockSymbols = data?.stocks?.symbols || []
+        stockSymbols.forEach((s) => typeof s === "string" && universeSymbols.add(s.toUpperCase()))
+        // Also include crypto symbols if present
+        const cryptoSymbols = data?.crypto?.symbols || []
+        cryptoSymbols.forEach((s) => typeof s === "string" && universeSymbols.add(s.toUpperCase()))
+        console.log("tape_universe_symbols", {
+          stocks: stockSymbols.length,
+          crypto: cryptoSymbols.length,
+          total: universeSymbols.size,
+        })
+      }
+    } catch (err) {
+      console.error("Failed to fetch market/universe:", err.message)
     }
-  } catch (err) {
-    console.error("Failed to fetch market/universe:", err.message)
   }
 
   // Split target evenly: 50% small caps (prebreakout), 50% mid caps (swing overnight).
@@ -3259,13 +3576,13 @@ async function discoverTapeSymbols(maxSymbols) {
   const smallCaps = new Set()
   const midCaps = new Set()
 
-  // 1. Small caps for prebreakout ($5M-$100M market cap)
+  // 1. Small caps for prebreakout.
   try {
     const screenerUrl = new URL(`${config.fmpStableBaseUrl}/company-screener`)
-    screenerUrl.searchParams.set("marketCapMoreThan", "5000000")
-    screenerUrl.searchParams.set("marketCapLowerThan", "80000000")
+    screenerUrl.searchParams.set("marketCapMoreThan", String(settings.smallCapMinMarketCap))
+    screenerUrl.searchParams.set("marketCapLowerThan", String(settings.smallCapMaxMarketCap))
     screenerUrl.searchParams.set("isActivelyTrading", "true")
-    screenerUrl.searchParams.set("volumeMoreThan", "50000")
+    screenerUrl.searchParams.set("volumeMoreThan", String(settings.smallCapMinVolume))
     screenerUrl.searchParams.set("limit", String(smallCapTarget + 20)) // Extra buffer for filtering
     screenerUrl.searchParams.set("apikey", config.fmpKey)
     const results = await fetchJsonWithRetry(screenerUrl.toString())
@@ -3276,13 +3593,13 @@ async function discoverTapeSymbols(maxSymbols) {
     console.error("Small cap screener failed:", err.message)
   }
 
-  // 2. Mid caps for swing overnight ($1B-$50B market cap)
+  // 2. Mid caps for swing overnight.
   try {
     const midCapUrl = new URL(`${config.fmpStableBaseUrl}/company-screener`)
-    midCapUrl.searchParams.set("marketCapMoreThan", "1000000000")
-    midCapUrl.searchParams.set("marketCapLowerThan", "50000000000")
+    midCapUrl.searchParams.set("marketCapMoreThan", String(settings.midCapMinMarketCap))
+    midCapUrl.searchParams.set("marketCapLowerThan", String(settings.midCapMaxMarketCap))
     midCapUrl.searchParams.set("isActivelyTrading", "true")
-    midCapUrl.searchParams.set("volumeMoreThan", "500000")
+    midCapUrl.searchParams.set("volumeMoreThan", String(settings.midCapMinVolume))
     midCapUrl.searchParams.set("limit", String(midCapTarget + 20)) // Extra buffer for filtering
     midCapUrl.searchParams.set("apikey", config.fmpKey)
     const results = await fetchJsonWithRetry(midCapUrl.toString())
@@ -3317,7 +3634,8 @@ async function discoverTapeSymbols(maxSymbols) {
     midCapTarget,
     smallCapsFound: filteredSmallCaps.length,
     midCapsFound: filteredMidCaps.length,
-    totalUnique: allSymbols.size
+    totalUnique: allSymbols.size,
+    settings,
   })
 
   return Array.from(allSymbols)
@@ -3372,12 +3690,22 @@ async function handleReplayBuildTape(req, res, params) {
     hardMaxSymbols
   )
   const autoDiscover = body?.autoDiscover === true || params.get("autoDiscover") === "true"
+  const autoDiscoverConfig = body?.autoDiscoverConfig || {}
+  const autoDiscoverOptions = {
+    includeUniverse: autoDiscoverConfig.includeUniverse,
+    smallCapMinMarketCap: autoDiscoverConfig.smallCapMinMarketCap,
+    smallCapMaxMarketCap: autoDiscoverConfig.smallCapMaxMarketCap,
+    smallCapMinVolume: autoDiscoverConfig.smallCapMinVolume,
+    midCapMinMarketCap: autoDiscoverConfig.midCapMinMarketCap,
+    midCapMaxMarketCap: autoDiscoverConfig.midCapMaxMarketCap,
+    midCapMinVolume: autoDiscoverConfig.midCapMinVolume,
+  }
 
   let symbols = normalizeSymbolList(body?.symbols || params.get("symbols"))
 
   // Auto-discover symbols for algorithms if no symbols provided or autoDiscover is true
   if (autoDiscover || !symbols.length) {
-    const discovered = await discoverTapeSymbols(maxSymbols)
+    const discovered = await discoverTapeSymbols(maxSymbols, autoDiscoverOptions)
     symbols = [...new Set([...symbols, ...discovered])]
     console.log("tape_auto_discover", {
       requested: normalizeSymbolList(body?.symbols || params.get("symbols")).length,
@@ -3692,10 +4020,62 @@ async function handleReplayBuildTape(req, res, params) {
 
   await writeReplayArtifact(manifestPath, manifest, false)
 
+  if (body?.registerRun === true || body?.runId || body?.runLabel || body?.label) {
+    try {
+      const runPayload = {
+        runId: body?.runId,
+        label: body?.runLabel || body?.label,
+        datasetId,
+        tapeDate: date,
+        symbolCount: results.okSymbols.length,
+        source: "tape_builder",
+      }
+      results.run = await registerReplayRun(runPayload)
+    } catch (err) {
+      results.runError = err?.message || "Replay run registration failed"
+    }
+  }
+
   respondJson(res, 200, results)
 }
 
+async function handleReplayRunsList(req, res, params) {
+  const limit = params.get("limit")
+  const runs = await listReplayRuns(limit)
+  respondJson(res, 200, { runs, count: runs.length })
+}
+
+async function handleReplayRegisterRun(req, res, params) {
+  let body = null
+  try {
+    body = await readJsonBody(req)
+  } catch (err) {
+    respondJson(res, 400, { error: err.message || "Invalid JSON body" })
+    return
+  }
+  try {
+    const run = await registerReplayRun({
+      runId: body?.runId || params.get("runId"),
+      label: body?.label || body?.runLabel,
+      datasetId: body?.datasetId || params.get("datasetId"),
+      tapeDate: body?.tapeDate || body?.date,
+      symbolCount: body?.symbolCount,
+      manifestPath: body?.manifestPath,
+      notes: body?.notes,
+      tags: body?.tags,
+      source: body?.source || "ui",
+    })
+    respondJson(res, 200, { ok: true, run })
+  } catch (err) {
+    respondJson(res, 400, { error: err?.message || "Replay run registration failed" })
+  }
+}
+
 async function requestHandler(req, res) {
+  // Attach request ID for distributed tracing
+  const requestId = attachRequestId(req, res)
+  const log = createRequestLogger("market-data-gateway", requestId)
+
   try {
     applyCorsHeaders(res)
     if (req.method === "OPTIONS") {
@@ -3707,6 +4087,9 @@ async function requestHandler(req, res) {
     const url = new URL(req.url || "/", "http://localhost")
     const path = url.pathname
     const params = url.searchParams
+
+    // Log incoming request with request ID
+    log.info(`${req.method} ${path}`)
     if (path === "/" || path === "/healthz" || path === "/readyz") {
       respondJson(res, 200, { status: "ok" })
       return
@@ -3742,6 +4125,19 @@ async function requestHandler(req, res) {
         console.error("Failed to load tape symbols:", err.message)
         respondJson(res, 404, { error: "Tape not found or invalid", datasetId })
       }
+      return
+    }
+
+    if (path === "/replay/runs") {
+      if (req.method === "GET") {
+        await handleReplayRunsList(req, res, params)
+        return
+      }
+      if (req.method === "POST") {
+        await handleReplayRegisterRun(req, res, params)
+        return
+      }
+      respondJson(res, 405, { error: "Method not allowed" })
       return
     }
 
@@ -3810,6 +4206,10 @@ async function requestHandler(req, res) {
 
     if (path === "/v1/fmp/quote") {
       await handleFmpQuote(req, res, params, replayState)
+      return
+    }
+    if (path === "/v1/fmp/aftermarket-quote") {
+      await handleFmpAftermarketQuote(req, res, params)
       return
     }
     if (path === "/v1/fmp/quotes") {

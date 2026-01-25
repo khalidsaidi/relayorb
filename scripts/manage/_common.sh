@@ -125,6 +125,7 @@ deploy_run_job() {
   local job="$1"
   local image="$2"
   local region="$3"
+  local extra_env="${4:-}"
   require_cmd gcloud
   if [ "$region" != "$EXPECTED_REGION" ]; then
     echo "Refusing to deploy $job outside $EXPECTED_REGION (got: $region)." >&2
@@ -133,7 +134,11 @@ deploy_run_job() {
   ensure_run_job_exists "$job" "$region"
 
   local args=(run jobs deploy "$job" --image "$image" --region "$region")
-  args+=(--update-env-vars "RUN_REGION=$EXPECTED_REGION")
+  local envs="RUN_REGION=$EXPECTED_REGION"
+  if [ -n "$extra_env" ]; then
+    envs="${envs},${extra_env}"
+  fi
+  args+=(--update-env-vars "$envs")
   if [ -n "${JOB_TASKS:-}" ]; then
     args+=(--tasks "$JOB_TASKS")
   fi

@@ -4,6 +4,9 @@
   "description": "IBKR executor service - one instance per broker account",
   "main": "src/index.js",
   "type": "commonjs",
+  "engines": {
+    "node": "20"
+  },
   "scripts": {
     "start": "node src/index.js",
     "test": "node test/claim-logic.test.js"

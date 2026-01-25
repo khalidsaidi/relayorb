@@ -23,7 +23,6 @@ except Exception:  # pragma: no cover - optional dependency
 
 logger = logging.getLogger(__name__)
 
-FMP_BASE_URL = "https://financialmodelingprep.com/stable"
 METADATA_IDENTITY_URL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity"
 METADATA_HEADERS = {"Metadata-Flavor": "Google"}
 _gateway_token = {"value": None, "exp": 0.0}
@@ -226,7 +225,6 @@ def fetch_fmp_candles(symbol: str, asset_class: str, timeframe: str = "1d", days
     normalized = normalize_fmp_symbol(symbol, asset_class)
     if not normalized:
         return None
-    payload = None
     payload = fetch_gateway_json(
         "/v1/fmp/candles",
         {
@@ -238,28 +236,8 @@ def fetch_fmp_candles(symbol: str, asset_class: str, timeframe: str = "1d", days
     )
 
     if payload is None:
-        api_key = os.environ.get("FMP_API_KEY")
-        if not api_key:
-            return None
-        try:
-            if interval in ("1day", "1week"):
-                response = requests.get(
-                    f"{FMP_BASE_URL}/historical-price-eod/full",
-                    params={"symbol": normalized, "apikey": api_key},
-                    timeout=10,
-                )
-            else:
-                response = requests.get(
-                    f"{FMP_BASE_URL}/historical-chart/{interval}",
-                    params={"symbol": normalized, "apikey": api_key},
-                    timeout=10,
-                )
-            if response.status_code != 200:
-                return None
-            payload = response.json()
-        except Exception as e:
-            logger.error(f"Error fetching FMP data: {e}")
-            return None
+        logger.warning(f"Gateway returned no data for {symbol} candles")
+        return None
 
     if isinstance(payload, dict):
         data = payload.get("candles") or payload.get("historical") or payload.get("data")

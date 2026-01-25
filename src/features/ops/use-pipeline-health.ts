@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
-import { doc, onSnapshot } from "firebase/firestore"
+import { doc } from "firebase/firestore"
 import { db } from "@/lib/firebase"
+import { onSnapshotWithRetry } from "@/lib/firestore-retry"
 
 export type ServiceHealth = {
   status: "ok" | "degraded" | "stale" | "error" | "unknown"
@@ -56,13 +57,13 @@ export function usePipelineHealth() {
   useEffect(() => {
     if (!db) return
 
-    const unsub = onSnapshot(
+    const unsub = onSnapshotWithRetry(
       doc(db, "pipeline", "status"),
       (snap) => {
         if (snap.exists()) {
           const data = snap.data()
           const updatedAt = data.updatedAt?.toDate?.() || null
-          
+
           setHealth({
             status: data.status || "unknown",
             updatedAt,
@@ -86,7 +87,7 @@ export function usePipelineHealth() {
         setLoading(false)
       },
       (err) => {
-        console.error("Pipeline health subscription failed:", err)
+        console.error("Pipeline health subscription failed after retries:", err)
         setError(err.message)
         setLoading(false)
       }

@@ -112,7 +112,8 @@ export function AppShell() {
     const list = Array.isArray(replayControls?.requiredServices)
       ? replayControls.requiredServices
       : []
-    return list.length ? list : ["mdg", "price-streamer", "market-intel", "signal-evaluator", "ui"]
+    const filtered = list.filter((service) => service !== "ui")
+    return filtered.length ? filtered : ["mdg", "price-streamer", "market-intel", "signal-evaluator"]
   }, [replayControls?.requiredServices])
   const replayPlaybackLabel = useMemo(() => {
     if (!replayActive) return t("replay.controls.playbackStopped")
@@ -393,7 +394,7 @@ export function AppShell() {
                   <Sheet open={replaySheetOpen} onOpenChange={setReplaySheetOpen}>
                     <SheetTrigger asChild>
                       <Button variant={replayActive ? "secondary" : "outline"} size="sm">
-                        {t("replay.controls.title")}
+                        {t("replay.controls.open")}
                       </Button>
                     </SheetTrigger>
                     <SheetContent

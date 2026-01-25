@@ -20,6 +20,11 @@ Commands:
   pull        Pull latest images
   ps          Show container status
   config      Show resolved docker-compose config
+
+Env (set before running commands):
+  MARKET_DATA_GATEWAY_URL   Market data gateway base URL (required)
+  MARKET_DATA_GATEWAY_AUTH  true/false (default: true)
+  REDIS_URL                 Redis connection URL (default: redis://redis:6379)
 USAGE
 }
 

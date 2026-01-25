@@ -5,6 +5,8 @@ const fs = require("fs")
 const { GoogleAuth } = require("google-auth-library")
 const { createClient } = require("redis")
 const WebSocket = require("ws")
+const { createCircuitBreaker } = require("../../shared/circuit-breaker")
+const { generateRequestId, withRequestId, attachRequestId, createRequestLogger } = require("../../shared/request-id")
 const config = {
   projectId:
     process.env.FIREBASE_PROJECT_ID ||
@@ -45,7 +47,7 @@ const config = {
   pipelineEventsEnabled: process.env.PIPELINE_EVENTS_ENABLED !== "false",
   pipelineEventsStream: process.env.PIPELINE_EVENTS_STREAM || "",
   pipelineEventsMaxlen: parseInt(process.env.PIPELINE_EVENTS_MAXLEN || "20000", 10),
-  pipelineEventsSampleRate: parseFloat(process.env.PIPELINE_EVENTS_SAMPLE_RATE || "0.2"),
+  pipelineEventsSampleRate: parseFloat(process.env.PIPELINE_EVENTS_SAMPLE_RATE || "0.15"),
   pipelineEventsRunEnv: process.env.PIPELINE_EVENTS_RUN_ENV || "prod",
   replayAllowed: process.env.REPLAY_ALLOWED !== "false",
   replayControlsCacheMs: parseInt(process.env.REPLAY_CONTROLS_CACHE_MS || "1500", 10),
@@ -150,7 +152,6 @@ function assertUsWest1(serviceName) {
 assertRemoteOnly("price-streamer")
 assertUsWest1("price-streamer")
 
-const FMP_STABLE_BASE_URL = "https://financialmodelingprep.com/stable"
 const DEFAULT_UNIVERSE_MODE = "movers_plus_universe"
 const UNIVERSE_MODES = new Set([
   "movers_only",
@@ -465,6 +466,16 @@ const runId =
 const replayControlsCache = { value: null, expiresAt: 0 }
 const gatewayAuth = new GoogleAuth()
 let gatewayAuthClient = null
+
+// Circuit breaker for market-data-gateway calls
+const gatewayCircuitBreaker = createCircuitBreaker("market-data-gateway", {
+  failureThreshold: 5,
+  successThreshold: 2,
+  timeout: 30000,
+  onStateChange: (oldState, newState) => {
+    console.log(`Gateway circuit breaker: ${oldState} -> ${newState}`)
+  },
+})
 
 function resolvePipelineStream() {
   if (state?.replay?.mode === "replay" && state.replay.runId) {
@@ -1535,8 +1546,10 @@ async function fetchGatewayJson(path, params) {
     )
   }
   try {
-    const authHeaders = await getGatewayAuthHeaders()
-    const data = await fetchJson(url, authHeaders ? { headers: authHeaders } : undefined)
+    const data = await gatewayCircuitBreaker.execute(async () => {
+      const authHeaders = await getGatewayAuthHeaders()
+      return fetchJson(url, authHeaders ? { headers: authHeaders } : undefined)
+    })
     if (shouldEmit) {
       await publishPipelineEvent(
         buildPipelineEvent({
@@ -1569,6 +1582,7 @@ async function fetchGatewayJson(path, params) {
           meta: {
             endpointName,
             paramsHash,
+            circuitBreakerOpen: err?.message?.includes("Circuit breaker"),
           },
           error: { message: err?.message ? String(err.message) : "Gateway error" },
         })
@@ -1610,67 +1624,30 @@ async function fetchFmpQuote(symbol, assetClass = "stock") {
     return null
   }
   
-  if (config.marketDataGatewayUrl) {
-    try {
-      trackApiCall()
-      const data = await fetchGatewayJson("/v1/fmp/quote", {
-        symbol,
-        assetClass,
-      })
-      if (!data || typeof data?.price !== "number") return null
-      return {
-        symbol,
-        price: data.price,
-        bid: parseNumber(data.bid),
-        ask: parseNumber(data.ask),
-        volume: parseNumber(data.volume),
-        change24h: parseNumber(data.changePercent),
-        exchange: data.exchange || data.exchangeShortName,
-        source: "gateway",
-      }
-    } catch (err) {
-      console.error(`Gateway quote failed for ${symbol}:`, err.message)
-    }
+  if (!config.marketDataGatewayUrl) {
+    console.warn(`No gateway URL configured, cannot fetch quote for ${symbol}`)
+    return null
   }
-  if (!config.fmpKey) return null
-  if (isFmpRateLimited()) return null
-  const normalized = normalizeFmpQuoteSymbol(symbol, assetClass)
-  if (!normalized) return null
+
   try {
     trackApiCall()
-    const url = new URL(`${FMP_STABLE_BASE_URL}/quote`)
-    url.searchParams.set("symbol", normalized)
-    url.searchParams.set("apikey", config.fmpKey)
-    const data = await fetchJson(url.toString())
-    const entry = Array.isArray(data) ? data[0] : data
-    if (!entry) return null
-    const bid = parseNumber(entry.bid)
-    const ask = parseNumber(entry.ask)
-    const volume = parseNumber(entry.volume) ?? parseNumber(entry.avgVolume) ?? parseNumber(entry.volumeAvg)
-    const price =
-      parseNumber(entry.price) ??
-      parseNumber(entry.lastSale) ??
-      parseNumber(entry.last) ??
-      parseNumber(entry.close) ??
-      (bid !== undefined && ask !== undefined ? (bid + ask) / 2 : bid ?? ask)
-    if (typeof price !== "number") return null
-    const change24h = parseNumber(entry.changesPercentage) ?? parseNumber(entry.changePercentage)
+    const data = await fetchGatewayJson("/v1/fmp/quote", {
+      symbol,
+      assetClass,
+    })
+    if (!data || typeof data?.price !== "number") return null
     return {
       symbol,
-      price,
-      bid,
-      ask,
-      volume,
-      change24h,
-      exchange: entry.exchange || entry.exchangeShortName,
-      source: "fmp",
+      price: data.price,
+      bid: parseNumber(data.bid),
+      ask: parseNumber(data.ask),
+      volume: parseNumber(data.volume),
+      change24h: parseNumber(data.changePercent),
+      exchange: data.exchange || data.exchangeShortName,
+      source: "gateway",
     }
   } catch (err) {
-    const message = err?.message ? String(err.message) : "Unknown error"
-    if (message.includes("429") || message.includes("Limit Reach")) {
-      markFmpRateLimited()
-    }
-    console.error(`FMP quote failed for ${normalized}:`, message)
+    console.error(`Gateway quote failed for ${symbol}:`, err.message)
     return null
   }
 }
@@ -1727,44 +1704,34 @@ async function fetchQuotesParallel(symbols, assetClass) {
 
 /**
  * Fetch extended hours (pre-market / after-hours) quote for a stock symbol
- * Uses /stable/aftermarket-quote which returns bid/ask even when regular market is closed
- * 
+ * Uses market-data-gateway's /v1/fmp/aftermarket-quote endpoint
+ *
  * @param {string} symbol - Stock symbol
  * @returns {Promise<{symbol: string, price: number, bid: number, ask: number, source: string}|null>}
  */
 async function fetchExtendedHoursQuote(symbol) {
   if (isReplayMode()) return null
-  if (!symbol || !config.fmpKey) return null
+  if (!symbol || !config.marketDataGatewayUrl) return null
   if (!canMakeApiCall()) return null
-  
+
   try {
     trackApiCall()
-    const url = new URL(`${FMP_STABLE_BASE_URL}/aftermarket-quote`)
-    url.searchParams.set("symbol", symbol)
-    url.searchParams.set("apikey", config.fmpKey)
-    const data = await fetchJson(url.toString())
-    const entry = Array.isArray(data) ? data[0] : data
-    
-    if (!entry) return null
-    
-    const bid = parseNumber(entry.bidPrice) ?? parseNumber(entry.bid)
-    const ask = parseNumber(entry.askPrice) ?? parseNumber(entry.ask)
-    
-    // Calculate mid price from bid/ask since extended hours may not have a "price" field
-    const price = parseNumber(entry.price) ?? 
-      (bid !== undefined && ask !== undefined ? (bid + ask) / 2 : null)
-    
+    const data = await fetchGatewayJson("/v1/fmp/aftermarket-quote", { symbol })
+
+    if (!data) return null
+
+    const price = parseNumber(data.price)
     if (typeof price !== "number") return null
-    
+
     return {
       symbol,
       price,
-      bid,
-      ask,
-      volume: parseNumber(entry.volume),
-      change24h: parseNumber(entry.changesPercentage) ?? parseNumber(entry.changePercentage),
-      exchange: entry.exchange || entry.exchangeShortName,
-      source: "fmp_extended",
+      bid: parseNumber(data.bid),
+      ask: parseNumber(data.ask),
+      volume: parseNumber(data.volume),
+      change24h: parseNumber(data.change24h),
+      exchange: data.exchange,
+      source: data.source || "gateway_extended",
     }
   } catch (err) {
     console.error(`Extended hours quote failed for ${symbol}:`, err.message)

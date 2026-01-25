@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
-import { collectionGroup, query, where, orderBy, limit, getDocs, Timestamp } from "firebase/firestore"
+import { collectionGroup, query, where, orderBy, limit, Timestamp } from "firebase/firestore"
 import { db } from "@/lib/firebase"
+import { getDocsWithRetry } from "@/lib/firestore-retry"
 
 export type SymbolSignal = {
   id: string
@@ -45,7 +46,7 @@ export function useSymbolSignals(symbol?: string, maxSignals = 20) {
           limit(maxSignals)
         )
 
-        const snapshot = await getDocs(q)
+        const snapshot = await getDocsWithRetry(q)
         if (cancelled) return
 
         const results: SymbolSignal[] = snapshot.docs.map((doc) => {

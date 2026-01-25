@@ -38,7 +38,20 @@ service cloud.firestore {
         && request.resource.data.brokerAccountKey == uidToAccount(request.auth.uid)
         && request.resource.data.status in ["draft", "approved"]
         && request.resource.data.approvedByUid == request.auth.uid;
-      allow update, delete: if isServiceAccount();
+      // Service accounts can update with valid status transitions:
+      // draft → approved, rejected
+      // approved → executed, rejected, expired
+      // executed, rejected, expired are terminal states (no updates allowed to status)
+      allow update: if isServiceAccount()
+        && (
+          // No status change (other fields being updated)
+          request.resource.data.status == resource.data.status
+          // draft → approved or rejected
+          || (resource.data.status == "draft" && request.resource.data.status in ["approved", "rejected"])
+          // approved → executed, rejected, or expired
+          || (resource.data.status == "approved" && request.resource.data.status in ["executed", "rejected", "expired"])
+        );
+      allow delete: if isServiceAccount();
     }
 
     match /brokerOrders/{requestId} {

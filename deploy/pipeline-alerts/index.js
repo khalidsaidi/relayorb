@@ -129,6 +129,7 @@ const config = {
     "relayorb-market-data-gateway",
     "relayorb-price-streamer",
     "relayorb-refresh",
+    "relayorb-orb-runner",
   ],
 
   // Jobs to monitor for errors

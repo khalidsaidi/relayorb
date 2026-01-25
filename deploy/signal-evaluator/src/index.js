@@ -4,6 +4,8 @@ const fs = require("fs")
 const { GoogleAuth } = require("google-auth-library")
 const { adjustEvaluationTime, isMarketOpen } = require("./marketHours")
 const { createClient } = require("redis")
+const { createCircuitBreaker } = require("../../shared/circuit-breaker")
+const { generateRequestId, withRequestId, createRequestLogger } = require("../../shared/request-id")
 
 const HORIZONS = {
   "1h": 60,
@@ -75,6 +77,16 @@ const config = {
 
 const gatewayAuth = new GoogleAuth()
 let gatewayAuthClient = null
+
+// Circuit breaker for market-data-gateway calls
+const gatewayCircuitBreaker = createCircuitBreaker("market-data-gateway", {
+  failureThreshold: 5,
+  successThreshold: 2,
+  timeout: 30000,
+  onStateChange: (oldState, newState) => {
+    console.log(`Gateway circuit breaker: ${oldState} -> ${newState}`)
+  },
+})
 
 const EXPECTED_REGION = "us-west1"
 const DMI_PRODUCT_PATHS = [
@@ -619,8 +631,10 @@ async function fetchGatewayJson(path, params) {
     )
   }
   try {
-    const authHeaders = await getGatewayAuthHeaders()
-    const data = await fetchJson(url, authHeaders ? { headers: authHeaders } : undefined)
+    const data = await gatewayCircuitBreaker.execute(async () => {
+      const authHeaders = await getGatewayAuthHeaders()
+      return fetchJson(url, authHeaders ? { headers: authHeaders } : undefined)
+    })
     if (shouldEmit) {
       await publishPipelineEvent(
         buildPipelineEvent({
@@ -664,6 +678,7 @@ async function fetchGatewayJson(path, params) {
           meta: {
             endpointName,
             paramsHash,
+            circuitBreakerOpen: err?.message?.includes("Circuit breaker"),
           },
           error: { message: err?.message ? String(err.message) : "Gateway error" },
         })

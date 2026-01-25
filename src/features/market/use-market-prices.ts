@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
-import { doc, onSnapshot } from "firebase/firestore"
+import { doc } from "firebase/firestore"
 import { db } from "@/lib/firebase"
+import { onSnapshotWithRetry } from "@/lib/firestore-retry"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
 
 export type MarketPrice = {
@@ -34,25 +35,29 @@ export function useMarketPrices() {
             ? doc(db, "replay", "controls", "runs", replayRunId, "market", "prices")
             : doc(db, "market", "prices")
 
-        const unsub = onSnapshot(pricesRef, (snap) => {
-            if (snap.exists()) {
-                const data = snap.data()
-                const items = data.items || []
-                const priceMap: Record<string, number> = {}
+        const unsub = onSnapshotWithRetry(
+            pricesRef,
+            (snap) => {
+                if (snap.exists()) {
+                    const data = snap.data()
+                    const items = data.items || []
+                    const priceMap: Record<string, number> = {}
 
-                items.forEach((item: MarketPrice) => {
-                    if (item.symbol && typeof item.price === "number") {
-                        priceMap[item.symbol] = item.price
-                    }
-                })
+                    items.forEach((item: MarketPrice) => {
+                        if (item.symbol && typeof item.price === "number") {
+                            priceMap[item.symbol] = item.price
+                        }
+                    })
 
-                setLivePrices(priceMap)
+                    setLivePrices(priceMap)
+                }
+                setLiveLoaded(true)
+            },
+            (err) => {
+                console.error("Market prices subscription failed after retries:", err)
+                setLiveLoaded(true)
             }
-            setLiveLoaded(true)
-        }, (err) => {
-            console.error("Market prices subscription failed:", err)
-            setLiveLoaded(true)
-        })
+        )
 
         return () => unsub()
     }, [replayActive, replayRunId, replayBlocked])
@@ -65,25 +70,29 @@ export function useMarketPrices() {
             ? doc(db, "replay", "controls", "runs", replayRunId, "market", "prices_snapshot")
             : doc(db, "market", "prices_snapshot")
 
-        const unsub = onSnapshot(snapshotRef, (snap) => {
-            if (snap.exists()) {
-                const data = snap.data()
-                const items = data.items || []
-                const priceMap: Record<string, number> = {}
+        const unsub = onSnapshotWithRetry(
+            snapshotRef,
+            (snap) => {
+                if (snap.exists()) {
+                    const data = snap.data()
+                    const items = data.items || []
+                    const priceMap: Record<string, number> = {}
 
-                items.forEach((item: MarketPrice) => {
-                    if (item.symbol && typeof item.price === "number") {
-                        priceMap[item.symbol] = item.price
-                    }
-                })
+                    items.forEach((item: MarketPrice) => {
+                        if (item.symbol && typeof item.price === "number") {
+                            priceMap[item.symbol] = item.price
+                        }
+                    })
 
-                setSnapshotPrices(priceMap)
+                    setSnapshotPrices(priceMap)
+                }
+                setSnapshotLoaded(true)
+            },
+            (err) => {
+                console.error("Market price snapshot subscription failed after retries:", err)
+                setSnapshotLoaded(true)
             }
-            setSnapshotLoaded(true)
-        }, (err) => {
-            console.error("Market price snapshot subscription failed:", err)
-            setSnapshotLoaded(true)
-        })
+        )
 
         return () => unsub()
     }, [replayActive, replayRunId, replayBlocked])

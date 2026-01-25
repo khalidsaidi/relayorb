@@ -16,7 +16,7 @@ import { useTranslation } from "react-i18next"
 import { Activity, ChevronDown, Clock, HelpCircle, Target, Timer } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   Dialog,
@@ -715,6 +715,8 @@ export default function OrbRobotPage() {
     ? t("orb.context.positionPending")
     : t("orb.context.positionFlat")
   const orbRunnerBase = (import.meta.env.VITE_ORB_RUNNER_URL || "").replace(/\/+$/, "")
+  const orbRangeMinutesLabel =
+    activeProfile.orb?.range_minutes ?? DEFAULT_DAILY_PROFILE.orb.range_minutes
   const replayAsOfDate = resolveReplayAsOf(replayControls?.asOf)
   const replayAsOfEt = replayAsOfDate ? formatEtDateTime(replayAsOfDate) : ""
   const replayAsOfLocal = replayAsOfDate ? formatLocalDateTime(replayAsOfDate) : ""
@@ -726,8 +728,7 @@ export default function OrbRobotPage() {
   const replayReady = replayMode && replayControls?.activeRunId && replayControls?.datasetId
   const replayOpenMinutes = 9 * 60 + 30
   const replayCloseMinutes = 16 * 60
-  const replayRangeMinutes =
-    activeProfile.orb?.range_minutes ?? DEFAULT_DAILY_PROFILE.orb.range_minutes
+  const replayRangeMinutes = orbRangeMinutesLabel
   const replayEntryDelay =
     activeProfile.orb?.entry_delay_minutes ?? DEFAULT_DAILY_PROFILE.orb.entry_delay_minutes
   const replayForceFlat =
@@ -742,6 +743,17 @@ export default function OrbRobotPage() {
     replayCloseMinutes -
     Math.max(replayForceFlat, DEFAULT_DAILY_PROFILE.exit.force_flat_minutes_before_close)
   const runUntilStopPlaceholder = formatEtTimeInput(replayLiquidationMinute)
+  const orbRangeStartLabel = formatEtTimeInput(replayOpenMinutes)
+  const orbRangeEndLabel = formatEtTimeInput(replayRangeEnd)
+  const orbRangeWindowLabel = `${orbRangeStartLabel}-${orbRangeEndLabel} ET`
+  const currentEtMinutes = replayAsOfMinutes ?? getEtMinutes(new Date())
+  const currentEtLabel =
+    typeof currentEtMinutes === "number" ? formatEtTime(currentEtMinutes) : ""
+  const orbHighHeader = `${t("orb.universe.orbHigh")} (${orbRangeWindowLabel})`
+  const rangeComplete = Boolean(stateDoc?.lastOpenRangeAt)
+  const capturedLabel = stateDoc?.lastOpenRangeAt
+    ? formatTimestamp(stateDoc.lastOpenRangeAt)
+    : t("orb.universe.capturedPending")
   const replaySteps = useMemo(() => {
     const steps = []
     if (activeMode === "daily_universe") {
@@ -1387,8 +1399,8 @@ export default function OrbRobotPage() {
         </div>
       </header>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-        <div className="space-y-6">
+      <div className="grid gap-6 lg:grid-cols-12">
+        <div className="order-1 space-y-6 lg:order-1 lg:col-span-8">
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-sm">
@@ -1900,13 +1912,134 @@ export default function OrbRobotPage() {
             </CardContent>
           </Card>
 
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">{t("orb.status.title")}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">{t("orb.status.state")}</span>
+                <span>{stateDoc?.status || t("common.na")}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">{t("orb.status.session")}</span>
+                <span>{stateDoc?.sessionKey || t("common.na")}</span>
+              </div>
+              <Separator />
+              {activeMode === "daily_universe" ? (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">{t("orb.status.lastUniverse")}</span>
+                    <span>{formatTimestamp(stateDoc?.lastUniverseAt)}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">{t("orb.status.lastOpenRange")}</span>
+                    <span>{formatTimestamp(stateDoc?.lastOpenRangeAt)}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">{t("orb.status.lastBreakout")}</span>
+                    <span>{formatTimestamp(stateDoc?.lastBreakoutAt)}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">{t("orb.status.lastLiquidation")}</span>
+                    <span>{formatTimestamp(stateDoc?.lastLiquidationAt)}</span>
+                  </div>
+                  <Separator />
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">{t("orb.status.nextOpenRange")}</span>
+                    <span>{stateDoc?.nextOpenRangeLabel || t("common.na")}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">{t("orb.status.nextBreakout")}</span>
+                    <span>{stateDoc?.nextBreakoutLabel || t("common.na")}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">
+                      {t("orb.status.nextLiquidation")}
+                    </span>
+                    <span>{stateDoc?.nextLiquidationLabel || t("common.na")}</span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">{t("orb.status.lastOpenRange")}</span>
+                    <span>{formatTimestamp(stateDoc?.lastOpenRangeAt)}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">{t("orb.status.lastEntryCheck")}</span>
+                    <span>{formatTimestamp(stateDoc?.lastEntryCheckAt)}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">{t("orb.status.lastEntry")}</span>
+                    <span>{formatTimestamp(stateDoc?.lastEntryAt)}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">{t("orb.status.lastExit")}</span>
+                    <span>{formatTimestamp(stateDoc?.lastExitAt)}</span>
+                  </div>
+                  <Separator />
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">{t("orb.status.nextOpenRange")}</span>
+                    <span>{stateDoc?.nextOpenRangeLabel || t("common.na")}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">{t("orb.status.nextEntry")}</span>
+                    <span>{stateDoc?.nextEntryLabel || t("common.na")}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">
+                      {t("orb.status.nextLiquidation")}
+                    </span>
+                    <span>{stateDoc?.nextLiquidationLabel || t("common.na")}</span>
+                  </div>
+                </>
+              )}
+              {stateDoc?.lastError ? (
+                <>
+                  <Separator />
+                  <div className="text-xs text-rose-600">{stateDoc.lastError}</div>
+                </>
+              ) : null}
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="order-2 space-y-6 lg:order-3 lg:col-span-12">
           {activeMode === "daily_universe" ? (
             <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-sm">
-                  <Activity className="h-4 w-4" />
-                  {t("orb.universe.title")}
-                </CardTitle>
+              <CardHeader className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <CardTitle className="flex items-center gap-2 text-sm">
+                    <Activity className="h-4 w-4" />
+                    {t("orb.universe.title")}
+                  </CardTitle>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                      {t("orb.universe.rangeWindowLabel")}
+                    </div>
+                    <div className="text-xs font-medium">{orbRangeWindowLabel}</div>
+                  </div>
+                  <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                      {t("orb.universe.currentTimeLabel")}
+                    </div>
+                    <div className="text-xs font-medium">
+                      {currentEtLabel || t("common.na")}
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                      {t("orb.universe.capturedAtLabel")}
+                    </div>
+                    <div className="text-xs font-medium">{capturedLabel}</div>
+                  </div>
+                </div>
+                <CardDescription className="text-xs text-muted-foreground">
+                  {t("orb.universe.statusLegend")}
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 {universe.length === 0 ? (
@@ -1921,27 +2054,35 @@ export default function OrbRobotPage() {
                         <TableHead>{t("orb.universe.price")}</TableHead>
                         <TableHead>{t("orb.universe.volume")}</TableHead>
                         <TableHead>{t("orb.universe.dollarVolume")}</TableHead>
-                        <TableHead>{t("orb.universe.orbHigh")}</TableHead>
+                        <TableHead>{orbHighHeader}</TableHead>
                         <TableHead>{t("orb.universe.status")}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {universe.map((item) => (
-                        <TableRow key={item.symbol}>
-                          <TableCell className="font-medium">{item.symbol}</TableCell>
-                          <TableCell>{formatAssetPrice(item.price, "stock")}</TableCell>
-                          <TableCell>{formatNumber(item.volume)}</TableCell>
-                          <TableCell>{formatNumber(item.dollarVolume)}</TableCell>
-                          <TableCell>{formatAssetPrice(orbHighs[item.symbol], "stock")}</TableCell>
-                          <TableCell>
-                            {tradedSymbols.has(item.symbol) ? (
-                              <Badge variant="secondary">{t("orb.universe.traded")}</Badge>
-                            ) : (
-                              <Badge variant="outline">{t("orb.universe.pending")}</Badge>
-                            )}
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                      {universe.map((item) => {
+                        const orbHigh = orbHighs[item.symbol]
+                        const statusLabel = !rangeComplete
+                          ? t("orb.universe.rangePending")
+                          : tradedSymbols.has(item.symbol)
+                          ? t("orb.universe.traded")
+                          : t("orb.universe.pending")
+                        return (
+                          <TableRow key={item.symbol}>
+                            <TableCell className="font-medium">{item.symbol}</TableCell>
+                            <TableCell>{formatAssetPrice(item.price, "stock")}</TableCell>
+                            <TableCell>{formatNumber(item.volume)}</TableCell>
+                            <TableCell>{formatNumber(item.dollarVolume)}</TableCell>
+                            <TableCell>{formatAssetPrice(orbHigh, "stock")}</TableCell>
+                            <TableCell>
+                              <Badge
+                                variant={tradedSymbols.has(item.symbol) ? "secondary" : "outline"}
+                              >
+                                {statusLabel}
+                              </Badge>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
                     </TableBody>
                   </Table>
                 )}
@@ -2007,6 +2148,9 @@ export default function OrbRobotPage() {
                 <Timer className="h-4 w-4" />
                 {t("orb.orders.title")}
               </CardTitle>
+              <CardDescription className="text-xs text-muted-foreground">
+                {t("orb.orders.help")}
+              </CardDescription>
             </CardHeader>
             <CardContent>
               {requests.length === 0 ? (
@@ -2020,24 +2164,89 @@ export default function OrbRobotPage() {
                       <TableHead>{t("orb.orders.qty")}</TableHead>
                       <TableHead>{t("orb.orders.price")}</TableHead>
                       <TableHead>{t("orb.orders.status")}</TableHead>
-                      <TableHead>{t("orb.orders.createdAt")}</TableHead>
+                      <TableHead>{t("orb.orders.timing")}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {requests.map((request) => (
-                      <TableRow key={request.id}>
-                        <TableCell>{request.orderSnapshot?.symbol}</TableCell>
-                        <TableCell className="uppercase">
-                          {request.orderSnapshot?.side || "—"}
-                        </TableCell>
-                        <TableCell>{formatNumber(request.orderSnapshot?.quantity)}</TableCell>
-                        <TableCell>
-                          {formatAssetPrice(request.orderSnapshot?.limitPrice, "stock")}
-                        </TableCell>
-                        <TableCell>{request.status}</TableCell>
-                        <TableCell>{formatTimestamp(request.createdAt)}</TableCell>
-                      </TableRow>
-                    ))}
+                    {requests.map((request) => {
+                      const snapshot = request.orderSnapshot
+                      const orderType = snapshot?.orderType || "limit"
+                      const orderTypeLabel = orderType === "market" ? "MKT" : "LIMIT"
+                      const priceLabel =
+                        orderType === "market"
+                          ? "MKT"
+                          : formatAssetPrice(snapshot?.limitPrice, "stock")
+                      const timeInForce = snapshot?.timeInForce || "DAY"
+                      const statusLabel = request.status
+                        ? t(`ibkr.status.${request.status}`)
+                        : t("common.na")
+                      const modeLabel = request.mode ? t(`ibkr.mode.${request.mode}`) : t("common.na")
+                      const priceMetaParts = [orderTypeLabel, timeInForce]
+                      if (typeof snapshot?.stopLoss === "number") {
+                        priceMetaParts.push(
+                          t("orb.orders.stopLoss", {
+                            value: formatAssetPrice(snapshot.stopLoss, "stock"),
+                          })
+                        )
+                      }
+                      if (typeof snapshot?.takeProfit === "number") {
+                        priceMetaParts.push(
+                          t("orb.orders.takeProfit", {
+                            value: formatAssetPrice(snapshot.takeProfit, "stock"),
+                          })
+                        )
+                      }
+                      const priceMeta = priceMetaParts.filter(Boolean).join(" | ")
+                      const statusMeta = [statusLabel, modeLabel].filter(Boolean).join(" | ")
+                      const timingParts = []
+                      if (request.submittedAt) {
+                        timingParts.push(
+                          `${t("orb.orders.timingSubmitted")}: ${formatTimestamp(request.submittedAt)}`
+                        )
+                      }
+                      if (request.filledAt) {
+                        timingParts.push(
+                          `${t("orb.orders.timingFilled")}: ${formatTimestamp(request.filledAt)}`
+                        )
+                      }
+                      if (!request.filledAt && request.updatedAt) {
+                        timingParts.push(
+                          `${t("orb.orders.timingUpdated")}: ${formatTimestamp(request.updatedAt)}`
+                        )
+                      }
+                      const timingMeta = timingParts.join(" | ")
+                      return (
+                        <TableRow key={request.id}>
+                          <TableCell>{snapshot?.symbol || "—"}</TableCell>
+                          <TableCell className="uppercase">{snapshot?.side || "—"}</TableCell>
+                          <TableCell>{formatNumber(snapshot?.quantity)}</TableCell>
+                          <TableCell>
+                            <div className="flex flex-col">
+                              <span>{priceLabel}</span>
+                              <span className="text-[10px] uppercase text-muted-foreground">
+                                {priceMeta}
+                              </span>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-[11px] text-muted-foreground">
+                            <div className="flex flex-col gap-1">
+                              <span className="uppercase text-foreground">{statusMeta}</span>
+                              {request.statusReason ? (
+                                <span className="text-amber-700">{request.statusReason}</span>
+                              ) : null}
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-[11px] text-muted-foreground">
+                            <div className="flex flex-col gap-1">
+                              <span>
+                                {t("orb.orders.timingCreated")}: {formatTimestamp(request.createdAt)}
+                              </span>
+                              {timingMeta ? <span>{timingMeta}</span> : null}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
                   </TableBody>
                 </Table>
               )}
@@ -2045,7 +2254,7 @@ export default function OrbRobotPage() {
           </Card>
         </div>
 
-        <div className="space-y-6">
+        <div className="order-3 space-y-6 lg:order-2 lg:col-span-4">
           <Card>
             <CardHeader>
               <div className="flex items-start justify-between gap-3">
@@ -2322,97 +2531,6 @@ export default function OrbRobotPage() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">{t("orb.status.title")}</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm">
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">{t("orb.status.state")}</span>
-                <span>{stateDoc?.status || t("common.na")}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">{t("orb.status.session")}</span>
-                <span>{stateDoc?.sessionKey || t("common.na")}</span>
-              </div>
-              <Separator />
-              {activeMode === "daily_universe" ? (
-                <>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{t("orb.status.lastUniverse")}</span>
-                    <span>{formatTimestamp(stateDoc?.lastUniverseAt)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{t("orb.status.lastOpenRange")}</span>
-                    <span>{formatTimestamp(stateDoc?.lastOpenRangeAt)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{t("orb.status.lastBreakout")}</span>
-                    <span>{formatTimestamp(stateDoc?.lastBreakoutAt)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{t("orb.status.lastLiquidation")}</span>
-                    <span>{formatTimestamp(stateDoc?.lastLiquidationAt)}</span>
-                  </div>
-                  <Separator />
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{t("orb.status.nextOpenRange")}</span>
-                    <span>{stateDoc?.nextOpenRangeLabel || t("common.na")}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{t("orb.status.nextBreakout")}</span>
-                    <span>{stateDoc?.nextBreakoutLabel || t("common.na")}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">
-                      {t("orb.status.nextLiquidation")}
-                    </span>
-                    <span>{stateDoc?.nextLiquidationLabel || t("common.na")}</span>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{t("orb.status.lastOpenRange")}</span>
-                    <span>{formatTimestamp(stateDoc?.lastOpenRangeAt)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{t("orb.status.lastEntryCheck")}</span>
-                    <span>{formatTimestamp(stateDoc?.lastEntryCheckAt)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{t("orb.status.lastEntry")}</span>
-                    <span>{formatTimestamp(stateDoc?.lastEntryAt)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{t("orb.status.lastExit")}</span>
-                    <span>{formatTimestamp(stateDoc?.lastExitAt)}</span>
-                  </div>
-                  <Separator />
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{t("orb.status.nextOpenRange")}</span>
-                    <span>{stateDoc?.nextOpenRangeLabel || t("common.na")}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{t("orb.status.nextEntry")}</span>
-                    <span>{stateDoc?.nextEntryLabel || t("common.na")}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">
-                      {t("orb.status.nextLiquidation")}
-                    </span>
-                    <span>{stateDoc?.nextLiquidationLabel || t("common.na")}</span>
-                  </div>
-                </>
-              )}
-              {stateDoc?.lastError ? (
-                <>
-                  <Separator />
-                  <div className="text-xs text-rose-600">{stateDoc.lastError}</div>
-                </>
-              ) : null}
-            </CardContent>
-          </Card>
         </div>
       </div>
     </div>

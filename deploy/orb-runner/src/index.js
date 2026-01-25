@@ -3,6 +3,8 @@ const http = require("http")
 const crypto = require("crypto")
 const fs = require("fs")
 const { GoogleAuth } = require("google-auth-library")
+const { createCircuitBreaker } = require("../../shared/circuit-breaker")
+const { generateRequestId, withRequestId, createRequestLogger } = require("../../shared/request-id")
 const { buildTradeContext } = require("./context")
 const { resolveEntryBehavior } = require("./behaviors/entry")
 const { resolveExitBehavior } = require("./behaviors/exit")
@@ -198,6 +200,19 @@ const db = admin.firestore()
 const FieldValue = admin.firestore.FieldValue
 const gatewayAuth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] })
 let gatewayAuthClient = null
+
+// Circuit breaker for market-data-gateway calls
+const gatewayCircuitBreaker = createCircuitBreaker("market-data-gateway", {
+  failureThreshold: 5,
+  successThreshold: 2,
+  timeout: 30000, // 30 seconds before attempting recovery
+  onStateChange: (oldState, newState, status) => {
+    console.log(`Gateway circuit breaker: ${oldState} -> ${newState}`, status)
+  },
+  onFailure: (error) => {
+    console.error("Gateway circuit breaker recorded failure:", error.message)
+  },
+})
 
 const ET_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
@@ -445,10 +460,14 @@ async function fetchJson(url, options) {
   return res.json()
 }
 
-async function fetchGatewayJson(path, params) {
-  const url = buildGatewayUrl(path, params)
-  const headers = await getGatewayAuthHeaders()
-  return fetchJson(url, headers ? { headers } : undefined)
+async function fetchGatewayJson(path, params, requestId) {
+  return gatewayCircuitBreaker.execute(async () => {
+    const url = buildGatewayUrl(path, params)
+    const authHeaders = await getGatewayAuthHeaders()
+    const reqId = requestId || generateRequestId()
+    const headers = withRequestId(reqId, authHeaders || {}).headers
+    return fetchJson(url, { headers })
+  })
 }
 
 function deepClone(value) {
@@ -1154,13 +1173,18 @@ async function runDailyUniverseCycle({
       status: "running",
       universe: [],
       universeDateKey: null,
+      lastUniverseAt: null,
       orbHighs: {},
       orbLows: {},
+      lastOpenRangeAt: null,
+      lastBreakoutAt: null,
+      lastLiquidationAt: null,
       tradePlaced: [],
       tradeCounts: {},
       lastTradeMinutes: {},
       tradesToday: 0,
       lastBreakoutCheckMinute: null,
+      lastError: null,
     }
     await setState({
       status: "running",
@@ -1168,8 +1192,12 @@ async function runDailyUniverseCycle({
       mode: "daily_universe",
       universe: [],
       universeDateKey: null,
+      lastUniverseAt: null,
       orbHighs: {},
       orbLows: {},
+      lastOpenRangeAt: null,
+      lastBreakoutAt: null,
+      lastLiquidationAt: null,
       tradePlaced: [],
       tradeCounts: {},
       lastTradeMinutes: {},
@@ -1216,7 +1244,12 @@ async function runDailyUniverseCycle({
 
   const inSession = market.minutes >= market.openMinutes && market.minutes <= market.closeMinutes
   const openRangeMinute = market.openMinutes + profile.orb.range_minutes
-  if (!state?.lastOpenRangeAt && market.minutes >= openRangeMinute && inSession) {
+  const hasOrbHighs = Object.keys(state?.orbHighs || {}).length > 0
+  const inRangeWindow = market.minutes >= market.openMinutes && market.minutes < openRangeMinute
+  const shouldFinalizeRange =
+    inSession && market.minutes >= openRangeMinute && (!state?.lastOpenRangeAt || !hasOrbHighs)
+  const shouldUpdateRange = inSession && (inRangeWindow || shouldFinalizeRange)
+  if (shouldUpdateRange) {
     try {
       const limit = resolveCandleLimit(market)
       const results = await mapWithConcurrency(universe, 5, async (item) => {
@@ -1234,12 +1267,20 @@ async function runDailyUniverseCycle({
           orbLows[entry.symbol] = entry.low ?? null
         }
       })
-      await setState({
-        orbHighs,
-        orbLows,
-        lastOpenRangeAt: FieldValue.serverTimestamp(),
-        lastError: Object.keys(orbHighs).length ? null : "ORB range empty",
-      })
+      const hasRanges = Object.keys(orbHighs).length > 0
+      const nextOrbHighs = hasRanges ? orbHighs : (state?.orbHighs || {})
+      const nextOrbLows = hasRanges ? orbLows : (state?.orbLows || {})
+      const payload = {
+        orbHighs: nextOrbHighs,
+        orbLows: nextOrbLows,
+      }
+      if (shouldFinalizeRange) {
+        payload.lastOpenRangeAt = hasRanges ? FieldValue.serverTimestamp() : null
+        payload.lastError = hasRanges ? null : "ORB range empty"
+      } else if (hasRanges) {
+        payload.lastError = null
+      }
+      await setState(payload)
     } catch (error) {
       await setState({ lastError: `ORB range failed: ${error.message}` })
     }
@@ -1250,7 +1291,9 @@ async function runDailyUniverseCycle({
   const breakoutInterval = Number.isFinite(profile.orb.breakout_check_interval_minutes)
     ? profile.orb.breakout_check_interval_minutes
     : 0
+  const rangeComplete = Boolean(state?.lastOpenRangeAt)
   const shouldCheckBreakout =
+    rangeComplete &&
     inSession &&
     market.minutes >= breakoutStartMinute &&
     (breakoutInterval > 0
@@ -1570,6 +1613,13 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
       orbRange: null,
       barsSinceBreakout: 0,
       sessionStartNetLiq: null,
+      lastOpenRangeAt: null,
+      lastEntryCheckAt: null,
+      lastEntryAt: null,
+      lastExitAt: null,
+      lastForceFlatAt: null,
+      lastLiquidationAt: null,
+      lastError: null,
     }
     await setState({
       status: "running",
@@ -1588,6 +1638,12 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
       orbRange: null,
       barsSinceBreakout: 0,
       sessionStartNetLiq: null,
+      lastOpenRangeAt: null,
+      lastEntryCheckAt: null,
+      lastEntryAt: null,
+      lastExitAt: null,
+      lastForceFlatAt: null,
+      lastLiquidationAt: null,
       lastError: null,
       ...labels,
     })

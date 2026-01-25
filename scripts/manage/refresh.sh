@@ -10,6 +10,7 @@ SERVICE_DIR="$ROOT_DIR/deploy/refresh-service"
 REGION=$(resolve_region)
 ALLOW_UNAUTHENTICATED=${ALLOW_UNAUTHENTICATED:-true}
 ORB_RUNNER_SERVICE_NAME=${ORB_RUNNER_SERVICE_NAME:-relayorb-orb-runner}
+MARKET_DATA_GATEWAY_SERVICE_NAME=${MARKET_DATA_GATEWAY_SERVICE_NAME:-relayorb-market-data-gateway}
 
 usage() {
   cat <<USAGE
@@ -32,6 +33,11 @@ Env:
   ORB_RUNNER_AUTH        true/false (default: true)
   ORB_RUNNER_AUDIENCE    Optional audience override for ID token
   ORB_RUNNER_SERVICE_NAME  Cloud Run service name (default: relayorb-orb-runner)
+  MARKET_DATA_GATEWAY_URL       Market data gateway base URL (auto-resolved if unset)
+  MARKET_DATA_GATEWAY_AUTH      true/false (default: true)
+  MARKET_DATA_GATEWAY_AUDIENCE  Optional audience override for ID token
+  MARKET_DATA_GATEWAY_SERVICE_NAME  Cloud Run service name (default: relayorb-market-data-gateway)
+  CORS_ORIGIN             Allowed browser origin (default: *)
 USAGE
 }
 
@@ -64,14 +70,48 @@ resolve_orb_runner_auth() {
   fi
 }
 
+resolve_market_data_gateway_url() {
+  if [ -n "${MARKET_DATA_GATEWAY_URL:-}" ]; then
+    echo "$MARKET_DATA_GATEWAY_URL"
+    return
+  fi
+  require_cmd gcloud
+  gcloud run services describe "$MARKET_DATA_GATEWAY_SERVICE_NAME" --region "$REGION" \
+    --format="value(status.url)" 2>/dev/null || true
+}
+
+resolve_market_data_gateway_auth() {
+  if [ -n "${MARKET_DATA_GATEWAY_AUTH:-}" ]; then
+    echo "$MARKET_DATA_GATEWAY_AUTH"
+  else
+    echo "true"
+  fi
+}
+
 build_env_vars() {
-  local url auth envs audience
+  local url auth envs audience gateway_url gateway_auth gateway_audience cors_origin
   url=$(require_orb_runner_url)
   auth=$(resolve_orb_runner_auth)
   envs="ORB_RUNNER_URL=${url},ORB_RUNNER_AUTH=${auth}"
   audience="${ORB_RUNNER_AUDIENCE:-}"
   if [ -n "$audience" ]; then
     envs="${envs},ORB_RUNNER_AUDIENCE=${audience}"
+  fi
+  gateway_url=$(resolve_market_data_gateway_url)
+  if [ -n "$gateway_url" ]; then
+    envs="${envs},MARKET_DATA_GATEWAY_URL=${gateway_url}"
+  fi
+  gateway_auth=$(resolve_market_data_gateway_auth)
+  if [ -n "$gateway_auth" ]; then
+    envs="${envs},MARKET_DATA_GATEWAY_AUTH=${gateway_auth}"
+  fi
+  gateway_audience="${MARKET_DATA_GATEWAY_AUDIENCE:-}"
+  if [ -n "$gateway_audience" ]; then
+    envs="${envs},MARKET_DATA_GATEWAY_AUDIENCE=${gateway_audience}"
+  fi
+  cors_origin="${CORS_ORIGIN:-}"
+  if [ -n "$cors_origin" ]; then
+    envs="${envs},CORS_ORIGIN=${cors_origin}"
   fi
   echo "$envs"
 }

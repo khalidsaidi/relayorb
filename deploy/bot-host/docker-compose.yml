@@ -54,7 +54,7 @@ services:
     environment:
       - PORT=8080
       - MARKET_DATA_GATEWAY_URL=${MARKET_DATA_GATEWAY_URL:-}
-      - FMP_API_KEY=${FMP_API_KEY:-}
+      - MARKET_DATA_GATEWAY_AUTH=${MARKET_DATA_GATEWAY_AUTH:-true}
       - POLYGON_API_KEY=${POLYGON_API_KEY:-}
       - FIREBASE_PROJECT_ID=relayorb
       - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
