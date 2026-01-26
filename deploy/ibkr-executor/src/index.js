@@ -486,6 +486,7 @@ async function flushAccountSummary() {
       brokerAccountKey: config.brokerAccountKey,
       account: state.ibAccount || state.brokerAccount?.ibAccountCode || null,
       currency: state.accountSummary.currency || "USD",
+      mode: state.ibMode || "paper",
       values: {
         netLiquidation: state.accountSummary.netLiquidation ?? null,
         totalCash: state.accountSummary.totalCash ?? null,

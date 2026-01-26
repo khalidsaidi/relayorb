@@ -734,6 +734,7 @@ export type BrokerAccountSummaryDoc = {
   brokerAccountKey: BrokerAccountKey
   account?: string
   currency?: string
+  mode?: ExecutionMode
   values?: {
     netLiquidation?: number
     totalCash?: number
