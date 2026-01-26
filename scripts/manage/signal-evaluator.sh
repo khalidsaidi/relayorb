@@ -67,9 +67,10 @@ build_env_vars() {
   auth=$(resolve_gateway_auth)
   envs="MARKET_DATA_GATEWAY_URL=${url}|MARKET_DATA_GATEWAY_AUTH=${auth}"
   audience="${MARKET_DATA_GATEWAY_AUDIENCE:-}"
-  if [ -n "$audience" ]; then
-    envs="${envs}|MARKET_DATA_GATEWAY_AUDIENCE=${audience}"
+  if [ -z "$audience" ]; then
+    audience="$url"
   fi
+  envs="${envs}|MARKET_DATA_GATEWAY_AUDIENCE=${audience}"
   echo "$envs"
 }
 

@@ -1233,16 +1233,37 @@ async function writeHealthStatus() {
   await db.doc(ORB_HEALTH_DOC).set(payload, { merge: true })
 }
 
-async function recordRunRequested() {
-  const targets = Array.from(controlsByAccount.entries())
-    .filter(([, controls]) => controls?.enabled === true)
-    .map(([accountKey]) => accountKey)
+async function recordRunRequested(targetAccountKeys) {
+  const targets = (targetAccountKeys && targetAccountKeys.length
+    ? targetAccountKeys
+    : Array.from(controlsByAccount.entries())
+        .filter(([, controls]) => controls?.enabled === true)
+        .map(([accountKey]) => accountKey)
+  ).filter(Boolean)
   if (!targets.length) return
   await Promise.all(
     targets.map((accountKey) =>
       updateOrbState(accountKey, {
         lastRunRequestedAt: FieldValue.serverTimestamp(),
         lastRunRequestedSource: "manual",
+      })
+    )
+  )
+}
+
+async function recordForceUniverse(targetAccountKeys) {
+  const targets = (targetAccountKeys && targetAccountKeys.length
+    ? targetAccountKeys
+    : Array.from(controlsByAccount.entries())
+        .filter(([, controls]) => controls?.enabled === true)
+        .map(([accountKey]) => accountKey)
+  ).filter(Boolean)
+  if (!targets.length) return
+  await Promise.all(
+    targets.map((accountKey) =>
+      updateOrbState(accountKey, {
+        forceUniverse: true,
+        forceUniverseRequestedAt: FieldValue.serverTimestamp(),
       })
     )
   )
@@ -1390,6 +1411,8 @@ async function runDailyUniverseCycle({
       lastTradeMinutes: {},
       tradesToday: 0,
       lastBreakoutCheckMinute: null,
+      forceUniverse: false,
+      forceUniverseRequestedAt: null,
       lastError: null,
     }
     await setState({
@@ -1409,6 +1432,8 @@ async function runDailyUniverseCycle({
       lastTradeMinutes: {},
       tradesToday: 0,
       lastBreakoutCheckMinute: null,
+      forceUniverse: false,
+      forceUniverseRequestedAt: null,
       lastError: null,
       ...labels,
     })
@@ -1419,17 +1444,25 @@ async function runDailyUniverseCycle({
   state = getState()
   const premarket = market.minutes < market.openMinutes
   const needsUniverse = state?.universeDateKey !== market.dateKey
-  const allowLateUniverse = clock?.mode === "replay" && !premarket && needsUniverse
+  const forceUniverse = state?.forceUniverse === true
+  const allowLateUniverse =
+    (clock?.mode === "replay" && !premarket && needsUniverse) ||
+    (!premarket && needsUniverse && forceUniverse)
   if (premarket || allowLateUniverse) {
     if (needsUniverse) {
       try {
         const universe = await fetchUniverse(profile, clock)
-        await setState({
+        const payload = {
           universe,
           universeDateKey: market.dateKey,
           lastUniverseAt: FieldValue.serverTimestamp(),
           lastError: universe.length ? null : "Universe empty after filter",
-        })
+        }
+        if (forceUniverse) {
+          payload.forceUniverse = false
+          payload.forceUniverseRequestedAt = null
+        }
+        await setState(payload)
       } catch (error) {
         await setState({ lastError: `Universe fetch failed: ${error.message}` })
       }
@@ -2430,7 +2463,8 @@ async function start() {
       res.end()
       return
     }
-    if (req.url === "/health") {
+    const requestUrl = new URL(req.url || "/", "http://localhost")
+    if (requestUrl.pathname === "/health") {
       const accounts = Array.from(controlsByAccount.entries())
         .map(([accountKey, controls]) => {
           const state = stateByAccount.get(accountKey) || {}
@@ -2455,14 +2489,27 @@ async function start() {
       return
     }
 
-    if (req.url === "/run" && req.method === "POST") {
-      recordRunRequested().catch((err) => {
+    if (requestUrl.pathname === "/run" && req.method === "POST") {
+      const forceUniverse =
+        ["1", "true", "yes"].includes(requestUrl.searchParams.get("forceUniverse") || "") ||
+        ["1", "true", "yes"].includes(requestUrl.searchParams.get("force_universe") || "")
+      const targetAccount =
+        requestUrl.searchParams.get("account") ||
+        requestUrl.searchParams.get("brokerAccountKey") ||
+        requestUrl.searchParams.get("broker_account_key")
+      const targets = targetAccount ? [targetAccount] : null
+      recordRunRequested(targets).catch((err) => {
         console.error("ORB run record failed:", err.message)
       })
+      if (forceUniverse) {
+        recordForceUniverse(targets).catch((err) => {
+          console.error("ORB force-universe record failed:", err.message)
+        })
+      }
       runOrbCycle()
         .then(() => {
           res.writeHead(202, { "Content-Type": "application/json" })
-          res.end(JSON.stringify({ ok: true }))
+          res.end(JSON.stringify({ ok: true, forceUniverse: forceUniverse || false }))
         })
         .catch((err) => {
           res.writeHead(500, { "Content-Type": "application/json" })

@@ -114,9 +114,10 @@ build_env_vars() {
     envs="${envs}|MARKET_DATA_GATEWAY_AUTH=${gateway_auth}"
   fi
   gateway_audience="${MARKET_DATA_GATEWAY_AUDIENCE:-}"
-  if [ -n "$gateway_audience" ]; then
-    envs="${envs}|MARKET_DATA_GATEWAY_AUDIENCE=${gateway_audience}"
+  if [ -z "$gateway_audience" ]; then
+    gateway_audience="$gateway_url"
   fi
+  envs="${envs}|MARKET_DATA_GATEWAY_AUDIENCE=${gateway_audience}"
   cors_origin="${CORS_ORIGIN:-}"
   if [ -n "$cors_origin" ]; then
     envs="${envs}|CORS_ORIGIN=${cors_origin}"

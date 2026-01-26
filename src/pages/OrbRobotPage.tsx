@@ -1242,12 +1242,22 @@ export default function OrbRobotPage() {
     }
   }
 
-  async function runOrbOnce(authToken?: string) {
+  async function runOrbOnce(
+    authToken?: string,
+    options?: { forceUniverse?: boolean; account?: string }
+  ) {
     const headers: Record<string, string> = {}
     if (authToken) {
       headers.Authorization = `Bearer ${authToken}`
     }
-    const response = await fetch(`${orbRunnerBase}/run`, { method: "POST", headers })
+    const runUrl = new URL(`${orbRunnerBase}/run`)
+    if (options?.forceUniverse) {
+      runUrl.searchParams.set("forceUniverse", "1")
+    }
+    if (options?.account) {
+      runUrl.searchParams.set("account", options.account)
+    }
+    const response = await fetch(runUrl.toString(), { method: "POST", headers })
     if (!response.ok) {
       const text = await response.text()
       throw new Error(text || `HTTP ${response.status}`)
@@ -1265,8 +1275,13 @@ export default function OrbRobotPage() {
       return
     }
     setOrbRunLoading(true)
+    const shouldForceUniverse =
+      activeMode === "daily_universe" && !!brokerAccountKey && !stateDoc?.lastUniverseAt
     try {
-      await runOrbOnce(authToken)
+      await runOrbOnce(authToken, {
+        forceUniverse: shouldForceUniverse,
+        account: brokerAccountKey || undefined,
+      })
       setLastRunRequestedAt(new Date())
       setRunCooldownUntil(Date.now() + 4000)
       toast.success(t("orb.replay.runQueued"))
