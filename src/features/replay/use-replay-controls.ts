@@ -31,7 +31,9 @@ function normalizeControls(data?: DocumentData | null): ReplayControls | null {
     sessionId: data.sessionId,
     version: typeof data.version === "number" ? data.version : undefined,
     asOf: asOfValue,
-    requiredServices: Array.isArray(data.requiredServices) ? data.requiredServices : undefined,
+    requiredServices: Array.isArray(data.requiredServices)
+      ? data.requiredServices.filter((service) => service !== "ui")
+      : undefined,
     botsReplayEnabled: data.botsReplayEnabled === true,
     speedScript: Array.isArray(data.speedScript) ? data.speedScript : undefined,
   }

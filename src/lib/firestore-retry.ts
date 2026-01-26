@@ -1,13 +1,13 @@
-import {
+import { getDocs, onSnapshot } from "firebase/firestore"
+import type {
   DocumentReference,
-  Query,
-  onSnapshot,
-  getDocs,
   DocumentSnapshot,
-  QuerySnapshot,
   FirestoreError,
-  Unsubscribe
+  Query,
+  QuerySnapshot,
 } from "firebase/firestore"
+
+type Unsubscribe = () => void
 
 export type RetryConfig = {
   maxRetries?: number

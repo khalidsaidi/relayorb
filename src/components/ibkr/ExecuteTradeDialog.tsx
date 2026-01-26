@@ -112,6 +112,7 @@ export function ExecuteTradeDialog({
   const { t } = useTranslation()
   const { replayActive } = useReplayControls()
   const [mode, setMode] = useState<ExecutionMode>("paper")
+  const [confirmLiveOpen, setConfirmLiveOpen] = useState(false)
   const [requestId, setRequestId] = useState<string | null>(null)
   const [requestDoc, setRequestDoc] = useState<ExecutionRequestDoc | null>(null)
   const [brokerOrder, setBrokerOrder] = useState<BrokerOrderDoc | null>(null)
@@ -145,6 +146,30 @@ export function ExecuteTradeDialog({
       })
     }
   }, [open, proposal])
+
+  useEffect(() => {
+    if (!open && confirmLiveOpen) {
+      setConfirmLiveOpen(false)
+    }
+  }, [open, confirmLiveOpen])
+
+  function requestModeChange(nextMode: ExecutionMode) {
+    if (nextMode === mode) return
+    if (nextMode === "live") {
+      setConfirmLiveOpen(true)
+      return
+    }
+    setMode(nextMode)
+  }
+
+  function confirmLiveMode() {
+    setMode("live")
+    setConfirmLiveOpen(false)
+  }
+
+  function cancelLiveMode() {
+    setConfirmLiveOpen(false)
+  }
 
   const paperEnabled = brokerAccount?.enabled && brokerAccount?.paperEnabled
   const liveEnabled = brokerAccount?.enabled && brokerAccount?.liveEnabled
@@ -492,8 +517,9 @@ export function ExecuteTradeDialog({
   const draftLimitPrice = parsedInputs.limitPrice ?? proposal.price
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{t("ibkr.dialog.title", { symbol: proposal.symbol })}</DialogTitle>
           <DialogDescription>
@@ -612,7 +638,7 @@ export function ExecuteTradeDialog({
 
           <div className="space-y-2">
             <div className="text-xs text-muted-foreground">{t("ibkr.labels.mode")}</div>
-            <Tabs value={mode} onValueChange={(value) => setMode(value as ExecutionMode)}>
+            <Tabs value={mode} onValueChange={(value) => requestModeChange(value as ExecutionMode)}>
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="paper" disabled={!paperEnabled}>
                   {t("ibkr.mode.paper")}
@@ -622,6 +648,12 @@ export function ExecuteTradeDialog({
                 </TabsTrigger>
               </TabsList>
             </Tabs>
+            {mode === "live" ? (
+              <div className="rounded-md border border-rose-200/60 bg-rose-500/10 p-2 text-xs text-rose-700">
+                <div className="font-semibold">{t("ibkr.mode.liveCautionTitle")}</div>
+                <div className="mt-1">{t("ibkr.mode.liveCautionBody")}</div>
+              </div>
+            ) : null}
           </div>
 
           {requestDoc ? (
@@ -655,7 +687,24 @@ export function ExecuteTradeDialog({
             {submitting ? t("common.loading") : t("ibkr.confirm")}
           </Button>
         </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={confirmLiveOpen} onOpenChange={(next) => (!next ? cancelLiveMode() : null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("ibkr.mode.liveConfirmTitle")}</DialogTitle>
+            <DialogDescription>{t("ibkr.mode.liveConfirmBody")}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={cancelLiveMode}>
+              {t("ibkr.mode.liveCancel")}
+            </Button>
+            <Button variant="destructive" onClick={confirmLiveMode}>
+              {t("ibkr.mode.liveConfirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }

@@ -853,6 +853,8 @@ export type OrbStateDoc = {
   lastTradeMinutes?: Record<string, number>
   lastBreakoutCheckMinute?: number | null
   lastUniverseAt?: FirestoreTimestamp
+  lastRunRequestedAt?: FirestoreTimestamp
+  lastRunRequestedSource?: string
   lastOpenRangeAt?: FirestoreTimestamp
   lastBreakoutAt?: FirestoreTimestamp
   lastLiquidationAt?: FirestoreTimestamp

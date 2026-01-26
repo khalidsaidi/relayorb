@@ -864,6 +864,56 @@ function normalizeTagList(value) {
   return []
 }
 
+function normalizeSymbolSource(value) {
+  if (!value) return null
+  const cleaned = String(value).trim().toLowerCase()
+  if (cleaned === "auto" || cleaned === "auto-discover" || cleaned === "autodiscover") {
+    return "auto"
+  }
+  if (cleaned === "default" || cleaned === "default-list") return "default"
+  if (cleaned === "custom" || cleaned === "custom-list") return "custom"
+  return null
+}
+
+function parseOptionalIntValue(value) {
+  if (value === undefined || value === null || value === "") return undefined
+  const parsed = parseInt(value, 10)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function normalizeAutoDiscoverConfig(value) {
+  if (!value || typeof value !== "object") return null
+  const config = {}
+  if (typeof value.includeUniverse === "boolean") {
+    config.includeUniverse = value.includeUniverse
+  }
+  const smallCapMinMarketCap = parseOptionalIntValue(value.smallCapMinMarketCap)
+  if (smallCapMinMarketCap !== undefined) {
+    config.smallCapMinMarketCap = smallCapMinMarketCap
+  }
+  const smallCapMaxMarketCap = parseOptionalIntValue(value.smallCapMaxMarketCap)
+  if (smallCapMaxMarketCap !== undefined) {
+    config.smallCapMaxMarketCap = smallCapMaxMarketCap
+  }
+  const smallCapMinVolume = parseOptionalIntValue(value.smallCapMinVolume)
+  if (smallCapMinVolume !== undefined) {
+    config.smallCapMinVolume = smallCapMinVolume
+  }
+  const midCapMinMarketCap = parseOptionalIntValue(value.midCapMinMarketCap)
+  if (midCapMinMarketCap !== undefined) {
+    config.midCapMinMarketCap = midCapMinMarketCap
+  }
+  const midCapMaxMarketCap = parseOptionalIntValue(value.midCapMaxMarketCap)
+  if (midCapMaxMarketCap !== undefined) {
+    config.midCapMaxMarketCap = midCapMaxMarketCap
+  }
+  const midCapMinVolume = parseOptionalIntValue(value.midCapMinVolume)
+  if (midCapMinVolume !== undefined) {
+    config.midCapMinVolume = midCapMinVolume
+  }
+  return Object.keys(config).length ? config : null
+}
+
 function buildReplayRunId(tapeDate) {
   const dateKey = normalizeTapeDate(tapeDate) || new Date().toISOString().slice(0, 10)
   const suffix = crypto.randomUUID
@@ -912,9 +962,21 @@ function formatReplayRun(runId, data) {
     manifestPath: typeof data?.manifestPath === "string" ? data.manifestPath : undefined,
     notes: typeof data?.notes === "string" ? data.notes : undefined,
     tags: Array.isArray(data?.tags) ? data.tags : undefined,
+    symbolSource: normalizeSymbolSource(data?.symbolSource) || undefined,
+    autoDiscoverConfig: normalizeAutoDiscoverConfig(data?.autoDiscoverConfig) || undefined,
+    maxSymbols: parseOptionalIntValue(data?.maxSymbols),
     createdAt,
     updatedAt,
   }
+}
+
+function isReplayRunComplete(run) {
+  if (!run || !run.datasetId || !run.symbolSource) return false
+  if (typeof run.symbolCount !== "number" || !Number.isFinite(run.symbolCount)) return false
+  if (run.symbolSource === "auto") {
+    if (!run.autoDiscoverConfig || typeof run.maxSymbols !== "number") return false
+  }
+  return true
 }
 
 async function loadReplayRunInfo(runId) {
@@ -951,6 +1013,24 @@ async function registerReplayRun(payload) {
   const notes = typeof payload?.notes === "string" ? payload.notes.trim() : ""
   const tags = normalizeTagList(payload?.tags)
   const source = typeof payload?.source === "string" ? payload.source.trim() : "ui"
+  const symbolSource = normalizeSymbolSource(payload?.symbolSource)
+  const maxSymbols = parseOptionalIntValue(payload?.maxSymbols)
+  const autoDiscoverConfig = normalizeAutoDiscoverConfig(payload?.autoDiscoverConfig)
+
+  if (!symbolSource) {
+    throw new Error("Missing symbolSource")
+  }
+  if (typeof symbolCount !== "number" || symbolCount <= 0) {
+    throw new Error("Missing symbolCount")
+  }
+  if (symbolSource === "auto") {
+    if (!autoDiscoverConfig) {
+      throw new Error("Missing autoDiscoverConfig")
+    }
+    if (typeof maxSymbols !== "number" || maxSymbols <= 0) {
+      throw new Error("Missing maxSymbols")
+    }
+  }
 
   const db = initFirestore()
   const ref = db.doc(`replay/controls/runs/${runId}`)
@@ -966,6 +1046,9 @@ async function registerReplayRun(payload) {
   if (manifestPath) response.manifestPath = manifestPath
   if (notes) response.notes = notes
   if (tags.length) response.tags = tags
+  if (symbolSource) response.symbolSource = symbolSource
+  if (typeof maxSymbols === "number") response.maxSymbols = maxSymbols
+  if (autoDiscoverConfig) response.autoDiscoverConfig = autoDiscoverConfig
   const patch = {
     ...response,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -992,7 +1075,9 @@ async function listReplayRuns(limit) {
       .orderBy("createdAt", "desc")
       .limit(safeLimit)
       .get()
-    return snap.docs.map((doc) => formatReplayRun(doc.id, doc.data()))
+    return snap.docs
+      .map((doc) => formatReplayRun(doc.id, doc.data()))
+      .filter((run) => isReplayRunComplete(run))
   } catch (err) {
     console.error("Replay run list failed:", err.message)
     return []
@@ -3690,18 +3775,47 @@ async function handleReplayBuildTape(req, res, params) {
     hardMaxSymbols
   )
   const autoDiscover = body?.autoDiscover === true || params.get("autoDiscover") === "true"
-  const autoDiscoverConfig = body?.autoDiscoverConfig || {}
+  const autoDiscoverConfig = normalizeAutoDiscoverConfig(body?.autoDiscoverConfig)
   const autoDiscoverOptions = {
-    includeUniverse: autoDiscoverConfig.includeUniverse,
-    smallCapMinMarketCap: autoDiscoverConfig.smallCapMinMarketCap,
-    smallCapMaxMarketCap: autoDiscoverConfig.smallCapMaxMarketCap,
-    smallCapMinVolume: autoDiscoverConfig.smallCapMinVolume,
-    midCapMinMarketCap: autoDiscoverConfig.midCapMinMarketCap,
-    midCapMaxMarketCap: autoDiscoverConfig.midCapMaxMarketCap,
-    midCapMinVolume: autoDiscoverConfig.midCapMinVolume,
+    includeUniverse: autoDiscoverConfig?.includeUniverse,
+    smallCapMinMarketCap: autoDiscoverConfig?.smallCapMinMarketCap,
+    smallCapMaxMarketCap: autoDiscoverConfig?.smallCapMaxMarketCap,
+    smallCapMinVolume: autoDiscoverConfig?.smallCapMinVolume,
+    midCapMinMarketCap: autoDiscoverConfig?.midCapMinMarketCap,
+    midCapMaxMarketCap: autoDiscoverConfig?.midCapMaxMarketCap,
+    midCapMinVolume: autoDiscoverConfig?.midCapMinVolume,
   }
 
   let symbols = normalizeSymbolList(body?.symbols || params.get("symbols"))
+  const symbolSource = normalizeSymbolSource(body?.symbolSource)
+
+  if (!symbolSource) {
+    respondJson(res, 400, { error: "symbolSource is required (auto, default, custom)." })
+    return
+  }
+  if (symbolSource === "auto") {
+    if (!autoDiscover) {
+      respondJson(res, 400, { error: "symbolSource=auto requires autoDiscover=true." })
+      return
+    }
+    if (!autoDiscoverConfig) {
+      respondJson(res, 400, { error: "autoDiscoverConfig is required for auto-discover." })
+      return
+    }
+    if (symbols.length > 0) {
+      respondJson(res, 400, { error: "Symbols are not allowed when symbolSource=auto." })
+      return
+    }
+  } else {
+    if (autoDiscover) {
+      respondJson(res, 400, { error: "autoDiscover must be false for custom/default symbols." })
+      return
+    }
+    if (!symbols.length) {
+      respondJson(res, 400, { error: "Symbols are required when symbolSource is not auto." })
+      return
+    }
+  }
 
   // Auto-discover symbols for algorithms if no symbols provided or autoDiscover is true
   if (autoDiscover || !symbols.length) {
@@ -4028,6 +4142,9 @@ async function handleReplayBuildTape(req, res, params) {
         datasetId,
         tapeDate: date,
         symbolCount: results.okSymbols.length,
+        symbolSource: body?.symbolSource,
+        maxSymbols,
+        autoDiscoverConfig: autoDiscoverConfig,
         source: "tape_builder",
       }
       results.run = await registerReplayRun(runPayload)
@@ -4063,6 +4180,9 @@ async function handleReplayRegisterRun(req, res, params) {
       manifestPath: body?.manifestPath,
       notes: body?.notes,
       tags: body?.tags,
+      symbolSource: body?.symbolSource,
+      maxSymbols: body?.maxSymbols,
+      autoDiscoverConfig: body?.autoDiscoverConfig,
       source: body?.source || "ui",
     })
     respondJson(res, 200, { ok: true, run })

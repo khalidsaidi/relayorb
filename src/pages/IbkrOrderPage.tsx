@@ -8,6 +8,7 @@ import {
   LineChart,
   Wallet,
   BadgeDollarSign,
+  AlertTriangle,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -15,6 +16,14 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Separator } from "@/components/ui/separator"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { FmpCandleChart } from "@/components/charts/FmpCandleChart"
 import { useAuth } from "@/features/auth/auth-context"
 import { useIbkrAccount } from "@/features/ibkr/use-ibkr-account"
@@ -118,6 +127,7 @@ export default function IbkrOrderPage() {
   const [timeInForce, setTimeInForce] = useState<OrderSnapshot["timeInForce"]>("DAY")
   const [useBracket, setUseBracket] = useState(false)
   const [mode, setMode] = useState<ExecutionMode>("paper")
+  const [confirmLiveOpen, setConfirmLiveOpen] = useState(false)
   const [draftInputs, setDraftInputs] = useState({
     limitPrice: "",
     quantity: "",
@@ -167,6 +177,24 @@ export default function IbkrOrderPage() {
       setMode("live")
     }
   }, [paperEnabled, liveEnabled])
+
+  function requestModeChange(nextMode: ExecutionMode) {
+    if (nextMode === mode) return
+    if (nextMode === "live") {
+      setConfirmLiveOpen(true)
+      return
+    }
+    setMode(nextMode)
+  }
+
+  function confirmLiveMode() {
+    setMode("live")
+    setConfirmLiveOpen(false)
+  }
+
+  function cancelLiveMode() {
+    setConfirmLiveOpen(false)
+  }
 
   useEffect(() => {
     if (requireBracket) {
@@ -888,7 +916,10 @@ export default function IbkrOrderPage() {
 
               <div className="space-y-2">
                 <div className="text-xs text-muted-foreground">{t("ibkr.labels.mode")}</div>
-                <Tabs value={mode} onValueChange={(value) => setMode(value as ExecutionMode)}>
+                <Tabs
+                  value={mode}
+                  onValueChange={(value) => requestModeChange(value as ExecutionMode)}
+                >
                   <TabsList className="grid w-full grid-cols-2">
                     <TabsTrigger value="paper" disabled={!paperEnabled}>
                       {t("ibkr.mode.paper")}
@@ -898,6 +929,15 @@ export default function IbkrOrderPage() {
                     </TabsTrigger>
                   </TabsList>
                 </Tabs>
+                {mode === "live" ? (
+                  <div className="rounded-md border border-rose-200/60 bg-rose-500/10 p-2 text-xs text-rose-700">
+                    <div className="flex items-center gap-2 font-semibold text-rose-700">
+                      <AlertTriangle className="h-4 w-4" />
+                      {t("ibkr.mode.liveCautionTitle")}
+                    </div>
+                    <div className="mt-1">{t("ibkr.mode.liveCautionBody")}</div>
+                  </div>
+                ) : null}
               </div>
 
               <Button
@@ -963,6 +1003,22 @@ export default function IbkrOrderPage() {
           </Card>
         </div>
       </div>
+      <Dialog open={confirmLiveOpen} onOpenChange={(open) => (!open ? cancelLiveMode() : null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("ibkr.mode.liveConfirmTitle")}</DialogTitle>
+            <DialogDescription>{t("ibkr.mode.liveConfirmBody")}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={cancelLiveMode}>
+              {t("ibkr.mode.liveCancel")}
+            </Button>
+            <Button variant="destructive" onClick={confirmLiveMode}>
+              {t("ibkr.mode.liveConfirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

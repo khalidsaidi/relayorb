@@ -1074,6 +1074,21 @@ async function updateOrbState(brokerAccountKey, patch) {
   )
 }
 
+async function recordRunRequested() {
+  const targets = Array.from(controlsByAccount.entries())
+    .filter(([, controls]) => controls?.enabled === true)
+    .map(([accountKey]) => accountKey)
+  if (!targets.length) return
+  await Promise.all(
+    targets.map((accountKey) =>
+      updateOrbState(accountKey, {
+        lastRunRequestedAt: FieldValue.serverTimestamp(),
+        lastRunRequestedSource: "manual",
+      })
+    )
+  )
+}
+
 async function ensureStateDoc(brokerAccountKey) {
   const ref = db.doc(`${ORB_STATE_COLLECTION}/${brokerAccountKey}`)
   const snap = await ref.get()
@@ -1090,6 +1105,7 @@ async function ensureStateDoc(brokerAccountKey) {
 
 async function createExecutionRequest({
   brokerAccountKey,
+  mode,
   symbol,
   side,
   quantity,
@@ -1127,7 +1143,7 @@ async function createExecutionRequest({
     approvedByUid: resolvedRequestedBy,
     ibAccountCodeSnapshot: accountCode || undefined,
     approvedAt: FieldValue.serverTimestamp(),
-    mode: "paper",
+    mode: mode || "paper",
     status: "approved",
     orderSnapshot,
     expiresAt,
@@ -1404,6 +1420,7 @@ async function runDailyUniverseCycle({
             const bracket = resolveBracket(price, null, tradingControls)
             await createExecutionRequest({
               brokerAccountKey: accountKey,
+              mode: resolvedControls.mode,
               symbol,
               side: "buy",
               quantity,
@@ -1481,6 +1498,7 @@ async function runDailyUniverseCycle({
         if (!price) continue
         await createExecutionRequest({
           brokerAccountKey: accountKey,
+          mode: resolvedControls.mode,
           symbol: pos.symbol,
           side: "sell",
           quantity,
@@ -1804,6 +1822,7 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
 
         const exitRequestId = await createExecutionRequest({
           brokerAccountKey: accountKey,
+          mode: resolvedControls.mode,
           symbol,
           side: "sell",
           quantity: Math.abs(positionQty),
@@ -1939,6 +1958,7 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
 
         const entryRequestId = await createExecutionRequest({
           brokerAccountKey: accountKey,
+          mode: resolvedControls.mode,
           symbol,
           side: "buy",
           quantity,
@@ -2030,6 +2050,7 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
 
       const exitRequestId = await createExecutionRequest({
         brokerAccountKey: accountKey,
+        mode: resolvedControls.mode,
         symbol,
         side: "sell",
         quantity: Math.abs(positionQty),
@@ -2191,6 +2212,9 @@ async function start() {
     }
 
     if (req.url === "/run" && req.method === "POST") {
+      recordRunRequested().catch((err) => {
+        console.error("ORB run record failed:", err.message)
+      })
       runOrbCycle()
         .then(() => {
           res.writeHead(202, { "Content-Type": "application/json" })

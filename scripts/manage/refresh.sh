@@ -38,6 +38,7 @@ Env:
   MARKET_DATA_GATEWAY_AUDIENCE  Optional audience override for ID token
   MARKET_DATA_GATEWAY_SERVICE_NAME  Cloud Run service name (default: relayorb-market-data-gateway)
   CORS_ORIGIN             Allowed browser origin (default: *)
+  ADMIN_ALLOWLIST         Comma-separated admin emails allowed to call this service
 USAGE
 }
 
@@ -89,7 +90,7 @@ resolve_market_data_gateway_auth() {
 }
 
 build_env_vars() {
-  local url auth envs audience gateway_url gateway_auth gateway_audience cors_origin
+  local url auth envs audience gateway_url gateway_auth gateway_audience cors_origin allowlist
   url=$(require_orb_runner_url)
   auth=$(resolve_orb_runner_auth)
   envs="ORB_RUNNER_URL=${url},ORB_RUNNER_AUTH=${auth}"
@@ -112,6 +113,10 @@ build_env_vars() {
   cors_origin="${CORS_ORIGIN:-}"
   if [ -n "$cors_origin" ]; then
     envs="${envs},CORS_ORIGIN=${cors_origin}"
+  fi
+  allowlist="${ADMIN_ALLOWLIST:-}"
+  if [ -n "$allowlist" ]; then
+    envs="${envs},ADMIN_ALLOWLIST=${allowlist}"
   fi
   echo "$envs"
 }

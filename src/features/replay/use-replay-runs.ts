@@ -10,6 +10,18 @@ import {
 
 import { db, firebaseEnabled } from "@/lib/firebase"
 
+type SymbolSource = "auto" | "default" | "custom"
+
+type AutoDiscoverConfig = {
+  includeUniverse?: boolean
+  smallCapMinMarketCap?: number
+  smallCapMaxMarketCap?: number
+  smallCapMinVolume?: number
+  midCapMinMarketCap?: number
+  midCapMaxMarketCap?: number
+  midCapMinVolume?: number
+}
+
 export type ReplayRun = {
   runId: string
   label?: string
@@ -19,13 +31,55 @@ export type ReplayRun = {
   manifestPath?: string
   notes?: string
   tags?: string[]
+  symbolSource?: SymbolSource
+  autoDiscoverConfig?: AutoDiscoverConfig
+  maxSymbols?: number
   createdAt?: unknown
   updatedAt?: unknown
 }
 
+function normalizeSymbolSource(value: unknown): SymbolSource | undefined {
+  if (typeof value !== "string") return undefined
+  const normalized = value.trim().toLowerCase()
+  if (normalized === "auto" || normalized === "default" || normalized === "custom") {
+    return normalized
+  }
+  return undefined
+}
+
+function parseOptionalNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "string") {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : undefined
+  }
+  return undefined
+}
+
+function normalizeAutoDiscoverConfig(value: DocumentData | null | undefined): AutoDiscoverConfig | undefined {
+  if (!value || typeof value !== "object") return undefined
+  const config: AutoDiscoverConfig = {}
+  if (typeof value.includeUniverse === "boolean") {
+    config.includeUniverse = value.includeUniverse
+  }
+  const smallCapMinMarketCap = parseOptionalNumber(value.smallCapMinMarketCap)
+  if (smallCapMinMarketCap !== undefined) config.smallCapMinMarketCap = smallCapMinMarketCap
+  const smallCapMaxMarketCap = parseOptionalNumber(value.smallCapMaxMarketCap)
+  if (smallCapMaxMarketCap !== undefined) config.smallCapMaxMarketCap = smallCapMaxMarketCap
+  const smallCapMinVolume = parseOptionalNumber(value.smallCapMinVolume)
+  if (smallCapMinVolume !== undefined) config.smallCapMinVolume = smallCapMinVolume
+  const midCapMinMarketCap = parseOptionalNumber(value.midCapMinMarketCap)
+  if (midCapMinMarketCap !== undefined) config.midCapMinMarketCap = midCapMinMarketCap
+  const midCapMaxMarketCap = parseOptionalNumber(value.midCapMaxMarketCap)
+  if (midCapMaxMarketCap !== undefined) config.midCapMaxMarketCap = midCapMaxMarketCap
+  const midCapMinVolume = parseOptionalNumber(value.midCapMinVolume)
+  if (midCapMinVolume !== undefined) config.midCapMinVolume = midCapMinVolume
+  return Object.keys(config).length ? config : undefined
+}
+
 function normalizeReplayRun(id: string, data?: DocumentData | null): ReplayRun | null {
   if (!id || !data) return null
-  return {
+  const run: ReplayRun = {
     runId: id,
     label: typeof data.label === "string" ? data.label : undefined,
     datasetId: typeof data.datasetId === "string" ? data.datasetId : undefined,
@@ -34,9 +88,21 @@ function normalizeReplayRun(id: string, data?: DocumentData | null): ReplayRun |
     manifestPath: typeof data.manifestPath === "string" ? data.manifestPath : undefined,
     notes: typeof data.notes === "string" ? data.notes : undefined,
     tags: Array.isArray(data.tags) ? data.tags : undefined,
+    symbolSource: normalizeSymbolSource(data.symbolSource),
+    autoDiscoverConfig: normalizeAutoDiscoverConfig(data.autoDiscoverConfig),
+    maxSymbols: parseOptionalNumber(data.maxSymbols),
     createdAt: data.createdAt,
     updatedAt: data.updatedAt,
   }
+  if (!run.datasetId || !run.symbolSource || typeof run.symbolCount !== "number") {
+    return null
+  }
+  if (run.symbolSource === "auto") {
+    if (!run.autoDiscoverConfig || typeof run.maxSymbols !== "number") {
+      return null
+    }
+  }
+  return run
 }
 
 export function useReplayRuns(maxCount = 50) {

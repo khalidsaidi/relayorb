@@ -13,7 +13,7 @@ import {
 } from "firebase/firestore"
 import { toast } from "sonner"
 import { useTranslation } from "react-i18next"
-import { Activity, ChevronDown, Clock, HelpCircle, Target, Timer } from "lucide-react"
+import { Activity, AlertTriangle, ChevronDown, Clock, HelpCircle, Target, Timer } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -22,6 +22,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -37,22 +38,25 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { db, firebaseEnabled } from "@/lib/firebase"
-import { getBrokerAccountKeyForUid } from "@/lib/broker-accounts"
 import { formatAssetPrice, formatNumber, formatTimestamp } from "@/lib/format"
 import { useAuth } from "@/features/auth/auth-context"
+import { useIbkrAccount } from "@/features/ibkr/use-ibkr-account"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
 import type {
   ExecutionRequestDoc,
   OrbControlDoc,
   OrbStateDoc,
   OrbStrategyProfile,
+  ExecutionMode,
 } from "@/lib/types"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 type EntryType = "ORB_RAW" | "ORB_VWAP" | "ORB_ATR_BUFFER" | "ORB_MULTI_BAR"
 type ExitType = "FIXED_STOP" | "TRAILING_STOP" | "REMEMBERED_ORB_STOP" | "TIME_STOP"
 
 type ControlDraft = {
   enabled: boolean
+  executionMode: ExecutionMode
   mode: "daily_universe" | "single_symbol"
   priceMin: string
   priceMax: string
@@ -154,6 +158,7 @@ const DEFAULT_SINGLE_PROFILE: OrbStrategyProfile = {
 
 const DEFAULT_DRAFT: ControlDraft = {
   enabled: false,
+  executionMode: "paper",
   mode: "daily_universe",
   priceMin: String(DEFAULT_DAILY_PROFILE.universe.price_min),
   priceMax: String(DEFAULT_DAILY_PROFILE.universe.price_max),
@@ -399,6 +404,7 @@ function isAggressivePresetApplied(draft: ControlDraft, preset: AggressivePreset
 function areDraftsEqual(a: ControlDraft, b: ControlDraft) {
   return (
     a.enabled === b.enabled &&
+    a.executionMode === b.executionMode &&
     a.mode === b.mode &&
     a.priceMin === b.priceMin &&
     a.priceMax === b.priceMax &&
@@ -452,6 +458,11 @@ function resolveTimestampMillis(value: unknown) {
     return seconds * 1000 + Math.floor(nanos / 1_000_000)
   }
   return null
+}
+
+function pickLatestDate(a: Date | null, b: Date | null) {
+  if (a && b) return a.getTime() >= b.getTime() ? a : b
+  return a || b
 }
 
 function resolveProfileFromControls(controls: OrbControlDoc): OrbStrategyProfile {
@@ -539,6 +550,7 @@ function buildDraftFromControls(controls: OrbControlDoc): ControlDraft {
 
   return {
     enabled: controls.enabled ?? false,
+    executionMode: controls.mode === "live" ? "live" : "paper",
     mode: profile.mode || "daily_universe",
     priceMin: formatControlValue(
       profile.universe?.price_min,
@@ -621,10 +633,7 @@ function formatFirestoreError(error: unknown) {
 export default function OrbRobotPage() {
   const { t } = useTranslation()
   const { user } = useAuth()
-  const brokerAccountKey = useMemo(
-    () => getBrokerAccountKeyForUid(user?.uid),
-    [user?.uid]
-  )
+  const { brokerAccountKey, brokerAccount } = useIbkrAccount(user?.uid)
   const [controls, setControls] = useState<OrbControlDoc | null>(null)
   const [stateDoc, setStateDoc] = useState<OrbStateDoc | null>(null)
   const [draft, setDraft] = useState<ControlDraft>(DEFAULT_DRAFT)
@@ -644,9 +653,12 @@ export default function OrbRobotPage() {
   const [runUntilStopTime, setRunUntilStopTime] = useState("")
   const [runUntilActive, setRunUntilActive] = useState(false)
   const [runUntilStatus, setRunUntilStatus] = useState("")
+  const [confirmLiveOpen, setConfirmLiveOpen] = useState(false)
   const runUntilCancelRef = useRef(false)
   const requestsRef = useRef<ExecutionRequestDoc[]>([])
   const { controls: replayControls } = useReplayControls()
+  const paperEnabled = brokerAccount?.enabled && brokerAccount?.paperEnabled
+  const liveEnabled = brokerAccount?.enabled && brokerAccount?.liveEnabled
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
@@ -697,6 +709,37 @@ export default function OrbRobotPage() {
     setDraft(buildDraftFromControls(controls))
     setAggressivePresetBackup(null)
   }, [controls, dirty])
+
+  useEffect(() => {
+    if (!paperEnabled && !liveEnabled) return
+    if (paperEnabled && !liveEnabled && draft.executionMode !== "paper") {
+      setDraft((prev) => ({ ...prev, executionMode: "paper" }))
+      setDirty(true)
+    } else if (!paperEnabled && liveEnabled && draft.executionMode !== "live") {
+      setDraft((prev) => ({ ...prev, executionMode: "live" }))
+      setDirty(true)
+    }
+  }, [paperEnabled, liveEnabled, draft.executionMode])
+
+  function requestExecutionMode(nextMode: ExecutionMode) {
+    if (nextMode === draft.executionMode) return
+    if (nextMode === "live") {
+      setConfirmLiveOpen(true)
+      return
+    }
+    setDraft((prev) => ({ ...prev, executionMode: nextMode }))
+    setDirty(true)
+  }
+
+  function confirmLiveMode() {
+    setDraft((prev) => ({ ...prev, executionMode: "live" }))
+    setDirty(true)
+    setConfirmLiveOpen(false)
+  }
+
+  function cancelLiveMode() {
+    setConfirmLiveOpen(false)
+  }
 
   const canWrite = firebaseEnabled && !!db && !!brokerAccountKey
   const activeProfile = controls ? resolveProfileFromControls(controls) : DEFAULT_DAILY_PROFILE
@@ -799,7 +842,9 @@ export default function OrbRobotPage() {
   ])
   const runCooldownActive =
     typeof runCooldownUntil === "number" && Date.now() < runCooldownUntil
-  const lastRunMs = lastRunRequestedAt ? lastRunRequestedAt.getTime() : null
+  const lastRunFromState = resolveReplayAsOf(stateDoc?.lastRunRequestedAt)
+  const lastRunAt = pickLatestDate(lastRunFromState, lastRunRequestedAt)
+  const lastRunMs = lastRunAt ? lastRunAt.getTime() : null
   const ordersSinceRunEntries = useMemo(() => {
     if (!lastRunMs) return []
     return requests.filter((request) => {
@@ -827,6 +872,14 @@ export default function OrbRobotPage() {
 
   async function handleToggleEnabled() {
     if (!canWrite || !db || !brokerAccountKey) return
+    if (draft.executionMode === "live" && !liveEnabled) {
+      toast.error(t("ibkr.errors.liveDisabled"))
+      return
+    }
+    if (draft.executionMode === "paper" && !paperEnabled) {
+      toast.error(t("ibkr.errors.paperDisabled"))
+      return
+    }
     const nextEnabled = !draft.enabled
     setDraft((prev) => ({ ...prev, enabled: nextEnabled }))
     setDirty(true)
@@ -836,7 +889,7 @@ export default function OrbRobotPage() {
         {
           enabled: nextEnabled,
           brokerAccountKey,
-          mode: "paper",
+          mode: draft.executionMode,
           updatedAt: serverTimestamp(),
           updatedByUid: user?.uid || undefined,
         },
@@ -852,6 +905,14 @@ export default function OrbRobotPage() {
 
   async function handleSave() {
     if (!canWrite || !db || !brokerAccountKey) return
+    if (draft.executionMode === "live" && !liveEnabled) {
+      toast.error(t("ibkr.errors.liveDisabled"))
+      return
+    }
+    if (draft.executionMode === "paper" && !paperEnabled) {
+      toast.error(t("ibkr.errors.paperDisabled"))
+      return
+    }
 
     const mode = draft.mode
     const symbol = normalizeSymbolInput(draft.symbol)
@@ -1054,7 +1115,7 @@ export default function OrbRobotPage() {
         {
           enabled: draft.enabled,
           brokerAccountKey,
-          mode: "paper",
+          mode: draft.executionMode,
           strategyProfile,
           orderType: draft.orderType,
           updatedAt: serverTimestamp(),
@@ -1387,7 +1448,7 @@ export default function OrbRobotPage() {
           <Badge variant="outline">
             {t("orb.account", { account: brokerAccountKey.toUpperCase() })}
           </Badge>
-          <Badge variant="secondary">{t("orb.mode.paper")}</Badge>
+          <Badge variant="secondary">{t(`orb.mode.${draft.executionMode}`)}</Badge>
           <Badge
             variant={draft.enabled ? "secondary" : "outline"}
             className={
@@ -1425,6 +1486,37 @@ export default function OrbRobotPage() {
                 >
                   {draft.enabled ? t("orb.enabled") : t("orb.disabled")}
                 </Button>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-xs text-muted-foreground">
+                  {t("orb.controls.executionMode")}
+                </div>
+                <Tabs
+                  value={draft.executionMode}
+                  onValueChange={(value) => {
+                    const nextMode = value === "live" ? "live" : "paper"
+                    requestExecutionMode(nextMode)
+                  }}
+                >
+                  <TabsList className="grid w-full grid-cols-2">
+                    <TabsTrigger value="paper" disabled={!paperEnabled}>
+                      {t("ibkr.mode.paper")}
+                    </TabsTrigger>
+                    <TabsTrigger value="live" disabled={!liveEnabled}>
+                      {t("ibkr.mode.live")}
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+                {draft.executionMode === "live" ? (
+                  <div className="rounded-md border border-rose-200/60 bg-rose-500/10 p-2 text-xs text-rose-700">
+                    <div className="flex items-center gap-2 font-semibold">
+                      <AlertTriangle className="h-4 w-4" />
+                      {t("ibkr.mode.liveCautionTitle")}
+                    </div>
+                    <div className="mt-1">{t("ibkr.mode.liveCautionBody")}</div>
+                  </div>
+                ) : null}
               </div>
 
               <Separator />
@@ -2394,7 +2486,7 @@ export default function OrbRobotPage() {
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">{t("orb.replay.lastRunRequested")}</span>
                   <span>
-                    {lastRunRequestedAt ? lastRunRequestedAt.toLocaleString() : t("common.na")}
+                    {lastRunAt ? lastRunAt.toLocaleString() : t("common.na")}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
@@ -2533,6 +2625,22 @@ export default function OrbRobotPage() {
 
         </div>
       </div>
+      <Dialog open={confirmLiveOpen} onOpenChange={(next) => (!next ? cancelLiveMode() : null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("ibkr.mode.liveConfirmTitle")}</DialogTitle>
+            <DialogDescription>{t("ibkr.mode.liveConfirmBody")}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={cancelLiveMode}>
+              {t("ibkr.mode.liveCancel")}
+            </Button>
+            <Button variant="destructive" onClick={confirmLiveMode}>
+              {t("ibkr.mode.liveConfirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
