@@ -1082,11 +1082,15 @@ function validateAccountSummaryMode(accountSummary, requiredMode, context) {
   return accountSummary
 }
 
-function resolveOrderQuantity(price, positionPct, accountSummary) {
+function resolveOrderQuantity(price, positionPct, accountSummary, caps) {
   const netLiq = accountSummary?.values?.netLiquidation
   const buyingPower = accountSummary?.values?.buyingPower
   const baseValue = parseNumber(netLiq) ?? parseNumber(buyingPower) ?? 0
-  const notional = baseValue * positionPct
+  let notional = baseValue * positionPct
+  const maxNotional = parseNumber(caps?.maxNotionalPerTrade)
+  if (Number.isFinite(maxNotional) && maxNotional > 0) {
+    notional = Math.min(notional, maxNotional)
+  }
   if (!Number.isFinite(notional) || notional <= 0) return 1
   const qty = Math.floor(notional / price)
   return qty > 0 ? qty : 1
@@ -1648,7 +1652,12 @@ async function runDailyUniverseCycle({
             if (!price || !high) continue
             if (price <= high) continue
 
-            const quantity = resolveOrderQuantity(price, profile.risk.position_pct, accountSummary)
+            const quantity = resolveOrderQuantity(
+              price,
+              profile.risk.position_pct,
+              accountSummary,
+              tradingControls?.caps
+            )
             if (!quantity) continue
             const bracket = resolveBracket(price, null, tradingControls)
             await createExecutionRequest({
@@ -2204,7 +2213,8 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
         const quantity = resolveOrderQuantity(
           snapshot.price,
           profile.risk.position_pct,
-          accountSummary
+          accountSummary,
+          tradingControls?.caps
         )
         const initialStop = exitBehavior.initialStop(context)
         const bracket = resolveBracket(snapshot.price, initialStop, tradingControls)

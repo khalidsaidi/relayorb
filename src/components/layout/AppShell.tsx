@@ -456,7 +456,7 @@ export function AppShell() {
               data-testid="replay-banner"
               className="border-b border-amber-200/70 bg-amber-50/80 px-4 py-3 text-sm text-amber-950 md:px-6"
             >
-              <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-3">
+              <div className="mx-auto flex w-full max-w-[90rem] flex-wrap items-center gap-3">
                 <Badge variant="destructive" className="uppercase tracking-[0.2em]">
                   {t("replay.active")}
                 </Badge>
@@ -479,7 +479,7 @@ export function AppShell() {
           )}
 
           <div className="flex-1 p-4 md:p-6">
-            <div className="mx-auto w-full max-w-7xl">
+            <div className="mx-auto w-full max-w-[90rem]">
               <Outlet />
             </div>
           </div>
