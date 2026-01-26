@@ -114,9 +114,9 @@ deploy_run_service() {
   fi
   local envs="RUN_REGION=$EXPECTED_REGION"
   if [ -n "$extra_env" ]; then
-    envs="${envs},${extra_env}"
+    envs="${envs}|${extra_env}"
   fi
-  args+=(--update-env-vars "$envs")
+  args+=(--update-env-vars "^|^${envs}")
 
   gcloud "${args[@]}"
 }
@@ -136,9 +136,9 @@ deploy_run_job() {
   local args=(run jobs deploy "$job" --image "$image" --region "$region")
   local envs="RUN_REGION=$EXPECTED_REGION"
   if [ -n "$extra_env" ]; then
-    envs="${envs},${extra_env}"
+    envs="${envs}|${extra_env}"
   fi
-  args+=(--update-env-vars "$envs")
+  args+=(--update-env-vars "^|^${envs}")
   if [ -n "${JOB_TASKS:-}" ]; then
     args+=(--tasks "$JOB_TASKS")
   fi

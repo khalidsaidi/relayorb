@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/_common.sh"
 SERVICE_NAME=${SERVICE_NAME:-relayorb-refresh}
 SERVICE_DIR="$ROOT_DIR/deploy/refresh-service"
 REGION=$(resolve_region)
-ALLOW_UNAUTHENTICATED=${ALLOW_UNAUTHENTICATED:-true}
+ALLOW_UNAUTHENTICATED=${ALLOW_UNAUTHENTICATED:-false}
 ORB_RUNNER_SERVICE_NAME=${ORB_RUNNER_SERVICE_NAME:-relayorb-orb-runner}
 MARKET_DATA_GATEWAY_SERVICE_NAME=${MARKET_DATA_GATEWAY_SERVICE_NAME:-relayorb-market-data-gateway}
 
@@ -23,12 +23,13 @@ Commands:
   build        Build container image via Cloud Build
   deploy       Deploy Cloud Run service
   logs         Tail recent logs
+  health       Fetch /health with an identity token
   local        Run locally (npm run start)
   image        Print resolved image name
 
 Env:
   ALLOW_CREATE           Create the service if it does not exist (default: false)
-  ALLOW_UNAUTHENTICATED  Keep service public (default: true)
+  ALLOW_UNAUTHENTICATED  Keep service public (default: false)
   ORB_RUNNER_URL         ORB runner base URL (auto-resolved if unset)
   ORB_RUNNER_AUTH        true/false (default: true)
   ORB_RUNNER_AUDIENCE    Optional audience override for ID token
@@ -50,6 +51,12 @@ resolve_orb_runner_url() {
   fi
   require_cmd gcloud
   gcloud run services describe "$ORB_RUNNER_SERVICE_NAME" --region "$REGION" \
+    --format="value(status.url)" 2>/dev/null || true
+}
+
+resolve_service_url() {
+  require_cmd gcloud
+  gcloud run services describe "$SERVICE_NAME" --region "$REGION" \
     --format="value(status.url)" 2>/dev/null || true
 }
 
@@ -93,30 +100,30 @@ build_env_vars() {
   local url auth envs audience gateway_url gateway_auth gateway_audience cors_origin allowlist
   url=$(require_orb_runner_url)
   auth=$(resolve_orb_runner_auth)
-  envs="ORB_RUNNER_URL=${url},ORB_RUNNER_AUTH=${auth}"
+  envs="ORB_RUNNER_URL=${url}|ORB_RUNNER_AUTH=${auth}"
   audience="${ORB_RUNNER_AUDIENCE:-}"
   if [ -n "$audience" ]; then
-    envs="${envs},ORB_RUNNER_AUDIENCE=${audience}"
+    envs="${envs}|ORB_RUNNER_AUDIENCE=${audience}"
   fi
   gateway_url=$(resolve_market_data_gateway_url)
   if [ -n "$gateway_url" ]; then
-    envs="${envs},MARKET_DATA_GATEWAY_URL=${gateway_url}"
+    envs="${envs}|MARKET_DATA_GATEWAY_URL=${gateway_url}"
   fi
   gateway_auth=$(resolve_market_data_gateway_auth)
   if [ -n "$gateway_auth" ]; then
-    envs="${envs},MARKET_DATA_GATEWAY_AUTH=${gateway_auth}"
+    envs="${envs}|MARKET_DATA_GATEWAY_AUTH=${gateway_auth}"
   fi
   gateway_audience="${MARKET_DATA_GATEWAY_AUDIENCE:-}"
   if [ -n "$gateway_audience" ]; then
-    envs="${envs},MARKET_DATA_GATEWAY_AUDIENCE=${gateway_audience}"
+    envs="${envs}|MARKET_DATA_GATEWAY_AUDIENCE=${gateway_audience}"
   fi
   cors_origin="${CORS_ORIGIN:-}"
   if [ -n "$cors_origin" ]; then
-    envs="${envs},CORS_ORIGIN=${cors_origin}"
+    envs="${envs}|CORS_ORIGIN=${cors_origin}"
   fi
   allowlist="${ADMIN_ALLOWLIST:-}"
   if [ -n "$allowlist" ]; then
-    envs="${envs},ADMIN_ALLOWLIST=${allowlist}"
+    envs="${envs}|ADMIN_ALLOWLIST=${allowlist}"
   fi
   echo "$envs"
 }
@@ -131,6 +138,18 @@ case "$command" in
     ;;
   logs)
     service_logs "$SERVICE_NAME" "$REGION"
+    ;;
+  health)
+    require_cmd curl
+    require_cmd gcloud
+    url=$(resolve_service_url)
+    if [ -z "$url" ]; then
+      echo "Service URL not found for $SERVICE_NAME in $REGION." >&2
+      exit 1
+    fi
+    curl -sS -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+      "${url}/health"
+    echo
     ;;
   local)
     run_local_node "$SERVICE_DIR"

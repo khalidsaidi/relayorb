@@ -68,14 +68,14 @@ build_env_vars() {
   local url auth envs audience requested_by
   url=$(require_gateway_url)
   auth=$(resolve_gateway_auth)
-  envs="MARKET_DATA_GATEWAY_URL=${url},MARKET_DATA_GATEWAY_AUTH=${auth}"
+  envs="MARKET_DATA_GATEWAY_URL=${url}|MARKET_DATA_GATEWAY_AUTH=${auth}"
   audience="${MARKET_DATA_GATEWAY_AUDIENCE:-}"
   if [ -n "$audience" ]; then
-    envs="${envs},MARKET_DATA_GATEWAY_AUDIENCE=${audience}"
+    envs="${envs}|MARKET_DATA_GATEWAY_AUDIENCE=${audience}"
   fi
   requested_by="${ORB_REQUESTED_BY_UID:-}"
   if [ -n "$requested_by" ]; then
-    envs="${envs},ORB_REQUESTED_BY_UID=${requested_by}"
+    envs="${envs}|ORB_REQUESTED_BY_UID=${requested_by}"
   fi
   echo "$envs"
 }

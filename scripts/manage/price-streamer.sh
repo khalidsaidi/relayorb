@@ -64,10 +64,10 @@ build_env_vars() {
   local url auth envs audience
   url=$(require_gateway_url)
   auth=$(resolve_gateway_auth)
-  envs="MARKET_DATA_GATEWAY_URL=${url},MARKET_DATA_GATEWAY_AUTH=${auth}"
+  envs="MARKET_DATA_GATEWAY_URL=${url}|MARKET_DATA_GATEWAY_AUTH=${auth}"
   audience="${MARKET_DATA_GATEWAY_AUDIENCE:-}"
   if [ -n "$audience" ]; then
-    envs="${envs},MARKET_DATA_GATEWAY_AUDIENCE=${audience}"
+    envs="${envs}|MARKET_DATA_GATEWAY_AUDIENCE=${audience}"
   fi
   echo "$envs"
 }
