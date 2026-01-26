@@ -670,6 +670,11 @@ const en = {
       stopLoss: "SL {{value}}",
       takeProfit: "TP {{value}}",
       help: "Execution requests sent by the ORB runner (times shown in your local timezone).",
+      sinceRunLabel: "Orders since last run",
+      sinceRunAt: "Since {{time}}",
+      sinceRunBadge: "Since run",
+      filterAll: "All",
+      filterSinceRun: "Since last run",
     },
     status: {
       title: "Robot status",

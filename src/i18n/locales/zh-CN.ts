@@ -668,6 +668,11 @@ const zhCN = {
       stopLoss: "止损 {{value}}",
       takeProfit: "止盈 {{value}}",
       help: "ORB 机器人发送的执行请求（时间为本地时区）。",
+      sinceRunLabel: "本次运行后的订单",
+      sinceRunAt: "自 {{time}} 起",
+      sinceRunBadge: "本次运行",
+      filterAll: "全部",
+      filterSinceRun: "本次运行后",
     },
     status: {
       title: "机器人状态",

@@ -654,6 +654,7 @@ export default function OrbRobotPage() {
   const [runUntilActive, setRunUntilActive] = useState(false)
   const [runUntilStatus, setRunUntilStatus] = useState("")
   const [confirmLiveOpen, setConfirmLiveOpen] = useState(false)
+  const [ordersFilter, setOrdersFilter] = useState<"all" | "since_run">("all")
   const runUntilCancelRef = useRef(false)
   const requestsRef = useRef<ExecutionRequestDoc[]>([])
   const { controls: replayControls } = useReplayControls()
@@ -860,6 +861,25 @@ export default function OrbRobotPage() {
       ),
     [ordersSinceRunEntries]
   )
+  const ordersSinceRunIds = useMemo(() => {
+    const ids = new Set<string>()
+    ordersSinceRunEntries.forEach((request) => {
+      if (request.id) ids.add(request.id)
+    })
+    return ids
+  }, [ordersSinceRunEntries])
+  const ordersFilterOptions = {
+    all: t("orb.orders.filterAll"),
+    sinceRun: t("orb.orders.filterSinceRun"),
+  }
+  const ordersFilterSinceLabel =
+    lastRunMs !== null
+      ? `${ordersFilterOptions.sinceRun} (${ordersSinceRun})`
+      : ordersFilterOptions.sinceRun
+  const displayedRequests = useMemo(() => {
+    if (ordersFilter === "since_run") return ordersSinceRunEntries
+    return requests
+  }, [ordersFilter, ordersSinceRunEntries, requests])
 
   useEffect(() => {
     if (!runCooldownActive || typeof runCooldownUntil !== "number") return
@@ -869,6 +889,12 @@ export default function OrbRobotPage() {
     }, delay)
     return () => window.clearTimeout(timer)
   }, [runCooldownActive, runCooldownUntil])
+
+  useEffect(() => {
+    if (ordersFilter === "since_run" && lastRunMs === null) {
+      setOrdersFilter("all")
+    }
+  }, [lastRunMs, ordersFilter])
 
   async function handleToggleEnabled() {
     if (!canWrite || !db || !brokerAccountKey) return
@@ -2236,16 +2262,52 @@ export default function OrbRobotPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-sm">
-                <Timer className="h-4 w-4" />
-                {t("orb.orders.title")}
-              </CardTitle>
-              <CardDescription className="text-xs text-muted-foreground">
-                {t("orb.orders.help")}
-              </CardDescription>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-sm">
+                    <Timer className="h-4 w-4" />
+                    {t("orb.orders.title")}
+                  </CardTitle>
+                  <CardDescription className="text-xs text-muted-foreground">
+                    {t("orb.orders.help")}
+                  </CardDescription>
+                </div>
+                <Tabs
+                  value={ordersFilter}
+                  onValueChange={(value) =>
+                    setOrdersFilter(value === "since_run" ? "since_run" : "all")
+                  }
+                >
+                  <TabsList className="h-8">
+                    <TabsTrigger value="all" className="text-xs">
+                      {ordersFilterOptions.all}
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="since_run"
+                      className="text-xs"
+                      disabled={lastRunMs === null}
+                    >
+                      {ordersFilterSinceLabel}
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                <span>
+                  {t("orb.orders.sinceRunLabel")}:{" "}
+                  {lastRunAt
+                    ? ordersSinceRunSymbols
+                      ? `${ordersSinceRun} · ${ordersSinceRunSymbols}`
+                      : String(ordersSinceRun)
+                    : t("common.na")}
+                </span>
+                {lastRunAt ? (
+                  <span>{t("orb.orders.sinceRunAt", { time: lastRunAt.toLocaleString() })}</span>
+                ) : null}
+              </div>
             </CardHeader>
             <CardContent>
-              {requests.length === 0 ? (
+              {displayedRequests.length === 0 ? (
                 <div className="text-sm text-muted-foreground">{t("orb.orders.empty")}</div>
               ) : (
                 <Table>
@@ -2260,7 +2322,7 @@ export default function OrbRobotPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {requests.map((request) => {
+                    {displayedRequests.map((request) => {
                       const snapshot = request.orderSnapshot
                       const orderType = snapshot?.orderType || "limit"
                       const orderTypeLabel = orderType === "market" ? "MKT" : "LIMIT"
@@ -2307,9 +2369,22 @@ export default function OrbRobotPage() {
                         )
                       }
                       const timingMeta = timingParts.join(" | ")
+                      const isSinceRun = request.id ? ordersSinceRunIds.has(request.id) : false
                       return (
-                        <TableRow key={request.id}>
-                          <TableCell>{snapshot?.symbol || "—"}</TableCell>
+                        <TableRow
+                          key={request.id}
+                          className={isSinceRun ? "bg-emerald-50/60" : undefined}
+                        >
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              <span>{snapshot?.symbol || "—"}</span>
+                              {isSinceRun ? (
+                                <Badge variant="secondary" className="text-[10px]">
+                                  {t("orb.orders.sinceRunBadge")}
+                                </Badge>
+                              ) : null}
+                            </div>
+                          </TableCell>
                           <TableCell className="uppercase">{snapshot?.side || "—"}</TableCell>
                           <TableCell>{formatNumber(snapshot?.quantity)}</TableCell>
                           <TableCell>
