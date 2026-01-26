@@ -979,6 +979,11 @@ const zhCN = {
       price_streamer: "价格流",
       relayorb_agent: "RelayOrb 代理",
       backtrader: "Backtrader",
+      orb_runner: "Orb Runner",
+    },
+    details: {
+      accounts: "账户",
+      gateway: "网关",
     },
     lastSeen: "最近心跳：{{age}}",
     noHeartbeat: "未收到心跳",

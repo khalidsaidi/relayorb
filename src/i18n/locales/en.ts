@@ -981,6 +981,11 @@ const en = {
       price_streamer: "price streamer",
       relayorb_agent: "relayorb agent",
       backtrader: "backtrader",
+      orb_runner: "orb runner",
+    },
+    details: {
+      accounts: "Accounts",
+      gateway: "Gateway",
     },
     lastSeen: "Last seen: {{age}}",
     noHeartbeat: "No heartbeat received",

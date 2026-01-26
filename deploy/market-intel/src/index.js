@@ -6885,15 +6885,17 @@ async function aggregatePipelineHealth(db, marketIntelHealth) {
   const now = Date.now()
   
   // Read health status from other services
-  const [priceStreamerSnap, agentSnap, backtraderSnap] = await Promise.all([
+  const [priceStreamerSnap, agentSnap, backtraderSnap, orbRunnerSnap] = await Promise.all([
     db.doc("pipeline/price_streamer").get().catch(() => null),
     db.doc("pipeline/relayorb_agent").get().catch(() => null),
     db.doc("pipeline/backtrader").get().catch(() => null),
+    db.doc("pipeline/orb_runner").get().catch(() => null),
   ])
   
   const priceStreamer = priceStreamerSnap?.exists ? priceStreamerSnap.data() : null
   const agent = agentSnap?.exists ? agentSnap.data() : null
   const backtrader = backtraderSnap?.exists ? backtraderSnap.data() : null
+  const orbRunner = orbRunnerSnap?.exists ? orbRunnerSnap.data() : null
   
   // Check staleness of each service
   const checkServiceHealth = (data, serviceName) => {
@@ -6923,6 +6925,7 @@ async function aggregatePipelineHealth(db, marketIntelHealth) {
     price_streamer: checkServiceHealth(priceStreamer, "price_streamer"),
     relayorb_agent: checkServiceHealth(agent, "relayorb_agent"),
     backtrader: checkServiceHealth(backtrader, "backtrader"),
+    orb_runner: checkServiceHealth(orbRunner, "orb_runner"),
   }
   
   // Determine overall pipeline status

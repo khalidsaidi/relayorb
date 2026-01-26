@@ -491,6 +491,26 @@ async function runVerification() {
           addCheck("services", `${name}_freshness`, "warning", 
             `${name.replace(/_/g, " ")} last seen ${Math.round(service.ageMs / 60000)} min ago`)
         }
+        if (name === "orb_runner" && service.details) {
+          const accountCount = service.details.accountCount ?? null
+          const enabledCount = service.details.enabledCount ?? null
+          if (accountCount === 0) {
+            addCheck("services", "orb_runner_accounts", "failed", "orb runner has no accounts loaded", {
+              accountCount,
+              enabledCount,
+            })
+          } else if (enabledCount === 0) {
+            addCheck("services", "orb_runner_enabled", "warning", "orb runner has no enabled accounts", {
+              accountCount,
+              enabledCount,
+            })
+          }
+          if (service.details.gateway?.circuitState === "open") {
+            addCheck("services", "orb_runner_gateway", "failed", "orb runner gateway circuit is open", {
+              gateway: service.details.gateway,
+            })
+          }
+        }
       }
     }
 

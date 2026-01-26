@@ -53,6 +53,8 @@ function ServiceIcon({ name }: { name: string }) {
       return <Bot className="h-4 w-4 text-amber-500" />
     case "backtrader":
       return <Server className="h-4 w-4 text-emerald-600" />
+    case "orb_runner":
+      return <Server className="h-4 w-4 text-sky-500" />
     default:
       return <Server className="h-4 w-4 text-slate-500" />
   }
@@ -60,6 +62,14 @@ function ServiceIcon({ name }: { name: string }) {
 
 function ServiceCard({ name, health }: { name: string; health: ServiceHealth }) {
   const { t } = useTranslation()
+  const orbDetails = name === "orb_runner" ? (health.details as Record<string, unknown> | undefined) : undefined
+  const orbGateway = orbDetails && typeof orbDetails.gateway === "object" ? (orbDetails.gateway as Record<string, unknown>) : undefined
+  const orbAccountCount =
+    orbDetails && typeof orbDetails.accountCount === "number" ? (orbDetails.accountCount as number) : null
+  const orbEnabledCount =
+    orbDetails && typeof orbDetails.enabledCount === "number" ? (orbDetails.enabledCount as number) : null
+  const orbGatewayState =
+    orbGateway && typeof orbGateway.circuitState === "string" ? (orbGateway.circuitState as string) : null
   const statusLabels = {
     ok: t("pipeline.status.ok"),
     degraded: t("pipeline.status.degraded"),
@@ -100,6 +110,21 @@ function ServiceCard({ name, health }: { name: string; health: ServiceHealth }) 
             <>{t("pipeline.noHeartbeat")}</>
           )}
         </div>
+        {name === "orb_runner" && (
+          <div className="mt-1 text-xs text-muted-foreground flex flex-wrap gap-x-3 gap-y-1">
+            {orbAccountCount !== null && (
+              <span>
+                {t("pipeline.details.accounts")}: {orbAccountCount}
+                {orbEnabledCount !== null ? ` (${orbEnabledCount} enabled)` : ""}
+              </span>
+            )}
+            {orbGatewayState && (
+              <span>
+                {t("pipeline.details.gateway")}: {orbGatewayState}
+              </span>
+            )}
+          </div>
+        )}
         {health.isStale && health.status !== "unknown" && (
           <div className="mt-1 text-xs text-amber-600 flex items-center gap-1">
             <AlertCircle className="h-3 w-3" />
@@ -282,6 +307,7 @@ export function PipelineHealthPanel({ defaultExpanded = true, showTitle = true }
                 <ServiceCard name="price_streamer" health={health.services.price_streamer} />
                 <ServiceCard name="relayorb_agent" health={health.services.relayorb_agent} />
                 <ServiceCard name="backtrader" health={health.services.backtrader} />
+                <ServiceCard name="orb_runner" health={health.services.orb_runner} />
               </div>
 
               {/* Last Update */}

@@ -29,6 +29,9 @@ const config = {
   requestedByUid: process.env.ORB_REQUESTED_BY_UID || "system-orb",
   bracketStopLossPct: parseFloat(process.env.ORB_STOP_LOSS_PCT || "2"),
   bracketTakeProfitPct: parseFloat(process.env.ORB_TAKE_PROFIT_PCT || "4"),
+  healthWriteMs: parseInt(process.env.ORB_HEALTH_WRITE_MS || "30000", 10),
+  healthStartupGraceMs: parseInt(process.env.ORB_HEALTH_STARTUP_GRACE_MS || "120000", 10),
+  gatewayDegradedMs: parseInt(process.env.ORB_GATEWAY_DEGRADED_MS || "300000", 10),
 }
 
 const DEFAULT_DAILY_PROFILE = {
@@ -104,6 +107,22 @@ const DEFAULT_SINGLE_PROFILE = {
     position_pct: 0.1,
     max_daily_loss_pct: 2.0,
   },
+}
+
+const ORB_HEALTH_DOC = "pipeline/orb_runner"
+const bootedAt = Date.now()
+let lastHealthWriteAt = 0
+
+const healthState = {
+  lastControlsSnapshotAt: null,
+  lastStateSnapshotAt: null,
+  controlsDocCount: null,
+  stateDocCount: null,
+  lastFirestoreError: null,
+  lastGatewayFailureAt: null,
+  lastGatewayError: null,
+  lastGatewaySuccessAt: null,
+  gatewayCircuitState: null,
 }
 
 const ORB_CONTROLS_COLLECTION = "orbControls"
@@ -207,9 +226,11 @@ const gatewayCircuitBreaker = createCircuitBreaker("market-data-gateway", {
   successThreshold: 2,
   timeout: 30000, // 30 seconds before attempting recovery
   onStateChange: (oldState, newState, status) => {
+    healthState.gatewayCircuitState = status?.state || newState
     console.log(`Gateway circuit breaker: ${oldState} -> ${newState}`, status)
   },
   onFailure: (error) => {
+    recordGatewayFailure(error)
     console.error("Gateway circuit breaker recorded failure:", error.message)
   },
 })
@@ -468,6 +489,16 @@ function normalizeAuthHeaders(headers) {
   return { ...headers }
 }
 
+function recordGatewayFailure(error) {
+  healthState.lastGatewayFailureAt = Date.now()
+  healthState.lastGatewayError = error?.message || String(error)
+}
+
+function recordGatewaySuccess() {
+  healthState.lastGatewaySuccessAt = Date.now()
+  healthState.lastGatewayError = null
+}
+
 async function fetchGatewayJson(path, params, requestId) {
   return gatewayCircuitBreaker.execute(async () => {
     const url = buildGatewayUrl(path, params)
@@ -476,7 +507,14 @@ async function fetchGatewayJson(path, params, requestId) {
     const headers = withRequestId(reqId, {
       headers: normalizeAuthHeaders(authHeaders),
     }).headers
-    return fetchJson(url, { headers })
+    try {
+      const data = await fetchJson(url, { headers })
+      recordGatewaySuccess()
+      return data
+    } catch (error) {
+      recordGatewayFailure(error)
+      throw error
+    }
   })
 }
 
@@ -1084,6 +1122,96 @@ async function updateOrbState(brokerAccountKey, patch) {
   )
 }
 
+function mergeStatus(current, next) {
+  const order = ["ok", "degraded", "error"]
+  const currentIdx = order.indexOf(current)
+  const nextIdx = order.indexOf(next)
+  if (nextIdx === -1) return current
+  if (currentIdx === -1) return next
+  return order[Math.max(currentIdx, nextIdx)]
+}
+
+async function writeHealthStatus() {
+  const now = Date.now()
+  if (now - lastHealthWriteAt < config.healthWriteMs) return
+  lastHealthWriteAt = now
+
+  const accountEntries = Array.from(controlsByAccount.entries())
+  const accountCount = accountEntries.length
+  const enabledCount = accountEntries.filter(([, controls]) => controls?.enabled === true).length
+
+  const reasons = []
+  let status = "ok"
+  const ageSinceBoot = now - bootedAt
+
+  if (healthState.lastFirestoreError) {
+    status = mergeStatus(status, "error")
+    reasons.push("firestore_error")
+  }
+
+  if (accountCount === 0) {
+    const severity =
+      ageSinceBoot > config.healthStartupGraceMs ? "error" : "degraded"
+    status = mergeStatus(status, severity)
+    reasons.push("no_accounts_loaded")
+  } else if (enabledCount === 0) {
+    status = mergeStatus(status, "degraded")
+    reasons.push("no_enabled_accounts")
+  }
+
+  const gatewayState = healthState.gatewayCircuitState || gatewayCircuitBreaker.getStatus().state
+
+  if (gatewayState === "open") {
+    status = mergeStatus(status, "error")
+    reasons.push("gateway_circuit_open")
+  } else if (
+    healthState.lastGatewayFailureAt &&
+    now - healthState.lastGatewayFailureAt < config.gatewayDegradedMs
+  ) {
+    status = mergeStatus(status, "degraded")
+    reasons.push("gateway_recent_failures")
+  }
+
+  const payload = {
+    service: "orb_runner",
+    status,
+    heartbeatAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+    accountCount,
+    enabledCount,
+    reasons,
+    lastControlsSnapshotAt: healthState.lastControlsSnapshotAt
+      ? new Date(healthState.lastControlsSnapshotAt).toISOString()
+      : null,
+    lastStateSnapshotAt: healthState.lastStateSnapshotAt
+      ? new Date(healthState.lastStateSnapshotAt).toISOString()
+      : null,
+    controlsDocCount: healthState.controlsDocCount,
+    stateDocCount: healthState.stateDocCount,
+    firestoreError: healthState.lastFirestoreError
+      ? {
+          message: healthState.lastFirestoreError.message,
+          at: new Date(healthState.lastFirestoreError.at).toISOString(),
+        }
+      : null,
+    gateway: {
+      circuitState: gatewayState || "unknown",
+      lastSuccessAt: healthState.lastGatewaySuccessAt
+        ? new Date(healthState.lastGatewaySuccessAt).toISOString()
+        : null,
+      lastFailureAt: healthState.lastGatewayFailureAt
+        ? new Date(healthState.lastGatewayFailureAt).toISOString()
+        : null,
+      lastError: healthState.lastGatewayError || null,
+      authEnabled: config.marketDataGatewayAuth,
+      audience: config.marketDataGatewayAudience || null,
+      url: config.marketDataGatewayUrl || null,
+    },
+  }
+
+  await db.doc(ORB_HEALTH_DOC).set(payload, { merge: true })
+}
+
 async function recordRunRequested() {
   const targets = Array.from(controlsByAccount.entries())
     .filter(([, controls]) => controls?.enabled === true)
@@ -1111,6 +1239,37 @@ async function ensureStateDoc(brokerAccountKey) {
     },
     { merge: true }
   )
+}
+
+async function seedControlsSnapshot() {
+  try {
+    const snap = await db.collection(ORB_CONTROLS_COLLECTION).get()
+    snap.forEach((doc) => {
+      const accountKey = doc.id
+      const controls = resolveControls(doc.data(), accountKey)
+      controlsByAccount.set(accountKey, controls)
+    })
+    healthState.lastControlsSnapshotAt = Date.now()
+    healthState.controlsDocCount = snap.size
+  } catch (error) {
+    healthState.lastFirestoreError = { message: error.message, at: Date.now() }
+    console.error("ORB controls seed error:", error.message)
+  }
+}
+
+async function seedStateSnapshot() {
+  try {
+    const snap = await db.collection(ORB_STATE_COLLECTION).get()
+    snap.forEach((doc) => {
+      const accountKey = doc.id
+      stateByAccount.set(accountKey, doc.data() || {})
+    })
+    healthState.lastStateSnapshotAt = Date.now()
+    healthState.stateDocCount = snap.size
+  } catch (error) {
+    healthState.lastFirestoreError = { message: error.message, at: Date.now() }
+    console.error("ORB state seed error:", error.message)
+  }
 }
 
 async function createExecutionRequest({
@@ -2107,6 +2266,9 @@ async function runOrbCycle() {
     }
   } finally {
     runInProgress = false
+    writeHealthStatus().catch((err) =>
+      console.error("ORB health tick error:", err.message)
+    )
   }
 }
 
@@ -2156,6 +2318,8 @@ async function migrateLegacyDocs() {
 
 async function start() {
   await migrateLegacyDocs()
+  await seedControlsSnapshot()
+  await seedStateSnapshot()
 
   db.collection(ORB_CONTROLS_COLLECTION).onSnapshot((snap) => {
     snap.docChanges().forEach((change) => {
@@ -2170,6 +2334,11 @@ async function start() {
         console.error(`Failed to ensure state doc for ${accountKey}:`, error.message)
       })
     })
+    healthState.lastControlsSnapshotAt = Date.now()
+    healthState.controlsDocCount = snap.size
+  }, (error) => {
+    healthState.lastFirestoreError = { message: error.message, at: Date.now() }
+    console.error("ORB controls snapshot error:", error.message)
   })
 
   db.collection(ORB_STATE_COLLECTION).onSnapshot((snap) => {
@@ -2181,13 +2350,27 @@ async function start() {
       }
       stateByAccount.set(accountKey, change.doc.data() || {})
     })
+    healthState.lastStateSnapshotAt = Date.now()
+    healthState.stateDocCount = snap.size
+  }, (error) => {
+    healthState.lastFirestoreError = { message: error.message, at: Date.now() }
+    console.error("ORB state snapshot error:", error.message)
   })
 
   setInterval(() => {
     runOrbCycle().catch((err) => console.error("ORB tick error:", err.message))
   }, config.tickMs)
 
+  setInterval(() => {
+    writeHealthStatus().catch((err) =>
+      console.error("ORB health write error:", err.message)
+    )
+  }, config.healthWriteMs)
+
   runOrbCycle().catch((err) => console.error("ORB boot error:", err.message))
+  writeHealthStatus().catch((err) =>
+    console.error("ORB health boot error:", err.message)
+  )
 
   const server = http.createServer(async (req, res) => {
     applyCorsHeaders(res)

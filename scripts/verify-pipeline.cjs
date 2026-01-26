@@ -172,6 +172,19 @@ async function checkServiceHealth() {
       if (serviceName === "price_streamer" && service.details) {
         await checkPriceStreamerHealth(service.details)
       }
+
+      if (serviceName === "orb_runner" && service.details) {
+        const accountCount = service.details.accountCount ?? null
+        const enabledCount = service.details.enabledCount ?? null
+        if (accountCount === 0) {
+          addCheck("services", "orb_runner_accounts", "failed", "orb runner has no accounts loaded")
+        } else if (enabledCount === 0) {
+          addCheck("services", "orb_runner_enabled", "warning", "orb runner has no enabled accounts")
+        }
+        if (service.details.gateway?.circuitState === "open") {
+          addCheck("services", "orb_runner_gateway", "failed", "orb runner gateway circuit is open")
+        }
+      }
     }
     
   } catch (err) {
