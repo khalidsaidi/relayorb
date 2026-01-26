@@ -1061,6 +1061,27 @@ async function loadOpenPositions(brokerAccountKey, symbols) {
   return rows.filter((row) => symbolSet.has(row.symbol))
 }
 
+function validateAccountSummaryMode(accountSummary, requiredMode, context) {
+  if (!accountSummary) return null
+  const summaryMode = accountSummary.mode
+  if (!summaryMode) {
+    console.warn(
+      `[${context}] Account summary has no mode field (legacy doc). ` +
+        `Required: ${requiredMode}. Refusing to use for position sizing.`
+    )
+    return null
+  }
+  if (summaryMode !== requiredMode) {
+    console.warn(
+      `[${context}] Account summary mode mismatch: ` +
+        `summary=${summaryMode}, required=${requiredMode}. ` +
+        `Refusing to use for position sizing.`
+    )
+    return null
+  }
+  return accountSummary
+}
+
 function resolveOrderQuantity(price, positionPct, accountSummary) {
   const netLiq = accountSummary?.values?.netLiquidation
   const buyingPower = accountSummary?.values?.buyingPower
@@ -1561,7 +1582,17 @@ async function runDailyUniverseCycle({
             await setState({ lastError: `Position load failed: ${error.message}` })
           }
 
-          const accountSummary = await loadAccountSummary(accountKey)
+          const rawAccountSummary = await loadAccountSummary(accountKey)
+          const accountSummary = validateAccountSummaryMode(
+            rawAccountSummary,
+            resolvedControls.mode,
+            `universe:${accountKey}`
+          )
+          if (!accountSummary && rawAccountSummary) {
+            await setState({
+              lastError: `Account summary mode mismatch: summary=${rawAccountSummary.mode || "unknown"}, required=${resolvedControls.mode}`,
+            })
+          }
           const brokerAccount = await loadBrokerAccount(accountKey)
           const requestedByUid = resolveRequesterUid(resolvedControls, brokerAccount)
           const orderType = resolveOrderType(tradingControls, resolvedControls)
@@ -1901,7 +1932,17 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
   let accountSummary = null
   if (!state?.sessionStartNetLiq && market.minutes >= market.openMinutes) {
     try {
-      accountSummary = await loadAccountSummary(accountKey)
+      const rawSummary = await loadAccountSummary(accountKey)
+      accountSummary = validateAccountSummaryMode(
+        rawSummary,
+        resolvedControls.mode,
+        `session-start:${accountKey}`
+      )
+      if (!accountSummary && rawSummary) {
+        await setState({
+          lastError: `Account summary mode mismatch: summary=${rawSummary.mode || "unknown"}, required=${resolvedControls.mode}`,
+        })
+      }
       const netLiq = parseNumber(accountSummary?.values?.netLiquidation)
       if (typeof netLiq === "number" && netLiq > 0) {
         await setState({ sessionStartNetLiq: netLiq })
@@ -2053,7 +2094,17 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
     } else {
       try {
         if (!accountSummary) {
-          accountSummary = await loadAccountSummary(accountKey)
+          const rawSummary = await loadAccountSummary(accountKey)
+          accountSummary = validateAccountSummaryMode(
+            rawSummary,
+            resolvedControls.mode,
+            `loss-check:${accountKey}`
+          )
+          if (!accountSummary && rawSummary) {
+            await setState({
+              lastError: `Account summary mode mismatch: summary=${rawSummary.mode || "unknown"}, required=${resolvedControls.mode}`,
+            })
+          }
         }
         const netLiq = parseNumber(accountSummary?.values?.netLiquidation)
         const startNetLiq = parseNumber(state?.sessionStartNetLiq)

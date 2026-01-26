@@ -50,13 +50,13 @@ resolve_orb_runner_url() {
     return
   fi
   require_cmd gcloud
-  gcloud run services describe "$ORB_RUNNER_SERVICE_NAME" --region "$REGION" \
+  gcloud run services describe "$ORB_RUNNER_SERVICE_NAME" --project "$(require_project_id)" --region "$REGION" \
     --format="value(status.url)" 2>/dev/null || true
 }
 
 resolve_service_url() {
   require_cmd gcloud
-  gcloud run services describe "$SERVICE_NAME" --region "$REGION" \
+  gcloud run services describe "$SERVICE_NAME" --project "$(require_project_id)" --region "$REGION" \
     --format="value(status.url)" 2>/dev/null || true
 }
 
@@ -84,7 +84,7 @@ resolve_market_data_gateway_url() {
     return
   fi
   require_cmd gcloud
-  gcloud run services describe "$MARKET_DATA_GATEWAY_SERVICE_NAME" --region "$REGION" \
+  gcloud run services describe "$MARKET_DATA_GATEWAY_SERVICE_NAME" --project "$(require_project_id)" --region "$REGION" \
     --format="value(status.url)" 2>/dev/null || true
 }
 

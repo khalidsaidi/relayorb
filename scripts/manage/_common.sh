@@ -59,8 +59,10 @@ resolve_image() {
 ensure_run_service_exists() {
   local service="$1"
   local region="$2"
+  local project
+  project=$(require_project_id)
   require_cmd gcloud
-  if gcloud run services describe "$service" --region "$region" >/dev/null 2>&1; then
+  if gcloud run services describe "$service" --project "$project" --region "$region" >/dev/null 2>&1; then
     return 0
   fi
   if [ "${ALLOW_CREATE:-false}" = "true" ]; then
@@ -74,8 +76,10 @@ ensure_run_service_exists() {
 ensure_run_job_exists() {
   local job="$1"
   local region="$2"
+  local project
+  project=$(require_project_id)
   require_cmd gcloud
-  if gcloud run jobs describe "$job" --region "$region" >/dev/null 2>&1; then
+  if gcloud run jobs describe "$job" --project "$project" --region "$region" >/dev/null 2>&1; then
     return 0
   fi
   if [ "${ALLOW_CREATE:-false}" = "true" ]; then
@@ -89,8 +93,10 @@ ensure_run_job_exists() {
 build_image() {
   local dir="$1"
   local image="$2"
+  local project
+  project=$(require_project_id)
   require_cmd gcloud
-  gcloud builds submit --tag "$image" "$dir"
+  gcloud builds submit --project "$project" --tag "$image" "$dir"
 }
 
 deploy_run_service() {
@@ -99,6 +105,8 @@ deploy_run_service() {
   local region="$3"
   local allow_unauth="${4:-false}"
   local extra_env="${5:-}"
+  local project
+  project=$(require_project_id)
   require_cmd gcloud
   if [ "$region" != "$EXPECTED_REGION" ]; then
     echo "Refusing to deploy $service outside $EXPECTED_REGION (got: $region)." >&2
@@ -106,7 +114,7 @@ deploy_run_service() {
   fi
   ensure_run_service_exists "$service" "$region"
 
-  local args=(run deploy "$service" --image "$image" --region "$region" --platform managed)
+  local args=(run deploy "$service" --project "$project" --image "$image" --region "$region" --platform managed)
   if [ "$allow_unauth" = "true" ]; then
     args+=(--allow-unauthenticated)
   else
@@ -126,6 +134,8 @@ deploy_run_job() {
   local image="$2"
   local region="$3"
   local extra_env="${4:-}"
+  local project
+  project=$(require_project_id)
   require_cmd gcloud
   if [ "$region" != "$EXPECTED_REGION" ]; then
     echo "Refusing to deploy $job outside $EXPECTED_REGION (got: $region)." >&2
@@ -133,7 +143,7 @@ deploy_run_job() {
   fi
   ensure_run_job_exists "$job" "$region"
 
-  local args=(run jobs deploy "$job" --image "$image" --region "$region")
+  local args=(run jobs deploy "$job" --project "$project" --image "$image" --region "$region")
   local envs="RUN_REGION=$EXPECTED_REGION"
   if [ -n "$extra_env" ]; then
     envs="${envs}|${extra_env}"
@@ -152,36 +162,42 @@ deploy_run_job() {
 execute_run_job() {
   local job="$1"
   local region="$2"
+  local project
+  project=$(require_project_id)
   require_cmd gcloud
   if [ "$region" != "$EXPECTED_REGION" ]; then
     echo "Refusing to execute $job outside $EXPECTED_REGION (got: $region)." >&2
     exit 1
   fi
-  gcloud run jobs execute "$job" --region "$region" --wait
+  gcloud run jobs execute "$job" --project "$project" --region "$region" --wait
 }
 
 service_logs() {
   local service="$1"
   local region="$2"
   local limit="${LOG_LIMIT:-100}"
+  local project
+  project=$(require_project_id)
   require_cmd gcloud
   if [ "$region" != "$EXPECTED_REGION" ]; then
     echo "Refusing to read $service logs outside $EXPECTED_REGION (got: $region)." >&2
     exit 1
   fi
-  gcloud run services logs read "$service" --region "$region" --limit "$limit"
+  gcloud run services logs read "$service" --project "$project" --region "$region" --limit "$limit"
 }
 
 job_logs() {
   local job="$1"
   local region="$2"
   local limit="${LOG_LIMIT:-100}"
+  local project
+  project=$(require_project_id)
   require_cmd gcloud
   if [ "$region" != "$EXPECTED_REGION" ]; then
     echo "Refusing to read $job logs outside $EXPECTED_REGION (got: $region)." >&2
     exit 1
   fi
-  gcloud run jobs logs read "$job" --region "$region" --limit "$limit"
+  gcloud run jobs logs read "$job" --project "$project" --region "$region" --limit "$limit"
 }
 
 run_local_node() {

@@ -38,7 +38,7 @@ resolve_gateway_url() {
     return
   fi
   require_cmd gcloud
-  gcloud run services describe "$GATEWAY_SERVICE_NAME" --region "$REGION" \
+  gcloud run services describe "$GATEWAY_SERVICE_NAME" --project "$(require_project_id)" --region "$REGION" \
     --format="value(status.url)" 2>/dev/null || true
 }
 
