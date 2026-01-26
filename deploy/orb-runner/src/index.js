@@ -198,7 +198,7 @@ if (!admin.apps.length) {
 
 const db = admin.firestore()
 const FieldValue = admin.firestore.FieldValue
-const gatewayAuth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] })
+const gatewayAuth = new GoogleAuth()
 let gatewayAuthClient = null
 
 // Circuit breaker for market-data-gateway calls
@@ -460,12 +460,22 @@ async function fetchJson(url, options) {
   return res.json()
 }
 
+function normalizeAuthHeaders(headers) {
+  if (!headers) return {}
+  if (typeof headers.entries === "function") {
+    return Object.fromEntries(headers.entries())
+  }
+  return { ...headers }
+}
+
 async function fetchGatewayJson(path, params, requestId) {
   return gatewayCircuitBreaker.execute(async () => {
     const url = buildGatewayUrl(path, params)
     const authHeaders = await getGatewayAuthHeaders()
     const reqId = requestId || generateRequestId()
-    const headers = withRequestId(reqId, authHeaders || {}).headers
+    const headers = withRequestId(reqId, {
+      headers: normalizeAuthHeaders(authHeaders),
+    }).headers
     return fetchJson(url, { headers })
   })
 }

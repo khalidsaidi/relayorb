@@ -144,6 +144,7 @@ if (!admin.apps.length) {
 
 const db = admin.firestore()
 const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] })
+const idTokenAuth = new GoogleAuth()
 let gatewayAuthClient = null
 let orbRunnerAuthClient = null
 
@@ -602,7 +603,7 @@ async function getGatewayAuthHeaders() {
   if (!audience) return null
   try {
     if (!gatewayAuthClient) {
-      gatewayAuthClient = await auth.getIdTokenClient(audience)
+      gatewayAuthClient = await idTokenAuth.getIdTokenClient(audience)
     }
     const headers = await gatewayAuthClient.getRequestHeaders()
     if (headers?.Authorization || headers?.authorization) return headers
@@ -624,7 +625,7 @@ async function getOrbRunnerAuthHeaders() {
   if (!audience) return null
   try {
     if (!orbRunnerAuthClient) {
-      orbRunnerAuthClient = await auth.getIdTokenClient(audience)
+      orbRunnerAuthClient = await idTokenAuth.getIdTokenClient(audience)
     }
     const headers = await orbRunnerAuthClient.getRequestHeaders()
     if (headers?.Authorization || headers?.authorization) return headers
