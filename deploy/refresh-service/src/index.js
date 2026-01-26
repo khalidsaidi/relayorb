@@ -347,6 +347,33 @@ async function fetchPendingBatches(lastProcessedAt) {
 }
 
 async function runJobsForBatch(batchId, runId) {
+  let batchMeta = null
+  if (batchId) {
+    try {
+      const snap = await resolveBatchCollection().doc(batchId).get()
+      batchMeta = snap.exists ? snap.data() : null
+    } catch (err) {
+      console.error("Batch metadata fetch failed", err.message || err)
+    }
+  }
+
+  if (config.allowlist.length > 0) {
+    const email = String(batchMeta?.requestedByEmail || "").toLowerCase()
+    if (!email || !config.allowlist.includes(email)) {
+      console.warn("ref_batch_rejected", { batchId, email })
+      await resolveBatchCollection().doc(batchId).set(
+        {
+          status: "rejected",
+          rejectionReason: "not_authorized",
+          processedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      )
+      await updateBatchConsumerState(batchId)
+      return
+    }
+  }
+
   const jobs = config.redisEventJobs.length ? config.redisEventJobs : config.jobs
   const overrides = runId ? { env: { RUN_ID: runId } } : undefined
   await Promise.all(jobs.map((job) => runJob(job, overrides)))

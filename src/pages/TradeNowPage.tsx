@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { doc, onSnapshot } from "firebase/firestore"
+import { addDoc, collection, doc, onSnapshot, serverTimestamp } from "firebase/firestore"
 import { db, firebaseEnabled } from "@/lib/firebase"
 import type {
   MarketActionBoardDoc,
@@ -472,16 +472,19 @@ export default function TradeNowPage() {
     enabled: !loading,
   })
 
+  const refreshMode = (import.meta.env.VITE_REFRESH_MODE || "firestore").trim().toLowerCase()
   const refreshEndpoint = useMemo(() => {
+    if (refreshMode !== "http") return ""
     const base = (import.meta.env.VITE_REFRESH_URL || "").trim()
     if (!base) return ""
     return `${base.replace(/\/+$/, "")}/refresh`
-  }, [])
+  }, [refreshMode])
   const adviceEndpoint = useMemo(() => {
+    if (refreshMode !== "http") return ""
     const base = (import.meta.env.VITE_REFRESH_URL || "").trim()
     if (!base) return ""
     return `${base.replace(/\/+$/, "")}/advice`
-  }, [])
+  }, [refreshMode])
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
@@ -641,9 +644,34 @@ export default function TradeNowPage() {
     return t("tradeNow.noSignalsYet", { side: t(`trade.side.${sideLabel}`) })
   }
 
+  async function triggerRefreshViaBatch() {
+    if (!firebaseEnabled || !db) {
+      toast.error(t("tradeNow.firebaseNotConfigured"))
+      return
+    }
+    if (!user) {
+      toast.error(t("tradeNow.mustBeSignedIn"))
+      return
+    }
+    const runId = `ui-refresh-${Date.now()}`
+    await addDoc(collection(db, "batches"), {
+      runId,
+      type: "refresh",
+      source: "ui",
+      requestedByUid: user.uid,
+      requestedByEmail: user.email || null,
+      createdAt: serverTimestamp(),
+    })
+    toast.success(t("tradeNow.refreshStarted"))
+  }
+
   async function triggerRefresh() {
     if (replayActive) {
       toast.info(replayActionDisabledReason)
+      return
+    }
+    if (refreshMode !== "http") {
+      await triggerRefreshViaBatch()
       return
     }
     if (!firebaseEnabled || !db) {
