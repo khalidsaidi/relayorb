@@ -1503,8 +1503,8 @@ export default function OrbRobotPage() {
 
       <div className="grid gap-6 lg:grid-cols-12">
         <div className="order-1 space-y-6 lg:order-1 lg:col-span-9">
-          <Card>
-            <CardHeader>
+          <Card className="lg:-mx-6 xl:-mx-8">
+            <CardHeader className="px-6 xl:px-8">
               <CardTitle className="flex items-center gap-2 text-sm">
                 <Target className="h-4 w-4" />
                 {t("orb.controls.title")}
@@ -2323,7 +2323,7 @@ export default function OrbRobotPage() {
             </CardHeader>
             <CardContent className="px-0">
               {displayedRequests.length === 0 ? (
-                <div className="px-6 text-sm text-muted-foreground">
+                <div className="px-6 text-sm text-muted-foreground xl:px-8">
                   {t("orb.orders.empty")}
                 </div>
               ) : (
