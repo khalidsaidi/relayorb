@@ -232,7 +232,7 @@ export function AppShell() {
       .slice(0, 2)
       .join("") || "U"
 
-  const sidebarWidth = sidebarCollapsed ? "84px" : "260px"
+  const sidebarWidth = sidebarCollapsed ? "72px" : "220px"
 
   return (
     <div className="app-bg min-h-svh">
@@ -250,7 +250,7 @@ export function AppShell() {
         <aside
           className={[
             "hidden md:flex flex-col border-r/60 bg-background/70 backdrop-blur-xl transition-[width] duration-300",
-            sidebarCollapsed ? "w-[84px]" : "w-[260px]",
+            sidebarCollapsed ? "w-[72px]" : "w-[220px]",
           ].join(" ")}
         >
           <div className="flex items-center justify-between px-5 py-4">

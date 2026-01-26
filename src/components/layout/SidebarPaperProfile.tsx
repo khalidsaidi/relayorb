@@ -310,8 +310,8 @@ export function SidebarBrokerProfile({
       </div>
 
       <div className="mb-3 space-y-1">
-        <div className="text-lg font-bold tracking-tight">{displayBalance}</div>
-        <div className="flex items-center gap-1.5">
+        <div className="text-xl font-semibold tracking-tight">{displayBalance}</div>
+        <div className="flex items-center gap-2 text-sm">
           {isPositive ? (
             <TrendingUp className="h-3 w-3 text-emerald-600" />
           ) : (
@@ -319,29 +319,31 @@ export function SidebarBrokerProfile({
           )}
           <span
             className={[
-              "text-xs font-medium",
+              "text-sm font-medium",
               isPositive ? "text-emerald-600" : "text-rose-600",
             ].join(" ")}
           >
             {isPositive ? "+" : "-"}
             {formatCurrency(Math.abs(unrealizedPnl))}
           </span>
-          <span className="text-[10px] text-muted-foreground/60">{t("ibkr.sidebar.unrealizedPnl")}</span>
+          <span className="text-xs text-muted-foreground/70">
+            {t("ibkr.sidebar.unrealizedPnl")}
+          </span>
         </div>
       </div>
 
       <div className="mt-3 grid grid-cols-1 gap-2 border-t border-border/40 pt-3">
         <div className="flex items-center justify-between">
-          <span className="text-[10px] uppercase tracking-tighter text-muted-foreground/70">
+          <span className="text-xs uppercase tracking-tight text-muted-foreground/70">
             {t("ibkr.sidebar.openPositions")}
           </span>
-          <span className="font-mono text-xs font-bold">{positionCount}</span>
+          <span className="font-mono text-sm font-semibold">{positionCount}</span>
         </div>
         <div className="flex items-center justify-between">
-            <span className="text-[10px] uppercase tracking-tighter text-muted-foreground/70">
+          <span className="text-xs uppercase tracking-tight text-muted-foreground/70">
             {t("ibkr.sidebar.connection")}
           </span>
-          <div className="flex items-center gap-1.5 text-[10px] font-medium">
+          <div className="flex items-center gap-1.5 text-xs font-medium">
             <span
               className={[
                 "h-2 w-2 rounded-full",
@@ -372,22 +374,22 @@ export function SidebarBrokerProfile({
           </div>
         </div>
         {heartbeatAgeSec !== null ? (
-          <div className="text-[10px] text-muted-foreground/60">
+          <div className="text-xs text-muted-foreground/70">
             {t("ibkr.sidebar.lastHeartbeat", { seconds: heartbeatAgeSec })}
           </div>
         ) : null}
         {isConnectionError ? (
-          <div className="text-[10px] text-rose-600/80">
+          <div className="text-xs text-rose-600/80">
             {t("ibkr.sidebar.connectionError", { error: connectError })}
           </div>
         ) : null}
-        <div className="flex flex-wrap items-center gap-2 pt-1">
+        <div className="grid grid-cols-2 gap-2 pt-1">
           <Button
             size="sm"
             variant={isConnected ? "outline" : "default"}
             disabled={updating || !brokerAccountKey}
             onClick={() => setConnectionEnabled(!isConnected)}
-            className="h-6 px-2 text-[10px]"
+            className="h-7 w-full text-xs"
           >
             {isConnected ? t("ibkr.sidebar.disconnect") : t("ibkr.sidebar.connect")}
           </Button>
@@ -396,7 +398,7 @@ export function SidebarBrokerProfile({
             variant="ghost"
             disabled={updating || !brokerAccountKey}
             onClick={requestOrdersRefresh}
-            className="h-6 px-2 text-[10px]"
+            className="h-7 w-full text-xs"
           >
             {t("ibkr.sidebar.refreshOrders")}
           </Button>

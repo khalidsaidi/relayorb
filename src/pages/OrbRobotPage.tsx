@@ -1501,9 +1501,9 @@ export default function OrbRobotPage() {
         </div>
       </header>
 
-      <div className="grid gap-6 lg:grid-cols-12">
-        <div className="order-1 space-y-6 lg:order-1 lg:col-span-9">
-          <Card className="lg:-mx-6 xl:-mx-8">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(280px,340px)]">
+        <div className="order-1 min-w-0 space-y-6 lg:order-none lg:col-start-1 lg:row-start-1">
+          <Card>
             <CardHeader className="px-6 xl:px-8">
               <CardTitle className="flex items-center gap-2 text-sm">
                 <Target className="h-4 w-4" />
@@ -1602,7 +1602,7 @@ export default function OrbRobotPage() {
                 </div>
 
                 {isDailyDraft ? (
-                  <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-4 md:grid-cols-2 md:gap-x-6 md:[&>div]:min-w-0">
                     <div className="space-y-1">
                       <div className="text-xs text-muted-foreground">
                         {t("orb.controls.priceMin")}
@@ -1710,7 +1710,7 @@ export default function OrbRobotPage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-4 md:grid-cols-2 md:gap-x-6 md:[&>div]:min-w-0">
                     <div className="space-y-1">
                       <div className="text-xs text-muted-foreground">{t("orb.controls.symbol")}</div>
                       <Input
@@ -1819,30 +1819,36 @@ export default function OrbRobotPage() {
                   </div>
                 )}
 
-                <div className="space-y-1">
-                  <div className="text-xs text-muted-foreground">{t("orb.controls.orderType")}</div>
-                  <select
-                    className="w-full rounded-md border border-border/60 bg-background px-3 py-2 text-sm"
-                    value={draft.orderType}
-                    onChange={(event) => {
-                      const value = event.target.value === "market" ? "market" : "limit"
-                      setDraft((prev) => ({ ...prev, orderType: value }))
-                      setDirty(true)
-                    }}
-                  >
-                    <option value="limit">{t("orb.controls.orderTypeLimit")}</option>
-                    <option value="market">{t("orb.controls.orderTypeMarket")}</option>
-                  </select>
+                <div className="grid gap-4 md:grid-cols-2 md:gap-x-6 md:[&>div]:min-w-0">
+                  <div className="space-y-1">
+                    <div className="text-xs text-muted-foreground">
+                      {t("orb.controls.orderType")}
+                    </div>
+                    <select
+                      className="w-full rounded-md border border-border/60 bg-background px-3 py-2 text-sm"
+                      value={draft.orderType}
+                      onChange={(event) => {
+                        const value = event.target.value === "market" ? "market" : "limit"
+                        setDraft((prev) => ({ ...prev, orderType: value }))
+                        setDirty(true)
+                      }}
+                    >
+                      <option value="limit">{t("orb.controls.orderTypeLimit")}</option>
+                      <option value="market">{t("orb.controls.orderTypeMarket")}</option>
+                    </select>
+                  </div>
+                  <div className="hidden md:block" />
                 </div>
               </div>
 
+              <Separator className="my-1" />
               <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
                 <CollapsibleTrigger asChild>
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="flex items-center gap-2 px-0 text-sm"
+                    className="flex w-full items-center justify-between gap-2 px-0 text-sm"
                   >
                     {t("orb.controls.advancedTitle")}
                     <ChevronDown
@@ -1859,7 +1865,7 @@ export default function OrbRobotPage() {
                       : t("orb.controls.advancedHint")}
                   </div>
                   {isDailyDraft ? (
-                    <div className="grid gap-4 md:grid-cols-2">
+                    <div className="grid gap-4 md:grid-cols-2 md:gap-x-6 md:[&>div]:min-w-0">
                       <div className="space-y-1">
                         <div className="text-xs text-muted-foreground">
                           {t("orb.controls.breakoutCheckInterval")}
@@ -1926,7 +1932,7 @@ export default function OrbRobotPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className="grid gap-4 md:grid-cols-2">
+                    <div className="grid gap-4 md:grid-cols-2 md:gap-x-6 md:[&>div]:min-w-0">
                       <div className="space-y-1">
                         <div className="text-xs text-muted-foreground">
                           {t("orb.controls.atrBufferPct")}
@@ -2025,7 +2031,7 @@ export default function OrbRobotPage() {
                 </CollapsibleContent>
               </Collapsible>
 
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 pt-2">
                 <Button type="button" onClick={handleSave} disabled={!dirty || saving || !canWrite}>
                   {saving ? t("orb.saving") : t("orb.save")}
                 </Button>
@@ -2138,7 +2144,7 @@ export default function OrbRobotPage() {
           </Card>
         </div>
 
-        <div className="order-2 space-y-6 lg:order-3 lg:col-span-12">
+        <div className="order-2 min-w-0 space-y-6 lg:order-none lg:col-start-1 lg:row-start-2 lg:col-span-2 lg:border-t lg:border-border/60 lg:pt-6">
           {activeMode === "daily_universe" ? (
             <Card>
               <CardHeader className="space-y-3">
@@ -2275,7 +2281,7 @@ export default function OrbRobotPage() {
             </Card>
           )}
 
-          <Card>
+          <Card className="lg:w-[calc(100%+6rem)] lg:-ml-24 xl:w-[calc(100%+10rem)] xl:-ml-40">
             <CardHeader>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -2328,11 +2334,11 @@ export default function OrbRobotPage() {
                 </div>
               ) : (
                 <Table className="w-full">
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>{t("orb.orders.symbol")}</TableHead>
-                      <TableHead>{t("orb.orders.side")}</TableHead>
-                      <TableHead>{t("orb.orders.qty")}</TableHead>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>{t("orb.orders.symbol")}</TableHead>
+                        <TableHead>{t("orb.orders.side")}</TableHead>
+                        <TableHead>{t("orb.orders.qty")}</TableHead>
                       <TableHead>{t("orb.orders.price")}</TableHead>
                       <TableHead>{t("orb.orders.status")}</TableHead>
                       <TableHead>{t("orb.orders.timing")}</TableHead>
@@ -2438,7 +2444,7 @@ export default function OrbRobotPage() {
           </Card>
         </div>
 
-        <div className="order-3 space-y-6 lg:order-2 lg:col-span-3">
+        <div className="order-3 min-w-0 space-y-6 lg:order-none lg:col-start-2 lg:row-start-1 lg:min-w-[280px] lg:max-w-[360px]">
           <Card>
             <CardHeader>
               <div className="flex items-start justify-between gap-3">
