@@ -374,7 +374,15 @@ async function runJobsForBatch(batchId, runId) {
     }
   }
 
-  const jobs = config.redisEventJobs.length ? config.redisEventJobs : config.jobs
+  const requestedJobs = Array.isArray(batchMeta?.jobs)
+    ? batchMeta.jobs.map((job) => String(job).trim()).filter(Boolean)
+    : []
+  const jobs =
+    requestedJobs.length > 0
+      ? requestedJobs
+      : config.redisEventJobs.length
+        ? config.redisEventJobs
+        : config.jobs
   const overrides = runId ? { env: { RUN_ID: runId } } : undefined
   await Promise.all(jobs.map((job) => runJob(job, overrides)))
   await updateBatchConsumerState(batchId)

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { Link, useParams } from "react-router-dom"
 import {
   addDoc,
@@ -48,6 +48,7 @@ import { DEFAULT_EXCHANGES, DEFAULT_MODES, DEFAULT_TIMEFRAMES, parsePairs, uniqu
 import { AssetChartModal } from "@/components/charts/AssetChartModal"
 import { ScoreBreakdownDialog } from "@/components/score/ScoreBreakdownDialog"
 import { useStreamSymbols } from "@/features/market/use-stream-symbols"
+import { useMarketControls } from "@/features/market/use-market-controls"
 import { BarChart3, InfoIcon } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
@@ -102,6 +103,7 @@ export default function BotDetailPage() {
   const { botId } = useParams()
   const { user } = useAuth()
   const { t } = useTranslation()
+  const { cryptoEnabled, forexEnabled } = useMarketControls()
   const naLabel = t("common.na")
   const unknownLabel = t("common.unknown")
   const assetLabelMap = useMemo(
@@ -129,6 +131,14 @@ export default function BotDetailPage() {
     if (!modeValue) return naLabel
     return t(`botDetail.mode.${modeValue}`, { defaultValue: modeValue })
   }
+  const isAssetEnabled = useCallback(
+    (assetClass?: string | null) => {
+      if (assetClass === "crypto") return cryptoEnabled
+      if (assetClass === "forex") return forexEnabled
+      return true
+    },
+    [cryptoEnabled, forexEnabled]
+  )
   const [bot, setBot] = useState<BotDoc | null>(null)
   const [events, setEvents] = useState<BotEventDoc[]>([])
   const [loadingBot, setLoadingBot] = useState(true)
@@ -222,6 +232,7 @@ export default function BotDetailPage() {
       if (!Array.isArray(list)) return
       list.forEach((entry) => {
         if (!entry?.symbol) return
+        if (!isAssetEnabled(entry.assetClass ?? null)) return
         items.push({ symbol: entry.symbol, assetClass: entry.assetClass ?? null })
       })
     }
@@ -230,11 +241,16 @@ export default function BotDetailPage() {
     Object.values(top).forEach((list) => add(list))
     Object.values(bottom).forEach((list) => add(list))
     return items
-  }, [botPerformance])
+  }, [botPerformance, isAssetEnabled])
+
+  const visibleRecommendations = useMemo(
+    () => recommendations.filter((trade) => isAssetEnabled(trade.assetClass ?? null)),
+    [recommendations, isAssetEnabled]
+  )
 
   const streamItems = useMemo(
-    () => [...recommendations, ...performanceItems],
-    [recommendations, performanceItems]
+    () => [...visibleRecommendations, ...performanceItems],
+    [visibleRecommendations, performanceItems]
   )
 
   useStreamSymbols(`bot-${botId || "unknown"}`, {
@@ -704,12 +720,20 @@ export default function BotDetailPage() {
     await queueCommand("configure", payload)
   }
 
+  const recommendedTopSymbols = useMemo(
+    () =>
+      (botPerformance?.topSymbols?.[recommendHorizon] ?? []).filter((item) =>
+        isAssetEnabled(item.assetClass ?? null)
+      ),
+    [botPerformance, recommendHorizon, isAssetEnabled]
+  )
+
   function applyRecommendedSymbols(mode: "append" | "replace", limit = RECOMMENDED_SYMBOL_LIMIT) {
     if (!botPerformance) {
       toast.error(t("botDetail.toasts.noAccuracyData"))
       return
     }
-    const picks = (botPerformance.topSymbols?.[recommendHorizon] ?? [])
+    const picks = recommendedTopSymbols
       .map((item) => item.symbol)
       .filter(Boolean)
       .slice(0, limit)
@@ -741,9 +765,15 @@ export default function BotDetailPage() {
 
   function renderBotPerformancePanel(horizon: (typeof PERFORMANCE_HORIZONS)[number]) {
     const stats = botPerformance?.overall?.[horizon]
-    const assetStats = botPerformance?.byAsset?.[horizon] ?? []
-    const topSymbols = botPerformance?.topSymbols?.[horizon] ?? []
-    const bottomSymbols = botPerformance?.bottomSymbols?.[horizon] ?? []
+    const assetStats = (botPerformance?.byAsset?.[horizon] ?? []).filter((asset) =>
+      isAssetEnabled(asset.assetClass ?? null)
+    )
+    const topSymbols = (botPerformance?.topSymbols?.[horizon] ?? []).filter((symbol) =>
+      isAssetEnabled(symbol.assetClass ?? null)
+    )
+    const bottomSymbols = (botPerformance?.bottomSymbols?.[horizon] ?? []).filter((symbol) =>
+      isAssetEnabled(symbol.assetClass ?? null)
+    )
 
     return (
       <div className="space-y-3">
@@ -974,12 +1004,12 @@ export default function BotDetailPage() {
                       </div>
                     ) : loadingRecommendations ? (
                       <div className="text-sm opacity-70">{t("botDetail.recommendations.loading")}</div>
-                    ) : recommendations.length === 0 ? (
+                    ) : visibleRecommendations.length === 0 ? (
                       <div className="text-sm opacity-70">
                         {t("botDetail.recommendations.empty")}
                       </div>
                     ) : (
-                      recommendations.slice(0, 3).map((trade) => (
+                      visibleRecommendations.slice(0, 3).map((trade) => (
                         <div
                           key={`${trade.assetClass}-${trade.symbol}`}
                           className="rounded-xl border border-border/60 bg-background/70 p-3"
@@ -1263,13 +1293,13 @@ export default function BotDetailPage() {
                       <div className="text-sm text-muted-foreground">
                         {t("botDetail.recommended.noPerformance")}
                       </div>
-                    ) : (botPerformance.topSymbols?.[recommendHorizon] ?? []).length === 0 ? (
+                    ) : recommendedTopSymbols.length === 0 ? (
                       <div className="text-sm text-muted-foreground">
                         {t("botDetail.recommended.empty")}
                       </div>
                     ) : (
                       <div className="space-y-2">
-                        {(botPerformance.topSymbols?.[recommendHorizon] ?? [])
+                        {recommendedTopSymbols
                           .slice(0, RECOMMENDED_SYMBOL_LIMIT)
                           .map((symbol) => (
                             <div

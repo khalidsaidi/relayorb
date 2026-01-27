@@ -30,7 +30,11 @@ case "$command" in
   deploy)
     require_cmd firebase
     project=$(require_project_id)
-    (cd "$FUNCTION_DIR" && firebase deploy --only functions --project "$project")
+    if [ -n "${FUNCTION_NAME:-}" ]; then
+      (cd "$FUNCTION_DIR" && firebase deploy --only "functions:${FUNCTION_NAME}" --project "$project")
+    else
+      (cd "$FUNCTION_DIR" && firebase deploy --only functions --project "$project")
+    fi
     ;;
   logs)
     require_cmd firebase

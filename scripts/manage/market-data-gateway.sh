@@ -24,6 +24,8 @@ Commands:
 Env:
   ALLOW_CREATE           Create the service if it does not exist (default: false)
   ALLOW_UNAUTHENTICATED  Make service public (default: false)
+  FINNHUB_API_KEY        Optional Finnhub key for fallback stock quotes
+  FINNHUB_BASE_URL       Optional Finnhub base URL override
 USAGE
 }
 
@@ -33,7 +35,18 @@ case "$command" in
     build_image "$SERVICE_DIR" "$(resolve_image "$SERVICE_NAME")"
     ;;
   deploy)
-    deploy_run_service "$SERVICE_NAME" "$(resolve_image "$SERVICE_NAME")" "$REGION" "$ALLOW_UNAUTHENTICATED"
+    envs=""
+    if [ -n "${FINNHUB_API_KEY:-}" ]; then
+      envs="FINNHUB_API_KEY=${FINNHUB_API_KEY}"
+    fi
+    if [ -n "${FINNHUB_BASE_URL:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|FINNHUB_BASE_URL=${FINNHUB_BASE_URL}"
+      else
+        envs="FINNHUB_BASE_URL=${FINNHUB_BASE_URL}"
+      fi
+    fi
+    deploy_run_service "$SERVICE_NAME" "$(resolve_image "$SERVICE_NAME")" "$REGION" "$ALLOW_UNAUTHENTICATED" "$envs"
     ;;
   logs)
     service_logs "$SERVICE_NAME" "$REGION"

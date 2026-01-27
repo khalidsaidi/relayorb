@@ -29,6 +29,7 @@ import { useAuth } from "@/features/auth/auth-context"
 import { useIbkrAccount } from "@/features/ibkr/use-ibkr-account"
 import { useIbkrExecutor } from "@/features/ibkr/use-ibkr-executor"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
+import { useMarketControls } from "@/features/market/use-market-controls"
 import {
   useFmpChart,
   useFmpQuote,
@@ -115,6 +116,7 @@ export default function IbkrOrderPage() {
   const executor = useIbkrExecutor(brokerAccountKey)
   const { replayActive } = useReplayControls()
   const { prices } = useMarketPrices()
+  const { forexEnabled } = useMarketControls()
 
   const [assetClass, setAssetClass] = useState<AssetClass>("stock")
   const [symbolInput, setSymbolInput] = useState("AAPL")
@@ -160,6 +162,12 @@ export default function IbkrOrderPage() {
     }),
     []
   )
+
+  useEffect(() => {
+    if (assetClass === "forex" && !forexEnabled) {
+      setAssetClass("stock")
+    }
+  }, [assetClass, forexEnabled])
 
   useEffect(() => {
     const nextSymbol = resolveOrderSymbol(defaultSymbols[assetClass], assetClass)
@@ -542,7 +550,9 @@ export default function IbkrOrderPage() {
                   }}
                 >
                   <option value="stock">{t("assets.stock")}</option>
-                  <option value="forex">{t("assets.forex")}</option>
+                  {forexEnabled ? (
+                    <option value="forex">{t("assets.forex")}</option>
+                  ) : null}
                 </select>
                 <div className="flex-1 min-w-[200px]">
                   <Input

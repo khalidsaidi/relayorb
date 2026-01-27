@@ -15,6 +15,7 @@ import {
   serverTimestamp,
 } from "firebase/firestore"
 import type { DocumentData, QuerySnapshot } from "firebase/firestore"
+import { useSearchParams } from "react-router-dom"
 import { db, firebaseEnabled } from "@/lib/firebase"
 import type {
   BotDoc,
@@ -89,6 +90,18 @@ type TurnoverScope = {
   trending: boolean
   hotTrades: boolean
 }
+type DailyHistoryMode = "standard" | "strict" | "full"
+type DailyHistoryMeta = {
+  mode?: DailyHistoryMode
+  missingDailyCount?: number
+  missingDailySymbols?: string[]
+  insufficientDailyCount?: number
+  insufficientDailySymbols?: string[]
+  missingIntradayCount?: number
+  missingIntradaySymbols?: string[]
+}
+type DataProfile = "normal" | "balanced" | "survival"
+type StockQuoteMode = "auto" | "stream_only" | "poll_only"
 
 const POPULAR_CRYPTO = [
   "BTC/USDT",
@@ -239,6 +252,7 @@ function resolveUniverseMode(value?: string | null): MarketUniverseMode {
 export default function DashboardPage() {
   const { user } = useAuth()
   const { t, i18n } = useTranslation()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { prices, livePrices } = useMarketPrices()
   const { replayActive, controls: replayControls } = useReplayControls()
   const replayRunId = replayActive ? replayControls?.activeRunId || null : null
@@ -257,15 +271,24 @@ export default function DashboardPage() {
   const [swingOvernight, setSwingOvernight] = useState<MarketHotTrade[]>([])
   const [swingOvernightUpdatedAt, setSwingOvernightUpdatedAt] =
     useState<MarketSwingOvernightDoc["updatedAt"]>()
+  const [swingOvernightMeta, setSwingOvernightMeta] = useState<Record<string, unknown> | null>(
+    null
+  )
   const [prebreakout, setPrebreakout] = useState<MarketHotTrade[]>([])
   const [prebreakoutUpdatedAt, setPrebreakoutUpdatedAt] =
     useState<MarketPrebreakoutDoc["updatedAt"]>()
+  const [prebreakoutMeta, setPrebreakoutMeta] = useState<Record<string, unknown> | null>(
+    null
+  )
   const [trending, setTrending] = useState<MarketTrendingDoc | null>(null)
   const [trendingUpdatedAt, setTrendingUpdatedAt] = useState<MarketTrendingDoc["updatedAt"]>()
   const [popular, setPopular] = useState<MarketPopularDoc | null>(null)
   const [universe, setUniverse] = useState<MarketUniverseDoc | null>(null)
   const [signalPerformance, setSignalPerformance] = useState<SignalPerformanceDoc | null>(null)
   const [universeOpen, setUniverseOpen] = useState(false)
+  const [manageAssetsTab, setManageAssetsTab] = useState<"dip" | "universe" | "primary">(
+    "dip"
+  )
   const [preferencesSaving, setPreferencesSaving] = useState(false)
   const [cryptoSelection, setCryptoSelection] = useState<string[]>([])
   const [stockSelection, setStockSelection] = useState<string[]>([])
@@ -283,6 +306,10 @@ export default function DashboardPage() {
   const [cryptoMode, setCryptoMode] = useState<MarketUniverseMode>(DEFAULT_UNIVERSE_MODE)
   const [stockMode, setStockMode] = useState<MarketUniverseMode>(DEFAULT_UNIVERSE_MODE)
   const [forexMode, setForexMode] = useState<MarketUniverseMode>(DEFAULT_UNIVERSE_MODE)
+  const [cryptoEnabled, setCryptoEnabled] = useState(true)
+  const [forexEnabled, setForexEnabled] = useState(true)
+  const [universeTab, setUniverseTab] = useState<"crypto" | "stocks" | "fx">("crypto")
+  const [primaryTab, setPrimaryTab] = useState<"crypto" | "stocks" | "fx">("crypto")
   const [llmIntervalMinutes, setLlmIntervalMinutes] = useState(30)
   const [llmEnabled, setLlmEnabled] = useState(true)
   const [newsIntervalMinutes, setNewsIntervalMinutes] = useState(30)
@@ -291,6 +318,24 @@ export default function DashboardPage() {
   const [swingOvernightAutoPaperEnabled, setSwingOvernightAutoPaperEnabled] = useState(false)
   const [prebreakoutEnabled, setPrebreakoutEnabled] = useState(false)
   const [prebreakoutAutoPaperEnabled, setPrebreakoutAutoPaperEnabled] = useState(false)
+  const [dataProfile, setDataProfile] = useState<DataProfile>("normal")
+  const [dataProfileSaved, setDataProfileSaved] = useState<DataProfile>("normal")
+  const [savingDataProfile, setSavingDataProfile] = useState(false)
+  const [dailyHistoryMode, setDailyHistoryMode] = useState<DailyHistoryMode>("standard")
+  const [dailyHistoryModeSaved, setDailyHistoryModeSaved] =
+    useState<DailyHistoryMode>("standard")
+  const [savingDailyHistoryMode, setSavingDailyHistoryMode] = useState(false)
+  const [stockQuoteMode, setStockQuoteMode] = useState<StockQuoteMode>("auto")
+  const [stockQuoteModeSaved, setStockQuoteModeSaved] = useState<StockQuoteMode>("auto")
+  const [savingStockQuoteMode, setSavingStockQuoteMode] = useState(false)
+
+  useEffect(() => {
+    if (searchParams.get("manageAssets") !== "1") return
+    setUniverseOpen(true)
+    const nextParams = new URLSearchParams(searchParams)
+    nextParams.delete("manageAssets")
+    setSearchParams(nextParams, { replace: true })
+  }, [searchParams, setSearchParams])
   const [moverTurnoverMinPct, setMoverTurnoverMinPct] = useState(DEFAULT_TURNOVER_MIN_PCT)
   const [moverTurnoverMaxPct, setMoverTurnoverMaxPct] = useState(DEFAULT_TURNOVER_MAX_PCT)
   const [moverTurnoverScope, setMoverTurnoverScope] = useState<TurnoverScope>({
@@ -340,6 +385,21 @@ export default function DashboardPage() {
     "stock",
     "forex",
   ])
+  const assetFocusOptions = useMemo(
+    () =>
+      (["crypto", "stock", "forex"] as AssetClass[]).filter((option) => {
+        if (option === "crypto") return cryptoEnabled
+        if (option === "forex") return forexEnabled
+        return true
+      }),
+    [cryptoEnabled, forexEnabled]
+  )
+  const universeTabCols =
+    cryptoEnabled && forexEnabled
+      ? "grid-cols-3"
+      : cryptoEnabled || forexEnabled
+        ? "grid-cols-2"
+        : "grid-cols-1"
   const [loadingBots, setLoadingBots] = useState(true)
   const [loadingEvents, setLoadingEvents] = useState(true)
   const [loadingSignals, setLoadingSignals] = useState(true)
@@ -351,15 +411,23 @@ export default function DashboardPage() {
   const [startingBots, setStartingBots] = useState(false)
   const [refreshingJobs, setRefreshingJobs] = useState(false)
   const [refreshingMovers, setRefreshingMovers] = useState(false)
-
-  const refreshEndpoint = useMemo(() => {
-    const base = (import.meta.env.VITE_REFRESH_URL || "").trim()
-    if (!base) return ""
-    return `${base.replace(/\/+$/, "")}/refresh`
-  }, [])
-  const marketIntelJob = useMemo(() => {
-    return (import.meta.env.VITE_MARKET_INTEL_JOB || "relayorb-market-intel").trim()
-  }, [])
+  const marketIntelJob = useMemo(
+    () => (import.meta.env.VITE_MARKET_INTEL_JOB || "relayorb-market-intel").trim(),
+    []
+  )
+  const refreshDisabledReason = useMemo(() => {
+    if (replayActive) return t("replay.actionsDisabled")
+    if (!firebaseEnabled || !db) return t("tradeNow.firebaseNotConfigured")
+    if (!user) return t("tradeNow.mustBeSignedIn")
+    return ""
+  }, [replayActive, firebaseEnabled, db, user, t])
+  const refreshMoversDisabledReason = useMemo(() => {
+    if (replayActive) return t("replay.actionsDisabled")
+    if (!firebaseEnabled || !db) return t("tradeNow.firebaseNotConfigured")
+    if (!user) return t("tradeNow.mustBeSignedIn")
+    if (!marketIntelJob) return t("tradeNow.refreshNotConfigured")
+    return ""
+  }, [replayActive, firebaseEnabled, db, user, marketIntelJob, t])
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
@@ -441,6 +509,8 @@ export default function DashboardPage() {
     const ref = doc(db, "market", "controls")
     return onSnapshot(ref, (snap) => {
       if (!snap.exists()) {
+        setCryptoEnabled(true)
+        setForexEnabled(true)
         setLlmIntervalMinutes(30)
         setLlmEnabled(true)
         setNewsIntervalMinutes(30)
@@ -449,6 +519,12 @@ export default function DashboardPage() {
         setSwingOvernightAutoPaperEnabled(false)
         setPrebreakoutEnabled(false)
         setPrebreakoutAutoPaperEnabled(false)
+        setDataProfile("normal")
+        setDataProfileSaved("normal")
+        setDailyHistoryMode("standard")
+        setDailyHistoryModeSaved("standard")
+        setStockQuoteMode("auto")
+        setStockQuoteModeSaved("auto")
         setMoverTurnoverMinPct(DEFAULT_TURNOVER_MIN_PCT)
         setMoverTurnoverMaxPct(DEFAULT_TURNOVER_MAX_PCT)
         setMoverTurnoverScope({ movers: true, trending: false, hotTrades: false })
@@ -475,6 +551,10 @@ export default function DashboardPage() {
         return
       }
       const data = snap.data() as MarketControlsDoc
+      const nextCryptoEnabled = data.cryptoEnabled !== false
+      const nextForexEnabled = data.forexEnabled !== false
+      setCryptoEnabled(nextCryptoEnabled)
+      setForexEnabled(nextForexEnabled)
       const parsed = Number(data.llmIntervalMinutes)
       if (Number.isFinite(parsed) && LLM_INTERVAL_OPTIONS.includes(parsed)) {
         setLlmIntervalMinutes(parsed)
@@ -493,6 +573,24 @@ export default function DashboardPage() {
       setSwingOvernightAutoPaperEnabled(data.swingOvernightAutoPaperEnabled === true)
       setPrebreakoutEnabled(data.prebreakoutEnabled === true)
       setPrebreakoutAutoPaperEnabled(data.prebreakoutAutoPaperEnabled === true)
+      const nextDataProfile: DataProfile =
+        data.dataProfile === "balanced" || data.dataProfile === "survival"
+          ? data.dataProfile
+          : "normal"
+      setDataProfile(nextDataProfile)
+      setDataProfileSaved(nextDataProfile)
+      const nextDailyHistoryMode: DailyHistoryMode =
+        data.dailyHistoryMode === "strict" || data.dailyHistoryMode === "full"
+          ? data.dailyHistoryMode
+          : "standard"
+      setDailyHistoryMode(nextDailyHistoryMode)
+      setDailyHistoryModeSaved(nextDailyHistoryMode)
+      const nextStockQuoteMode: StockQuoteMode =
+        data.stockQuoteMode === "stream_only" || data.stockQuoteMode === "poll_only"
+          ? data.stockQuoteMode
+          : "auto"
+      setStockQuoteMode(nextStockQuoteMode)
+      setStockQuoteModeSaved(nextStockQuoteMode)
       const parsedTurnoverMin = Number(data.moverTurnoverMinPct)
       setMoverTurnoverMinPct(
         Number.isFinite(parsedTurnoverMin) && parsedTurnoverMin >= 0
@@ -587,8 +685,14 @@ export default function DashboardPage() {
           ASSET_FOCUS_OPTIONS.includes(item)
         )
         : []
-      const nextFocus: AssetClass[] =
-        focus.length > 0 ? focus : ["crypto", "stock", "forex"]
+      const fallbackFocus: AssetClass[] = ["crypto", "stock", "forex"]
+      const baseFocus = focus.length > 0 ? focus : fallbackFocus
+      const enabledFocus = baseFocus.filter((item) => {
+        if (item === "crypto") return nextCryptoEnabled
+        if (item === "forex") return nextForexEnabled
+        return true
+      })
+      const nextFocus: AssetClass[] = enabledFocus.length > 0 ? enabledFocus : ["stock"]
       setAssetFocus(nextFocus)
       setTrendAssetFocus(nextFocus)
       setPrimaryCryptoSelection(
@@ -602,6 +706,55 @@ export default function DashboardPage() {
       )
     })
   }, [])
+
+  useEffect(() => {
+    if (quickAssetClass === "crypto" && !cryptoEnabled) {
+      setQuickAssetClass("stock")
+      return
+    }
+    if (quickAssetClass === "forex" && !forexEnabled) {
+      setQuickAssetClass("stock")
+    }
+  }, [quickAssetClass, cryptoEnabled, forexEnabled])
+
+  useEffect(() => {
+    const filterFocus = (focus: AssetClass[]) =>
+      focus.filter((item) => {
+        if (item === "crypto") return cryptoEnabled
+        if (item === "forex") return forexEnabled
+        return true
+      })
+    setAssetFocus((prev) => {
+      const next = filterFocus(prev)
+      if (next.length === 0) return ["stock"]
+      return next.length === prev.length ? prev : next
+    })
+    setTrendAssetFocus((prev) => {
+      const next = filterFocus(prev)
+      if (next.length === 0) return ["stock"]
+      return next.length === prev.length ? prev : next
+    })
+  }, [cryptoEnabled, forexEnabled])
+
+  useEffect(() => {
+    if (universeTab === "crypto" && !cryptoEnabled) {
+      setUniverseTab("stocks")
+      return
+    }
+    if (universeTab === "fx" && !forexEnabled) {
+      setUniverseTab("stocks")
+    }
+  }, [universeTab, cryptoEnabled, forexEnabled])
+
+  useEffect(() => {
+    if (primaryTab === "crypto" && !cryptoEnabled) {
+      setPrimaryTab("stocks")
+      return
+    }
+    if (primaryTab === "fx" && !forexEnabled) {
+      setPrimaryTab("stocks")
+    }
+  }, [primaryTab, cryptoEnabled, forexEnabled])
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
@@ -653,12 +806,14 @@ export default function DashboardPage() {
       if (!snap.exists()) {
         setSwingOvernight([])
         setSwingOvernightUpdatedAt(undefined)
+        setSwingOvernightMeta(null)
         setLoadingSwingOvernight(false)
         return
       }
       const data = snap.data() as MarketSwingOvernightDoc
       setSwingOvernight(data.items ?? [])
       setSwingOvernightUpdatedAt(data.updatedAt)
+      setSwingOvernightMeta((data.meta as Record<string, unknown>) ?? null)
       setLoadingSwingOvernight(false)
     })
   }, [replayActive, replayRunId])
@@ -683,12 +838,14 @@ export default function DashboardPage() {
       if (!snap.exists()) {
         setPrebreakout([])
         setPrebreakoutUpdatedAt(undefined)
+        setPrebreakoutMeta(null)
         setLoadingPrebreakout(false)
         return
       }
       const data = snap.data() as MarketPrebreakoutDoc
       setPrebreakout(data.items ?? [])
       setPrebreakoutUpdatedAt(data.updatedAt)
+      setPrebreakoutMeta((data.meta as Record<string, unknown>) ?? null)
       setLoadingPrebreakout(false)
     })
   }, [replayActive, replayRunId])
@@ -997,6 +1154,82 @@ export default function DashboardPage() {
     }),
     [t]
   )
+  const dailyHistoryModeLabels = useMemo(
+    () => ({
+      standard: t("dashboard.dailyHistory.modeStandard"),
+      strict: t("dashboard.dailyHistory.modeStrict"),
+      full: t("dashboard.dailyHistory.modeFull"),
+    }),
+    [t]
+  )
+  const dataProfileLabels = useMemo(
+    () => ({
+      normal: t("dashboard.dataProfile.normal"),
+      balanced: t("dashboard.dataProfile.balanced"),
+      survival: t("dashboard.dataProfile.survival"),
+    }),
+    [t]
+  )
+  const dataProfileHelp = useMemo(
+    () => ({
+      normal: t("dashboard.dataProfile.normalHelp"),
+      balanced: t("dashboard.dataProfile.balancedHelp"),
+      survival: t("dashboard.dataProfile.survivalHelp"),
+    }),
+    [t]
+  )
+  const dailyHistoryModeHelp = useMemo(
+    () => ({
+      standard: t("dashboard.dailyHistory.modeHelpStandard"),
+      strict: t("dashboard.dailyHistory.modeHelpStrict"),
+      full: t("dashboard.dailyHistory.modeHelpFull"),
+    }),
+    [t]
+  )
+  const stockQuoteModeLabels = useMemo(
+    () => ({
+      auto: t("dashboard.stockQuotes.modeAuto"),
+      stream_only: t("dashboard.stockQuotes.modeStreamOnly"),
+      poll_only: t("dashboard.stockQuotes.modePollOnly"),
+    }),
+    [t]
+  )
+  const stockQuoteModeHelp = useMemo(
+    () => ({
+      auto: t("dashboard.stockQuotes.helpAuto"),
+      stream_only: t("dashboard.stockQuotes.helpStreamOnly"),
+      poll_only: t("dashboard.stockQuotes.helpPollOnly"),
+    }),
+    [t]
+  )
+
+  const resolveDailyHistory = (meta: Record<string, unknown> | null) => {
+    if (!meta || typeof meta !== "object") return null
+    const dailyHistory = (meta as { dailyHistory?: DailyHistoryMeta }).dailyHistory
+    if (!dailyHistory || typeof dailyHistory !== "object") return null
+    return dailyHistory
+  }
+  const swingDailyHistory = useMemo(
+    () => resolveDailyHistory(swingOvernightMeta),
+    [swingOvernightMeta]
+  )
+  const prebreakoutDailyHistory = useMemo(
+    () => resolveDailyHistory(prebreakoutMeta),
+    [prebreakoutMeta]
+  )
+  const formatDailySample = (symbols?: string[]) =>
+    Array.isArray(symbols) && symbols.length > 0
+      ? symbols.slice(0, 8).join(", ")
+      : ""
+  const dailyHistoryDirty = dailyHistoryMode !== dailyHistoryModeSaved
+  const dataProfileDirty = dataProfile !== dataProfileSaved
+  const stockQuoteModeDirty = stockQuoteMode !== stockQuoteModeSaved
+  const swingDailyMissing = swingDailyHistory?.missingDailyCount ?? 0
+  const swingDailyInsufficient = swingDailyHistory?.insufficientDailyCount ?? 0
+  const swingIntradayMissing = swingDailyHistory?.missingIntradayCount ?? 0
+  const prebreakoutDailyMissing = prebreakoutDailyHistory?.missingDailyCount ?? 0
+  const prebreakoutDailyInsufficient = prebreakoutDailyHistory?.insufficientDailyCount ?? 0
+  const prebreakoutIntradayMissing = prebreakoutDailyHistory?.missingIntradayCount ?? 0
 
   const getAssetLabel = (assetClass?: string | null, variant: "short" | "long" = "long") => {
     if (!assetClass) return unknownLabel
@@ -1075,6 +1308,31 @@ export default function DashboardPage() {
     }
   }
 
+  async function triggerRefreshViaBatch(jobs?: string[]) {
+    if (!firebaseEnabled || !db) {
+      toast.error(t("tradeNow.firebaseNotConfigured"))
+      return false
+    }
+    if (!user) {
+      toast.error(t("tradeNow.mustBeSignedIn"))
+      return false
+    }
+    const runId = `ui-refresh-${Date.now()}`
+    const payload: Record<string, unknown> = {
+      runId,
+      type: "refresh",
+      source: "ui",
+      requestedByUid: user.uid,
+      requestedByEmail: user.email || null,
+      createdAt: serverTimestamp(),
+    }
+    if (Array.isArray(jobs) && jobs.length > 0) {
+      payload.jobs = jobs
+    }
+    await addDoc(collection(db, "batches"), payload)
+    return true
+  }
+
   async function triggerRefresh() {
     if (replayActive) {
       toast.info(t("replay.actionsDisabled"))
@@ -1084,10 +1342,6 @@ export default function DashboardPage() {
       toast.error(t("tradeNow.firebaseNotConfigured"))
       return
     }
-    if (!refreshEndpoint) {
-      toast.error(t("tradeNow.refreshNotConfigured"))
-      return
-    }
     if (!user) {
       toast.error(t("tradeNow.mustBeSignedIn"))
       return
@@ -1095,29 +1349,10 @@ export default function DashboardPage() {
 
     setRefreshingJobs(true)
     try {
-      const token = await user.getIdToken(true)
-      const response = await fetch(refreshEndpoint, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({}),
-      })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok) {
-        throw new Error(
-          payload?.error || t("tradeNow.refreshFailed", { status: response.status })
-        )
+      const ok = await triggerRefreshViaBatch()
+      if (ok) {
+        toast.success(t("tradeNow.refreshStarted"))
       }
-      const jobNames = Array.isArray(payload?.jobs)
-        ? payload.jobs.map((job: { job?: string }) => job.job).filter(Boolean)
-        : []
-      toast.success(
-        jobNames.length > 0
-          ? t("tradeNow.refreshStartedWithJobs", { jobs: jobNames.join(", ") })
-          : t("tradeNow.refreshStarted")
-      )
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t("tradeNow.refreshFailedGeneric"))
     } finally {
@@ -1134,10 +1369,6 @@ export default function DashboardPage() {
       toast.error(t("tradeNow.firebaseNotConfigured"))
       return
     }
-    if (!refreshEndpoint) {
-      toast.error(t("tradeNow.refreshNotConfigured"))
-      return
-    }
     if (!user) {
       toast.error(t("tradeNow.mustBeSignedIn"))
       return
@@ -1149,33 +1380,98 @@ export default function DashboardPage() {
 
     setRefreshingMovers(true)
     try {
-      const token = await user.getIdToken(true)
-      const response = await fetch(refreshEndpoint, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ jobs: [marketIntelJob] }),
-      })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok) {
-        throw new Error(
-          payload?.error || t("tradeNow.refreshFailed", { status: response.status })
-        )
+      const ok = await triggerRefreshViaBatch([marketIntelJob])
+      if (ok) {
+        toast.success(t("tradeNow.refreshMoversStarted"))
       }
-      const jobNames = Array.isArray(payload?.jobs)
-        ? payload.jobs.map((job: { job?: string }) => job.job).filter(Boolean)
-        : []
-      toast.success(
-        jobNames.length > 0
-          ? t("tradeNow.refreshMoversStartedWithJobs", { jobs: jobNames.join(", ") })
-          : t("tradeNow.refreshMoversStarted")
-      )
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t("tradeNow.refreshFailedGeneric"))
     } finally {
       setRefreshingMovers(false)
+    }
+  }
+
+  async function applyDailyHistoryMode() {
+    if (!firebaseEnabled || !db) {
+      toast.error(t("tradeNow.firebaseNotConfigured"))
+      return
+    }
+    if (replayActive) {
+      toast.info(t("replay.actionsDisabled"))
+      return
+    }
+    setSavingDailyHistoryMode(true)
+    try {
+      await setDoc(
+        doc(db, "market", "controls"),
+        {
+          dailyHistoryMode,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      )
+      setDailyHistoryModeSaved(dailyHistoryMode)
+      toast.success(t("dashboard.dailyHistory.applied"))
+    } catch {
+      toast.error(t("dashboard.dailyHistory.applyFailed"))
+    } finally {
+      setSavingDailyHistoryMode(false)
+    }
+  }
+
+  async function applyDataProfile() {
+    if (!firebaseEnabled || !db) {
+      toast.error(t("tradeNow.firebaseNotConfigured"))
+      return
+    }
+    if (replayActive) {
+      toast.info(t("replay.actionsDisabled"))
+      return
+    }
+    setSavingDataProfile(true)
+    try {
+      await setDoc(
+        doc(db, "market", "controls"),
+        {
+          dataProfile,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      )
+      setDataProfileSaved(dataProfile)
+      toast.success(t("dashboard.dataProfile.applied"))
+    } catch {
+      toast.error(t("dashboard.dataProfile.applyFailed"))
+    } finally {
+      setSavingDataProfile(false)
+    }
+  }
+
+  async function applyStockQuoteMode() {
+    if (!firebaseEnabled || !db) {
+      toast.error(t("tradeNow.firebaseNotConfigured"))
+      return
+    }
+    if (replayActive) {
+      toast.info(t("replay.actionsDisabled"))
+      return
+    }
+    setSavingStockQuoteMode(true)
+    try {
+      await setDoc(
+        doc(db, "market", "controls"),
+        {
+          stockQuoteMode,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      )
+      setStockQuoteModeSaved(stockQuoteMode)
+      toast.success(t("dashboard.stockQuotes.applied"))
+    } catch {
+      toast.error(t("dashboard.stockQuotes.applyFailed"))
+    } finally {
+      setSavingStockQuoteMode(false)
     }
   }
 
@@ -1482,6 +1778,9 @@ export default function DashboardPage() {
   }
 
   function toggleAssetFocus(value: AssetClass) {
+    if ((value === "crypto" && !cryptoEnabled) || (value === "forex" && !forexEnabled)) {
+      return
+    }
     setAssetFocus((prev) => {
       const next = prev.includes(value)
         ? prev.filter((item) => item !== value)
@@ -1491,6 +1790,9 @@ export default function DashboardPage() {
   }
 
   function toggleTrendFocus(value: AssetClass) {
+    if ((value === "crypto" && !cryptoEnabled) || (value === "forex" && !forexEnabled)) {
+      return
+    }
     setTrendAssetFocus((prev) => {
       const next = prev.includes(value)
         ? prev.filter((item) => item !== value)
@@ -2084,8 +2386,15 @@ export default function DashboardPage() {
     const activeDb = db
     setPreferencesSaving(true)
     try {
+      const focusFallback: AssetClass[] = ["crypto", "stock", "forex"]
+      const baseFocus = assetFocus.length > 0 ? assetFocus : focusFallback
+      const filteredFocus = baseFocus.filter((item) => {
+        if (item === "crypto") return cryptoEnabled
+        if (item === "forex") return forexEnabled
+        return true
+      })
       const resolvedAssetFocus: AssetClass[] =
-        assetFocus.length > 0 ? assetFocus : ["crypto", "stock", "forex"]
+        filteredFocus.length > 0 ? filteredFocus : ["stock"]
       const payload: MarketUniverseDoc = {
         crypto: {
           mode: cryptoMode,
@@ -2103,6 +2412,8 @@ export default function DashboardPage() {
       }
 
       const controls: MarketControlsDoc = {
+        cryptoEnabled,
+        forexEnabled,
         llmIntervalMinutes,
         enableLLM: llmEnabled,
         newsIntervalMinutes,
@@ -2111,6 +2422,9 @@ export default function DashboardPage() {
         swingOvernightAutoPaperEnabled,
         prebreakoutEnabled,
         prebreakoutAutoPaperEnabled,
+        dataProfile,
+        dailyHistoryMode,
+        stockQuoteMode,
         moverTurnoverMinPct,
         moverTurnoverMaxPct,
         moverTurnoverScope,
@@ -2288,6 +2602,8 @@ export default function DashboardPage() {
     }
 
     const controlsPayload: MarketControlsDoc = {
+      cryptoEnabled,
+      forexEnabled,
       primaryAssets: {
         crypto: nextPrimaryCrypto,
         stocks: nextPrimaryStocks,
@@ -2368,30 +2684,22 @@ export default function DashboardPage() {
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-4">
             <PipelineHealthBadge showLabel />
-            <MarketStatusBadge assetClass="crypto" />
+            {cryptoEnabled ? <MarketStatusBadge assetClass="crypto" /> : null}
             <MarketStatusBadge assetClass="stock" />
-            <MarketStatusBadge assetClass="forex" />
+            {forexEnabled ? <MarketStatusBadge assetClass="forex" /> : null}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" onClick={() => setUniverseOpen(true)}>
-            {t("dashboard.actions.manageAssets")}
-          </Button>
           <Button
             variant="outline"
             onClick={triggerMoversRefresh}
             disabled={
-              !firebaseEnabled ||
-              refreshingMovers ||
-              !refreshEndpoint ||
-              replayActive
+              refreshingMovers || Boolean(refreshMoversDisabledReason)
             }
             title={
-              replayActive
-                ? t("replay.actionsDisabled")
-                : refreshEndpoint
-                  ? t("tradeNow.refreshMoversTitle")
-                  : t("tradeNow.refreshMoversDisabledTitle")
+              refreshingMovers
+                ? t("tradeNow.refreshingMovers")
+                : refreshMoversDisabledReason || t("tradeNow.refreshMoversTitle")
             }
           >
             {refreshingMovers ? t("tradeNow.refreshingMovers") : t("tradeNow.refreshMovers")}
@@ -2400,17 +2708,12 @@ export default function DashboardPage() {
             variant="secondary"
             onClick={triggerRefresh}
             disabled={
-              !firebaseEnabled ||
-              refreshingJobs ||
-              !refreshEndpoint ||
-              replayActive
+              refreshingJobs || Boolean(refreshDisabledReason)
             }
             title={
-              replayActive
-                ? t("replay.actionsDisabled")
-                : refreshEndpoint
-                  ? t("tradeNow.refreshTitle")
-                  : t("tradeNow.refreshDisabledTitle")
+              refreshingJobs
+                ? t("tradeNow.refreshing")
+                : refreshDisabledReason || t("tradeNow.refreshTitle")
             }
           >
             {refreshingJobs ? t("tradeNow.refreshing") : t("tradeNow.refreshNow")}
@@ -2442,10 +2745,19 @@ export default function DashboardPage() {
             <DialogDescription>
               {t("dashboard.universe.description")}
             </DialogDescription>
+            <div className="text-xs text-muted-foreground">
+              {t("dashboard.universe.headerNote")}
+            </div>
           </DialogHeader>
 
           <div className="max-h-[70vh] overflow-y-auto pr-1">
-            <Tabs defaultValue="dip" className="space-y-4">
+            <Tabs
+              value={manageAssetsTab}
+              onValueChange={(value) =>
+                setManageAssetsTab(value as "dip" | "universe" | "primary")
+              }
+              className="space-y-4"
+            >
               <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="dip">{t("dashboard.universe.tabs.dipAi")}</TabsTrigger>
                 <TabsTrigger value="universe">{t("dashboard.universe.tabs.universe")}</TabsTrigger>
@@ -2602,6 +2914,274 @@ export default function DashboardPage() {
                         {prebreakoutAutoPaperEnabled
                           ? t("dashboard.prebreakoutControls.autoPaperOn")
                           : t("dashboard.prebreakoutControls.autoPaperOff")}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-border/60 bg-muted/30 p-4 md:col-span-2">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium">
+                          {t("dashboard.dataProfile.title")}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {t("dashboard.dataProfile.description")}
+                        </div>
+                      </div>
+                      <Badge variant="outline">{dataProfileLabels[dataProfile]}</Badge>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      <Label>{t("dashboard.dataProfile.modeLabel")}</Label>
+                      <div className="flex flex-wrap gap-2">
+                        {(["normal", "balanced", "survival"] as DataProfile[]).map(
+                          (mode) => (
+                            <Button
+                              key={mode}
+                              type="button"
+                              variant={dataProfile === mode ? "secondary" : "outline"}
+                              size="sm"
+                              onClick={() => setDataProfile(mode)}
+                            >
+                              {dataProfileLabels[mode]}
+                            </Button>
+                          )
+                        )}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {dataProfileHelp[dataProfile]}
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={applyDataProfile}
+                        disabled={
+                          !dataProfileDirty ||
+                          savingDataProfile ||
+                          !firebaseEnabled ||
+                          replayActive
+                        }
+                      >
+                        {savingDataProfile
+                          ? t("dashboard.dataProfile.applying")
+                          : t("dashboard.dataProfile.apply")}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-border/60 bg-muted/30 p-4 md:col-span-2">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium">
+                          {t("dashboard.stockQuotes.title")}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {t("dashboard.stockQuotes.description")}
+                        </div>
+                      </div>
+                      <Badge variant="outline">{stockQuoteModeLabels[stockQuoteMode]}</Badge>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      <Label>{t("dashboard.stockQuotes.modeLabel")}</Label>
+                      <div className="flex flex-wrap gap-2">
+                        {(["auto", "stream_only", "poll_only"] as StockQuoteMode[]).map(
+                          (mode) => (
+                            <Button
+                              key={mode}
+                              type="button"
+                              variant={stockQuoteMode === mode ? "secondary" : "outline"}
+                              size="sm"
+                              onClick={() => setStockQuoteMode(mode)}
+                            >
+                              {stockQuoteModeLabels[mode]}
+                            </Button>
+                          )
+                        )}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {stockQuoteModeHelp[stockQuoteMode]}
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={applyStockQuoteMode}
+                        disabled={
+                          !stockQuoteModeDirty ||
+                          savingStockQuoteMode ||
+                          !firebaseEnabled ||
+                          replayActive
+                        }
+                      >
+                        {savingStockQuoteMode
+                          ? t("dashboard.stockQuotes.applying")
+                          : t("dashboard.stockQuotes.apply")}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-border/60 bg-muted/30 p-4 md:col-span-2">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium">
+                          {t("dashboard.dailyHistory.title")}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {t("dashboard.dailyHistory.description")}
+                        </div>
+                      </div>
+                      <Badge variant="outline">
+                        {dailyHistoryModeLabels[dailyHistoryMode]}
+                      </Badge>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      <Label>{t("dashboard.dailyHistory.modeLabel")}</Label>
+                      <div className="flex flex-wrap gap-2">
+                        {(["standard", "strict", "full"] as DailyHistoryMode[]).map(
+                          (mode) => (
+                            <Button
+                              key={mode}
+                              type="button"
+                              variant={dailyHistoryMode === mode ? "secondary" : "outline"}
+                              size="sm"
+                              onClick={() => setDailyHistoryMode(mode)}
+                            >
+                              {dailyHistoryModeLabels[mode]}
+                            </Button>
+                          )
+                        )}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {dailyHistoryModeHelp[dailyHistoryMode]}
+                      </div>
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-md border border-border/60 bg-background/70 p-3">
+                        <div className="text-xs font-medium">
+                          {t("dashboard.dailyHistory.swingLabel")}
+                        </div>
+                        {swingDailyHistory ? (
+                          <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                            <div>
+                              {t("dashboard.dailyHistory.missingDaily")}: {swingDailyMissing}
+                            </div>
+                            <div>
+                              {t("dashboard.dailyHistory.insufficientDaily")}:{" "}
+                              {swingDailyInsufficient}
+                            </div>
+                            <div>
+                              {t("dashboard.dailyHistory.missingIntraday")}:{" "}
+                              {swingIntradayMissing}
+                            </div>
+                            {formatDailySample(swingDailyHistory.missingDailySymbols) ? (
+                              <div>
+                                {t("dashboard.dailyHistory.sampleLabel")}:{" "}
+                                {formatDailySample(swingDailyHistory.missingDailySymbols)}
+                              </div>
+                            ) : null}
+                            {formatDailySample(swingDailyHistory.insufficientDailySymbols) ? (
+                              <div>
+                                {t("dashboard.dailyHistory.sampleLabel")}:{" "}
+                                {formatDailySample(swingDailyHistory.insufficientDailySymbols)}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-xs text-muted-foreground">
+                            {t("dashboard.dailyHistory.noIssues")}
+                          </div>
+                        )}
+                      </div>
+                      <div className="rounded-md border border-border/60 bg-background/70 p-3">
+                        <div className="text-xs font-medium">
+                          {t("dashboard.dailyHistory.prebreakoutLabel")}
+                        </div>
+                        {prebreakoutDailyHistory ? (
+                          <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                            <div>
+                              {t("dashboard.dailyHistory.missingDaily")}:{" "}
+                              {prebreakoutDailyMissing}
+                            </div>
+                            <div>
+                              {t("dashboard.dailyHistory.insufficientDaily")}:{" "}
+                              {prebreakoutDailyInsufficient}
+                            </div>
+                            <div>
+                              {t("dashboard.dailyHistory.missingIntraday")}:{" "}
+                              {prebreakoutIntradayMissing}
+                            </div>
+                            {formatDailySample(prebreakoutDailyHistory.missingDailySymbols) ? (
+                              <div>
+                                {t("dashboard.dailyHistory.sampleLabel")}:{" "}
+                                {formatDailySample(prebreakoutDailyHistory.missingDailySymbols)}
+                              </div>
+                            ) : null}
+                            {formatDailySample(prebreakoutDailyHistory.insufficientDailySymbols) ? (
+                              <div>
+                                {t("dashboard.dailyHistory.sampleLabel")}:{" "}
+                                {formatDailySample(prebreakoutDailyHistory.insufficientDailySymbols)}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-xs text-muted-foreground">
+                            {t("dashboard.dailyHistory.noIssues")}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={applyDailyHistoryMode}
+                        disabled={
+                          !dailyHistoryDirty ||
+                          savingDailyHistoryMode ||
+                          !firebaseEnabled ||
+                          replayActive
+                        }
+                      >
+                        {savingDailyHistoryMode
+                          ? t("dashboard.dailyHistory.applyingMode")
+                          : t("dashboard.dailyHistory.applyMode")}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={triggerRefresh}
+                        disabled={
+                          !firebaseEnabled ||
+                          refreshingJobs ||
+                          Boolean(refreshDisabledReason) ||
+                          replayActive
+                        }
+                        title={
+                          refreshingJobs
+                            ? t("tradeNow.refreshing")
+                            : refreshDisabledReason || t("dashboard.dailyHistory.retryData")
+                        }
+                      >
+                        {refreshingJobs
+                          ? t("tradeNow.refreshing")
+                          : t("dashboard.dailyHistory.retryData")}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setManageAssetsTab("universe")
+                          setUniverseTab("stocks")
+                        }}
+                      >
+                        {t("dashboard.dailyHistory.openUniverse")}
                       </Button>
                     </div>
                   </div>
@@ -2815,7 +3395,7 @@ export default function DashboardPage() {
                     <div className="mt-4 space-y-2">
                       <Label>{t("dashboard.dip.assetFocusLabel")}</Label>
                       <div className="flex flex-wrap gap-2">
-                        {ASSET_FOCUS_OPTIONS.map((option) => (
+                        {assetFocusOptions.map((option) => (
                           <Button
                             key={option}
                             type="button"
@@ -3104,13 +3684,54 @@ export default function DashboardPage() {
                 <div className="text-xs text-muted-foreground">
                   {t("dashboard.universe.addAssetsHint")}
                 </div>
-                <Tabs defaultValue="crypto" className="space-y-4">
-                  <TabsList className="grid w-full grid-cols-3">
-                    <TabsTrigger value="crypto">{assetLabelMap.crypto}</TabsTrigger>
+                <div className="rounded-lg border border-border/60 bg-muted/30 p-4">
+                  <div className="text-sm font-medium">{t("dashboard.universe.dataFeedsTitle")}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {t("dashboard.universe.dataFeedsDescription")}
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant={cryptoEnabled ? "secondary" : "outline"}
+                      size="sm"
+                      onClick={() => setCryptoEnabled((prev) => !prev)}
+                      aria-pressed={cryptoEnabled}
+                    >
+                      {cryptoEnabled
+                        ? t("dashboard.universe.cryptoEnabled")
+                        : t("dashboard.universe.cryptoDisabled")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={forexEnabled ? "secondary" : "outline"}
+                      size="sm"
+                      onClick={() => setForexEnabled((prev) => !prev)}
+                      aria-pressed={forexEnabled}
+                    >
+                      {forexEnabled
+                        ? t("dashboard.universe.forexEnabled")
+                        : t("dashboard.universe.forexDisabled")}
+                    </Button>
+                  </div>
+                </div>
+                <Tabs
+                  value={universeTab}
+                  onValueChange={(value) =>
+                    setUniverseTab(value as "crypto" | "stocks" | "fx")
+                  }
+                  className="space-y-4"
+                >
+                  <TabsList className={`grid w-full ${universeTabCols}`}>
+                    {cryptoEnabled ? (
+                      <TabsTrigger value="crypto">{assetLabelMap.crypto}</TabsTrigger>
+                    ) : null}
                     <TabsTrigger value="stocks">{assetLabelMap.stock}</TabsTrigger>
-                    <TabsTrigger value="fx">{assetLabelMap.forex}</TabsTrigger>
+                    {forexEnabled ? (
+                      <TabsTrigger value="fx">{assetLabelMap.forex}</TabsTrigger>
+                    ) : null}
                   </TabsList>
 
+                  {cryptoEnabled ? (
                   <TabsContent value="crypto" className="space-y-3">
                     <div className="flex items-center justify-between gap-2">
                       <div>
@@ -3282,6 +3903,7 @@ export default function DashboardPage() {
                       </div>
                     </div>
                   </TabsContent>
+                  ) : null}
 
                   <TabsContent value="stocks" className="space-y-3">
                     <div className="flex items-center justify-between gap-2">
@@ -3471,6 +4093,7 @@ export default function DashboardPage() {
                     </div>
                   </TabsContent>
 
+                  {forexEnabled ? (
                   <TabsContent value="fx" className="space-y-3">
                     <div className="flex items-center justify-between gap-2">
                       <div>
@@ -3642,6 +4265,7 @@ export default function DashboardPage() {
                       </div>
                     </div>
                   </TabsContent>
+                  ) : null}
                 </Tabs>
               </TabsContent>
 
@@ -3652,13 +4276,22 @@ export default function DashboardPage() {
                     {t("dashboard.primary.subtitle")}
                   </div>
                 </div>
-                <Tabs defaultValue="crypto" className="space-y-4">
-                  <TabsList className="grid w-full grid-cols-3">
-                    <TabsTrigger value="crypto">{assetLabelMap.crypto}</TabsTrigger>
+                <Tabs
+                  value={primaryTab}
+                  onValueChange={(value) => setPrimaryTab(value as "crypto" | "stocks" | "fx")}
+                  className="space-y-4"
+                >
+                  <TabsList className={`grid w-full ${universeTabCols}`}>
+                    {cryptoEnabled ? (
+                      <TabsTrigger value="crypto">{assetLabelMap.crypto}</TabsTrigger>
+                    ) : null}
                     <TabsTrigger value="stocks">{assetLabelMap.stock}</TabsTrigger>
-                    <TabsTrigger value="fx">{assetLabelMap.forex}</TabsTrigger>
+                    {forexEnabled ? (
+                      <TabsTrigger value="fx">{assetLabelMap.forex}</TabsTrigger>
+                    ) : null}
                   </TabsList>
 
+                  {cryptoEnabled ? (
                   <TabsContent value="crypto" className="space-y-3">
                     <div className="rounded-lg border border-border/60 bg-background/70 p-4">
                       <div className="flex items-center justify-between gap-2">
@@ -3728,6 +4361,7 @@ export default function DashboardPage() {
                       </div>
                     </div>
                   </TabsContent>
+                  ) : null}
 
                   <TabsContent value="stocks" className="space-y-3">
                     <div className="rounded-lg border border-border/60 bg-background/70 p-4">
@@ -3799,6 +4433,7 @@ export default function DashboardPage() {
                     </div>
                   </TabsContent>
 
+                  {forexEnabled ? (
                   <TabsContent value="fx" className="space-y-3">
                     <div className="rounded-lg border border-border/60 bg-background/70 p-4">
                       <div className="flex items-center justify-between gap-2">
@@ -3868,6 +4503,7 @@ export default function DashboardPage() {
                       </div>
                     </div>
                   </TabsContent>
+                  ) : null}
                 </Tabs>
               </TabsContent>
             </Tabs>
@@ -4529,7 +5165,7 @@ export default function DashboardPage() {
                           </div>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          {ASSET_FOCUS_OPTIONS.map((option) => (
+                          {assetFocusOptions.map((option) => (
                             <Button
                               key={`trend-focus-${option}`}
                               type="button"
@@ -4543,7 +5179,13 @@ export default function DashboardPage() {
                         </div>
 
                         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                          {(["crypto", "stock", "forex"] as AssetClass[]).map((assetClass) => {
+                          {(["crypto", "stock", "forex"] as AssetClass[])
+                            .filter((assetClass) => {
+                              if (assetClass === "crypto") return cryptoEnabled
+                              if (assetClass === "forex") return forexEnabled
+                              return true
+                            })
+                            .map((assetClass) => {
                             const list =
                               assetClass === "crypto"
                                 ? trendingBuckets.crypto
@@ -5023,9 +5665,13 @@ export default function DashboardPage() {
                           setQuickAssetClass(event.target.value as AssetClass)
                         }
                       >
-                        <option value="crypto">{assetLabelMap.crypto}</option>
+                        {cryptoEnabled ? (
+                          <option value="crypto">{assetLabelMap.crypto}</option>
+                        ) : null}
                         <option value="stock">{assetLabelMap.stock}</option>
-                        <option value="forex">{assetLabelMap.forex}</option>
+                        {forexEnabled ? (
+                          <option value="forex">{assetLabelMap.forex}</option>
+                        ) : null}
                       </Select>
                       <div className="relative w-full min-w-[180px] flex-1">
                         <Input

@@ -37,7 +37,7 @@ import {
 import { useAuth } from "@/features/auth/auth-context"
 import { auth, db, firebaseEnabled } from "@/lib/firebase"
 import { signOut } from "firebase/auth"
-import { doc, setDoc } from "firebase/firestore"
+import { doc, setDoc, serverTimestamp } from "firebase/firestore"
 import { toast } from "sonner"
 import { SidebarBrokerProfile } from "./SidebarPaperProfile"
 import { usePresence } from "@/features/presence/use-presence"
@@ -48,6 +48,7 @@ import { useReplayControls } from "@/features/replay/use-replay-controls"
 import { ReplayControlsPanel } from "@/components/ReplayControlsPanel"
 import { useIbkrAccount } from "@/features/ibkr/use-ibkr-account"
 import { formatTimestamp } from "@/lib/format"
+import { useMarketControls } from "@/features/market/use-market-controls"
 
 type NavItem = {
   to: string
@@ -99,11 +100,12 @@ function NavItemLink({
 export function AppShell() {
   const { user } = useAuth()
   const { t, i18n } = useTranslation()
-  const { pathname } = useLocation()
+  const { pathname, search } = useLocation()
   const navigate = useNavigate()
   const pageTitle = useMemo(() => getPageTitle(pathname, t), [pathname, t])
   const { controls: replayControls, replayActive } = useReplayControls()
   const { brokerAccountKey, brokerAccount, tradingControls } = useIbkrAccount(user?.uid)
+  const { cryptoEnabled, forexEnabled, controls } = useMarketControls()
   const replayAsOfLabel = useMemo(
     () => formatTimestamp(replayControls?.asOf as Parameters<typeof formatTimestamp>[0]),
     [replayControls?.asOf]
@@ -115,6 +117,12 @@ export function AppShell() {
     const filtered = list.filter((service) => service !== "ui")
     return filtered.length ? filtered : ["mdg", "price-streamer", "market-intel", "signal-evaluator"]
   }, [replayControls?.requiredServices])
+
+  const openManageAssets = () => {
+    const params = new URLSearchParams(pathname.startsWith("/dashboard") ? search : "")
+    params.set("manageAssets", "1")
+    navigate({ pathname: "/dashboard", search: `?${params.toString()}` })
+  }
   const replayPlaybackLabel = useMemo(() => {
     if (!replayActive) return t("replay.controls.playbackStopped")
     return replayControls?.phase === "paused"
@@ -130,6 +138,17 @@ export function AppShell() {
       : [{ speed: 1 }]
   const replayBotsEnabled = replayControls?.botsReplayEnabled === true
   const canWriteReplayControls = Boolean(firebaseEnabled && db)
+  const assetsShownLabel = useMemo(() => {
+    const labels = [t("assets.stocks")]
+    if (cryptoEnabled) labels.push(t("assets.crypto"))
+    if (forexEnabled) labels.push(t("assets.fx"))
+    return t("app.assetsShown", { assets: labels.join(" + ") })
+  }, [t, cryptoEnabled, forexEnabled])
+  const dataProfile = useMemo(() => {
+    const raw = typeof controls?.dataProfile === "string" ? controls.dataProfile : ""
+    return raw === "balanced" || raw === "survival" ? raw : "normal"
+  }, [controls?.dataProfile])
+  const [profileUpdating, setProfileUpdating] = useState(false)
 
   const navItems: NavItem[] = [
     { to: "/", label: t("nav.tradeNow"), icon: <TrendingUp className="h-4 w-4" /> },
@@ -178,6 +197,27 @@ export function AppShell() {
       toast.success(successMessage)
     } catch {
       toast.error(t("replay.controls.updateFailed"))
+    }
+  }
+
+  async function switchToNormalProfile() {
+    if (!firebaseEnabled || !db) {
+      toast.error(t("tradeNow.firebaseNotConfigured"))
+      return
+    }
+    if (profileUpdating) return
+    setProfileUpdating(true)
+    try {
+      await setDoc(
+        doc(db, "market", "controls"),
+        { dataProfile: "normal", updatedAt: serverTimestamp() },
+        { merge: true }
+      )
+      toast.success(t("app.dataProfile.switched"))
+    } catch {
+      toast.error(t("app.dataProfile.switchFailed"))
+    } finally {
+      setProfileUpdating(false)
     }
   }
 
@@ -350,10 +390,16 @@ export function AppShell() {
                   {t("app.console")}
                 </div>
                 <div className="text-base font-semibold">{pageTitle}</div>
+                <div className="text-xs text-muted-foreground">
+                  {assetsShownLabel}
+                </div>
               </div>
             </div>
 
             <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={openManageAssets}>
+                {t("dashboard.actions.manageAssets")}
+              </Button>
               {firebaseEnabled && <PipelineHealthBadge showLabel={false} />}
               {!firebaseEnabled ? (
                 <Badge variant="outline">{t("app.firebaseDisabled")}</Badge>
@@ -450,6 +496,28 @@ export function AppShell() {
               </DropdownMenu>
             </div>
           </header>
+
+          {dataProfile === "survival" && (
+            <div className="border-b border-amber-200/70 bg-amber-50/80 px-4 py-3 text-sm text-amber-950 md:px-6">
+              <div className="flex w-full max-w-none flex-wrap items-center gap-3">
+                <Badge variant="destructive" className="uppercase tracking-[0.2em]">
+                  {t("dashboard.dataProfile.survival")}
+                </Badge>
+                <span className="font-semibold">{t("app.dataProfile.survivalTitle")}</span>
+                <span className="text-amber-900/80">{t("app.dataProfile.survivalBody")}</span>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={switchToNormalProfile}
+                  disabled={profileUpdating || !firebaseEnabled}
+                >
+                  {profileUpdating
+                    ? t("app.dataProfile.switching")
+                    : t("app.dataProfile.switchToNormal")}
+                </Button>
+              </div>
+            </div>
+          )}
 
           {replayActive && (
             <div

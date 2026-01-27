@@ -172,6 +172,7 @@ const TREND_HORIZONS = ["15m", "1h", "24h", "7d"]
 const VALID_TREND_HORIZONS = new Set(TREND_HORIZONS)
 const VALID_RISK = new Set(["conservative", "balanced", "aggressive"])
 const VALID_ASSET_FOCUS = new Set(["crypto", "stock", "forex"])
+const VALID_DATA_PROFILES = new Set(["normal", "balanced", "survival"])
 const UNIVERSE_MODES = new Set([
   "movers_only",
   "universe_only",
@@ -1720,6 +1721,14 @@ async function readControls(db) {
     : "15m"
   const riskCandidate = typeof data?.riskProfile === "string" ? data.riskProfile : ""
   const riskProfile = VALID_RISK.has(riskCandidate) ? riskCandidate : "balanced"
+  const dataProfileRaw = typeof data?.dataProfile === "string" ? data.dataProfile : ""
+  const dataProfile = VALID_DATA_PROFILES.has(dataProfileRaw) ? dataProfileRaw : "normal"
+  const dailyHistoryCandidate =
+    typeof data?.dailyHistoryMode === "string" ? data.dailyHistoryMode : ""
+  const dailyHistoryMode =
+    dailyHistoryCandidate === "strict" || dailyHistoryCandidate === "full"
+      ? dailyHistoryCandidate
+      : "standard"
   const focusList = Array.isArray(data?.assetFocus)
     ? data.assetFocus.map((item) => String(item).toLowerCase())
     : []
@@ -1814,9 +1823,11 @@ async function readControls(db) {
     assetFocus: normalizedFocus,
     primaryAssets,
     botWeights,
+    dataProfile,
     moverTurnoverMinPct,
     moverTurnoverMaxPct,
     moverTurnoverScope,
+    dailyHistoryMode,
     autoTuneEnabled:
       data?.autoTuneEnabled === undefined ? config.autoTuneEnabled : Boolean(data.autoTuneEnabled),
     autoTuneWithAI: data?.autoTuneWithAI !== false,
@@ -1853,9 +1864,13 @@ async function writeReplayConfigSnapshot(db, runId, payload) {
   }
 }
 
-async function refreshStockSymbolCache(db) {
+async function refreshStockSymbolCache(db, controls) {
   if (isReplayMode()) {
     console.log("Stock symbol cache skipped (replay mode)")
+    return
+  }
+  if (controls?.dataProfile === "survival") {
+    console.log("Stock symbol cache skipped (profile survival)")
     return
   }
   if (!config.marketDataGatewayUrl) {
@@ -1866,7 +1881,10 @@ async function refreshStockSymbolCache(db) {
   const cacheRef = db.doc("market/symbolCache")
   const cacheSnap = await cacheRef.get()
   const lastUpdated = cacheSnap.data()?.stocksUpdatedAt?.toDate?.()
-  const maxAgeMs = Math.max(config.symbolCacheDays, 0) * 24 * 60 * 60 * 1000
+  let maxAgeMs = Math.max(config.symbolCacheDays, 0) * 24 * 60 * 60 * 1000
+  if (controls?.dataProfile === "balanced") {
+    maxAgeMs = Math.max(maxAgeMs, 14 * 24 * 60 * 60 * 1000)
+  }
 
   if (lastUpdated && maxAgeMs > 0) {
     const ageMs = Date.now() - lastUpdated.getTime()
@@ -4260,18 +4278,29 @@ function scoreTrade(candidate, signalData, side, options = {}) {
   }
 }
 
-async function fetchFmpCandles(symbol, assetClass, interval = "15min", limit = 120) {
+async function fetchFmpCandles(
+  symbol,
+  assetClass,
+  interval = "15min",
+  limit = 120,
+  options = {}
+) {
   if (!config.marketDataGatewayUrl) return []
   if (!symbol) return []
   if (assetClass !== "stock" && assetClass !== "forex" && assetClass !== "crypto") {
     return []
   }
+  const dailyMode =
+    typeof options.dailyHistoryMode === "string" ? options.dailyHistoryMode : null
   try {
     const data = await fetchGatewayJson("/v1/fmp/candles", {
       symbol,
       assetClass,
       interval,
       limit: String(limit),
+      ...(interval === "1day" || interval === "1week"
+        ? { dailyMode: dailyMode || "standard" }
+        : {}),
     })
     const candles = Array.isArray(data?.candles) ? data.candles : []
     const debugSymbols = parseList(process.env.SWING_DEBUG_SYMBOLS || "")
@@ -5035,6 +5064,7 @@ async function buildSwingOvernight({
   universe,
   trendingByHorizon,
   asOf,
+  controls,
 }) {
   const entryWindow = resolveSwingEntryWindow(asOf)
   const baseMeta = {
@@ -5131,6 +5161,20 @@ async function buildSwingOvernight({
     rejectionCounts[reason] = (rejectionCounts[reason] || 0) + 1
   }
 
+  const dailyHistory = {
+    mode: controls?.dailyHistoryMode || "standard",
+    missingDailyCount: 0,
+    missingDailySymbols: [],
+    insufficientDailyCount: 0,
+    insufficientDailySymbols: [],
+    missingIntradayCount: 0,
+    missingIntradaySymbols: [],
+  }
+  const addSample = (list, symbol) => {
+    if (!symbol) return
+    if (list.length < 12) list.push(symbol)
+  }
+
   const items = await mapWithConcurrency(symbols, 4, async (symbol) => {
     const debugRecord = debugSet.has(symbol)
       ? { symbol, reasons: [], checks: {}, metrics: {}, passed: false }
@@ -5141,13 +5185,23 @@ async function buildSwingOvernight({
       debugRecord.passed = debugRecord.reasons.length === 0
       debugMap[symbol] = debugRecord
     }
-    const dailyCandles = await fetchFmpCandles(symbol, "stock", "1day", 80)
+    const dailyCandles = await fetchFmpCandles(symbol, "stock", "1day", 80, {
+      dailyHistoryMode: controls?.dailyHistoryMode,
+    })
     const intradayCandles = await fetchFmpCandles(symbol, "stock", "30min", 500)
     if (debugRecord) {
       debugRecord.metrics.dailyCandles = dailyCandles.length
       debugRecord.metrics.intradayCandles = intradayCandles.length
     }
     if (dailyCandles.length === 0 || intradayCandles.length === 0) {
+      if (dailyCandles.length === 0) {
+        dailyHistory.missingDailyCount += 1
+        addSample(dailyHistory.missingDailySymbols, symbol)
+      }
+      if (intradayCandles.length === 0) {
+        dailyHistory.missingIntradayCount += 1
+        addSample(dailyHistory.missingIntradaySymbols, symbol)
+      }
       trackRejection("missing_candles")
       recordDebug("missing_candles")
       return null
@@ -5166,6 +5220,8 @@ async function buildSwingOvernight({
         : daily
     if (cleanedDaily.length < SWING_RULES.maLong + SWING_RULES.maSlopeLookback) {
       if (debugRecord) debugRecord.metrics.cleanedDaily = cleanedDaily.length
+      dailyHistory.insufficientDailyCount += 1
+      addSample(dailyHistory.insufficientDailySymbols, symbol)
       trackRejection("insufficient_daily_history")
       recordDebug("insufficient_daily_history")
       return null
@@ -5177,6 +5233,8 @@ async function buildSwingOvernight({
         debugRecord.metrics.closesLength = closes.length
         debugRecord.metrics.volumesLength = volumes.length
       }
+      dailyHistory.insufficientDailyCount += 1
+      addSample(dailyHistory.insufficientDailySymbols, symbol)
       trackRejection("insufficient_closes_or_volumes")
       recordDebug("insufficient_closes_or_volumes")
       return null
@@ -5490,6 +5548,7 @@ async function buildSwingOvernight({
       count: limited.length,
       origins: originBreakdown,
       rejectionBreakdown: Object.keys(rejectionCounts).length > 0 ? rejectionCounts : undefined,
+      dailyHistory,
       ...(debugPayload && { debug: debugPayload }),
     },
   }
@@ -5502,6 +5561,7 @@ async function buildPrebreakout({
   newsScoreMap,
   botSignals,
   asOf,
+  controls,
 }) {
   const entryWindow = resolvePrebreakoutEntryWindow(asOf)
   const baseMeta = {
@@ -5589,6 +5649,20 @@ async function buildPrebreakout({
     rejectionCounts[reason] = (rejectionCounts[reason] || 0) + 1
   }
 
+  const dailyHistory = {
+    mode: controls?.dailyHistoryMode || "standard",
+    missingDailyCount: 0,
+    missingDailySymbols: [],
+    insufficientDailyCount: 0,
+    insufficientDailySymbols: [],
+    missingIntradayCount: 0,
+    missingIntradaySymbols: [],
+  }
+  const addSample = (list, symbol) => {
+    if (!symbol) return
+    if (list.length < 12) list.push(symbol)
+  }
+
   const items = await mapWithConcurrency(symbols, 4, async (symbol) => {
     const debugRecord = debugSet.has(symbol)
       ? {
@@ -5652,9 +5726,19 @@ async function buildPrebreakout({
       return null
     }
 
-    const dailyCandles = await fetchFmpCandles(symbol, "stock", "1day", 90)
+    const dailyCandles = await fetchFmpCandles(symbol, "stock", "1day", 90, {
+      dailyHistoryMode: controls?.dailyHistoryMode,
+    })
     const intradayCandles = await fetchFmpCandles(symbol, "stock", "5min", 200)
     if (dailyCandles.length === 0 || intradayCandles.length === 0) {
+      if (dailyCandles.length === 0) {
+        dailyHistory.missingDailyCount += 1
+        addSample(dailyHistory.missingDailySymbols, symbol)
+      }
+      if (intradayCandles.length === 0) {
+        dailyHistory.missingIntradayCount += 1
+        addSample(dailyHistory.missingIntradaySymbols, symbol)
+      }
       trackRejection("missing_candles")
       if (debugRecord) {
         debugRecord.metrics.dailyCandles = dailyCandles.length
@@ -5678,6 +5762,8 @@ async function buildPrebreakout({
         : daily
     if (cleanedDaily.length < PREBREAKOUT_RULES.maLong + PREBREAKOUT_RULES.maSlopeLookback) {
       trackRejection("insufficient_daily_history")
+      dailyHistory.insufficientDailyCount += 1
+      addSample(dailyHistory.insufficientDailySymbols, symbol)
       if (debugRecord) {
         debugRecord.metrics.cleanedDaily = cleanedDaily.length
         debugRecord.reasons.push("insufficient_daily_history")
@@ -5690,6 +5776,8 @@ async function buildPrebreakout({
     const volumes = cleanedDaily.map((candle) => candle.volume).filter(Number.isFinite)
     if (closes.length < PREBREAKOUT_RULES.maLong || volumes.length < PREBREAKOUT_RULES.volumeLookbackSessions) {
       trackRejection("insufficient_daily_series")
+      dailyHistory.insufficientDailyCount += 1
+      addSample(dailyHistory.insufficientDailySymbols, symbol)
       if (debugRecord) {
         debugRecord.metrics.closes = closes.length
         debugRecord.metrics.volumes = volumes.length
@@ -6121,6 +6209,7 @@ async function buildPrebreakout({
       count: limited.length,
       origins: originBreakdown,
       rejectionBreakdown: Object.keys(rejectionCounts).length > 0 ? rejectionCounts : undefined,
+      dailyHistory,
       ...(debugPayload && { debug: debugPayload }),
     }),
   }
@@ -6994,10 +7083,6 @@ async function run() {
 
   console.log("mi_run_start", { startedAt: startedAt.toISOString(), runId })
 
-  await refreshStockSymbolCache(db).catch((err) => {
-    console.error("Stock symbol cache refresh failed", err.message)
-  })
-
   let universe = null
   let controls = null
   let runConfig = null
@@ -7097,6 +7182,10 @@ async function run() {
       readRunConfig(db, runId),
     ])
   }
+
+  await refreshStockSymbolCache(db, controls).catch((err) => {
+    console.error("Stock symbol cache refresh failed", err.message)
+  })
 
   const testFilter = buildTestFilter(runConfig)
   if (testFilter) {
@@ -7423,6 +7512,7 @@ async function run() {
         universe,
         trendingByHorizon,
         asOf: startedAt,
+        controls,
       })
     : {
         items: [],
@@ -7460,6 +7550,7 @@ async function run() {
         newsScoreMap: newsData.scoreMap,
         botSignals,
         asOf: startedAt,
+        controls,
       })
     : {
         items: [],

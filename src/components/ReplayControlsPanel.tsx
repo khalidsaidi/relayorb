@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { doc, setDoc, Timestamp } from "firebase/firestore"
+import { addDoc, collection, doc, serverTimestamp, setDoc, Timestamp } from "firebase/firestore"
 import { toast } from "sonner"
 import { useTranslation } from "react-i18next"
 import { fromZonedTime } from "date-fns-tz"
@@ -468,11 +468,6 @@ export function ReplayControlsPanel() {
     })
   }, [selectedRunSymbolSource, selectedRun?.autoDiscoverConfig, t])
   const gatewayBase = MARKET_DATA_BASE
-  const refreshEndpoint = useMemo(() => {
-    const base = (import.meta.env.VITE_REFRESH_URL || "").trim()
-    if (!base) return ""
-    return `${base.replace(/\/+$/, "")}/refresh`
-  }, [])
   const marketIntelJob = useMemo(
     () => (import.meta.env.VITE_MARKET_INTEL_JOB || "relayorb-market-intel").trim(),
     []
@@ -501,6 +496,12 @@ export function ReplayControlsPanel() {
   }, [consumerMap, requiredServicesFiltered, controls?.version, controls?.sessionId, controls?.desiredMode])
 
   const canWrite = Boolean(firebaseEnabled && db)
+  const marketIntelDisabledReason = useMemo(() => {
+    if (!firebaseEnabled || !db) return t("tradeNow.firebaseNotConfigured")
+    if (!user) return t("tradeNow.mustBeSignedIn")
+    if (!marketIntelJob) return t("replay.controls.refreshNotConfigured")
+    return ""
+  }, [firebaseEnabled, db, user, marketIntelJob, t])
   const desiredMode = controls?.desiredMode || "live"
   const phase = controls?.phase || "ready"
   const isReplay = desiredMode === "replay"
@@ -859,40 +860,50 @@ export function ReplayControlsPanel() {
     }
   }
 
+  async function triggerRefreshViaBatch(jobs?: string[]) {
+    if (!firebaseEnabled || !db) {
+      toast.error(t("tradeNow.firebaseNotConfigured"))
+      return false
+    }
+    if (!user) {
+      toast.error(t("tradeNow.mustBeSignedIn"))
+      return false
+    }
+    const runId = runIdValue.trim()
+    const payload: Record<string, unknown> = {
+      runId: runId || undefined,
+      type: "refresh",
+      source: "ui",
+      requestedByUid: user.uid,
+      requestedByEmail: user.email || null,
+      createdAt: serverTimestamp(),
+    }
+    if (Array.isArray(jobs) && jobs.length > 0) {
+      payload.jobs = jobs
+    }
+    await addDoc(collection(db, "batches"), payload)
+    return true
+  }
+
   async function handleRunMarketIntel() {
     if (!firebaseEnabled || !db) {
       toast.error(t("tradeNow.firebaseNotConfigured"))
-      return
-    }
-    if (!refreshEndpoint) {
-      toast.error(t("replay.controls.refreshNotConfigured"))
       return
     }
     if (!user) {
       toast.error(t("tradeNow.mustBeSignedIn"))
       return
     }
+    if (!marketIntelJob) {
+      toast.error(t("replay.controls.refreshNotConfigured"))
+      return
+    }
     setMarketIntelBusy(true)
     try {
-      const token = await user.getIdToken(true)
-      const response = await fetch(refreshEndpoint, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          jobs: [marketIntelJob],
-          runId: runIdValue.trim() || undefined,
-        }),
-      })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok) {
-        throw new Error(
-          payload?.error || t("tradeNow.refreshFailed", { status: response.status })
-        )
+      const ok = await triggerRefreshViaBatch([marketIntelJob])
+      if (ok) {
+        toast.success(t("replay.controls.marketIntelStarted"))
       }
-      toast.success(t("replay.controls.marketIntelStarted"))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t("tradeNow.refreshFailedGeneric"))
     } finally {
@@ -993,27 +1004,64 @@ export function ReplayControlsPanel() {
           </div>
           <div className="space-y-2">
             <Label>{t("replay.controls.tape.symbolSourceLabel")}</Label>
-            <div className="flex flex-wrap gap-3">
+            <div className="grid gap-3 sm:grid-cols-3">
               <Button
                 variant={symbolSource === "default" ? "secondary" : "outline"}
                 onClick={() => setSymbolSourceInput("default")}
+                className="h-auto items-start justify-start text-left flex flex-col gap-1"
               >
-                {t("replay.controls.tape.symbolSourceDefault")}
+                <span className="text-sm font-medium">
+                  {t("replay.controls.tape.symbolSourceDefault")}
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  {t("replay.controls.tape.symbolSourceDefaultHint", {
+                    count: defaultSymbolCount,
+                  })}
+                </span>
               </Button>
               <Button
                 variant={symbolSource === "auto" ? "secondary" : "outline"}
                 onClick={() => setSymbolSourceInput("auto")}
+                className="h-auto items-start justify-start text-left flex flex-col gap-1"
               >
-                {t("replay.controls.tape.symbolSourceAuto")}
+                <span className="text-sm font-medium">
+                  {t("replay.controls.tape.symbolSourceAuto")}
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  {t("replay.controls.tape.symbolSourceAutoHint")}
+                </span>
               </Button>
               <Button
                 variant={symbolSource === "custom" ? "secondary" : "outline"}
                 onClick={() => setSymbolSourceInput("custom")}
+                className="h-auto items-start justify-start text-left flex flex-col gap-1"
               >
-                {t("replay.controls.tape.symbolSourceCustom")}
+                <span className="text-sm font-medium">
+                  {t("replay.controls.tape.symbolSourceCustom")}
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  {t("replay.controls.tape.symbolSourceCustomHint")}
+                </span>
               </Button>
             </div>
-            <p className="text-[11px] text-muted-foreground">{recordingSourceLine}</p>
+            <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
+              <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                {t("replay.controls.tape.symbolSourceSummaryLabel")}
+              </div>
+              <div className="text-sm font-medium">{recordingSourceLine}</div>
+              {symbolSource === "custom" ? (
+                <div className="text-[11px] text-muted-foreground">
+                  {t("replay.controls.recordingScopeSymbolsCustom", {
+                    count: selectedSymbolCount,
+                  })}
+                </div>
+              ) : null}
+              {symbolSource === "auto" && autoDiscoverSummaryLine ? (
+                <div className="text-[11px] text-muted-foreground">
+                  {autoDiscoverSummaryLine}
+                </div>
+              ) : null}
+            </div>
           </div>
           {symbolSource === "default" ? (
             <p
@@ -1055,125 +1103,135 @@ export function ReplayControlsPanel() {
               </div>
             </div>
           ) : null}
-          {symbolSource === "auto" ? (
-            <div className="space-y-4 rounded-lg border border-border/60 bg-muted/10 p-4">
-              <div className="space-y-1">
-                <div className="text-sm font-medium">
-                  {t("replay.controls.autoDiscover.title")}
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  {t("replay.controls.autoDiscover.hint")}
-                </div>
+          <div
+            className={`space-y-4 rounded-lg border border-border/60 bg-muted/10 p-4 ${
+              symbolSource !== "auto" ? "opacity-70" : ""
+            }`}
+          >
+            <div className="space-y-1">
+              <div className="text-sm font-medium">
+                {t("replay.controls.autoDiscover.title")}
               </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="replay-tape-max-symbols">
-                    {t("replay.controls.tape.maxSymbolsLabel")}
-                  </Label>
-                  <Input
-                    id="replay-tape-max-symbols"
-                    type="number"
-                    min="1"
-                    max="2000"
-                    value={tapeMaxSymbolsInput}
-                    onChange={(e) => setTapeMaxSymbolsInput(e.target.value)}
-                  />
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-3">
-                <Button
-                  variant={autoDiscoverIncludeUniverse ? "secondary" : "outline"}
-                  onClick={() =>
-                    setAutoDiscoverIncludeUniverse((prev) => !prev)
-                  }
-                >
-                  {autoDiscoverIncludeUniverse
-                    ? t("replay.controls.autoDiscover.includeUniverseOn")
-                    : t("replay.controls.autoDiscover.includeUniverseOff")}
-                </Button>
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="replay-auto-smallcap-min">
-                    {t("replay.controls.autoDiscover.smallCapMinMarketCap")}
-                  </Label>
-                  <Input
-                    id="replay-auto-smallcap-min"
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={autoDiscoverSmallCapMin}
-                    onChange={(e) => setAutoDiscoverSmallCapMin(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="replay-auto-smallcap-max">
-                    {t("replay.controls.autoDiscover.smallCapMaxMarketCap")}
-                  </Label>
-                  <Input
-                    id="replay-auto-smallcap-max"
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={autoDiscoverSmallCapMax}
-                    onChange={(e) => setAutoDiscoverSmallCapMax(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="replay-auto-smallcap-volume">
-                    {t("replay.controls.autoDiscover.smallCapMinVolume")}
-                  </Label>
-                  <Input
-                    id="replay-auto-smallcap-volume"
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={autoDiscoverSmallCapVolume}
-                    onChange={(e) => setAutoDiscoverSmallCapVolume(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="replay-auto-midcap-min">
-                    {t("replay.controls.autoDiscover.midCapMinMarketCap")}
-                  </Label>
-                  <Input
-                    id="replay-auto-midcap-min"
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={autoDiscoverMidCapMin}
-                    onChange={(e) => setAutoDiscoverMidCapMin(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="replay-auto-midcap-max">
-                    {t("replay.controls.autoDiscover.midCapMaxMarketCap")}
-                  </Label>
-                  <Input
-                    id="replay-auto-midcap-max"
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={autoDiscoverMidCapMax}
-                    onChange={(e) => setAutoDiscoverMidCapMax(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="replay-auto-midcap-volume">
-                    {t("replay.controls.autoDiscover.midCapMinVolume")}
-                  </Label>
-                  <Input
-                    id="replay-auto-midcap-volume"
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={autoDiscoverMidCapVolume}
-                    onChange={(e) => setAutoDiscoverMidCapVolume(e.target.value)}
-                  />
-                </div>
+              <div className="text-xs text-muted-foreground">
+                {t("replay.controls.autoDiscover.hint")}
               </div>
             </div>
-          ) : null}
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="replay-tape-max-symbols">
+                  {t("replay.controls.tape.maxSymbolsLabel")}
+                </Label>
+                <Input
+                  id="replay-tape-max-symbols"
+                  type="number"
+                  min="1"
+                  max="2000"
+                  value={tapeMaxSymbolsInput}
+                  onChange={(e) => setTapeMaxSymbolsInput(e.target.value)}
+                  disabled={symbolSource !== "auto"}
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <Button
+                variant={autoDiscoverIncludeUniverse ? "secondary" : "outline"}
+                onClick={() =>
+                  setAutoDiscoverIncludeUniverse((prev) => !prev)
+                }
+                disabled={symbolSource !== "auto"}
+              >
+                {autoDiscoverIncludeUniverse
+                  ? t("replay.controls.autoDiscover.includeUniverseOn")
+                  : t("replay.controls.autoDiscover.includeUniverseOff")}
+              </Button>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="replay-auto-smallcap-min">
+                  {t("replay.controls.autoDiscover.smallCapMinMarketCap")}
+                </Label>
+                <Input
+                  id="replay-auto-smallcap-min"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={autoDiscoverSmallCapMin}
+                  onChange={(e) => setAutoDiscoverSmallCapMin(e.target.value)}
+                  disabled={symbolSource !== "auto"}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="replay-auto-smallcap-max">
+                  {t("replay.controls.autoDiscover.smallCapMaxMarketCap")}
+                </Label>
+                <Input
+                  id="replay-auto-smallcap-max"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={autoDiscoverSmallCapMax}
+                  onChange={(e) => setAutoDiscoverSmallCapMax(e.target.value)}
+                  disabled={symbolSource !== "auto"}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="replay-auto-smallcap-volume">
+                  {t("replay.controls.autoDiscover.smallCapMinVolume")}
+                </Label>
+                <Input
+                  id="replay-auto-smallcap-volume"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={autoDiscoverSmallCapVolume}
+                  onChange={(e) => setAutoDiscoverSmallCapVolume(e.target.value)}
+                  disabled={symbolSource !== "auto"}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="replay-auto-midcap-min">
+                  {t("replay.controls.autoDiscover.midCapMinMarketCap")}
+                </Label>
+                <Input
+                  id="replay-auto-midcap-min"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={autoDiscoverMidCapMin}
+                  onChange={(e) => setAutoDiscoverMidCapMin(e.target.value)}
+                  disabled={symbolSource !== "auto"}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="replay-auto-midcap-max">
+                  {t("replay.controls.autoDiscover.midCapMaxMarketCap")}
+                </Label>
+                <Input
+                  id="replay-auto-midcap-max"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={autoDiscoverMidCapMax}
+                  onChange={(e) => setAutoDiscoverMidCapMax(e.target.value)}
+                  disabled={symbolSource !== "auto"}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="replay-auto-midcap-volume">
+                  {t("replay.controls.autoDiscover.midCapMinVolume")}
+                </Label>
+                <Input
+                  id="replay-auto-midcap-volume"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={autoDiscoverMidCapVolume}
+                  onChange={(e) => setAutoDiscoverMidCapVolume(e.target.value)}
+                  disabled={symbolSource !== "auto"}
+                />
+              </div>
+            </div>
+          </div>
           <div className="flex flex-wrap gap-3">
             <Button
               variant={registerRun ? "secondary" : "outline"}
@@ -1371,7 +1429,12 @@ export function ReplayControlsPanel() {
             <Button
               variant="outline"
               onClick={handleRunMarketIntel}
-              disabled={marketIntelBusy}
+              disabled={marketIntelBusy || Boolean(marketIntelDisabledReason)}
+              title={
+                marketIntelBusy
+                  ? t("replay.controls.marketIntelRunning")
+                  : marketIntelDisabledReason || t("replay.controls.marketIntelRun")
+              }
             >
               {marketIntelBusy
                 ? t("replay.controls.marketIntelRunning")

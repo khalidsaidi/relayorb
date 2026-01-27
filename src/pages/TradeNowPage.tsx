@@ -18,6 +18,7 @@ import { toast } from "sonner"
 import { useAuth } from "@/features/auth/auth-context"
 import { useMarketPrices } from "@/features/market/use-market-prices"
 import { useStreamSymbols } from "@/features/market/use-stream-symbols"
+import { useMarketControls } from "@/features/market/use-market-controls"
 import { MarketStatusBadge } from "@/components/MarketStatusBadge"
 import { MarketStatusBanner } from "@/components/MarketClosedOverlay"
 import { AssetChartModal } from "@/components/charts/AssetChartModal"
@@ -429,6 +430,7 @@ export default function TradeNowPage() {
   const replayRunId = replayActive ? replayControls?.activeRunId : null
   const { brokerAccountKey, brokerAccount, tradingControls } = useIbkrAccount(user?.uid)
   const { prices, livePrices } = useMarketPrices()
+  const { cryptoEnabled, forexEnabled } = useMarketControls()
   const [actionBoard, setActionBoard] = useState<MarketActionBoardDoc | null>(null)
   const [hotTrades, setHotTrades] = useState<MarketHotTrade[]>([])
   const [hotTradesUpdatedAt, setHotTradesUpdatedAt] = useState<MarketHotTradesDoc["updatedAt"]>()
@@ -457,6 +459,15 @@ export default function TradeNowPage() {
     ? t("ibkr.errors.ibkrDisabled")
     : undefined
 
+  useEffect(() => {
+    if (assetFilter === "crypto" && !cryptoEnabled) {
+      setAssetFilter(forexEnabled ? "forex" : "stock")
+    }
+    if (assetFilter === "forex" && !forexEnabled) {
+      setAssetFilter(cryptoEnabled ? "crypto" : "stock")
+    }
+  }, [assetFilter, cryptoEnabled, forexEnabled])
+
   const streamItems = useMemo(() => {
     const items: MarketHotTrade[] = []
     if (actionBoard?.buys?.length) items.push(...actionBoard.buys)
@@ -464,27 +475,22 @@ export default function TradeNowPage() {
     if (hotTrades.length) items.push(...hotTrades)
     if (swingOvernight.length) items.push(...swingOvernight)
     if (prebreakout.length) items.push(...prebreakout)
-    return items
-  }, [actionBoard, hotTrades, swingOvernight, prebreakout])
+    return items.filter((item) => {
+      if (item.assetClass === "crypto") return cryptoEnabled
+      if (item.assetClass === "forex") return forexEnabled
+      return true
+    })
+  }, [actionBoard, hotTrades, swingOvernight, prebreakout, cryptoEnabled, forexEnabled])
 
   useStreamSymbols("trade-now", {
     items: streamItems,
     enabled: !loading,
   })
 
-  const refreshMode = (import.meta.env.VITE_REFRESH_MODE || "firestore").trim().toLowerCase()
-  const refreshEndpoint = useMemo(() => {
-    if (refreshMode !== "http") return ""
-    const base = (import.meta.env.VITE_REFRESH_URL || "").trim()
-    if (!base) return ""
-    return `${base.replace(/\/+$/, "")}/refresh`
-  }, [refreshMode])
-  const adviceEndpoint = useMemo(() => {
-    if (refreshMode !== "http") return ""
-    const base = (import.meta.env.VITE_REFRESH_URL || "").trim()
-    if (!base) return ""
-    return `${base.replace(/\/+$/, "")}/advice`
-  }, [refreshMode])
+  const adviceEndpoint = useMemo(
+    () => (import.meta.env.VITE_AI_ADVICE_URL || "").trim(),
+    []
+  )
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
@@ -577,13 +583,23 @@ export default function TradeNowPage() {
       : hotTrades.filter((item) => item.side === "buy")
     const limit = Number(actionBoard?.meta?.classLimit ?? 10)
 
-    if (assetFilter === "all") return baseBuys.slice(0, limit)
+    if (assetFilter === "all") {
+      return baseBuys
+        .filter((item) => {
+          if (item.assetClass === "crypto") return cryptoEnabled
+          if (item.assetClass === "forex") return forexEnabled
+          return true
+        })
+        .slice(0, limit)
+    }
+    if (assetFilter === "crypto" && !cryptoEnabled) return []
+    if (assetFilter === "forex" && !forexEnabled) return []
 
     const byAsset = hasActionBoard ? actionBoard?.byAsset?.buys?.[assetFilter] : null
     if (byAsset && byAsset.length > 0) return byAsset
 
     return baseBuys.filter((item) => item.assetClass === assetFilter).slice(0, limit)
-  }, [actionBoard, assetFilter, hasActionBoard, hotTrades])
+  }, [actionBoard, assetFilter, hasActionBoard, hotTrades, cryptoEnabled, forexEnabled])
 
   const sells = useMemo(() => {
     const baseSells = hasActionBoard
@@ -591,13 +607,23 @@ export default function TradeNowPage() {
       : hotTrades.filter((item) => item.side === "sell")
     const limit = Number(actionBoard?.meta?.classLimit ?? 10)
 
-    if (assetFilter === "all") return baseSells.slice(0, limit)
+    if (assetFilter === "all") {
+      return baseSells
+        .filter((item) => {
+          if (item.assetClass === "crypto") return cryptoEnabled
+          if (item.assetClass === "forex") return forexEnabled
+          return true
+        })
+        .slice(0, limit)
+    }
+    if (assetFilter === "crypto" && !cryptoEnabled) return []
+    if (assetFilter === "forex" && !forexEnabled) return []
 
     const byAsset = hasActionBoard ? actionBoard?.byAsset?.sells?.[assetFilter] : null
     if (byAsset && byAsset.length > 0) return byAsset
 
     return baseSells.filter((item) => item.assetClass === assetFilter).slice(0, limit)
-  }, [actionBoard, assetFilter, hasActionBoard, hotTrades])
+  }, [actionBoard, assetFilter, hasActionBoard, hotTrades, cryptoEnabled, forexEnabled])
 
   const updatedAt = hasActionBoard ? actionBoard?.updatedAt : hotTradesUpdatedAt
   const swingUpdatedAtLabel = swingOvernightUpdatedAt
@@ -620,6 +646,22 @@ export default function TradeNowPage() {
     return status && typeof status === "object" ? (status as FetchStatus) : null
   }, [actionBoard?.meta, hasActionBoard, hotTradesMeta])
   const adviceEnabled = Boolean(adviceEndpoint)
+  const refreshDisabledReason = useMemo(() => {
+    if (replayActive) return replayActionDisabledReason
+    if (!firebaseEnabled || !db) return t("tradeNow.firebaseNotConfigured")
+    if (!user) return t("tradeNow.mustBeSignedIn")
+    return ""
+  }, [replayActive, replayActionDisabledReason, firebaseEnabled, db, user, t])
+
+  const assetFilters = useMemo(() => {
+    const items = [
+      { value: "all", label: t("assets.allShort") },
+      { value: "stock", label: t("assets.stocks") },
+    ] as Array<{ value: "all" | "crypto" | "stock" | "forex"; label: string }>
+    if (cryptoEnabled) items.splice(1, 0, { value: "crypto", label: t("assets.crypto") })
+    if (forexEnabled) items.push({ value: "forex", label: t("assets.fx") })
+    return items
+  }, [t, cryptoEnabled, forexEnabled])
 
   function resolveEmptyMessage(sideLabel: "buy" | "sell") {
     if (assetFilter === "all") {
@@ -647,11 +689,11 @@ export default function TradeNowPage() {
   async function triggerRefreshViaBatch() {
     if (!firebaseEnabled || !db) {
       toast.error(t("tradeNow.firebaseNotConfigured"))
-      return
+      return false
     }
     if (!user) {
       toast.error(t("tradeNow.mustBeSignedIn"))
-      return
+      return false
     }
     const runId = `ui-refresh-${Date.now()}`
     await addDoc(collection(db, "batches"), {
@@ -662,7 +704,7 @@ export default function TradeNowPage() {
       requestedByEmail: user.email || null,
       createdAt: serverTimestamp(),
     })
-    toast.success(t("tradeNow.refreshStarted"))
+    return true
   }
 
   async function triggerRefresh() {
@@ -670,46 +712,13 @@ export default function TradeNowPage() {
       toast.info(replayActionDisabledReason)
       return
     }
-    if (refreshMode !== "http") {
-      await triggerRefreshViaBatch()
-      return
-    }
-    if (!firebaseEnabled || !db) {
-      toast.error(t("tradeNow.firebaseNotConfigured"))
-      return
-    }
-    if (!refreshEndpoint) {
-      toast.error(t("tradeNow.refreshNotConfigured"))
-      return
-    }
-    if (!user) {
-      toast.error(t("tradeNow.mustBeSignedIn"))
-      return
-    }
 
     setRefreshingJobs(true)
     try {
-      const token = await user.getIdToken(true)
-      const response = await fetch(refreshEndpoint, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({}),
-      })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok) {
-        throw new Error(payload?.error || t("tradeNow.refreshFailed", { status: response.status }))
+      const ok = await triggerRefreshViaBatch()
+      if (ok) {
+        toast.success(t("tradeNow.refreshStarted"))
       }
-      const jobNames = Array.isArray(payload?.jobs)
-        ? payload.jobs.map((job: { job?: string }) => job.job).filter(Boolean)
-        : []
-      toast.success(
-        jobNames.length > 0
-          ? t("tradeNow.refreshStartedWithJobs", { jobs: jobNames.join(", ") })
-          : t("tradeNow.refreshStarted")
-      )
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t("tradeNow.refreshFailedGeneric"))
     } finally {
@@ -815,28 +824,18 @@ export default function TradeNowPage() {
             size="sm"
             onClick={triggerRefresh}
             disabled={
-              !firebaseEnabled ||
-              refreshingJobs ||
-              !refreshEndpoint ||
-              replayActive
+              refreshingJobs || Boolean(refreshDisabledReason)
             }
             title={
-              replayActive
-                ? replayActionDisabledReason
-                : refreshEndpoint
-                  ? t("tradeNow.refreshTitle")
-                  : t("tradeNow.refreshDisabledTitle")
+              refreshingJobs
+                ? t("tradeNow.refreshing")
+                : refreshDisabledReason || t("tradeNow.refreshTitle")
             }
           >
             {refreshingJobs ? t("tradeNow.refreshing") : t("tradeNow.refreshNow")}
           </Button>
           <div className="flex flex-wrap items-center gap-1 rounded-full border border-border/60 bg-background/70 p-1">
-            {[
-              { value: "all", label: t("assets.allShort") },
-              { value: "crypto", label: t("assets.crypto") },
-              { value: "stock", label: t("assets.stocks") },
-              { value: "forex", label: t("assets.fx") },
-            ].map((filter) => (
+            {assetFilters.map((filter) => (
               <Button
                 key={filter.value}
                 type="button"
@@ -861,10 +860,10 @@ export default function TradeNowPage() {
         {(assetFilter === "all" || assetFilter === "stock") && (
           <MarketStatusBadge assetClass="stock" />
         )}
-        {(assetFilter === "all" || assetFilter === "forex") && (
+        {(assetFilter === "all" || assetFilter === "forex") && forexEnabled && (
           <MarketStatusBadge assetClass="forex" />
         )}
-        {(assetFilter === "all" || assetFilter === "crypto") && (
+        {(assetFilter === "all" || assetFilter === "crypto") && cryptoEnabled && (
           <MarketStatusBadge assetClass="crypto" />
         )}
       </div>
@@ -873,7 +872,7 @@ export default function TradeNowPage() {
       {(assetFilter === "all" || assetFilter === "stock") && (
         <MarketStatusBanner assetClass="stock" />
       )}
-      {(assetFilter === "forex") && (
+      {(assetFilter === "forex") && forexEnabled && (
         <MarketStatusBanner assetClass="forex" />
       )}
 

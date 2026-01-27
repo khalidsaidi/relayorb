@@ -383,6 +383,8 @@ export type MarketTrendingDoc = {
 
 export type MarketControlsDoc = {
   updatedAt?: FirestoreTimestamp
+  cryptoEnabled?: boolean
+  forexEnabled?: boolean
   llmIntervalMinutes?: number
   enableLLM?: boolean
   newsIntervalMinutes?: number
@@ -411,8 +413,11 @@ export type MarketControlsDoc = {
     trending?: boolean
     hotTrades?: boolean
   }
+  dataProfile?: "normal" | "balanced" | "survival"
   moverPriceMin?: number
   moverPriceMax?: number
+  dailyHistoryMode?: "standard" | "strict" | "full"
+  stockQuoteMode?: "auto" | "stream_only" | "poll_only"
   primaryAssets?: {
     crypto?: string[]
     stocks?: string[]

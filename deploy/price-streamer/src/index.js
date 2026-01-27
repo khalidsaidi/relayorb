@@ -802,6 +802,9 @@ const state = {
     stock: 0,
     forex: 0,
   },
+  dataProfile: "normal",
+  stockQuoteMode: "auto",
+  lastDiscoveryAt: 0,
   stockUniverse: {
     symbols: [],
     updatedAt: 0,
@@ -873,6 +876,8 @@ const STALENESS_THRESHOLDS = {
   heartbeat: 300000,  // 5 minutes - heartbeat interval
 }
 
+const DATA_PROFILES = ["normal", "balanced", "survival"]
+
 let server = null
 
 function parseNumber(value) {
@@ -898,6 +903,48 @@ function resolveMoverPriceFilter(controls) {
   const maxPrice = Number.isFinite(maxRaw) && maxRaw > 0 ? maxRaw : null
   const apply = minPrice !== null || maxPrice !== null
   return { minPrice, maxPrice, apply }
+}
+
+function resolveDataProfile(controls) {
+  const raw = typeof controls?.dataProfile === "string" ? controls.dataProfile.toLowerCase() : ""
+  return DATA_PROFILES.includes(raw) ? raw : "normal"
+}
+
+function resolveStockQuoteMode(controls) {
+  const raw = typeof controls?.stockQuoteMode === "string"
+    ? controls.stockQuoteMode.toLowerCase()
+    : ""
+  if (raw === "stream_only" || raw === "poll_only") return raw
+  return "auto"
+}
+
+function resolveProfileConfig(profile) {
+  switch (profile) {
+    case "balanced":
+      return {
+        discoveryIntervalMs: 5 * 60 * 1000,
+        stockListMinMs: Math.max(config.stockUniverseRefreshMs, 24 * 60 * 60 * 1000),
+        stockPollMinMs: Math.max(config.stockPollMs, 60 * 1000),
+        cryptoPollMinMs: Math.max(config.cryptoPollMs, 60 * 1000),
+        forexPollMinMs: Math.max(config.forexPollMs, 60 * 1000),
+      }
+    case "survival":
+      return {
+        discoveryIntervalMs: Infinity,
+        stockListMinMs: Infinity,
+        stockPollMinMs: Math.max(config.stockPollMs, 120 * 1000),
+        cryptoPollMinMs: Math.max(config.cryptoPollMs, 120 * 1000),
+        forexPollMinMs: Math.max(config.forexPollMs, 120 * 1000),
+      }
+    default:
+      return {
+        discoveryIntervalMs: 60 * 1000,
+        stockListMinMs: config.stockUniverseRefreshMs,
+        stockPollMinMs: config.stockPollMs,
+        cryptoPollMinMs: config.cryptoPollMs,
+        forexPollMinMs: config.forexPollMs,
+      }
+  }
 }
 
 function resolveRedisKey(suffix, replayState = state.replay) {
@@ -980,6 +1027,10 @@ function isStreamHealthyFor(assetClass) {
 }
 
 function shouldUseStreamFor(assetClass) {
+  if (assetClass === "stock") {
+    if (state.stockQuoteMode === "poll_only") return false
+    if (state.stockQuoteMode === "stream_only") return true
+  }
   if (!config.fmpStreamEnabled) return false
   if (isReplayMode()) return false
   return isStreamHealthyFor(assetClass)
@@ -999,9 +1050,14 @@ async function refreshStockUniverseCache() {
   if (isReplayMode()) return
   if (!config.marketDataGatewayUrl || config.stockUniverseLimit <= 0) return
   const now = Date.now()
+  const profileConfig = resolveProfileConfig(state.dataProfile || "normal")
+  if (!Number.isFinite(profileConfig.stockListMinMs)) {
+    console.log("ps_stock_universe_skip", { reason: "profile", profile: state.dataProfile })
+    return
+  }
   if (
     state.stockUniverse.updatedAt &&
-    now - state.stockUniverse.updatedAt < config.stockUniverseRefreshMs
+    now - state.stockUniverse.updatedAt < profileConfig.stockListMinMs
   ) {
     return
   }
@@ -1054,6 +1110,7 @@ function handleFmpStreamQuote(quote, streamName) {
 
   const streamHint = quote.stream || quote.streamId || streamName
   const assetClass = resolveStreamAssetClass(streamHint, quote.exchange)
+  if (assetClass === "stock" && state.stockQuoteMode === "poll_only") return
   const normalizedSymbol = normalizeSymbolForKey(rawSymbol, assetClass)
   if (!normalizedSymbol) return
   if (!streamAllowsSymbol(assetClass, normalizedSymbol)) {
@@ -2331,6 +2388,19 @@ async function refreshWatchlist() {
     ])
     const universe = universeSnap.exists ? universeSnap.data() : {}
     const controls = controlsSnap.exists ? controlsSnap.data() : {}
+    const dataProfile = resolveDataProfile(controls)
+    if (state.dataProfile !== dataProfile) {
+      state.dataProfile = dataProfile
+      console.log("ps_data_profile", { profile: dataProfile })
+    }
+    const stockQuoteMode = resolveStockQuoteMode(controls)
+    if (state.stockQuoteMode !== stockQuoteMode) {
+      state.stockQuoteMode = stockQuoteMode
+      console.log("ps_stock_quote_mode", { mode: stockQuoteMode })
+    }
+    if (stockQuoteMode === "stream_only" && !config.fmpStreamEnabled) {
+      console.warn("ps_stream_only_disabled", { reason: "stream_disabled" })
+    }
     const hotTrades = hotTradesSnap.exists ? hotTradesSnap.data()?.items || [] : []
     const actionBoard = actionBoardSnap.exists ? actionBoardSnap.data() : {}
     const actionBoardItems = [
@@ -2496,13 +2566,29 @@ async function refreshWatchlist() {
           maxPrice: priceFilter.maxPrice
         })
       }
-      const discoveredStocks = await fetchStockMovers(priceFilter)
-      if (discoveredStocks.length > 0) {
-        addSymbols(discoveredStocks, "stock")
-        console.log("ps_discovery_added", {
-          count: discoveredStocks.length,
-          stocksTotal: next.stock.size
+      const profileConfig = resolveProfileConfig(dataProfile)
+      const now = Date.now()
+      if (!Number.isFinite(profileConfig.discoveryIntervalMs)) {
+        console.log("ps_discovery_skip", { reason: "profile", profile: dataProfile })
+      } else if (
+        state.lastDiscoveryAt &&
+        now - state.lastDiscoveryAt < profileConfig.discoveryIntervalMs
+      ) {
+        console.log("ps_discovery_skip", {
+          reason: "interval",
+          profile: dataProfile,
+          waitMs: profileConfig.discoveryIntervalMs - (now - state.lastDiscoveryAt),
         })
+      } else {
+        const discoveredStocks = await fetchStockMovers(priceFilter)
+        state.lastDiscoveryAt = Date.now()
+        if (discoveredStocks.length > 0) {
+          addSymbols(discoveredStocks, "stock")
+          console.log("ps_discovery_added", {
+            count: discoveredStocks.length,
+            stocksTotal: next.stock.size
+          })
+        }
       }
     }
 
@@ -2576,6 +2662,13 @@ async function pollCryptoPrices() {
   if (isReplayMode()) return
   if (state.pollInFlight.crypto) {
     console.log("ps_poll_skip", { assetClass: "crypto", reason: "in_flight" })
+    return
+  }
+  const profileConfig = resolveProfileConfig(state.dataProfile || "normal")
+  if (
+    state.lastPollAt.crypto &&
+    Date.now() - state.lastPollAt.crypto < profileConfig.cryptoPollMinMs
+  ) {
     return
   }
   if (shouldUseStreamFor("crypto")) return
@@ -2661,6 +2754,13 @@ async function pollStockPrices() {
   if (isReplayMode() && !Number.isFinite(state.replay.asOfMs)) return
   if (state.pollInFlight.stock) {
     console.log("ps_poll_skip", { assetClass: "stock", reason: "in_flight" })
+    return
+  }
+  const profileConfig = resolveProfileConfig(state.dataProfile || "normal")
+  if (
+    state.lastPollAt.stock &&
+    Date.now() - state.lastPollAt.stock < profileConfig.stockPollMinMs
+  ) {
     return
   }
   if (!isReplayMode() && shouldUseStreamFor("stock")) return
@@ -2761,6 +2861,13 @@ async function pollForexPrices() {
   if (isReplayMode()) return
   if (state.pollInFlight.forex) {
     console.log("ps_poll_skip", { assetClass: "forex", reason: "in_flight" })
+    return
+  }
+  const profileConfig = resolveProfileConfig(state.dataProfile || "normal")
+  if (
+    state.lastPollAt.forex &&
+    Date.now() - state.lastPollAt.forex < profileConfig.forexPollMinMs
+  ) {
     return
   }
   if (shouldUseStreamFor("forex")) return

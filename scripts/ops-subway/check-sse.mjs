@@ -81,8 +81,8 @@ async function getIdToken() {
 
 async function main() {
   const envFile = await loadEnvFile(envPath)
-  const refreshUrl = process.env.VITE_REFRESH_URL || envFile.VITE_REFRESH_URL
-  if (!refreshUrl) throw new Error("Missing VITE_REFRESH_URL")
+  const refreshUrl = process.env.REFRESH_SERVICE_URL || envFile.REFRESH_SERVICE_URL
+  if (!refreshUrl) throw new Error("Missing REFRESH_SERVICE_URL")
 
   const idToken = await getIdToken()
   const streamUrl = `${refreshUrl.replace(/\/+$/, "")}/ops/events?tail=200`

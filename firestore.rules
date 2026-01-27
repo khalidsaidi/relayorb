@@ -7,16 +7,14 @@ service cloud.firestore {
         && request.auth.token.email.matches('.*@relayorb.iam.gserviceaccount.com');
     }
 
-    function uidToAccount(uid) {
-      return uid == "enEopK5vNkMWZrXJAllC9bX4cgu1" ? "acct1" :
-        uid == "TpMgVF4dkfRoiiGPsntwHNdnQpd2" ? "acct2" :
-        uid == "hhGFeCQGuwR32Jtswzik0k2v9rU2" ? "acct3" :
-        "";
+    function brokerAccountDoc(brokerAccountKey) {
+      return get(/databases/$(database)/documents/brokerAccounts/$(brokerAccountKey));
     }
 
-    // IBKR broker users (can trade)
-    function isBrokerUser() {
-      return request.auth != null && uidToAccount(request.auth.uid) != "";
+    function isAllowedBrokerAccount(brokerAccountKey) {
+      return isAuthenticated()
+        && brokerAccountDoc(brokerAccountKey).data.allowedUids != null
+        && request.auth.uid in brokerAccountDoc(brokerAccountKey).data.allowedUids;
     }
 
     // Any authenticated user (for general read access)
@@ -26,16 +24,13 @@ service cloud.firestore {
 
     // IBKR-specific paths require broker user access
     match /tradeProposals/{proposalId} {
-      allow read: if isBrokerUser()
-        && resource.data.brokerAccountKey == uidToAccount(request.auth.uid);
+      allow read: if isAllowedBrokerAccount(resource.data.brokerAccountKey);
       allow write: if isServiceAccount();
     }
 
     match /executionRequests/{requestId} {
-      allow read: if isBrokerUser()
-        && resource.data.brokerAccountKey == uidToAccount(request.auth.uid);
-      allow create: if isBrokerUser()
-        && request.resource.data.brokerAccountKey == uidToAccount(request.auth.uid)
+      allow read: if isAllowedBrokerAccount(resource.data.brokerAccountKey);
+      allow create: if isAllowedBrokerAccount(request.resource.data.brokerAccountKey)
         && request.resource.data.status in ["draft", "approved"]
         && request.resource.data.approvedByUid == request.auth.uid;
       // Service accounts can update with valid status transitions:
@@ -55,54 +50,50 @@ service cloud.firestore {
     }
 
     match /brokerOrders/{requestId} {
-      allow read: if isBrokerUser()
-        && resource.data.brokerAccountKey == uidToAccount(request.auth.uid);
+      allow read: if isAllowedBrokerAccount(resource.data.brokerAccountKey);
       allow write: if isServiceAccount();
     }
 
     match /brokerPositions/{positionId} {
-      allow read: if isBrokerUser()
-        && resource.data.brokerAccountKey == uidToAccount(request.auth.uid);
+      allow read: if isAllowedBrokerAccount(resource.data.brokerAccountKey);
       allow write: if isServiceAccount();
     }
 
     match /brokerAccountSummaries/{brokerAccountKey} {
-      allow read: if isBrokerUser()
-        && brokerAccountKey == uidToAccount(request.auth.uid);
+      allow read: if isAllowedBrokerAccount(brokerAccountKey);
       allow write: if isServiceAccount();
     }
 
     match /brokerAccounts/{brokerAccountKey} {
-      allow read: if isBrokerUser();
+      allow read: if isAllowedBrokerAccount(brokerAccountKey);
       allow create, delete: if isServiceAccount();
       allow update: if isServiceAccount()
-        || (isBrokerUser()
-          && brokerAccountKey == uidToAccount(request.auth.uid)
+        || (isAllowedBrokerAccount(brokerAccountKey)
           && request.resource.data.diff(resource.data).changedKeys()
             .hasOnly(["enabled", "paperEnabled", "ordersRefreshRequestedAt", "updatedAt"])
           && request.resource.data.liveEnabled == resource.data.liveEnabled);
     }
 
     match /brokerInstruments/{assetKey} {
-      allow read: if isBrokerUser();
+      allow read: if isAuthenticated();
       allow write: if isServiceAccount();
     }
 
     match /trading/controls {
-      allow read: if isBrokerUser() || isServiceAccount();
+      allow read: if isAuthenticated() || isServiceAccount();
       allow write: if isServiceAccount();
     }
 
     match /orbControls/{brokerAccountKey} {
       allow read: if isServiceAccount()
-        || (isBrokerUser() && brokerAccountKey == uidToAccount(request.auth.uid));
+        || isAllowedBrokerAccount(brokerAccountKey);
       allow write: if isServiceAccount()
-        || (isBrokerUser() && brokerAccountKey == uidToAccount(request.auth.uid));
+        || isAllowedBrokerAccount(brokerAccountKey);
     }
 
     match /orbStates/{brokerAccountKey} {
       allow read: if isServiceAccount()
-        || (isBrokerUser() && brokerAccountKey == uidToAccount(request.auth.uid));
+        || isAllowedBrokerAccount(brokerAccountKey);
       allow write: if isServiceAccount();
     }
 
@@ -143,6 +134,13 @@ service cloud.firestore {
     match /market/universe {
       allow read: if isAuthenticated() || isServiceAccount();
       allow write: if isAuthenticated();
+    }
+
+    match /batches/{batchId} {
+      allow create: if isAuthenticated()
+        && request.resource.data.type == "refresh"
+        && request.resource.data.requestedByUid == request.auth.uid;
+      allow read, update, delete: if isServiceAccount();
     }
 
     // General collections: any authenticated user can read, only service accounts can write

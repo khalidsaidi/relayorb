@@ -15,6 +15,7 @@ import type { BotSignalDoc } from "@/lib/types"
 import { formatTimestamp } from "@/lib/format"
 import { SignalMarketIndicator } from "@/components/SignalMarketIndicator"
 import { useStreamSymbols } from "@/features/market/use-stream-symbols"
+import { useMarketControls } from "@/features/market/use-market-controls"
 import { useTranslation } from "react-i18next"
 
 function signalBadgeVariant(side?: string) {
@@ -45,6 +46,16 @@ export default function SignalsPage() {
   const [loading, setLoading] = useState(() => firebaseEnabled && !!db)
   const [assetFilter, setAssetFilter] = useState<"all" | "crypto" | "stock" | "forex">("all")
   const { t } = useTranslation()
+  const { cryptoEnabled, forexEnabled } = useMarketControls()
+
+  useEffect(() => {
+    if (assetFilter === "crypto" && !cryptoEnabled) {
+      setAssetFilter(forexEnabled ? "forex" : "stock")
+    }
+    if (assetFilter === "forex" && !forexEnabled) {
+      setAssetFilter(cryptoEnabled ? "crypto" : "stock")
+    }
+  }, [assetFilter, cryptoEnabled, forexEnabled])
 
   const streamItems = useMemo(
     () =>
@@ -55,24 +66,60 @@ export default function SignalsPage() {
             signal.evaluation?.assetClass ||
             (typeof signal.data?.assetClass === "string" ? signal.data.assetClass : undefined),
         }))
-        .filter((entry) => entry.symbol),
-    [signals]
+        .filter((entry) => {
+          if (!entry.symbol) return false
+          if (entry.assetClass === "crypto" && !cryptoEnabled) return false
+          if (entry.assetClass === "forex" && !forexEnabled) return false
+          return true
+        }),
+    [signals, cryptoEnabled, forexEnabled]
   )
 
   const filteredSignals = useMemo(() => {
-    if (assetFilter === "all") return signals
+    if (assetFilter === "all") {
+      return signals.filter((signal) => {
+        const assetClass =
+          signal.evaluation?.assetClass ||
+          (typeof signal.data?.assetClass === "string" ? signal.data.assetClass : undefined)
+        if (assetClass === "crypto" && !cryptoEnabled) return false
+        if (assetClass === "forex" && !forexEnabled) return false
+        return true
+      })
+    }
+    if (assetFilter === "crypto" && !cryptoEnabled) return []
+    if (assetFilter === "forex" && !forexEnabled) return []
     return signals.filter((signal) => {
       const assetClass =
         signal.evaluation?.assetClass ||
         (typeof signal.data?.assetClass === "string" ? signal.data.assetClass : undefined)
       return assetClass === assetFilter
     })
-  }, [signals, assetFilter])
+  }, [signals, assetFilter, cryptoEnabled, forexEnabled])
+
+  const assetFilters = useMemo(() => {
+    const items = [
+      { value: "all", label: t("assets.allShort") },
+      { value: "stock", label: t("assets.stocks") },
+    ] as Array<{ value: "all" | "crypto" | "stock" | "forex"; label: string }>
+    if (cryptoEnabled) items.splice(1, 0, { value: "crypto", label: t("assets.crypto") })
+    if (forexEnabled) items.push({ value: "forex", label: t("assets.fx") })
+    return items
+  }, [t, cryptoEnabled, forexEnabled])
 
   useStreamSymbols("signals", {
     items: streamItems,
     enabled: !loading,
   })
+
+  const botConfigs = useMemo(() => {
+    const configs = [
+      { botId: "backtrader-stocks", perBot: 15 },
+      { botId: "market-intel", perBot: 5 },
+    ]
+    if (cryptoEnabled) configs.unshift({ botId: "backtrader-crypto", perBot: 15 })
+    if (forexEnabled) configs.push({ botId: "backtrader-forex", perBot: 15 })
+    return configs
+  }, [cryptoEnabled, forexEnabled])
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
@@ -85,13 +132,6 @@ export default function SignalsPage() {
     const signalsByBot: Record<string, BotSignalDoc[]> = {}
 
     // Bots to query - fetch signals from each to ensure balanced representation
-    const botConfigs = [
-      { botId: "backtrader-crypto", perBot: 15 },
-      { botId: "backtrader-stocks", perBot: 15 },
-      { botId: "backtrader-forex", perBot: 15 },
-      { botId: "market-intel", perBot: 5 },
-    ]
-
     const mergeAndUpdate = () => {
       const allSignals = Object.values(signalsByBot).flat()
       allSignals.sort((a, b) => {
@@ -131,7 +171,7 @@ export default function SignalsPage() {
         unsub()
       }
     }
-  }, [])
+  }, [botConfigs])
 
   return (
     <div className="space-y-4">
@@ -147,12 +187,7 @@ export default function SignalsPage() {
           <CardTitle className="text-base">{t("signals.feedTitle")}</CardTitle>
           <div className="flex items-center gap-2">
             <div className="flex flex-wrap items-center gap-1 rounded-full border border-border/60 bg-background/70 p-1">
-              {[
-                { value: "all", label: t("assets.allShort") },
-                { value: "crypto", label: t("assets.crypto") },
-                { value: "stock", label: t("assets.stocks") },
-                { value: "forex", label: t("assets.fx") },
-              ].map((filter) => (
+              {assetFilters.map((filter) => (
                 <Button
                   key={filter.value}
                   type="button"

@@ -15,6 +15,7 @@ import {
   useFmpRating,
 } from "@/features/market/use-fmp-data"
 import { useSymbolSignals } from "@/features/market/use-symbol-signals"
+import { useMarketControls } from "@/features/market/use-market-controls"
 import { FmpCandleChart, type SignalMarker } from "@/components/charts/FmpCandleChart"
 import {
   TrendingUp,
@@ -73,6 +74,7 @@ export default function LiveChartsPage() {
   const [showIndicators, setShowIndicators] = useState(true)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [showMatches, setShowMatches] = useState(false)
+  const { cryptoEnabled, forexEnabled } = useMarketControls()
 
   // Handle Escape key to exit fullscreen
   useEffect(() => {
@@ -103,6 +105,24 @@ export default function LiveChartsPage() {
     }),
     []
   )
+
+  useEffect(() => {
+    if (assetClass === "crypto" && !cryptoEnabled) {
+      const nextSymbol = defaultSymbols.stock
+      setAssetClass("stock")
+      setSymbolInput(nextSymbol)
+      setActiveSymbol(nextSymbol)
+      setShowMatches(false)
+      return
+    }
+    if (assetClass === "forex" && !forexEnabled) {
+      const nextSymbol = defaultSymbols.stock
+      setAssetClass("stock")
+      setSymbolInput(nextSymbol)
+      setActiveSymbol(nextSymbol)
+      setShowMatches(false)
+    }
+  }, [assetClass, cryptoEnabled, forexEnabled, defaultSymbols])
 
   const normalizedSymbol = useMemo(
     () => normalizeSymbol(activeSymbol, assetClass),
@@ -385,8 +405,12 @@ export default function LiveChartsPage() {
             }}
           >
             <option value="stock">{t("assets.stock")}</option>
-            <option value="forex">{t("assets.forex")}</option>
-            <option value="crypto">{t("assets.crypto")}</option>
+            {forexEnabled ? (
+              <option value="forex">{t("assets.forex")}</option>
+            ) : null}
+            {cryptoEnabled ? (
+              <option value="crypto">{t("assets.crypto")}</option>
+            ) : null}
           </select>
           <Input
             value={symbolInput}

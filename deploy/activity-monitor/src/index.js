@@ -1,5 +1,5 @@
 const { onSchedule } = require('firebase-functions/v2/scheduler')
-const { onDocumentUpdated } = require('firebase-functions/v2/firestore')
+const { onDocumentUpdated, onDocumentCreated } = require('firebase-functions/v2/firestore')
 const admin = require('firebase-admin')
 const fs = require('fs')
 const { JobsClient } = require('@google-cloud/run')
@@ -119,6 +119,14 @@ const runJobsClient = new JobsClient()
 const PROJECT_ID = process.env.GCLOUD_PROJECT || 'relayorb'
 const LOCATION = process.env.LOCATION || 'us-west1'
 const MARKET_INTEL_JOB = 'relayorb-market-intel'
+const REFRESH_JOBS = (process.env.REFRESH_JOBS || 'relayorb-market-intel,relayorb-signal-evaluator')
+  .split(',')
+  .map((job) => job.trim())
+  .filter(Boolean)
+const ADMIN_ALLOWLIST = (process.env.ADMIN_ALLOWLIST || '')
+  .split(',')
+  .map((email) => email.trim().toLowerCase())
+  .filter(Boolean)
 const ACTIVE_TIMEOUT_MS = 90 * 1000 // User is active if last seen < 90 seconds ago
 const MIN_BOOST_INTERVAL_MS = 90 * 1000 // Minimum interval between boosted runs (90 seconds)
 
@@ -184,6 +192,12 @@ async function triggerMarketIntel() {
     console.error('Failed to trigger market-intel:', err)
     return { success: false, error: err.message }
   }
+}
+
+async function triggerJob(jobName) {
+  const parent = `projects/${PROJECT_ID}/locations/${LOCATION}/jobs/${jobName}`
+  const [operation] = await runJobsClient.runJob({ name: parent })
+  return operation?.name || null
 }
 
 async function handleActivityCheck() {
@@ -272,5 +286,61 @@ exports.turnoverControlsTrigger = onDocumentUpdated(
     })
 
     return triggerMarketIntel()
+  }
+)
+
+exports.refreshBatchTrigger = onDocumentCreated(
+  {
+    document: 'batches/{batchId}',
+    region: 'us-west1',
+  },
+  async (event) => {
+    assertRemoteOnly('refresh-batch-trigger')
+    assertUsWest1('refresh-batch-trigger')
+    const snap = event?.data
+    if (!snap?.exists) return null
+    const data = snap.data() || {}
+    if (data.processedAt || data.status === 'processed') return null
+    if (data.type && data.type !== 'refresh') return null
+
+    const email = String(data.requestedByEmail || '').toLowerCase()
+    if (ADMIN_ALLOWLIST.length > 0 && (!email || !ADMIN_ALLOWLIST.includes(email))) {
+      await snap.ref.set(
+        {
+          status: 'rejected',
+          rejectionReason: 'not_authorized',
+          processedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      )
+      return null
+    }
+
+    const requestedJobs = Array.isArray(data.jobs)
+      ? data.jobs.map((job) => String(job).trim()).filter(Boolean)
+      : []
+    const jobs = requestedJobs.length > 0 ? requestedJobs : REFRESH_JOBS
+    const results = []
+    for (const job of jobs) {
+      try {
+        const execution = await triggerJob(job)
+        results.push({ job, status: 'started', execution })
+      } catch (err) {
+        results.push({
+          job,
+          status: 'error',
+          error: err?.message || String(err || 'Failed'),
+        })
+      }
+    }
+    await snap.ref.set(
+      {
+        status: 'processed',
+        processedAt: admin.firestore.FieldValue.serverTimestamp(),
+        jobs: results,
+      },
+      { merge: true }
+    )
+    return null
   }
 )

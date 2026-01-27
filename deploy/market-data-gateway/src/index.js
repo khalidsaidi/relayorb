@@ -15,11 +15,13 @@ const config = {
     process.env.GOOGLE_CLOUD_PROJECT ||
     "relayorb",
   fmpKey: process.env.FMP_API_KEY || "",
+  finnhubKey: process.env.FINNHUB_API_KEY || "",
   marketauxKey: process.env.MARKETAUX_API_KEY || "",
   port: parseInt(process.env.PORT || "8080", 10),
   fmpBaseUrl: process.env.FMP_BASE_URL || "https://financialmodelingprep.com",
   fmpStableBaseUrl:
     process.env.FMP_STABLE_BASE_URL || "https://financialmodelingprep.com/stable",
+  finnhubBaseUrl: process.env.FINNHUB_BASE_URL || "https://finnhub.io/api/v1",
   marketauxBaseUrl: process.env.MARKETAUX_BASE_URL || "https://api.marketaux.com/v1/news/all",
   cacheDefaultMs: parseInt(process.env.MDG_CACHE_TTL_MS || "15000", 10),
   cacheCandlesMs: parseInt(process.env.MDG_CANDLES_TTL_MS || "60000", 10),
@@ -1393,6 +1395,50 @@ function buildFmpQuotePayload(entry, symbol, assetClass) {
   }
 }
 
+function buildFinnhubQuotePayload(entry, symbol, assetClass) {
+  if (!entry) return null
+  const price = parseNumber(entry.c)
+  if (typeof price !== "number") return null
+  const bid = parseNumber(entry.b)
+  const ask = parseNumber(entry.a)
+  const change = parseNumber(entry.d)
+  const changePercent = parseNumber(entry.dp)
+  const dayHigh = parseNumber(entry.h)
+  const dayLow = parseNumber(entry.l)
+  const open = parseNumber(entry.o)
+  const previousClose = parseNumber(entry.pc)
+  return {
+    symbol,
+    assetClass,
+    price,
+    bid,
+    ask,
+    volume: null,
+    change,
+    changePercent,
+    changePercentage: changePercent,
+    dayHigh,
+    dayLow,
+    previousClose,
+    open,
+    source: "finnhub",
+  }
+}
+
+function isRateLimitError(err) {
+  const message = err?.message ? String(err.message) : ""
+  return message.includes("Request failed 429") || message.includes("Bandwidth Limit")
+}
+
+async function fetchFinnhubQuote(symbol) {
+  if (!config.finnhubKey) return null
+  const url = new URL(`${config.finnhubBaseUrl}/quote`)
+  url.searchParams.set("symbol", symbol)
+  url.searchParams.set("token", config.finnhubKey)
+  const data = await fetchJson(url.toString())
+  return buildFinnhubQuotePayload(data, symbol, "stock")
+}
+
 function mapIntervalToMs(interval) {
   const mapping = {
     "1min": 60 * 1000,
@@ -1593,6 +1639,9 @@ async function handleReplayCandles(res, params, replayState) {
   const assetClass = params.get("assetClass") || "stock"
   const interval = params.get("interval") || "15min"
   const limit = clamp(parseInt(params.get("limit") || "120", 10), 1, 500)
+  const dailyModeRaw = (params.get("dailyMode") || "").toLowerCase()
+  const dailyMode =
+    dailyModeRaw === "strict" || dailyModeRaw === "full" ? dailyModeRaw : "standard"
 
   const fmpInterval = mapIntervalToFmp(interval)
   const context = await resolveReplaySymbolContext(replayState, assetClass, symbol)
@@ -1859,15 +1908,47 @@ async function handleFmpQuote(req, res, params, replayState) {
     await handleReplayQuote(res, params, replayState)
     return
   }
-  if (!config.fmpKey) {
-    respondJson(res, 500, { error: "FMP API key is not configured" })
-    return
-  }
   const symbol = params.get("symbol") || ""
   const assetClass = params.get("assetClass") || "stock"
   const normalized = normalizeFmpQuoteSymbol(symbol, assetClass)
   if (!normalized) {
     respondJson(res, 400, { error: "Invalid symbol" })
+    return
+  }
+  if (!config.fmpKey) {
+    if (config.finnhubKey && assetClass === "stock") {
+      try {
+        const fallbackPayload = await fetchFinnhubQuote(normalized)
+        if (fallbackPayload) {
+          respondJson(res, 200, fallbackPayload)
+          await emitProviderEvent({
+            stationId: "provider:finnhub",
+            status: "end",
+            meta: {
+              providerId: "finnhub",
+              endpointName: "quote",
+              assetClass,
+              paramsHash: hashParams({ symbol: normalized, assetClass }),
+              httpStatus: 200,
+            },
+          })
+          return
+        }
+      } catch (err) {
+        await emitProviderEvent({
+          stationId: "provider:finnhub",
+          status: "error",
+          meta: {
+            providerId: "finnhub",
+            endpointName: "quote",
+            assetClass,
+            paramsHash: hashParams({ symbol: normalized, assetClass }),
+          },
+          error: { message: err?.message ? String(err.message) : "Request failed" },
+        })
+      }
+    }
+    respondJson(res, 500, { error: "FMP API key is not configured" })
     return
   }
   const cacheKey = `fmp:quote:${assetClass}:${normalized}`
@@ -1898,6 +1979,45 @@ async function handleFmpQuote(req, res, params, replayState) {
     const data = await fetchJson(url.toString())
     entry = Array.isArray(data) ? data[0] : data
   } catch (err) {
+    if (config.finnhubKey && assetClass === "stock" && isRateLimitError(err)) {
+      try {
+        const fallbackPayload = await fetchFinnhubQuote(normalized)
+        if (fallbackPayload) {
+          setCached(cacheKey, fallbackPayload, config.cacheDefaultMs)
+          respondJson(res, 200, fallbackPayload)
+          await emitProviderEvent({
+            stationId: "provider:finnhub",
+            status: "end",
+            startMs: startedAt,
+            meta: {
+              providerId: "finnhub",
+              endpointName: "quote",
+              assetClass,
+              paramsHash: hashParams({ symbol: normalized, assetClass }),
+              httpStatus: 200,
+            },
+          })
+          return
+        }
+      } catch (fallbackErr) {
+        await emitProviderEvent({
+          stationId: "provider:finnhub",
+          status: "error",
+          startMs: startedAt,
+          meta: {
+            providerId: "finnhub",
+            endpointName: "quote",
+            assetClass,
+            paramsHash: hashParams({ symbol: normalized, assetClass }),
+          },
+          error: {
+            message: fallbackErr?.message
+              ? String(fallbackErr.message)
+              : "Request failed",
+          },
+        })
+      }
+    }
     await emitProviderEvent({
       stationId: "provider:fmp",
       status: "error",
@@ -2206,7 +2326,10 @@ async function handleFmpCandles(req, res, params, replayState) {
   }
 
   const fmpInterval = mapIntervalToFmp(interval)
-  const cacheKey = `fmp:candles:${assetClass}:${normalized}:${fmpInterval}:${limit}`
+  const cacheKey =
+    fmpInterval === "1day" || fmpInterval === "1week"
+      ? `fmp:candles:${assetClass}:${normalized}:${fmpInterval}:${limit}:${dailyMode}`
+      : `fmp:candles:${assetClass}:${normalized}:${fmpInterval}:${limit}`
   const cached = getCached(cacheKey)
   if (cached) {
     respondJson(res, 200, cached)
@@ -2227,17 +2350,25 @@ async function handleFmpCandles(req, res, params, replayState) {
 
   const startedAt = Date.now()
   let data = []
+  let source = "fmp"
   try {
     if (fmpInterval === "1day" || fmpInterval === "1week") {
-      try {
-        data = await fetchFmpHistoricalFull(normalized, null, null)
-      } catch (err) {
-        console.error(`Daily full fetch failed for ${normalized}:`, err.message)
-        data = []
-      }
+      data = await fetchFmpHistoricalBars(normalized, fmpInterval, null, null)
       if (!Array.isArray(data) || data.length <= 1) {
+        if (dailyMode === "full") {
+          const fullHistory = await fetchFmpHistoricalFull(normalized, null, null)
+          if (Array.isArray(fullHistory) && fullHistory.length > 1) {
+            data = fullHistory
+            source = "fmp-full"
+          }
+        }
+      }
+      if ((!Array.isArray(data) || data.length <= 1) && dailyMode !== "strict") {
         const hourlyRange = await fetchFmpHistoricalBars(normalized, "1hour", null, null)
         data = buildDailyBarsFromIntraday(hourlyRange)
+        if (Array.isArray(data) && data.length > 1) {
+          source = "fmp-hourly"
+        }
       }
     } else {
       const url = new URL(`${config.fmpBaseUrl}/stable/historical-chart/${fmpInterval}`)
@@ -2306,7 +2437,7 @@ async function handleFmpCandles(req, res, params, replayState) {
     assetClass,
     interval: fmpInterval,
     candles: trimmed,
-    source: "fmp",
+    source,
   }
   setCached(cacheKey, payload, config.cacheCandlesMs)
   respondJson(res, 200, payload)
@@ -3932,13 +4063,6 @@ async function handleReplayBuildTape(req, res, params) {
           let dailyRange = await fetchFmpHistoricalBars(fmpSymbol, "1day", fromDate, date)
           if (!Array.isArray(dailyRange) || dailyRange.length <= 1) {
             dailyRange = await fetchFmpHistoricalBars(fmpSymbol, "1day", null, null)
-          }
-          if (!Array.isArray(dailyRange) || dailyRange.length <= 1) {
-            try {
-              dailyRange = await fetchFmpHistoricalFull(fmpSymbol, null, null)
-            } catch (err) {
-              console.error(`Daily full fetch failed for ${rawSymbol}:`, err.message)
-            }
           }
           if (!Array.isArray(dailyRange) || dailyRange.length <= 1) {
             try {

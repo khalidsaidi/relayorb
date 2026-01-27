@@ -4,7 +4,7 @@ import { db, firebaseEnabled } from "@/lib/firebase"
 import { useAuth } from "@/features/auth/auth-context"
 import { useMarketPrices } from "@/features/market/use-market-prices"
 import { useStreamSymbols } from "@/features/market/use-stream-symbols"
-import { formatCurrency, formatTimestamp } from "@/lib/format"
+import { formatCurrency, formatNumber, formatTimestamp } from "@/lib/format"
 import {
   Table,
   TableBody,
@@ -470,6 +470,17 @@ export default function PaperPage() {
                       const remainingQty =
                         typeof order.remainingQuantity === "number" ? order.remainingQuantity : null
                       const showFill = filledQty !== null || remainingQty !== null
+                      const filledLabel = filledQty !== null ? formatNumber(filledQty) : null
+                      const remainingLabel =
+                        remainingQty !== null ? formatNumber(remainingQty) : null
+                      const fillLine =
+                        filledLabel && remainingLabel
+                          ? `Filled ${filledLabel} · Remaining ${remainingLabel}`
+                          : filledLabel
+                          ? `Filled ${filledLabel}`
+                          : remainingLabel
+                          ? `Remaining ${remainingLabel}`
+                          : null
                       const lastUpdateLabel = formatTimestamp(order.lastUpdateAt ?? order.createdAt)
                       const isSelected = selectedOrderId === order.id
                       const showAppStatus = !brokerStatus && Boolean(order.status)
@@ -489,9 +500,9 @@ export default function PaperPage() {
                           <TableCell className="text-right">
                             <div className="flex flex-col items-end">
                               <span className="font-mono">{order.quantity ?? t("common.na")}</span>
-                              {showFill ? (
+                              {showFill && fillLine ? (
                                 <span className="text-[10px] text-muted-foreground">
-                                  F:{filledQty ?? "-"} R:{remainingQty ?? "-"}
+                                  {fillLine}
                                 </span>
                               ) : null}
                             </div>
