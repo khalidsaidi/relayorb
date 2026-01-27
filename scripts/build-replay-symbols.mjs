@@ -3,7 +3,7 @@ import fs from "fs"
 
 const projectId = process.env.FIREBASE_PROJECT_ID || "relayorb"
 const outputPath = process.env.OUTPUT_PATH || "tmp-replay-symbols.json"
-const extraSymbols = (process.env.EXTRA_SYMBOLS || "TNMG,VERO,RCFX.L,BRN")
+const extraSymbols = (process.env.EXTRA_SYMBOLS || "TNMG,VERO,BRN")
   .split(",")
   .map((symbol) => symbol.trim().toUpperCase())
   .filter(Boolean)

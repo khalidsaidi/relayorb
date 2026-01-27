@@ -876,8 +876,6 @@ function derivePrimaryExchange(exchange) {
   if (normalized === "NYSE") return "NYSE"
   if (normalized === "AMEX" || normalized === "NYSE MKT") return "AMEX"
   if (normalized === "NYSEARCA" || normalized === "ARCA") return "ARCA"
-  if (normalized === "TSX" || normalized === "TSE") return "TSE"
-  if (normalized === "TSXV" || normalized === "TSX.V" || normalized === "VENTURE") return "VENTURE"
   return undefined
 }
 
@@ -1009,11 +1007,11 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
 
   const reqId = Math.floor(Math.random() * 1000000)
   const contract = {
-    symbol: symbol.replace(".TO", ""), // Strip TSX suffix if present
+    symbol,
     secType,
     exchange: "SMART",
     currency: "USD",
-    primaryExch: primaryExchange || (symbol.endsWith(".TO") ? "TSE" : undefined),
+    primaryExch: primaryExchange || undefined,
   }
 
   return new Promise((resolve, reject) => {

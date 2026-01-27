@@ -330,7 +330,6 @@ const PAIR_QUOTES = new Set([
   "NZD",
 ])
 const FX_CODES = new Set(["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"])
-const TSX_SUFFIXES = [".TO", ".TSX", ".TSXV", ".V"]
 const ET_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
   year: "numeric",
@@ -790,9 +789,7 @@ async function readRunConfig(db, runId) {
 function normalizeMarketTag(value) {
   if (!value) return null
   const normalized = String(value).trim().toLowerCase()
-  if (normalized === "stock" || normalized === "stocks" || normalized === "us" || normalized === "tsx") {
-    return "stock"
-  }
+  if (normalized === "stock" || normalized === "stocks" || normalized === "us") return "stock"
   if (normalized === "forex" || normalized === "fx") return "forex"
   if (normalized === "crypto" || normalized === "cryptos") return "crypto"
   return null
@@ -1287,12 +1284,6 @@ function normalizeTicker(raw) {
   if (!cleaned) return null
   if (!/[A-Z]/.test(cleaned)) return null
   return cleaned
-}
-
-function isTsxSymbol(symbol) {
-  if (!symbol) return false
-  const upper = String(symbol).toUpperCase()
-  return TSX_SUFFIXES.some((suffix) => upper.endsWith(suffix))
 }
 
 function normalizeSignalKey(raw) {
@@ -2542,48 +2533,28 @@ async function fetchStocks(db, preferences = {}, controls = null) {
     turnoverConfig.applyToMovers || turnoverConfig.applyToTrending || turnoverConfig.applyToHotTrades
   )
 
-  const [usResult, tsxResult] = await Promise.all([
-    fetchLiveSnapshotMovers(db, {
-      collectionName: resolveSnapshotCollectionName("market_snapshots_us"),
-      assetClass: "stock",
-      normalizeItem: normalizeSnapshotStock,
-      watchlistSet,
-      mode,
-      exchangeHint: null,
-      market: "us",
-      livePrices,
-      filterItem: (item) => !isTsxSymbol(item?.symbol),
-      source: "stream",
-      turnoverConfig: {
-        ...turnoverConfig,
-        computeCandidates: turnoverNeeded,
-      },
-    }),
-    fetchLiveSnapshotMovers(db, {
-      collectionName: resolveSnapshotCollectionName("market_snapshots_tsx"),
-      assetClass: "stock",
-      normalizeItem: normalizeSnapshotStock,
-      watchlistSet,
-      mode,
-      exchangeHint: "TSX",
-      market: "tsx",
-      livePrices,
-      filterItem: (item) => isTsxSymbol(item?.symbol),
-      source: "stream",
-      turnoverConfig: {
-        ...turnoverConfig,
-        computeCandidates: turnoverNeeded,
-      },
-    }),
-  ])
-
-  const items = [...usResult.items, ...tsxResult.items]
-  const movers = compactObject({
-    us: usResult.movers || undefined,
-    tsx: tsxResult.movers || undefined,
+  const usResult = await fetchLiveSnapshotMovers(db, {
+    collectionName: resolveSnapshotCollectionName("market_snapshots_us"),
+    assetClass: "stock",
+    normalizeItem: normalizeSnapshotStock,
+    watchlistSet,
+    mode,
+    exchangeHint: null,
+    market: "us",
+    livePrices,
+    source: "stream",
+    turnoverConfig: {
+      ...turnoverConfig,
+      computeCandidates: turnoverNeeded,
+    },
   })
 
-  if (items.length > 0 || movers.us || movers.tsx) {
+  const items = usResult.items
+  const movers = compactObject({
+    us: usResult.movers || undefined,
+  })
+
+  if (items.length > 0 || movers.us) {
     return { items, movers, source: "stream" }
   }
 
@@ -4492,8 +4463,6 @@ function derivePrimaryExchange(exchange) {
   if (normalized === "NYSE") return "NYSE"
   if (normalized === "AMEX" || normalized === "NYSE MKT") return "AMEX"
   if (normalized === "NYSEARCA" || normalized === "ARCA") return "ARCA"
-  if (normalized === "TSX" || normalized === "TSE") return "TSE"
-  if (normalized === "TSXV" || normalized === "TSX.V" || normalized === "VENTURE") return "VENTURE"
   return undefined
 }
 
@@ -5070,14 +5039,14 @@ async function buildSwingOvernight({
   const watchlist = Array.isArray(universe?.stocks?.symbols) ? universe.stocks.symbols : []
   watchlist.forEach((symbol) => {
     const normalized = normalizeTicker(symbol)
-    if (!normalized || isTsxSymbol(normalized)) return
+    if (!normalized) return
     symbolSet.add(normalized)
     addOrigin(normalized, "user_universe")
   })
   const trendingStocks = trendingByHorizon?.["24h"]?.stock || []
   trendingStocks.forEach((item) => {
     const normalized = normalizeTicker(item?.symbol)
-    if (!normalized || isTsxSymbol(normalized)) return
+    if (!normalized) return
     symbolSet.add(normalized)
     addOrigin(normalized, "trending")
   })
@@ -5086,7 +5055,7 @@ async function buildSwingOvernight({
     const tapeSymbols = await fetchTapeSymbols(replayState.datasetId)
     tapeSymbols.forEach((symbol) => {
       const normalized = normalizeTicker(symbol)
-      if (!normalized || isTsxSymbol(normalized)) return
+      if (!normalized) return
       symbolSet.add(normalized)
       addOrigin(normalized, "tape")
     })
@@ -5094,7 +5063,7 @@ async function buildSwingOvernight({
   }
   const debugSymbols = parseList(process.env.SWING_DEBUG_SYMBOLS || "")
     .map((symbol) => normalizeTicker(symbol))
-    .filter((symbol) => symbol && !isTsxSymbol(symbol))
+    .filter((symbol) => symbol)
   const debugSet = new Set(debugSymbols)
   const debugMap = {}
   if (debugSymbols.length > 0) {
@@ -5537,14 +5506,14 @@ async function buildPrebreakout({
   const watchlist = Array.isArray(universe?.stocks?.symbols) ? universe.stocks.symbols : []
   watchlist.forEach((symbol) => {
     const normalized = normalizeTicker(symbol)
-    if (!normalized || isTsxSymbol(normalized)) return
+    if (!normalized) return
     symbolSet.add(normalized)
     addOrigin(normalized, "user_universe")
   })
   const trendingStocks = trendingByHorizon?.["24h"]?.stock || []
   trendingStocks.forEach((item) => {
     const normalized = normalizeTicker(item?.symbol)
-    if (!normalized || isTsxSymbol(normalized)) return
+    if (!normalized) return
     symbolSet.add(normalized)
     addOrigin(normalized, "trending")
   })
@@ -5553,7 +5522,7 @@ async function buildPrebreakout({
     const tapeSymbols = await fetchTapeSymbols(replayState.datasetId)
     tapeSymbols.forEach((symbol) => {
       const normalized = normalizeTicker(symbol)
-      if (!normalized || isTsxSymbol(normalized)) return
+      if (!normalized) return
       symbolSet.add(normalized)
       addOrigin(normalized, "tape")
     })
@@ -5561,7 +5530,7 @@ async function buildPrebreakout({
   }
   const debugSymbols = parseList(process.env.PREBREAKOUT_DEBUG_SYMBOLS || "")
     .map((symbol) => normalizeTicker(symbol))
-    .filter((symbol) => symbol && !isTsxSymbol(symbol))
+    .filter((symbol) => symbol)
   const debugSet = new Set(debugSymbols)
   const debugMap = {}
   if (debugSymbols.length > 0) {
@@ -7561,10 +7530,9 @@ async function run() {
   const stockMovers = stockPricesStaleDuringOpen ? null : stockResult.movers
   const moversMarkets = {}
   if (stockMovers?.us) moversMarkets.us = stockMovers.us
-  if (stockMovers?.tsx) moversMarkets.tsx = stockMovers.tsx
   if (forexResult.movers) moversMarkets.forex = forexResult.movers
-  const defaultMarket = moversMarkets.us ? "us" : moversMarkets.tsx ? "tsx" : null
-  const fallbackMarket = moversMarkets.us || moversMarkets.tsx || null
+  const defaultMarket = moversMarkets.us ? "us" : null
+  const fallbackMarket = moversMarkets.us || null
   const topLevelMovers = {
     gainers: Array.isArray(fallbackMarket?.gainers) ? fallbackMarket.gainers : [],
     losers: Array.isArray(fallbackMarket?.losers) ? fallbackMarket.losers : [],

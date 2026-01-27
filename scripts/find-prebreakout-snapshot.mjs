@@ -23,8 +23,6 @@ const RULES = {
   newsMaxCount: 8,
 }
 
-const TSX_SUFFIXES = [".TO", ".TSX", ".TSXV", ".V"]
-
 const MAX_MICROCAPS = Number(process.env.MAX_MICROCAPS || 300)
 const MAX_SCAN = Number(process.env.MAX_SCAN || 3000)
 const CONCURRENCY = Number(process.env.CONCURRENCY || 4)
@@ -269,7 +267,6 @@ async function main() {
     .map((item) => item.symbol)
     .filter(Boolean)
     .map((symbol) => symbol.toUpperCase())
-    .filter((symbol) => !TSX_SUFFIXES.some((suffix) => symbol.endsWith(suffix)))
     .sort(() => Math.random() - 0.5)
 
   const uniqueSeed = Array.from(new Set([...SEED_SYMBOLS, ...shuffled]))

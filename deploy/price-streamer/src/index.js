@@ -931,15 +931,10 @@ const STREAM_ALIASES = {
   "fmp-us-otc-stream": ["FMP US OTC Stream"],
   "fmp-crypto-stream": ["FMP Cryptocurrency Stream"],
   "fmp-currency-stream": ["FMP Currency Stream"],
-  "fmp-ca-equities-stream": ["FMP CA Equities Stream"],
-  "fmp-uk-equities-stream": ["FMP UK Equities Stream"],
   "fmp-index-stream": ["FMP Index Stream"],
   "fmp-commodity-stream": ["FMP Commodity Stream"],
   "nasdaq-basic-w-nls-plus": ["Nasdaq Basic with NLS Plus"],
   "iex-tops": ["IEX TOPS"],
-  "tsx-level-1": ["TSX Level 1"],
-  "tsxv-level-1": ["TSXV Level 1"],
-  "lse-level-1": ["LSE Level 1"],
   "cboe-index-main": ["Cboe Index Main"],
 }
 

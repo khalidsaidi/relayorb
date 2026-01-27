@@ -24,11 +24,7 @@
           "AMD",
           "AVGO",
           "NFLX",
-          "ORCL",
-          "SHOP.TO",
-          "RY.TO",
-          "TD.TO",
-          "ENB.TO"
+          "ORCL"
         ],
         "strategy": "default"
       },

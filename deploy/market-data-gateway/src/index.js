@@ -591,31 +591,9 @@ function normalizeSymbolList(raw) {
   return Array.from(new Set(list))
 }
 
-function resolveTsxSuffix(rawSymbol) {
-  if (!rawSymbol) return null
-  const upper = String(rawSymbol).trim().toUpperCase()
-  const suffixMap = {
-    ".TO": "TSX",
-    ".TSX": "TSX",
-    ".TSXV": "TSXV",
-    ".V": "TSXV",
-  }
-  for (const [suffix, exchange] of Object.entries(suffixMap)) {
-    if (upper.endsWith(suffix)) return exchange
-  }
-  return null
-}
-
-function stripTsxSuffix(symbol) {
-  if (!symbol) return symbol
-  return symbol.replace(/\.(TO|TSX|TSXV|V)$/i, "")
-}
-
 function mapExchangeHintToVenue(exchangeHint) {
   if (!exchangeHint) return { venue: "US", exchangeMeta: null }
   const upper = String(exchangeHint).trim().toUpperCase()
-  if (upper.includes("TSXV")) return { venue: "CA", exchangeMeta: "TSXV" }
-  if (upper.includes("TSX")) return { venue: "CA", exchangeMeta: "TSX" }
   if (upper.includes("NASDAQ")) return { venue: "US", exchangeMeta: "NASDAQ" }
   if (upper.includes("NYSE")) return { venue: "US", exchangeMeta: "NYSE" }
   if (upper.includes("AMEX")) return { venue: "US", exchangeMeta: "AMEX" }
@@ -623,10 +601,6 @@ function mapExchangeHintToVenue(exchangeHint) {
 }
 
 function resolveVenueInfo(rawSymbol, exchangeHint) {
-  const suffixExchange = resolveTsxSuffix(rawSymbol)
-  if (suffixExchange) {
-    return { venue: "CA", exchangeMeta: suffixExchange, suffixMatch: true }
-  }
   const mapped = mapExchangeHintToVenue(exchangeHint)
   return { ...mapped, suffixMatch: false }
 }
@@ -635,9 +609,6 @@ function normalizeSymbolKeyV2(rawSymbol, venue) {
   if (!rawSymbol) return null
   let normalized = normalizeTicker(rawSymbol) || normalizeSymbol(rawSymbol)
   if (!normalized) return null
-  if (venue === "CA") {
-    normalized = stripTsxSuffix(normalized)
-  }
   return normalized
 }
 
@@ -3473,11 +3444,6 @@ function buildMarketauxIndex(items) {
       if (!normalized) return
       if (!index.has(normalized)) index.set(normalized, [])
       index.get(normalized).push(item)
-      const stripped = stripTsxSuffix(normalized)
-      if (stripped && stripped !== normalized) {
-        if (!index.has(stripped)) index.set(stripped, [])
-        index.get(stripped).push(item)
-      }
     })
   })
   return index
@@ -3698,7 +3664,7 @@ async function discoverTapeSymbols(maxSymbols, options = {}) {
   // Filter function for valid symbols
   const isValidSymbol = (symbol) => {
     if (!symbol || typeof symbol !== "string") return false
-    if (symbol.includes(".") && !symbol.endsWith(".V")) return false // TSX ok
+    if (symbol.includes(".")) return false
     if (symbol.length > 5) return false // Likely warrants or units
     return true
   }
@@ -4053,7 +4019,7 @@ async function handleReplayBuildTape(req, res, params) {
         }
         if (includeNews && newsIndex) {
           const normalizedKey = normalizeTicker(rawSymbol) || normalizeSymbol(rawSymbol) || normalizedSymbol
-          const items = newsIndex.get(stripTsxSuffix(normalizedKey)) || newsIndex.get(normalizedKey) || []
+          const items = newsIndex.get(normalizedKey) || []
           await writeReplayArtifact(
             `${config.replayPrefix}/tapes/news/${date}/by_symbol/${symbolKeyV2}.json.gz`,
             items,
