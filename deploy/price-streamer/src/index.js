@@ -2363,6 +2363,8 @@ async function refreshWatchlist() {
     const cryptoMode = resolveUniverseMode(universe?.crypto?.mode || globalMode)
     const stockMode = resolveUniverseMode(universe?.stocks?.mode || globalMode)
     const forexMode = resolveUniverseMode(universe?.forex?.mode || globalMode)
+    const cryptoEnabled = controls?.cryptoEnabled !== false
+    const forexEnabled = controls?.forexEnabled !== false
 
     await refreshStockUniverseCache()
     const next = {
@@ -2473,6 +2475,15 @@ async function refreshWatchlist() {
       addSymbols(topSymbols.crypto, "crypto")
       addSymbols(topSymbols.stock, "stock")
       addSymbols(topSymbols.forex, "forex")
+    }
+
+    if (!cryptoEnabled) {
+      next.crypto.clear()
+      universeSets.crypto.clear()
+    }
+    if (!forexEnabled) {
+      next.forex.clear()
+      universeSets.forex.clear()
     }
 
     // Stock Discovery: Add gainers/losers/actives during market hours
