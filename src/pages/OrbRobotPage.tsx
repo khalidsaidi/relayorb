@@ -2281,7 +2281,7 @@ export default function OrbRobotPage() {
             </Card>
           )}
 
-          <Card className="lg:w-[calc(100%+6rem)] lg:-ml-24 xl:w-[calc(100%+10rem)] xl:-ml-40">
+          <Card>
             <CardHeader>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
