@@ -15,6 +15,7 @@ import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
 import { db, firebaseEnabled } from "@/lib/firebase"
 import { formatNumber, formatRelativeTimestamp, formatTimestamp } from "@/lib/format"
+import { resolveMarketDataProxyUrl } from "@/lib/runtime-urls"
 import { useAuth } from "@/features/auth/auth-context"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
 import { useReplayConsumers } from "@/features/replay/use-replay-consumers"
@@ -43,10 +44,7 @@ const DEFAULT_AUTO_DISCOVER_MID_CAP_MIN = "1000000000"
 const DEFAULT_AUTO_DISCOVER_MID_CAP_MAX = "50000000000"
 const DEFAULT_AUTO_DISCOVER_MID_CAP_VOLUME = "500000"
 const ET_TIMEZONE = "America/New_York"
-const MARKET_DATA_PROXY_URL = (import.meta.env.VITE_MARKET_DATA_PROXY_URL || "").replace(
-  /\/+$/,
-  ""
-)
+const MARKET_DATA_PROXY_URL = resolveMarketDataProxyUrl()
 const MARKET_DATA_GATEWAY_URL = (import.meta.env.VITE_MARKET_DATA_GATEWAY_URL || "").replace(
   /\/+$/,
   ""

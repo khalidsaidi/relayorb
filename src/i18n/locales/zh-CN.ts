@@ -1564,6 +1564,17 @@ const zhCN = {
       applied: "模式已应用。",
       applyFailed: "应用模式失败。",
     },
+    bandwidthSaver: {
+      apply: "应用带宽保护",
+      applying: "应用中...",
+      applied: "带宽保护已应用。",
+      applyFailed: "应用带宽保护失败。",
+      hint: "将模式设为平衡、股票报价设为仅流式、日线历史设为严格。",
+      disable: "关闭带宽保护",
+      disabled: "带宽保护已关闭。",
+      disableFailed: "关闭带宽保护失败。",
+      activeHint: "带宽保护已开启。",
+    },
     stockQuotes: {
       title: "股票报价来源",
       description: "选择实时股票报价的获取方式。",

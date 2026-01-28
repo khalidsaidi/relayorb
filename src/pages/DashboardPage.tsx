@@ -321,6 +321,7 @@ export default function DashboardPage() {
   const [dataProfile, setDataProfile] = useState<DataProfile>("normal")
   const [dataProfileSaved, setDataProfileSaved] = useState<DataProfile>("normal")
   const [savingDataProfile, setSavingDataProfile] = useState(false)
+  const [savingBandwidthSaver, setSavingBandwidthSaver] = useState(false)
   const [dailyHistoryMode, setDailyHistoryMode] = useState<DailyHistoryMode>("standard")
   const [dailyHistoryModeSaved, setDailyHistoryModeSaved] =
     useState<DailyHistoryMode>("standard")
@@ -328,6 +329,8 @@ export default function DashboardPage() {
   const [stockQuoteMode, setStockQuoteMode] = useState<StockQuoteMode>("auto")
   const [stockQuoteModeSaved, setStockQuoteModeSaved] = useState<StockQuoteMode>("auto")
   const [savingStockQuoteMode, setSavingStockQuoteMode] = useState(false)
+  const bandwidthSaverActive =
+    dataProfile === "balanced" && stockQuoteMode === "stream_only" && dailyHistoryMode === "strict"
 
   useEffect(() => {
     if (searchParams.get("manageAssets") !== "1") return
@@ -1472,6 +1475,82 @@ export default function DashboardPage() {
       toast.error(t("dashboard.stockQuotes.applyFailed"))
     } finally {
       setSavingStockQuoteMode(false)
+    }
+  }
+
+  async function applyBandwidthSaver() {
+    if (!firebaseEnabled || !db) {
+      toast.error(t("tradeNow.firebaseNotConfigured"))
+      return
+    }
+    if (replayActive) {
+      toast.info(t("replay.actionsDisabled"))
+      return
+    }
+    setSavingBandwidthSaver(true)
+    const nextProfile: DataProfile = "balanced"
+    const nextStockQuoteMode: StockQuoteMode = "stream_only"
+    const nextDailyHistory: DailyHistoryMode = "strict"
+    try {
+      await setDoc(
+        doc(db, "market", "controls"),
+        {
+          dataProfile: nextProfile,
+          stockQuoteMode: nextStockQuoteMode,
+          dailyHistoryMode: nextDailyHistory,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      )
+      setDataProfile(nextProfile)
+      setDataProfileSaved(nextProfile)
+      setStockQuoteMode(nextStockQuoteMode)
+      setStockQuoteModeSaved(nextStockQuoteMode)
+      setDailyHistoryMode(nextDailyHistory)
+      setDailyHistoryModeSaved(nextDailyHistory)
+      toast.success(t("dashboard.bandwidthSaver.applied"))
+    } catch {
+      toast.error(t("dashboard.bandwidthSaver.applyFailed"))
+    } finally {
+      setSavingBandwidthSaver(false)
+    }
+  }
+
+  async function disableBandwidthSaver() {
+    if (!firebaseEnabled || !db) {
+      toast.error(t("tradeNow.firebaseNotConfigured"))
+      return
+    }
+    if (replayActive) {
+      toast.info(t("replay.actionsDisabled"))
+      return
+    }
+    setSavingBandwidthSaver(true)
+    const nextProfile: DataProfile = "normal"
+    const nextStockQuoteMode: StockQuoteMode = "auto"
+    const nextDailyHistory: DailyHistoryMode = "standard"
+    try {
+      await setDoc(
+        doc(db, "market", "controls"),
+        {
+          dataProfile: nextProfile,
+          stockQuoteMode: nextStockQuoteMode,
+          dailyHistoryMode: nextDailyHistory,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      )
+      setDataProfile(nextProfile)
+      setDataProfileSaved(nextProfile)
+      setStockQuoteMode(nextStockQuoteMode)
+      setStockQuoteModeSaved(nextStockQuoteMode)
+      setDailyHistoryMode(nextDailyHistory)
+      setDailyHistoryModeSaved(nextDailyHistory)
+      toast.success(t("dashboard.bandwidthSaver.disabled"))
+    } catch {
+      toast.error(t("dashboard.bandwidthSaver.disableFailed"))
+    } finally {
+      setSavingBandwidthSaver(false)
     }
   }
 
@@ -2968,6 +3047,28 @@ export default function DashboardPage() {
                           ? t("dashboard.dataProfile.applying")
                           : t("dashboard.dataProfile.apply")}
                       </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={bandwidthSaverActive ? disableBandwidthSaver : applyBandwidthSaver}
+                        disabled={
+                          savingBandwidthSaver ||
+                          !firebaseEnabled ||
+                          replayActive
+                        }
+                      >
+                        {savingBandwidthSaver
+                          ? t("dashboard.bandwidthSaver.applying")
+                          : bandwidthSaverActive
+                            ? t("dashboard.bandwidthSaver.disable")
+                            : t("dashboard.bandwidthSaver.apply")}
+                      </Button>
+                    </div>
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      {bandwidthSaverActive
+                        ? t("dashboard.bandwidthSaver.activeHint")
+                        : t("dashboard.bandwidthSaver.hint")}
                     </div>
                   </div>
 

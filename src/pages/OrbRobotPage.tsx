@@ -48,6 +48,7 @@ import {
 } from "@/components/ui/table"
 import { db, firebaseEnabled } from "@/lib/firebase"
 import { formatAssetPrice, formatNumber, formatTimestamp } from "@/lib/format"
+import { resolveOrbRunnerUrl } from "@/lib/runtime-urls"
 import { useAuth } from "@/features/auth/auth-context"
 import { useIbkrAccount } from "@/features/ibkr/use-ibkr-account"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
@@ -768,7 +769,7 @@ export default function OrbRobotPage() {
     : stateDoc?.entryPending
     ? t("orb.context.positionPending")
     : t("orb.context.positionFlat")
-  const orbRunnerBase = (import.meta.env.VITE_ORB_RUNNER_URL || "").replace(/\/+$/, "")
+  const orbRunnerBase = resolveOrbRunnerUrl()
   const orbRangeMinutesLabel =
     activeProfile.orb?.range_minutes ?? DEFAULT_DAILY_PROFILE.orb.range_minutes
   const replayAsOfDate = resolveReplayAsOf(replayControls?.asOf)

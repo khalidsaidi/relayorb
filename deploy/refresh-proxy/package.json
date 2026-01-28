@@ -1,0 +1,13 @@
+{
+  "name": "relayorb-refresh-proxy",
+  "version": "1.0.0",
+  "description": "BFF proxy for refresh-service (IAM-private Cloud Run)",
+  "main": "src/index.js",
+  "engines": {
+    "node": "20"
+  },
+  "dependencies": {
+    "firebase-functions": "^7.0.3",
+    "google-auth-library": "^10.5.0"
+  }
+}

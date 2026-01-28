@@ -3,9 +3,10 @@ import { parse } from "date-fns"
 import { fromZonedTime } from "date-fns-tz"
 import type { User } from "firebase/auth"
 import { useAuth } from "@/features/auth/auth-context"
+import { resolveMarketDataProxyUrl } from "@/lib/runtime-urls"
 
 const GATEWAY_URL = (import.meta.env.VITE_MARKET_DATA_GATEWAY_URL || "").replace(/\/+$/, "")
-const PROXY_URL = (import.meta.env.VITE_MARKET_DATA_PROXY_URL || "").replace(/\/+$/, "")
+const PROXY_URL = resolveMarketDataProxyUrl()
 const GATEWAY_BASE = (PROXY_URL || GATEWAY_URL || "").replace(/\/+$/, "")
 const GATEWAY_AUTH_ENABLED = (() => {
   const flag = import.meta.env.VITE_MARKET_DATA_GATEWAY_AUTH

@@ -218,7 +218,10 @@ function compactObject(obj) {
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", config.corsOrigin)
-  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type")
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Authorization, Content-Type, X-RelayOrb-User-Token, X-User-Token"
+  )
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 }
 
@@ -231,6 +234,16 @@ function sendJson(res, status, payload) {
 function parseBearer(req) {
   const header = req.headers.authorization || ""
   const match = header.match(/^Bearer\s+(.+)$/i)
+  return match ? match[1] : null
+}
+
+function parseUserToken(req) {
+  const header =
+    req.headers["x-relayorb-user-token"] ||
+    req.headers["x-user-token"] ||
+    req.headers.authorization ||
+    ""
+  const match = String(header).match(/^Bearer\s+(.+)$/i)
   return match ? match[1] : null
 }
 
@@ -574,9 +587,20 @@ async function readBody(req) {
   })
 }
 
+function normalizeProxyUrl(rawUrl) {
+  if (!rawUrl) return ""
+  if (!rawUrl.startsWith("/proxy")) return rawUrl
+  let url = rawUrl.replace(/^\/proxy(?=\/|$)/, "")
+  if (!url) url = "/"
+  if (url.startsWith("?")) url = `/${url}`
+  return url
+}
+
 function parseRequestUrl(req) {
   try {
-    return new URL(req.url || "", "http://localhost")
+    const rawUrl = typeof req === "string" ? req : req?.url || ""
+    const url = normalizeProxyUrl(rawUrl)
+    return new URL(url, "http://localhost")
   } catch {
     return null
   }
@@ -861,7 +885,7 @@ function resolveRunId(req, body) {
 }
 
 async function verifyRequest(req) {
-  const token = parseBearer(req)
+  const token = parseUserToken(req)
   if (!token) {
     return { allowed: false, error: "Missing Authorization header." }
   }
@@ -1559,15 +1583,18 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
-  if (req.method === "GET" && req.url === "/health") {
+  const normalizedUrl = normalizeProxyUrl(req.url || "")
+  const parsedUrl = parseRequestUrl(normalizedUrl)
+  const pathname = parsedUrl?.pathname || ""
+
+  if (req.method === "GET" && (pathname === "/health" || pathname === "/health/")) {
     return sendJson(res, 200, { ok: true })
   }
 
-  if (req.method === "GET" && req.url === "/readyz") {
+  if (req.method === "GET" && (pathname === "/readyz" || pathname === "/readyz/")) {
     return sendJson(res, 200, { ok: true })
   }
 
-  const parsedUrl = parseRequestUrl(req)
   if (parsedUrl && isGatewayPath(parsedUrl.pathname || "")) {
     try {
       await handleGatewayProxy(req, res)

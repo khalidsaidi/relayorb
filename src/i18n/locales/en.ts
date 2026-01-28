@@ -1576,6 +1576,17 @@ const en = {
       applied: "Profile applied.",
       applyFailed: "Failed to apply profile.",
     },
+    bandwidthSaver: {
+      apply: "Apply bandwidth saver",
+      applying: "Applying...",
+      applied: "Bandwidth saver applied.",
+      applyFailed: "Failed to apply bandwidth saver.",
+      hint: "Sets profile to Balanced, stock quotes to Stream only, and daily history to Strict.",
+      disable: "Disable bandwidth saver",
+      disabled: "Bandwidth saver disabled.",
+      disableFailed: "Failed to disable bandwidth saver.",
+      activeHint: "Bandwidth saver is active.",
+    },
     stockQuotes: {
       title: "Stock quote source",
       description: "Choose how live stock quotes are fetched.",

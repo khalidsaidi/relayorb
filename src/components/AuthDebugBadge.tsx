@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { useAuth } from "@/features/auth/auth-context"
+import { resolveMarketDataProxyUrl } from "@/lib/runtime-urls"
 
-const PROXY_URL = (import.meta.env.VITE_MARKET_DATA_PROXY_URL || "").replace(/\/+$/, "")
+const PROXY_URL = resolveMarketDataProxyUrl()
 const GATEWAY_URL = (import.meta.env.VITE_MARKET_DATA_GATEWAY_URL || "").replace(/\/+$/, "")
 const GATEWAY_BASE = (PROXY_URL || GATEWAY_URL || "").replace(/\/+$/, "")
 const GATEWAY_AUTH_ENABLED = (() => {
