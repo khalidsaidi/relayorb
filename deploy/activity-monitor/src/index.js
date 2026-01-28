@@ -202,7 +202,23 @@ async function triggerJob(jobName) {
 
 async function handleActivityCheck() {
   console.log('Checking for active users...')
-  
+
+  try {
+    const controlsSnap = await db.doc('market/controls').get()
+    const controls = controlsSnap.exists ? controlsSnap.data() : null
+    const dataProfile = typeof controls?.dataProfile === 'string' ? controls.dataProfile : ''
+    if (dataProfile === 'survival') {
+      console.log('Market-intel boost skipped (profile survival)')
+      return { boosted: false, reason: 'profile_survival' }
+    }
+    if (controls?.marketIntelEnabled === false) {
+      console.log('Market-intel boost skipped (disabled by controls)')
+      return { boosted: false, reason: 'disabled' }
+    }
+  } catch (err) {
+    console.error('Failed to read market controls:', err)
+  }
+
   const { active, count, users } = await checkActiveUsers()
   
   if (!active) {
