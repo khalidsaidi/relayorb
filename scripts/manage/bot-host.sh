@@ -25,6 +25,12 @@ Env (set before running commands):
   MARKET_DATA_GATEWAY_URL   Market data gateway base URL (required)
   MARKET_DATA_GATEWAY_AUTH  true/false (default: true)
   REDIS_URL                 Redis connection URL (default: redis://redis:6379)
+  IBKR_ACCT1_USER           IBKR username for acct1 gateway
+  IBKR_ACCT1_PASS           IBKR password for acct1 gateway
+  IBKR_ACCT1_VNC_PASSWORD   Optional VNC password for acct1 gateway
+  IBKR_ACCT2_USER           IBKR username for acct2 gateway
+  IBKR_ACCT2_PASS           IBKR password for acct2 gateway
+  IBKR_ACCT2_VNC_PASSWORD   Optional VNC password for acct2 gateway
 USAGE
 }
 

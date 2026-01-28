@@ -42,7 +42,7 @@ const config = {
   pipelineEventsMaxlen: parseInt(process.env.PIPELINE_EVENTS_MAXLEN || "20000", 10),
   pipelineEventsRunEnv: process.env.PIPELINE_EVENTS_RUN_ENV || "prod",
   corsOrigin: process.env.MDG_CORS_ORIGIN || "*",
-  corsAllowHeaders: process.env.MDG_CORS_HEADERS || "Content-Type",
+  corsAllowHeaders: process.env.MDG_CORS_HEADERS || "Content-Type, Authorization",
   replayAllowed: process.env.REPLAY_ALLOWED !== "false",
   replayBucket: process.env.REPLAY_GCS_BUCKET || process.env.REPLAY_BUCKET || "",
   replayPrefix: process.env.REPLAY_GCS_PREFIX || "replay",

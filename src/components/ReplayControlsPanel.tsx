@@ -424,26 +424,36 @@ export function ReplayControlsPanel() {
   const selectedRunSourceLabel = useMemo(() => {
     if (!selectedRunSymbolSource) return ""
     if (selectedRunSymbolSource === "auto") {
-      const maxLabel =
-        selectedRunMaxSymbols !== null
-          ? String(selectedRunMaxSymbols)
-          : selectedRunSymbolCount || t("common.na")
-      return t("replay.controls.runDetails.sourceAuto", { count: maxLabel })
+      if (selectedRunMaxSymbols !== null) {
+        return t("replay.controls.runDetails.sourceAuto", { count: selectedRunMaxSymbols })
+      }
+      if (selectedRunSymbolCountValue !== null) {
+        return t("replay.controls.runDetails.sourceAuto", {
+          count: selectedRunSymbolCountValue,
+        })
+      }
+      return t("common.na")
     }
     if (selectedRunSymbolSource === "default") {
-      return t("replay.controls.recordingScopeSourceDefault", {
-        count: selectedRunSymbolCount || t("common.na"),
-      })
+      if (selectedRunSymbolCountValue !== null) {
+        return t("replay.controls.recordingScopeSourceDefault", {
+          count: selectedRunSymbolCountValue,
+        })
+      }
+      return t("common.na")
     }
     if (selectedRunSymbolSource === "custom") {
-      return t("replay.controls.recordingScopeSourceCustom", {
-        count: selectedRunSymbolCount || t("common.na"),
-      })
+      if (selectedRunSymbolCountValue !== null) {
+        return t("replay.controls.recordingScopeSourceCustom", {
+          count: selectedRunSymbolCountValue,
+        })
+      }
+      return t("common.na")
     }
     return ""
   }, [
     selectedRunSymbolSource,
-    selectedRunSymbolCount,
+    selectedRunSymbolCountValue,
     selectedRunMaxSymbols,
     t,
   ])
@@ -556,7 +566,7 @@ export function ReplayControlsPanel() {
           : Array.isArray(payload?.symbols)
             ? payload.symbols
             : []
-        const normalized = Array.from(
+        const normalized: string[] = Array.from(
           new Set(
             list.map((item: unknown) => String(item).trim().toUpperCase()).filter(Boolean)
           )

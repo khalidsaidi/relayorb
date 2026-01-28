@@ -634,6 +634,12 @@ const en = {
     universe: {
       title: "Universe and ORB highs",
       empty: "Universe not loaded yet.",
+      sourceLabel: "Universe source",
+      sourceFmp: "Market actives (FMP)",
+      sourceDefault: "Default list",
+      sourceProfile: "Your symbols",
+      sourceReplay: "Replay tape",
+      sourceFallback: "Fallback",
       symbol: "Symbol",
       price: "Price",
       volume: "Volume",
@@ -837,6 +843,35 @@ const en = {
       liveConfirmBody: "Live mode sends real orders to IBKR. Make sure you want to trade live.",
       liveConfirm: "Switch to Live",
       liveCancel: "Stay on Paper",
+    },
+    mfa: {
+      title: "Action needed: approve IBKR login",
+      body:
+        "Live trading is enabled for {{account}}, but the gateway isn’t connected yet. Open the IBKR Gateway (live) and approve the MFA/login prompt. Connection will turn green once approved.",
+      dismiss: "Got it",
+    },
+    retry: {
+      title: "Retry stuck live orders?",
+      body:
+        "This will create {{count}} new execution request(s) for live orders that have not updated in a few minutes. If the original orders reach IBKR later, duplicates are possible.",
+      action: "Retry stuck orders ({{count}})",
+      notice: "{{count}} live order(s) look stuck.",
+      confirm: "Retry orders",
+      cancel: "Cancel",
+      success: "Retried {{count}} live order(s).",
+      failed: "Retry failed.",
+      none: "No stuck live orders found.",
+    },
+    stuckCancel: {
+      title: "Cancel stuck live orders?",
+      body:
+        "This sends cancel requests for {{count}} live orders that have not updated in a few minutes. If the gateway is offline, you may need to retry after it reconnects.",
+      action: "Cancel stuck orders ({{count}})",
+      confirm: "Cancel orders",
+      cancel: "Keep them",
+      success: "Cancel requested for {{count}} order(s).",
+      failed: "Cancel request failed.",
+      none: "No stuck live orders found.",
     },
     status: {
       pending: "Pending",

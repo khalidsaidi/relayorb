@@ -440,14 +440,18 @@ export default function IbkrOrderPage() {
         symbol,
         assetClass,
         assetKey,
-        exchange: selectedExchange || undefined,
         side,
-        quantity: resolvedInputs.quantity || 0,
+        quantity: resolvedInputs.quantity ?? 0,
         orderType,
-        limitPrice: limitPrice ?? undefined,
-        stopLoss: useBracket ? resolvedInputs.stopLoss ?? undefined : undefined,
-        takeProfit: useBracket ? resolvedInputs.takeProfit ?? undefined : undefined,
         timeInForce: timeInForce || "DAY",
+        ...(selectedExchange ? { exchange: selectedExchange } : {}),
+        ...(typeof limitPrice === "number" ? { limitPrice } : {}),
+        ...(useBracket && typeof resolvedInputs.stopLoss === "number"
+          ? { stopLoss: resolvedInputs.stopLoss }
+          : {}),
+        ...(useBracket && typeof resolvedInputs.takeProfit === "number"
+          ? { takeProfit: resolvedInputs.takeProfit }
+          : {}),
       }
 
       const payload: ExecutionRequestDoc = {
@@ -456,7 +460,9 @@ export default function IbkrOrderPage() {
         proposalId: `manual:${assetClass}:${symbol}:${now}`,
         requestedByUid: user.uid,
         approvedByUid: user.uid,
-        ibAccountCodeSnapshot: brokerAccount?.ibAccountCode || undefined,
+        ...(brokerAccount?.ibAccountCode
+          ? { ibAccountCodeSnapshot: brokerAccount.ibAccountCode }
+          : {}),
         approvedAt: serverTimestamp(),
         mode,
         status: "approved",

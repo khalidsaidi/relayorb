@@ -9,6 +9,7 @@ const { buildTradeContext } = require("./context")
 const { resolveEntryBehavior } = require("./behaviors/entry")
 const { resolveExitBehavior } = require("./behaviors/exit")
 const { resolveSessionBehavior } = require("./behaviors/session")
+const DEFAULT_UNIVERSE_SYMBOLS = require("./default-universe.json")
 
 const config = {
   projectId:
@@ -532,6 +533,74 @@ function normalizeSymbolList(raw) {
   return Array.from(seen)
 }
 
+async function loadMarketPricesMap(clock) {
+  const isReplay = clock?.mode === "replay" && clock?.replay?.runId
+  const path = isReplay
+    ? `replay/controls/runs/${clock.replay.runId}/market/prices`
+    : "market/prices"
+  try {
+    const snap = await db.doc(path).get()
+    if (!snap.exists) return new Map()
+    const data = snap.data() || {}
+    const items = Array.isArray(data.items) ? data.items : []
+    const map = new Map()
+    items.forEach((item) => {
+      if (!item) return
+      if (item.assetClass && item.assetClass !== "stock") return
+      const symbol = normalizeTicker(item.symbol || item.ticker || "")
+      const price = parseNumber(item.price)
+      if (symbol && typeof price === "number") {
+        map.set(symbol, { price })
+      }
+    })
+    return map
+  } catch {
+    return new Map()
+  }
+}
+
+function isRateLimitError(error) {
+  const message = error?.message ? String(error.message) : ""
+  return (
+    message.includes("Request failed 429") ||
+    message.includes("Bandwidth Limit") ||
+    message.toLowerCase().includes("quota") ||
+    message.toLowerCase().includes("limit")
+  )
+}
+
+function resolveFallbackUniverseSymbols(profile) {
+  const include = Array.isArray(profile?.symbols?.include) ? profile.symbols.include : []
+  const normalizedInclude = include.map((symbol) => normalizeTicker(symbol)).filter(Boolean)
+  if (normalizedInclude.length) {
+    return { symbols: normalizedInclude, source: "profile_symbols" }
+  }
+  const fallback = Array.isArray(DEFAULT_UNIVERSE_SYMBOLS)
+    ? DEFAULT_UNIVERSE_SYMBOLS.map((symbol) => normalizeTicker(symbol)).filter(Boolean)
+    : []
+  return { symbols: fallback, source: "default_list" }
+}
+
+async function buildOrbRangeFromQuotes(symbols, state, clock) {
+  if (!Array.isArray(symbols) || !symbols.length) return null
+  let quoteDetails = await fetchQuoteDetails(symbols)
+  if (!quoteDetails.size) {
+    quoteDetails = await loadMarketPricesMap(clock)
+  }
+  if (!quoteDetails.size) return null
+  const nextHighs = { ...(state?.orbHighs || {}) }
+  const nextLows = { ...(state?.orbLows || {}) }
+  quoteDetails.forEach((entry, symbol) => {
+    const price = parseNumber(entry?.price)
+    if (!Number.isFinite(price)) return
+    const prevHigh = nextHighs[symbol]
+    const prevLow = nextLows[symbol]
+    nextHighs[symbol] = typeof prevHigh === "number" ? Math.max(prevHigh, price) : price
+    nextLows[symbol] = typeof prevLow === "number" ? Math.min(prevLow, price) : price
+  })
+  return { orbHighs: nextHighs, orbLows: nextLows }
+}
+
 function resolveStrategyProfile(rawControls) {
   const rawProfile = rawControls?.strategyProfile || {}
   const legacySymbol = normalizeTicker(rawControls?.singleSymbol)
@@ -854,6 +923,8 @@ async function fetchUniverse(profile, clock) {
     isReplayMode && clock?.replay?.datasetId ? clock.replay.datasetId : null
   let candidates = []
   let quoteDetails = new Map()
+  let source = "fmp_most_actives"
+  let fallback = false
 
   if (isReplayMode && !replayDatasetId) {
     throw new Error("Replay datasetId missing; cannot build universe")
@@ -878,32 +949,77 @@ async function fetchUniverse(profile, clock) {
         }
       })
       .filter(Boolean)
+    source = "replay_symbols"
   } else {
-    const payload = await fetchGatewayJson("/v1/fmp/most-actives", {
-      limit: String(limit),
-    })
-    const items = Array.isArray(payload?.data) ? payload.data : []
-    candidates = items
-      .map((item) => {
-        const symbol = normalizeTicker(item.symbol)
-        const price = parseNumber(item.price)
-        const volume = parseNumber(item.volume)
-        if (!symbol || !price) return null
-        return {
-          symbol,
-          price,
-          volume,
-          exchange: item.exchange || item.exchangeShortName || null,
-          name: item.name || item.companyName || null,
-        }
+    try {
+      const payload = await fetchGatewayJson("/v1/fmp/most-actives", {
+        limit: String(limit),
       })
-      .filter(Boolean)
-    if (candidates.length) {
-      quoteDetails = await fetchQuoteDetails(candidates.map((item) => item.symbol))
+      const items = Array.isArray(payload?.data) ? payload.data : []
+      candidates = items
+        .map((item) => {
+          const symbol = normalizeTicker(item.symbol)
+          const price = parseNumber(item.price)
+          const volume = parseNumber(item.volume)
+          if (!symbol || !price) return null
+          return {
+            symbol,
+            price,
+            volume,
+            exchange: item.exchange || item.exchangeShortName || null,
+            name: item.name || item.companyName || null,
+          }
+        })
+        .filter(Boolean)
+      if (candidates.length) {
+        quoteDetails = await fetchQuoteDetails(candidates.map((item) => item.symbol))
+      }
+    } catch (error) {
+      if (!isRateLimitError(error)) {
+        throw error
+      }
+      const fallbackConfig = resolveFallbackUniverseSymbols(profile)
+      if (!fallbackConfig.symbols.length) {
+        throw error
+      }
+      fallback = true
+      source = fallbackConfig.source
+      const limitedSymbols = fallbackConfig.symbols.slice(0, maxSymbols)
+      try {
+        quoteDetails = await fetchQuoteDetails(limitedSymbols)
+      } catch {
+        quoteDetails = new Map()
+      }
+      const fallbackCandidates = limitedSymbols
+        .map((symbol) => {
+          const quote = quoteDetails.get(symbol)
+          const price = parseNumber(quote?.price)
+          const volume = parseNumber(quote?.volume)
+          return {
+            symbol,
+            price: Number.isFinite(price) ? price : null,
+            volume: Number.isFinite(volume) ? volume : null,
+            exchange: null,
+            name: null,
+          }
+        })
+        .filter(Boolean)
+      const fallbackUniverse = fallbackCandidates.map((item) => {
+        const dollarVolume =
+          typeof item.price === "number" && typeof item.volume === "number"
+            ? item.price * item.volume
+            : null
+        return { ...item, dollarVolume }
+      })
+      return {
+        universe: fallbackUniverse.slice(0, maxSymbols),
+        source,
+        fallback,
+      }
     }
   }
 
-  if (!candidates.length) return []
+  if (!candidates.length) return { universe: [], source, fallback }
 
   const minPrice = Math.min(universe.price_min, universe.price_max)
   const maxPrice = Math.max(universe.price_min, universe.price_max)
@@ -925,7 +1041,11 @@ async function fetchUniverse(profile, clock) {
     })
     .sort((a, b) => b.dollarVolume - a.dollarVolume)
 
-  return filtered.slice(0, maxSymbols)
+  return {
+    universe: filtered.slice(0, maxSymbols),
+    source,
+    fallback,
+  }
 }
 
 function filterSessionCandles(candles, market, asOf) {
@@ -1455,12 +1575,15 @@ async function runDailyUniverseCycle({
   if (premarket || allowLateUniverse) {
     if (needsUniverse) {
       try {
-        const universe = await fetchUniverse(profile, clock)
+        const universeResult = await fetchUniverse(profile, clock)
+        const universe = universeResult?.universe || []
         const payload = {
           universe,
           universeDateKey: market.dateKey,
           lastUniverseAt: FieldValue.serverTimestamp(),
           lastError: universe.length ? null : "Universe empty after filter",
+          lastUniverseSource: universeResult?.source || null,
+          lastUniverseFallback: universeResult?.fallback === true,
         }
         if (forceUniverse) {
           payload.forceUniverse = false
@@ -1494,13 +1617,22 @@ async function runDailyUniverseCycle({
   const shouldUpdateRange = inSession && (inRangeWindow || shouldFinalizeRange)
   if (shouldUpdateRange) {
     try {
+      let rateLimitHit = false
       const limit = resolveCandleLimit(market)
       const results = await mapWithConcurrency(universe, 5, async (item) => {
-        const candles = await fetchCandles(item.symbol, limit)
-        const sessionCandles = filterSessionCandles(candles, market, now)
-        const orbRange = computeOrbRange(sessionCandles, market, profile.orb.range_minutes)
-        if (!orbRange) return null
-        return { symbol: item.symbol, high: orbRange.high, low: orbRange.low }
+        try {
+          const candles = await fetchCandles(item.symbol, limit)
+          const sessionCandles = filterSessionCandles(candles, market, now)
+          const orbRange = computeOrbRange(sessionCandles, market, profile.orb.range_minutes)
+          if (!orbRange) return null
+          return { symbol: item.symbol, high: orbRange.high, low: orbRange.low }
+        } catch (error) {
+          if (isRateLimitError(error)) {
+            rateLimitHit = true
+            return null
+          }
+          throw error
+        }
       })
       const orbHighs = {}
       const orbLows = {}
@@ -1510,9 +1642,25 @@ async function runDailyUniverseCycle({
           orbLows[entry.symbol] = entry.low ?? null
         }
       })
-      const hasRanges = Object.keys(orbHighs).length > 0
-      const nextOrbHighs = hasRanges ? orbHighs : (state?.orbHighs || {})
-      const nextOrbLows = hasRanges ? orbLows : (state?.orbLows || {})
+      let nextOrbHighs = { ...(state?.orbHighs || {}), ...orbHighs }
+      let nextOrbLows = { ...(state?.orbLows || {}), ...orbLows }
+      let hasRanges = Object.keys(nextOrbHighs).length > 0
+      let rangeSource = null
+
+      if (!hasRanges && rateLimitHit) {
+        const quoteFallback = await buildOrbRangeFromQuotes(
+          universe.map((item) => item.symbol),
+          state,
+          clock
+        )
+        if (quoteFallback) {
+          nextOrbHighs = quoteFallback.orbHighs
+          nextOrbLows = quoteFallback.orbLows
+          hasRanges = Object.keys(nextOrbHighs).length > 0
+          rangeSource = "quotes"
+        }
+      }
+
       const payload = {
         orbHighs: nextOrbHighs,
         orbLows: nextOrbLows,
@@ -1522,6 +1670,9 @@ async function runDailyUniverseCycle({
         payload.lastError = hasRanges ? null : "ORB range empty"
       } else if (hasRanges) {
         payload.lastError = null
+      }
+      if (rangeSource) {
+        payload.lastRangeSource = rangeSource
       }
       await setState(payload)
     } catch (error) {
@@ -1871,6 +2022,8 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
       exitRequestId: null,
       activeStop: null,
       orbRange: null,
+      orbHighs: {},
+      orbLows: {},
       barsSinceBreakout: 0,
       sessionStartNetLiq: null,
       lastOpenRangeAt: null,
@@ -1896,6 +2049,8 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
       exitRequestId: null,
       activeStop: null,
       orbRange: null,
+      orbHighs: {},
+      orbLows: {},
       barsSinceBreakout: 0,
       sessionStartNetLiq: null,
       lastOpenRangeAt: null,
@@ -1916,6 +2071,8 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
   const rangeEndMinute = market.openMinutes + profile.orb.range_minutes
   const entryStartMinute = rangeEndMinute + profile.orb.entry_delay_minutes
   const forceFlatMinute = market.closeMinutes - profile.exit.force_flat_minutes_before_close
+  const inRangeWindow =
+    market.minutes >= market.openMinutes && market.minutes < rangeEndMinute
 
   if (market.minutes < market.openMinutes) {
     return
@@ -2032,6 +2189,37 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
     return cachedSnapshot
   }
 
+  if (inRangeWindow && !state?.orbRange) {
+    try {
+      const quote = await loadQuote()
+      const price = parseNumber(quote?.price)
+      if (Number.isFinite(price)) {
+        const nextHighs = { ...(state?.orbHighs || {}) }
+        const nextLows = { ...(state?.orbLows || {}) }
+        const prevHigh = nextHighs[symbol]
+        const prevLow = nextLows[symbol]
+        nextHighs[symbol] = typeof prevHigh === "number" ? Math.max(prevHigh, price) : price
+        nextLows[symbol] = typeof prevLow === "number" ? Math.min(prevLow, price) : price
+        await setState({ orbHighs: nextHighs, orbLows: nextLows })
+      }
+    } catch (error) {
+      const priceMap = await loadMarketPricesMap(clock)
+      const fallback = priceMap.get(symbol)
+      const price = parseNumber(fallback?.price)
+      if (Number.isFinite(price)) {
+        const nextHighs = { ...(state?.orbHighs || {}) }
+        const nextLows = { ...(state?.orbLows || {}) }
+        const prevHigh = nextHighs[symbol]
+        const prevLow = nextLows[symbol]
+        nextHighs[symbol] = typeof prevHigh === "number" ? Math.max(prevHigh, price) : price
+        nextLows[symbol] = typeof prevLow === "number" ? Math.min(prevLow, price) : price
+        await setState({ orbHighs: nextHighs, orbLows: nextLows })
+      } else if (!isRateLimitError(error)) {
+        await setState({ lastError: `Quote fetch failed: ${error.message}` })
+      }
+    }
+  }
+
   const shouldCaptureRange =
     !state?.orbRange && market.minutes >= rangeEndMinute && market.minutes <= market.closeMinutes
 
@@ -2046,9 +2234,43 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
           lastError: null,
         })
       } else {
-        await setState({ lastError: "ORB range unavailable." })
+        const fallbackHigh = state?.orbHighs ? state.orbHighs[symbol] : null
+        const fallbackLow = state?.orbLows ? state.orbLows[symbol] : null
+        if (typeof fallbackHigh === "number" && typeof fallbackLow === "number") {
+          await setState({
+            orbRange: {
+              high: fallbackHigh,
+              low: fallbackLow,
+              startMinute: market.openMinutes,
+              endMinute: rangeEndMinute,
+            },
+            lastOpenRangeAt: FieldValue.serverTimestamp(),
+            lastError: null,
+            lastRangeSource: "quotes",
+          })
+        } else {
+          await setState({ lastError: "ORB range unavailable." })
+        }
       }
     } catch (error) {
+      if (isRateLimitError(error)) {
+        const fallbackHigh = state?.orbHighs ? state.orbHighs[symbol] : null
+        const fallbackLow = state?.orbLows ? state.orbLows[symbol] : null
+        if (typeof fallbackHigh === "number" && typeof fallbackLow === "number") {
+          await setState({
+            orbRange: {
+              high: fallbackHigh,
+              low: fallbackLow,
+              startMinute: market.openMinutes,
+              endMinute: rangeEndMinute,
+            },
+            lastOpenRangeAt: FieldValue.serverTimestamp(),
+            lastError: null,
+            lastRangeSource: "quotes",
+          })
+          return
+        }
+      }
       await setState({ lastError: `ORB range failed: ${error.message}` })
     }
   }

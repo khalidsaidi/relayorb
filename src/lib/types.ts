@@ -861,6 +861,8 @@ export type OrbStateDoc = {
   forceUniverse?: boolean
   forceUniverseRequestedAt?: FirestoreTimestamp | null
   lastUniverseAt?: FirestoreTimestamp
+  lastUniverseSource?: string | null
+  lastUniverseFallback?: boolean
   lastRunRequestedAt?: FirestoreTimestamp
   lastRunRequestedSource?: string
   lastOpenRangeAt?: FirestoreTimestamp

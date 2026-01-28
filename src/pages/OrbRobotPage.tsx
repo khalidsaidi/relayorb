@@ -13,7 +13,16 @@ import {
 } from "firebase/firestore"
 import { toast } from "sonner"
 import { useTranslation } from "react-i18next"
-import { Activity, AlertTriangle, ChevronDown, Clock, HelpCircle, Target, Timer } from "lucide-react"
+import {
+  Activity,
+  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  HelpCircle,
+  Target,
+  Timer,
+} from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -185,7 +194,7 @@ const DEFAULT_DRAFT: ControlDraft = {
   maxDailyLossPct: String(DEFAULT_SINGLE_PROFILE.risk.max_daily_loss_pct),
 }
 
-function formatControlValue(value: number | undefined, fallback: number) {
+function formatControlValue(value: number | null | undefined, fallback: number) {
   if (typeof value === "number" && Number.isFinite(value)) return String(value)
   return String(fallback)
 }
@@ -655,6 +664,7 @@ export default function OrbRobotPage() {
   const [runUntilStatus, setRunUntilStatus] = useState("")
   const [confirmLiveOpen, setConfirmLiveOpen] = useState(false)
   const [ordersFilter, setOrdersFilter] = useState<"all" | "since_run">("all")
+  const [replayOpen, setReplayOpen] = useState(false)
   const runUntilCancelRef = useRef(false)
   const requestsRef = useRef<ExecutionRequestDoc[]>([])
   const { controls: replayControls } = useReplayControls()
@@ -793,11 +803,23 @@ export default function OrbRobotPage() {
   const currentEtMinutes = replayAsOfMinutes ?? getEtMinutes(new Date())
   const currentEtLabel =
     typeof currentEtMinutes === "number" ? formatEtTime(currentEtMinutes) : ""
+  const universeSourceLabel = useMemo(() => {
+    const source = stateDoc?.lastUniverseSource
+    if (!source) return ""
+    if (source === "default_list") return t("orb.universe.sourceDefault")
+    if (source === "profile_symbols") return t("orb.universe.sourceProfile")
+    if (source === "replay_symbols") return t("orb.universe.sourceReplay")
+    if (source === "fmp_most_actives") return t("orb.universe.sourceFmp")
+    return source
+  }, [stateDoc?.lastUniverseSource, t])
   const orbHighHeader = `${t("orb.universe.orbHigh")} (${orbRangeWindowLabel})`
   const rangeComplete = Boolean(stateDoc?.lastOpenRangeAt)
   const capturedLabel = stateDoc?.lastOpenRangeAt
     ? formatTimestamp(stateDoc.lastOpenRangeAt)
     : t("orb.universe.capturedPending")
+  useEffect(() => {
+    setReplayOpen(replayMode)
+  }, [replayMode])
   const replaySteps = useMemo(() => {
     const steps = []
     if (activeMode === "daily_universe") {
@@ -2153,7 +2175,20 @@ export default function OrbRobotPage() {
                     <Activity className="h-4 w-4" />
                     {t("orb.universe.title")}
                   </CardTitle>
+                  {universeSourceLabel ? (
+                    <div className="flex items-center gap-2">
+                      {stateDoc?.lastUniverseFallback ? (
+                        <Badge variant="secondary">{t("orb.universe.sourceFallback")}</Badge>
+                      ) : null}
+                      <Badge variant="outline">{universeSourceLabel}</Badge>
+                    </div>
+                  ) : null}
                 </div>
+                {universeSourceLabel ? (
+                  <div className="text-xs text-muted-foreground">
+                    {t("orb.universe.sourceLabel")}: {universeSourceLabel}
+                  </div>
+                ) : null}
                 <div className="grid gap-2 sm:grid-cols-3">
                   <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2">
                     <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
@@ -2445,70 +2480,90 @@ export default function OrbRobotPage() {
         </div>
 
         <div className="order-3 min-w-0 space-y-6 lg:order-none lg:col-start-2 lg:row-start-1 lg:min-w-[280px] lg:max-w-[360px]">
-          <Card>
-            <CardHeader>
-              <div className="flex items-start justify-between gap-3">
-                <CardTitle className="flex items-center gap-2 text-sm">
-                  <Clock className="h-4 w-4" />
-                  {t("orb.replay.title")}
-                </CardTitle>
-                <Dialog>
-                  <DialogTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon-sm"
-                      aria-label={t("orb.replay.help.trigger")}
-                    >
-                      <HelpCircle className="h-4 w-4" />
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>{t("orb.replay.help.title")}</DialogTitle>
-                      <DialogDescription>{t("orb.replay.help.intro")}</DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-4 text-sm">
-                      <div className="space-y-2">
-                        <div className="font-medium">{t("orb.replay.help.stepsTitle")}</div>
-                        <ul className="list-disc space-y-1 pl-4 text-muted-foreground">
-                          <li>{t("orb.replay.help.steps.step1")}</li>
-                          <li>{t("orb.replay.help.steps.step2")}</li>
-                          <li>{t("orb.replay.help.steps.step3")}</li>
-                          <li>{t("orb.replay.help.steps.step4")}</li>
-                        </ul>
-                      </div>
-                      <div className="space-y-2">
-                        <div className="font-medium">{t("orb.replay.help.autoTitle")}</div>
-                        <p className="text-muted-foreground">
-                          {t("orb.replay.help.autoBody")}
-                        </p>
-                      </div>
-                      <div className="space-y-2">
-                        <div className="font-medium">{t("orb.replay.help.runTitle")}</div>
-                        <p className="text-muted-foreground">
-                          {t("orb.replay.help.runBody")}
-                        </p>
-                      </div>
-                      <div className="space-y-2">
-                        <div className="font-medium">{t("orb.replay.help.loopTitle")}</div>
-                        <p className="text-muted-foreground">
-                          {t("orb.replay.help.loopBody")}
-                        </p>
-                      </div>
-                      <div className="space-y-2">
-                        <div className="font-medium">{t("orb.replay.help.safetyTitle")}</div>
-                        <p className="text-muted-foreground">
-                          {t("orb.replay.help.safetyBody")}
-                        </p>
-                      </div>
-                    </div>
-                  </DialogContent>
-                </Dialog>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4 text-sm">
-              <div className="text-xs text-muted-foreground">{t("orb.replay.subtitle")}</div>
+          <Collapsible open={replayOpen} onOpenChange={setReplayOpen}>
+            <Card>
+              <CardHeader>
+                <div className="flex items-start justify-between gap-3">
+                  <CardTitle className="flex items-center gap-2 text-sm">
+                    <Clock className="h-4 w-4" />
+                    {t("orb.replay.title")}
+                  </CardTitle>
+                  <div className="flex items-center gap-2">
+                    <Dialog>
+                      <DialogTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon-sm"
+                          aria-label={t("orb.replay.help.trigger")}
+                        >
+                          <HelpCircle className="h-4 w-4" />
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent>
+                        <DialogHeader>
+                          <DialogTitle>{t("orb.replay.help.title")}</DialogTitle>
+                          <DialogDescription>{t("orb.replay.help.intro")}</DialogDescription>
+                        </DialogHeader>
+                        <div className="space-y-4 text-sm">
+                          <div className="space-y-2">
+                            <div className="font-medium">{t("orb.replay.help.stepsTitle")}</div>
+                            <ul className="list-disc space-y-1 pl-4 text-muted-foreground">
+                              <li>{t("orb.replay.help.steps.step1")}</li>
+                              <li>{t("orb.replay.help.steps.step2")}</li>
+                              <li>{t("orb.replay.help.steps.step3")}</li>
+                              <li>{t("orb.replay.help.steps.step4")}</li>
+                            </ul>
+                          </div>
+                          <div className="space-y-2">
+                            <div className="font-medium">{t("orb.replay.help.autoTitle")}</div>
+                            <p className="text-muted-foreground">
+                              {t("orb.replay.help.autoBody")}
+                            </p>
+                          </div>
+                          <div className="space-y-2">
+                            <div className="font-medium">{t("orb.replay.help.runTitle")}</div>
+                            <p className="text-muted-foreground">
+                              {t("orb.replay.help.runBody")}
+                            </p>
+                          </div>
+                          <div className="space-y-2">
+                            <div className="font-medium">{t("orb.replay.help.loopTitle")}</div>
+                            <p className="text-muted-foreground">
+                              {t("orb.replay.help.loopBody")}
+                            </p>
+                          </div>
+                          <div className="space-y-2">
+                            <div className="font-medium">{t("orb.replay.help.safetyTitle")}</div>
+                            <p className="text-muted-foreground">
+                              {t("orb.replay.help.safetyBody")}
+                            </p>
+                          </div>
+                        </div>
+                      </DialogContent>
+                    </Dialog>
+                    <CollapsibleTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon-sm"
+                        aria-label={replayOpen ? t("common.collapse") : t("common.expand")}
+                      >
+                        {replayOpen ? (
+                          <ChevronUp className="h-4 w-4" />
+                        ) : (
+                          <ChevronDown className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </CollapsibleTrigger>
+                  </div>
+                </div>
+              </CardHeader>
+              <CollapsibleContent>
+                <CardContent className="space-y-4 text-sm">
+                  <div className="text-xs text-muted-foreground">
+                    {t("orb.replay.subtitle")}
+                  </div>
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">{t("orb.replay.statusLabel")}</span>
                 <Badge variant={replayMode ? "secondary" : "outline"}>
@@ -2696,30 +2751,32 @@ export default function OrbRobotPage() {
               </div>
               <Separator />
               <div className="text-xs font-medium">{t("orb.replay.steps.title")}</div>
-              <div className="space-y-2">
-                {replaySteps.map((step) => (
-                  <div
-                    key={step.key}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border/60 px-3 py-2"
-                  >
-                    <div>
-                      <div className="text-sm font-medium">{step.label}</div>
-                      <div className="text-xs text-muted-foreground">{step.hint}</div>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleReplayStep(step.minutes, step.label)}
-                      disabled={!replayReady || replayUpdating || runUntilActive}
-                    >
-                      {formatEtTime(step.minutes)}
-                    </Button>
+                  <div className="space-y-2">
+                    {replaySteps.map((step) => (
+                      <div
+                        key={step.key}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border/60 px-3 py-2"
+                      >
+                        <div>
+                          <div className="text-sm font-medium">{step.label}</div>
+                          <div className="text-xs text-muted-foreground">{step.hint}</div>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleReplayStep(step.minutes, step.label)}
+                          disabled={!replayReady || replayUpdating || runUntilActive}
+                        >
+                          {formatEtTime(step.minutes)}
+                        </Button>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+                </CardContent>
+              </CollapsibleContent>
+            </Card>
+          </Collapsible>
 
         </div>
       </div>

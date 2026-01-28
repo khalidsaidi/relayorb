@@ -92,6 +92,23 @@ function buildOrderSnapshotFromProposal(proposal: TradeProposalDoc): OrderSnapsh
   }
 }
 
+function sanitizeOrderSnapshot(snapshot: OrderSnapshot): OrderSnapshot {
+  return {
+    symbol: snapshot.symbol,
+    assetClass: snapshot.assetClass,
+    assetKey: snapshot.assetKey,
+    side: snapshot.side,
+    quantity: snapshot.quantity,
+    orderType: snapshot.orderType,
+    timeInForce: snapshot.timeInForce,
+    ...(snapshot.exchange ? { exchange: snapshot.exchange } : {}),
+    ...(snapshot.primaryExchange ? { primaryExchange: snapshot.primaryExchange } : {}),
+    ...(typeof snapshot.limitPrice === "number" ? { limitPrice: snapshot.limitPrice } : {}),
+    ...(typeof snapshot.stopLoss === "number" ? { stopLoss: snapshot.stopLoss } : {}),
+    ...(typeof snapshot.takeProfit === "number" ? { takeProfit: snapshot.takeProfit } : {}),
+  }
+}
+
 type ExecuteTradeDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -462,13 +479,19 @@ export function ExecuteTradeDialog({
       const now = Date.now()
       const expiresAt = Timestamp.fromMillis(now + REQUEST_TTL_MS)
       const requestRef = doc(db, "executionRequests", id)
-      const sanitizedSnapshot: OrderSnapshot = {
+      const sanitizedSnapshot: OrderSnapshot = sanitizeOrderSnapshot({
         ...draft,
-        quantity: resolvedInputs.quantity,
-        limitPrice: resolvedInputs.limitPrice,
-        stopLoss: resolvedInputs.stopLoss,
-        takeProfit: resolvedInputs.takeProfit,
-      }
+        quantity: resolvedInputs.quantity ?? 0,
+        ...(typeof resolvedInputs.limitPrice === "number"
+          ? { limitPrice: resolvedInputs.limitPrice }
+          : {}),
+        ...(typeof resolvedInputs.stopLoss === "number"
+          ? { stopLoss: resolvedInputs.stopLoss }
+          : {}),
+        ...(typeof resolvedInputs.takeProfit === "number"
+          ? { takeProfit: resolvedInputs.takeProfit }
+          : {}),
+      })
 
       const payload: ExecutionRequestDoc = {
         id,
@@ -476,7 +499,9 @@ export function ExecuteTradeDialog({
         proposalId: proposal.id,
         requestedByUid,
         approvedByUid: requestedByUid,
-        ibAccountCodeSnapshot: brokerAccount?.ibAccountCode || undefined,
+        ...(brokerAccount?.ibAccountCode
+          ? { ibAccountCodeSnapshot: brokerAccount.ibAccountCode }
+          : {}),
         approvedAt: serverTimestamp(),
         mode,
         status: "approved",

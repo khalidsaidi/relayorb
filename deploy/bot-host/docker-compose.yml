@@ -108,4 +108,88 @@ services:
     volumes:
       - ./secrets/service-account.json:/secrets/service-account.json:ro
 
+  ib-gateway-acct1-paper:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    pull_policy: always
+    restart: unless-stopped
+    container_name: ib-gateway-acct1-paper
+    environment:
+      - TWS_USERID=${IBKR_ACCT1_USER:-}
+      - TWS_PASSWORD=${IBKR_ACCT1_PASS:-}
+      - TRADING_MODE=paper
+      - TWS_ACCEPT_INCOMING=all
+      - READ_ONLY_API=no
+      - ALLOW_BLIND_TRADING=no
+      - TWOFA_TIMEOUT_ACTION=exit
+      - TIME_ZONE=America/New_York
+      - GATEWAY_OR_TWS=gateway
+      - IB_GATEWAY_VERSION=10.37.1o
+      - VNC_SERVER_PASSWORD=${IBKR_ACCT1_VNC_PASSWORD:-}
+    ports:
+      - "127.0.0.1:4002:4004"
+      - "127.0.0.1:5900:5900"
+
+  ib-gateway-acct1-live:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    pull_policy: always
+    restart: unless-stopped
+    container_name: ib-gateway-acct1-live
+    environment:
+      - TWS_USERID=${IBKR_ACCT1_USER:-}
+      - TWS_PASSWORD=${IBKR_ACCT1_PASS:-}
+      - TRADING_MODE=live
+      - TWS_ACCEPT_INCOMING=all
+      - READ_ONLY_API=no
+      - ALLOW_BLIND_TRADING=no
+      - TWOFA_TIMEOUT_ACTION=exit
+      - TIME_ZONE=America/New_York
+      - GATEWAY_OR_TWS=gateway
+      - IB_GATEWAY_VERSION=10.37.1o
+      - VNC_SERVER_PASSWORD=${IBKR_ACCT1_VNC_PASSWORD:-}
+    ports:
+      - "127.0.0.1:4001:4003"
+      - "127.0.0.1:5901:5900"
+
+  ib-gateway-acct2-paper:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    pull_policy: always
+    restart: unless-stopped
+    container_name: ib-gateway-acct2-paper
+    environment:
+      - TWS_USERID=${IBKR_ACCT2_USER:-}
+      - TWS_PASSWORD=${IBKR_ACCT2_PASS:-}
+      - TRADING_MODE=paper
+      - TWS_ACCEPT_INCOMING=all
+      - READ_ONLY_API=no
+      - ALLOW_BLIND_TRADING=no
+      - TWOFA_TIMEOUT_ACTION=exit
+      - TIME_ZONE=America/New_York
+      - GATEWAY_OR_TWS=gateway
+      - IB_GATEWAY_VERSION=10.37.1o
+      - VNC_SERVER_PASSWORD=${IBKR_ACCT2_VNC_PASSWORD:-}
+    ports:
+      - "127.0.0.1:4012:4004"
+      - "127.0.0.1:5902:5900"
+
+  ib-gateway-acct2-live:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    pull_policy: always
+    restart: unless-stopped
+    container_name: ib-gateway-acct2-live
+    environment:
+      - TWS_USERID=${IBKR_ACCT2_USER:-}
+      - TWS_PASSWORD=${IBKR_ACCT2_PASS:-}
+      - TRADING_MODE=live
+      - TWS_ACCEPT_INCOMING=all
+      - READ_ONLY_API=no
+      - ALLOW_BLIND_TRADING=no
+      - TWOFA_TIMEOUT_ACTION=exit
+      - TIME_ZONE=America/New_York
+      - GATEWAY_OR_TWS=gateway
+      - IB_GATEWAY_VERSION=10.37.1o
+      - VNC_SERVER_PASSWORD=${IBKR_ACCT2_VNC_PASSWORD:-}
+    ports:
+      - "127.0.0.1:4011:4003"
+      - "127.0.0.1:5903:5900"
+
 volumes: {}

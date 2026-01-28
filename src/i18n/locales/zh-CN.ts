@@ -631,6 +631,12 @@ const zhCN = {
     universe: {
       title: "标的池与 ORB 高点",
       empty: "标的池尚未加载。",
+      sourceLabel: "标的池来源",
+      sourceFmp: "市场活跃榜（FMP）",
+      sourceDefault: "默认列表",
+      sourceProfile: "你的自选",
+      sourceReplay: "回放录制",
+      sourceFallback: "兜底",
       symbol: "代码",
       price: "价格",
       volume: "成交量",
@@ -834,6 +840,35 @@ const zhCN = {
       liveConfirmBody: "实盘模式会发送真实订单到 IBKR。请确认要下真实单。",
       liveConfirm: "切换到实盘",
       liveCancel: "继续模拟",
+    },
+    mfa: {
+      title: "需要操作：批准 IBKR 登录",
+      body:
+        "账号 {{account}} 已开启实盘，但网关尚未连接。请打开 IBKR Gateway（实盘）并通过 MFA/登录确认。批准后连接会变为绿色。",
+      dismiss: "知道了",
+    },
+    retry: {
+      title: "重试卡住的实盘订单？",
+      body:
+        "这将为 {{count}} 个长时间未更新的实盘订单创建新的执行请求。若原订单稍后到达 IBKR，可能会产生重复订单。",
+      action: "重试卡住的订单（{{count}}）",
+      notice: "有 {{count}} 个实盘订单疑似卡住。",
+      confirm: "确认重试",
+      cancel: "取消",
+      success: "已重试 {{count}} 个实盘订单。",
+      failed: "重试失败。",
+      none: "未发现卡住的实盘订单。",
+    },
+    stuckCancel: {
+      title: "取消卡住的实盘订单？",
+      body:
+        "这将为 {{count}} 个长时间未更新的实盘订单发送取消请求。如果网关离线，可能需要在重连后再试一次。",
+      action: "取消卡住的订单（{{count}}）",
+      confirm: "确认取消",
+      cancel: "暂不取消",
+      success: "已为 {{count}} 个订单发送取消请求。",
+      failed: "取消请求失败。",
+      none: "未发现卡住的实盘订单。",
     },
     status: {
       pending: "待处理",
