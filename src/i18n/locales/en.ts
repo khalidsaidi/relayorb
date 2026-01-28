@@ -775,6 +775,12 @@ const en = {
       viewStatus: "View status",
       hideStatus: "Hide status",
       updateFailed: "Failed to update IBKR settings.",
+      authStatus: "Auth status",
+      authOff: "Off",
+      authReady: "Authenticated",
+      authWaiting: "Waiting for approval",
+      authConnecting: "Connecting",
+      authHint: "Approve in IBKR Mobile to reconnect.",
     },
     portfolio: {
       title: "IBKR Portfolio",

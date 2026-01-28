@@ -135,6 +135,13 @@ export function SidebarBrokerProfile({
     liveModeActive &&
     !executor?.ibConnected &&
     (isConnectionError || connectAttemptFresh)
+  const authStatusLabel = !wantsConnection
+    ? t("ibkr.sidebar.authOff")
+    : isConnected
+      ? t("ibkr.sidebar.authReady")
+      : shouldPromptMfa
+        ? t("ibkr.sidebar.authWaiting")
+        : t("ibkr.sidebar.authConnecting")
   const lastModeLabel = lastMode ? t(`ibkr.mode.${lastMode}`) : t("common.na")
   const lastUpdate = lastBrokerOrder?.lastUpdateAt ?? lastRequestDoc?.updatedAt ?? lastRequestDoc?.createdAt
   const lastUpdateLabel = lastUpdate
@@ -649,9 +656,30 @@ export function SidebarBrokerProfile({
             </span>
           </div>
         </div>
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-xs uppercase tracking-tight text-muted-foreground/70">
+            {t("ibkr.sidebar.authStatus")}
+          </span>
+          <span
+            className={
+              isConnected
+                ? "text-emerald-600"
+                : shouldPromptMfa
+                  ? "text-amber-600"
+                  : "text-muted-foreground"
+            }
+          >
+            {authStatusLabel}
+          </span>
+        </div>
         {heartbeatAgeSec !== null ? (
           <div className="text-xs text-muted-foreground/70">
             {t("ibkr.sidebar.lastHeartbeat", { seconds: heartbeatAgeSec })}
+          </div>
+        ) : null}
+        {shouldPromptMfa ? (
+          <div className="text-[11px] text-amber-700">
+            {t("ibkr.sidebar.authHint")}
           </div>
         ) : null}
         {isConnectionError ? (

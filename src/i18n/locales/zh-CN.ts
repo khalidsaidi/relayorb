@@ -772,6 +772,12 @@ const zhCN = {
       viewStatus: "查看状态",
       hideStatus: "隐藏状态",
       updateFailed: "更新 IBKR 设置失败。",
+      authStatus: "认证状态",
+      authOff: "已关闭",
+      authReady: "已认证",
+      authWaiting: "等待批准",
+      authConnecting: "连接中",
+      authHint: "请在 IBKR Mobile 中批准以重新连接。",
     },
     portfolio: {
       title: "IBKR 投资组合",
