@@ -842,10 +842,13 @@ const zhCN = {
       liveCancel: "继续模拟",
     },
     mfa: {
-      title: "需要操作：批准 IBKR 登录",
+      title: "批准 IBKR 登录以交易",
       body:
-        "账号 {{account}} 已开启实盘，但网关尚未连接。请打开 IBKR Gateway（实盘）并通过 MFA/登录确认。批准后连接会变为绿色。",
-      dismiss: "知道了",
+        "为 {{account}} 下单前需要完成一次安全确认。请打开 IBKR Mobile 并批准登录（IB Key）。如出现验证码，请在 App 中输入。",
+      bodyAlt:
+        "批准后我们会自动连接。如果没有看到提示，请先退出其他 IBKR 应用后再试。",
+      statusWaiting: "正在等待安全批准…",
+      dismiss: "好的，我去批准",
     },
     retry: {
       title: "重试卡住的实盘订单？",

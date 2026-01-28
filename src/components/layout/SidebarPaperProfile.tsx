@@ -481,12 +481,18 @@ export function SidebarBrokerProfile({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t("ibkr.mfa.title")}</DialogTitle>
-          <DialogDescription>
-            {t("ibkr.mfa.body", { account: brokerAccountKey?.toUpperCase() ?? "—" })}
+          <DialogDescription className="space-y-2 text-sm text-muted-foreground">
+            <p>{t("ibkr.mfa.body", { account: brokerAccountKey?.toUpperCase() ?? "—" })}</p>
+            <p>{t("ibkr.mfa.bodyAlt")}</p>
           </DialogDescription>
         </DialogHeader>
+        <div className="rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-800">
+          {t("ibkr.mfa.statusWaiting")}
+        </div>
         <DialogFooter>
-          <Button onClick={() => setMfaPromptOpen(false)}>{t("ibkr.mfa.dismiss")}</Button>
+          <Button className="w-full" onClick={() => setMfaPromptOpen(false)}>
+            {t("ibkr.mfa.dismiss")}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -658,13 +664,13 @@ export function SidebarBrokerProfile({
             {t("ibkr.retry.notice", { count: stuckRequests.length })}
           </div>
         ) : null}
-        <div className="grid grid-cols-2 gap-2 pt-1">
+        <div className="grid grid-cols-1 gap-2 pt-1">
           <Button
             size="sm"
             variant={isConnected ? "outline" : "default"}
             disabled={updating || !brokerAccountKey}
             onClick={() => setConnectionEnabled(!isConnected)}
-            className="h-7 w-full text-xs"
+            className="h-8 w-full text-xs"
           >
             {isConnected ? t("ibkr.sidebar.disconnect") : t("ibkr.sidebar.connect")}
           </Button>
@@ -673,18 +679,18 @@ export function SidebarBrokerProfile({
             variant="ghost"
             disabled={updating || !brokerAccountKey}
             onClick={requestOrdersRefresh}
-            className="h-7 w-full text-xs"
+            className="h-8 w-full text-xs"
           >
             {t("ibkr.sidebar.refreshOrders")}
           </Button>
         </div>
         {stuckRequests.length ? (
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-2">
             <Button
               size="sm"
               variant="outline"
               onClick={() => setRetryOpen(true)}
-              className="h-7 w-full text-xs"
+              className="h-8 w-full text-xs"
               disabled={!user}
             >
               {t("ibkr.retry.action", { count: stuckRequests.length })}
@@ -693,7 +699,7 @@ export function SidebarBrokerProfile({
               size="sm"
               variant="destructive"
               onClick={() => setCancelOpen(true)}
-              className="h-7 w-full text-xs"
+              className="h-8 w-full text-xs"
               disabled={!user}
             >
               {t("ibkr.stuckCancel.action", { count: stuckRequests.length })}

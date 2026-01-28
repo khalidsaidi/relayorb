@@ -845,10 +845,13 @@ const en = {
       liveCancel: "Stay on Paper",
     },
     mfa: {
-      title: "Action needed: approve IBKR login",
+      title: "Approve IBKR login to trade",
       body:
-        "Live trading is enabled for {{account}}, but the gateway isn’t connected yet. Open the IBKR Gateway (live) and approve the MFA/login prompt. Connection will turn green once approved.",
-      dismiss: "Got it",
+        "To place orders for {{account}}, IBKR needs a quick security approval. Open IBKR Mobile and approve the login (IB Key). If you see a code, enter it in the app.",
+      bodyAlt:
+        "We’ll connect automatically once approved. If you don’t see a prompt, sign out of other IBKR apps and try again.",
+      statusWaiting: "Waiting for secure approval…",
+      dismiss: "OK, I’ll approve it",
     },
     retry: {
       title: "Retry stuck live orders?",
