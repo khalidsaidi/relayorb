@@ -39,11 +39,53 @@ case "$command" in
     if [ -n "${FINNHUB_API_KEY:-}" ]; then
       envs="FINNHUB_API_KEY=${FINNHUB_API_KEY}"
     fi
+    if [ -n "${STOCKDATA_API_KEY:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|STOCKDATA_API_KEY=${STOCKDATA_API_KEY}"
+      else
+        envs="STOCKDATA_API_KEY=${STOCKDATA_API_KEY}"
+      fi
+    fi
+    if [ -n "${TWELVEDATA_API_KEY:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|TWELVEDATA_API_KEY=${TWELVEDATA_API_KEY}"
+      else
+        envs="TWELVEDATA_API_KEY=${TWELVEDATA_API_KEY}"
+      fi
+    fi
+    if [ -n "${ALPHAVANTAGE_API_KEY:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY}"
+      else
+        envs="ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY}"
+      fi
+    fi
     if [ -n "${FINNHUB_BASE_URL:-}" ]; then
       if [ -n "$envs" ]; then
         envs="${envs}|FINNHUB_BASE_URL=${FINNHUB_BASE_URL}"
       else
         envs="FINNHUB_BASE_URL=${FINNHUB_BASE_URL}"
+      fi
+    fi
+    if [ -n "${STOCKDATA_BASE_URL:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|STOCKDATA_BASE_URL=${STOCKDATA_BASE_URL}"
+      else
+        envs="STOCKDATA_BASE_URL=${STOCKDATA_BASE_URL}"
+      fi
+    fi
+    if [ -n "${TWELVEDATA_BASE_URL:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|TWELVEDATA_BASE_URL=${TWELVEDATA_BASE_URL}"
+      else
+        envs="TWELVEDATA_BASE_URL=${TWELVEDATA_BASE_URL}"
+      fi
+    fi
+    if [ -n "${ALPHAVANTAGE_BASE_URL:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|ALPHAVANTAGE_BASE_URL=${ALPHAVANTAGE_BASE_URL}"
+      else
+        envs="ALPHAVANTAGE_BASE_URL=${ALPHAVANTAGE_BASE_URL}"
       fi
     fi
     deploy_run_service "$SERVICE_NAME" "$(resolve_image "$SERVICE_NAME")" "$REGION" "$ALLOW_UNAUTHENTICATED" "$envs"

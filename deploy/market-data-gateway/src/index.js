@@ -16,12 +16,18 @@ const config = {
     "relayorb",
   fmpKey: process.env.FMP_API_KEY || "",
   finnhubKey: process.env.FINNHUB_API_KEY || "",
+  stockdataKey: process.env.STOCKDATA_API_KEY || process.env.STOCKDATA_TOKEN || "",
+  twelvedataKey: process.env.TWELVEDATA_API_KEY || "",
+  alphavantageKey: process.env.ALPHAVANTAGE_API_KEY || "",
   marketauxKey: process.env.MARKETAUX_API_KEY || "",
   port: parseInt(process.env.PORT || "8080", 10),
   fmpBaseUrl: process.env.FMP_BASE_URL || "https://financialmodelingprep.com",
   fmpStableBaseUrl:
     process.env.FMP_STABLE_BASE_URL || "https://financialmodelingprep.com/stable",
   finnhubBaseUrl: process.env.FINNHUB_BASE_URL || "https://finnhub.io/api/v1",
+  stockdataBaseUrl: process.env.STOCKDATA_BASE_URL || "https://api.stockdata.org/v1",
+  twelvedataBaseUrl: process.env.TWELVEDATA_BASE_URL || "https://api.twelvedata.com",
+  alphavantageBaseUrl: process.env.ALPHAVANTAGE_BASE_URL || "https://www.alphavantage.co",
   marketauxBaseUrl: process.env.MARKETAUX_BASE_URL || "https://api.marketaux.com/v1/news/all",
   cacheDefaultMs: parseInt(process.env.MDG_CACHE_TTL_MS || "15000", 10),
   cacheCandlesMs: parseInt(process.env.MDG_CANDLES_TTL_MS || "60000", 10),
@@ -1425,9 +1431,27 @@ function buildFinnhubQuotePayload(entry, symbol, assetClass) {
   }
 }
 
+function parseFmpErrorPayload(data) {
+  if (!data || typeof data !== "object") return null
+  const message =
+    data?.["Error Message"] ||
+    data?.error ||
+    data?.message ||
+    data?.Error ||
+    data?.Note ||
+    data?.Information
+  if (typeof message === "string" && message.trim()) return message.trim()
+  return null
+}
+
 function isRateLimitError(err) {
   const message = err?.message ? String(err.message) : ""
-  return message.includes("Request failed 429") || message.includes("Bandwidth Limit")
+  return (
+    message.includes("Request failed 429") ||
+    message.includes("Bandwidth") ||
+    message.toLowerCase().includes("quota") ||
+    message.toLowerCase().includes("limit")
+  )
 }
 
 async function fetchFinnhubQuote(symbol) {
@@ -1437,6 +1461,323 @@ async function fetchFinnhubQuote(symbol) {
   url.searchParams.set("token", config.finnhubKey)
   const data = await fetchJson(url.toString())
   return buildFinnhubQuotePayload(data, symbol, "stock")
+}
+
+function buildStockDataQuotePayload(entry, symbol, assetClass) {
+  if (!entry) return null
+  const price =
+    parseNumber(entry.price) ??
+    parseNumber(entry.last_price) ??
+    parseNumber(entry.close) ??
+    parseNumber(entry.last) ??
+    parseNumber(entry.last_trade_price)
+  if (typeof price !== "number") return null
+  const bid = parseNumber(entry.bid)
+  const ask = parseNumber(entry.ask)
+  const change =
+    parseNumber(entry.change) ??
+    parseNumber(entry.change_price) ??
+    parseNumber(entry.day_change)
+  const changePercent = parsePercent(entry.change_percent ?? entry.changePercent)
+  const dayHigh = parseNumber(entry.high ?? entry.day_high)
+  const dayLow = parseNumber(entry.low ?? entry.day_low)
+  const open = parseNumber(entry.open ?? entry.day_open)
+  const previousClose =
+    parseNumber(entry.previous_close ?? entry.prev_close ?? entry.previous_close_price)
+  const volume = parseNumber(entry.volume)
+  return {
+    ...entry,
+    symbol,
+    assetClass,
+    price,
+    bid,
+    ask,
+    volume,
+    change,
+    changePercent,
+    changePercentage: changePercent,
+    dayHigh,
+    dayLow,
+    previousClose,
+    open,
+    source: "stockdata",
+  }
+}
+
+async function fetchStockDataQuote(symbol) {
+  if (!config.stockdataKey) return null
+  const url = new URL(`${config.stockdataBaseUrl}/data/quote`)
+  url.searchParams.set("symbols", symbol)
+  url.searchParams.set("api_token", config.stockdataKey)
+  const data = await fetchJson(url.toString())
+  const items = Array.isArray(data?.data)
+    ? data.data
+    : Array.isArray(data)
+      ? data
+      : data?.data
+        ? [data.data]
+        : []
+  const entry =
+    items.find((item) => String(item?.symbol || "").toUpperCase() === symbol) || items[0] || null
+  return buildStockDataQuotePayload(entry, symbol, "stock")
+}
+
+function buildTwelveDataQuotePayload(entry, symbol, assetClass) {
+  if (!entry) return null
+  const price = parseNumber(entry.close ?? entry.price ?? entry.last)
+  if (typeof price !== "number") return null
+  const open = parseNumber(entry.open)
+  const dayHigh = parseNumber(entry.high)
+  const dayLow = parseNumber(entry.low)
+  const volume = parseNumber(entry.volume)
+  return {
+    symbol,
+    assetClass,
+    price,
+    bid: null,
+    ask: null,
+    volume,
+    change: null,
+    changePercent: null,
+    changePercentage: null,
+    dayHigh,
+    dayLow,
+    previousClose: null,
+    open,
+    source: "twelvedata",
+  }
+}
+
+async function fetchTwelveDataQuote(symbol) {
+  if (!config.twelvedataKey) return null
+  const url = new URL(`${config.twelvedataBaseUrl}/time_series`)
+  url.searchParams.set("symbol", symbol)
+  url.searchParams.set("interval", "1min")
+  url.searchParams.set("outputsize", "1")
+  url.searchParams.set("apikey", config.twelvedataKey)
+  const data = await fetchJson(url.toString())
+  if (data?.status === "error") {
+    throw new Error(data?.message || "TwelveData error")
+  }
+  const entry = Array.isArray(data?.values) ? data.values[0] : null
+  return buildTwelveDataQuotePayload(entry, symbol, "stock")
+}
+
+function buildAlphaVantageQuotePayload(entry, symbol, assetClass) {
+  if (!entry) return null
+  const price = parseNumber(entry["05. price"])
+  if (typeof price !== "number") return null
+  const open = parseNumber(entry["02. open"])
+  const dayHigh = parseNumber(entry["03. high"])
+  const dayLow = parseNumber(entry["04. low"])
+  const volume = parseNumber(entry["06. volume"])
+  const previousClose = parseNumber(entry["08. previous close"])
+  const change = parseNumber(entry["09. change"])
+  const changePercent = parsePercent(entry["10. change percent"])
+  return {
+    symbol,
+    assetClass,
+    price,
+    bid: null,
+    ask: null,
+    volume,
+    change,
+    changePercent,
+    changePercentage: changePercent,
+    dayHigh,
+    dayLow,
+    previousClose,
+    open,
+    source: "alphavantage",
+  }
+}
+
+async function fetchAlphaVantageQuote(symbol) {
+  if (!config.alphavantageKey) return null
+  const url = new URL(`${config.alphavantageBaseUrl}/query`)
+  url.searchParams.set("function", "GLOBAL_QUOTE")
+  url.searchParams.set("symbol", symbol)
+  url.searchParams.set("apikey", config.alphavantageKey)
+  const data = await fetchJson(url.toString())
+  if (data?.Note || data?.Information || data?.["Error Message"]) {
+    throw new Error(
+      data?.Note || data?.Information || data?.["Error Message"] || "Alpha Vantage error"
+    )
+  }
+  const entry = data?.["Global Quote"]
+  return buildAlphaVantageQuotePayload(entry, symbol, "stock")
+}
+
+async function fetchAlphaVantageOverview(symbol) {
+  if (!config.alphavantageKey) return null
+  const url = new URL(`${config.alphavantageBaseUrl}/query`)
+  url.searchParams.set("function", "OVERVIEW")
+  url.searchParams.set("symbol", symbol)
+  url.searchParams.set("apikey", config.alphavantageKey)
+  const data = await fetchJson(url.toString())
+  if (data?.Note || data?.Information || data?.["Error Message"]) {
+    throw new Error(
+      data?.Note || data?.Information || data?.["Error Message"] || "Alpha Vantage error"
+    )
+  }
+  if (!data || typeof data !== "object") return null
+  if (data.Symbol && String(data.Symbol).toUpperCase() !== symbol) return null
+  return data
+}
+
+async function fetchStockDataEod(symbol, interval, fromDate, toDate) {
+  if (!config.stockdataKey) return []
+  const url = new URL(`${config.stockdataBaseUrl}/data/eod`)
+  url.searchParams.set("symbols", symbol)
+  url.searchParams.set("interval", interval)
+  url.searchParams.set("api_token", config.stockdataKey)
+  if (fromDate) url.searchParams.set("date_from", fromDate)
+  if (toDate) url.searchParams.set("date_to", toDate)
+  const data = await fetchJson(url.toString())
+  return Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []
+}
+
+async function fetchTwelveDataTimeSeries(symbol, interval, outputsize) {
+  if (!config.twelvedataKey) return []
+  const url = new URL(`${config.twelvedataBaseUrl}/time_series`)
+  url.searchParams.set("symbol", symbol)
+  url.searchParams.set("interval", interval)
+  url.searchParams.set("apikey", config.twelvedataKey)
+  if (outputsize) url.searchParams.set("outputsize", String(outputsize))
+  const data = await fetchJson(url.toString())
+  if (data?.status === "error") {
+    throw new Error(data?.message || "TwelveData error")
+  }
+  return Array.isArray(data?.values) ? data.values : []
+}
+
+async function fetchAlphaVantageDaily(symbol) {
+  if (!config.alphavantageKey) return []
+  const url = new URL(`${config.alphavantageBaseUrl}/query`)
+  url.searchParams.set("function", "TIME_SERIES_DAILY")
+  url.searchParams.set("symbol", symbol)
+  url.searchParams.set("apikey", config.alphavantageKey)
+  const data = await fetchJson(url.toString())
+  if (data?.Note || data?.Information || data?.["Error Message"]) {
+    throw new Error(
+      data?.Note || data?.Information || data?.["Error Message"] || "Alpha Vantage error"
+    )
+  }
+  const series = data?.["Time Series (Daily)"]
+  if (!series || typeof series !== "object") return []
+  return Object.entries(series).map(([date, entry]) => ({
+    date,
+    open: entry["1. open"],
+    high: entry["2. high"],
+    low: entry["3. low"],
+    close: entry["4. close"],
+    volume: entry["5. volume"],
+  }))
+}
+
+async function resolveQuoteFallback(symbol, assetClass, startedAt) {
+  const providers = [
+    {
+      id: "finnhub",
+      enabled: Boolean(config.finnhubKey && assetClass === "stock"),
+      fetcher: () => fetchFinnhubQuote(symbol),
+    },
+    {
+      id: "stockdata",
+      enabled: Boolean(config.stockdataKey && assetClass === "stock"),
+      fetcher: () => fetchStockDataQuote(symbol),
+    },
+    {
+      id: "twelvedata",
+      enabled: Boolean(config.twelvedataKey && assetClass === "stock"),
+      fetcher: () => fetchTwelveDataQuote(symbol),
+    },
+    {
+      id: "alphavantage",
+      enabled: Boolean(config.alphavantageKey && assetClass === "stock"),
+      fetcher: () => fetchAlphaVantageQuote(symbol),
+    },
+  ]
+
+  for (const provider of providers) {
+    if (!provider.enabled) continue
+    try {
+      const payload = await provider.fetcher()
+      if (!payload) continue
+      await emitProviderEvent({
+        stationId: `provider:${provider.id}`,
+        status: "end",
+        startMs: startedAt,
+        meta: {
+          providerId: provider.id,
+          endpointName: "quote",
+          assetClass,
+          paramsHash: hashParams({ symbol, assetClass }),
+          httpStatus: 200,
+        },
+      })
+      return payload
+    } catch (err) {
+      await emitProviderEvent({
+        stationId: `provider:${provider.id}`,
+        status: "error",
+        startMs: startedAt,
+        meta: {
+          providerId: provider.id,
+          endpointName: "quote",
+          assetClass,
+          paramsHash: hashParams({ symbol, assetClass }),
+        },
+        error: { message: err?.message ? String(err.message) : "Request failed" },
+      })
+    }
+  }
+  return null
+}
+
+async function fetchFallbackDailyCandles(symbol, fmpInterval, limit) {
+  const interval = fmpInterval === "1week" ? "1week" : "1day"
+  if (config.stockdataKey) {
+    const stockInterval = interval === "1week" ? "week" : "day"
+    try {
+      const entries = await fetchStockDataEod(symbol, stockInterval, null, null)
+      if (Array.isArray(entries) && entries.length) {
+        return { data: entries, source: "stockdata-eod", providerId: "stockdata" }
+      }
+    } catch {
+      // try next provider
+    }
+  }
+  if (config.twelvedataKey) {
+    const twelveInterval = interval === "1week" ? "1week" : "1day"
+    try {
+      const values = await fetchTwelveDataTimeSeries(symbol, twelveInterval, limit)
+      if (Array.isArray(values) && values.length) {
+        const mapped = values.map((entry) => ({
+          date: entry.datetime || entry.date || entry.time,
+          open: entry.open,
+          high: entry.high,
+          low: entry.low,
+          close: entry.close,
+          volume: entry.volume,
+        }))
+        return { data: mapped, source: "twelvedata", providerId: "twelvedata" }
+      }
+    } catch {
+      // try next provider
+    }
+  }
+  if (config.alphavantageKey && interval === "1day") {
+    try {
+      const entries = await fetchAlphaVantageDaily(symbol)
+      if (Array.isArray(entries) && entries.length) {
+        return { data: entries, source: "alphavantage", providerId: "alphavantage" }
+      }
+    } catch {
+      // try next provider
+    }
+  }
+  return { data: [], source: "", providerId: "" }
 }
 
 function mapIntervalToMs(interval) {
@@ -1915,38 +2256,13 @@ async function handleFmpQuote(req, res, params, replayState) {
     respondJson(res, 400, { error: "Invalid symbol" })
     return
   }
+  const startedAt = Date.now()
   if (!config.fmpKey) {
-    if (config.finnhubKey && assetClass === "stock") {
-      try {
-        const fallbackPayload = await fetchFinnhubQuote(normalized)
-        if (fallbackPayload) {
-          respondJson(res, 200, fallbackPayload)
-          await emitProviderEvent({
-            stationId: "provider:finnhub",
-            status: "end",
-            meta: {
-              providerId: "finnhub",
-              endpointName: "quote",
-              assetClass,
-              paramsHash: hashParams({ symbol: normalized, assetClass }),
-              httpStatus: 200,
-            },
-          })
-          return
-        }
-      } catch (err) {
-        await emitProviderEvent({
-          stationId: "provider:finnhub",
-          status: "error",
-          meta: {
-            providerId: "finnhub",
-            endpointName: "quote",
-            assetClass,
-            paramsHash: hashParams({ symbol: normalized, assetClass }),
-          },
-          error: { message: err?.message ? String(err.message) : "Request failed" },
-        })
-      }
+    const fallbackPayload = await resolveQuoteFallback(normalized, assetClass, startedAt)
+    if (fallbackPayload) {
+      setCached(`fmp:quote:${assetClass}:${normalized}`, fallbackPayload, config.cacheDefaultMs)
+      respondJson(res, 200, fallbackPayload)
+      return
     }
     respondJson(res, 500, { error: "FMP API key is not configured" })
     return
@@ -1970,7 +2286,6 @@ async function handleFmpQuote(req, res, params, replayState) {
     return
   }
 
-  const startedAt = Date.now()
   const url = new URL(`${config.fmpStableBaseUrl}/quote`)
   url.searchParams.set("symbol", normalized)
   url.searchParams.set("apikey", config.fmpKey)
@@ -1979,43 +2294,12 @@ async function handleFmpQuote(req, res, params, replayState) {
     const data = await fetchJson(url.toString())
     entry = Array.isArray(data) ? data[0] : data
   } catch (err) {
-    if (config.finnhubKey && assetClass === "stock" && isRateLimitError(err)) {
-      try {
-        const fallbackPayload = await fetchFinnhubQuote(normalized)
-        if (fallbackPayload) {
-          setCached(cacheKey, fallbackPayload, config.cacheDefaultMs)
-          respondJson(res, 200, fallbackPayload)
-          await emitProviderEvent({
-            stationId: "provider:finnhub",
-            status: "end",
-            startMs: startedAt,
-            meta: {
-              providerId: "finnhub",
-              endpointName: "quote",
-              assetClass,
-              paramsHash: hashParams({ symbol: normalized, assetClass }),
-              httpStatus: 200,
-            },
-          })
-          return
-        }
-      } catch (fallbackErr) {
-        await emitProviderEvent({
-          stationId: "provider:finnhub",
-          status: "error",
-          startMs: startedAt,
-          meta: {
-            providerId: "finnhub",
-            endpointName: "quote",
-            assetClass,
-            paramsHash: hashParams({ symbol: normalized, assetClass }),
-          },
-          error: {
-            message: fallbackErr?.message
-              ? String(fallbackErr.message)
-              : "Request failed",
-          },
-        })
+    if (isRateLimitError(err)) {
+      const fallbackPayload = await resolveQuoteFallback(normalized, assetClass, startedAt)
+      if (fallbackPayload) {
+        setCached(cacheKey, fallbackPayload, config.cacheDefaultMs)
+        respondJson(res, 200, fallbackPayload)
+        return
       }
     }
     await emitProviderEvent({
@@ -2318,6 +2602,9 @@ async function handleFmpCandles(req, res, params, replayState) {
   const assetClass = params.get("assetClass") || "stock"
   const interval = params.get("interval") || "15min"
   const limit = clamp(parseInt(params.get("limit") || "120", 10), 1, 500)
+  const dailyModeRaw = (params.get("dailyMode") || "").toLowerCase()
+  const dailyMode =
+    dailyModeRaw === "strict" || dailyModeRaw === "full" ? dailyModeRaw : "standard"
 
   const normalized = normalizeFmpSymbol(symbol, assetClass)
   if (!normalized) {
@@ -2377,19 +2664,57 @@ async function handleFmpCandles(req, res, params, replayState) {
       data = await fetchJson(url.toString())
     }
   } catch (err) {
-    await emitProviderEvent({
-      stationId: "provider:fmp",
-      status: "error",
-      startMs: startedAt,
-      meta: {
-        providerId: "fmp",
-        endpointName: "candles",
-        assetClass,
-        paramsHash: hashParams({ symbol: normalized, assetClass, interval: fmpInterval, limit }),
-      },
-      error: { message: err?.message ? String(err.message) : "Request failed" },
-    })
-    throw err
+    if (
+      isRateLimitError(err) &&
+      assetClass === "stock" &&
+      (fmpInterval === "1day" || fmpInterval === "1week")
+    ) {
+      await emitProviderEvent({
+        stationId: "provider:fmp",
+        status: "error",
+        startMs: startedAt,
+        meta: {
+          providerId: "fmp",
+          endpointName: "candles",
+          assetClass,
+          paramsHash: hashParams({ symbol: normalized, assetClass, interval: fmpInterval, limit }),
+        },
+        error: { message: err?.message ? String(err.message) : "Request failed" },
+      })
+      const fallback = await fetchFallbackDailyCandles(normalized, fmpInterval, limit)
+      if (Array.isArray(fallback.data) && fallback.data.length) {
+        data = fallback.data
+        source = fallback.source || source
+        await emitProviderEvent({
+          stationId: `provider:${fallback.providerId}`,
+          status: "end",
+          startMs: startedAt,
+          meta: {
+            providerId: fallback.providerId,
+            endpointName: "candles",
+            assetClass,
+            paramsHash: hashParams({ symbol: normalized, assetClass, interval: fmpInterval, limit }),
+            httpStatus: 200,
+          },
+        })
+      } else {
+        throw err
+      }
+    } else {
+      await emitProviderEvent({
+        stationId: "provider:fmp",
+        status: "error",
+        startMs: startedAt,
+        meta: {
+          providerId: "fmp",
+          endpointName: "candles",
+          assetClass,
+          paramsHash: hashParams({ symbol: normalized, assetClass, interval: fmpInterval, limit }),
+        },
+        error: { message: err?.message ? String(err.message) : "Request failed" },
+      })
+      throw err
+    }
   }
   if (!Array.isArray(data)) {
     respondJson(res, 502, { error: "Invalid candles response" })
@@ -2441,12 +2766,19 @@ async function handleFmpCandles(req, res, params, replayState) {
   }
   setCached(cacheKey, payload, config.cacheCandlesMs)
   respondJson(res, 200, payload)
+  const providerId = source.startsWith("stockdata")
+    ? "stockdata"
+    : source.startsWith("twelvedata")
+      ? "twelvedata"
+      : source.startsWith("alphavantage")
+        ? "alphavantage"
+        : "fmp"
   await emitProviderEvent({
-    stationId: "provider:fmp",
+    stationId: `provider:${providerId}`,
     status: "end",
     startMs: startedAt,
     meta: {
-      providerId: "fmp",
+      providerId,
       endpointName: "candles",
       assetClass,
       paramsHash: hashParams({ symbol: normalized, assetClass, interval: fmpInterval, limit }),
@@ -2884,11 +3216,6 @@ async function handleFmpProfile(req, res, params, replayState) {
     await handleReplayProfile(res, params, replayState)
     return
   }
-  if (!config.fmpKey) {
-    respondJson(res, 500, { error: "FMP_API_KEY is not configured" })
-    return
-  }
-
   const symbol = (params.get("symbol") || "").toUpperCase().replace(/[/-]/g, "")
   if (!symbol) {
     respondJson(res, 400, { error: "Missing symbol" })
@@ -2903,6 +3230,38 @@ async function handleFmpProfile(req, res, params, replayState) {
   }
 
   const startedAt = Date.now()
+  if (!config.fmpKey) {
+    try {
+      const overview = await fetchAlphaVantageOverview(symbol)
+      if (overview) {
+        const payload = { symbol, profile: overview, source: "alphavantage" }
+        setCached(cacheKey, payload, config.cacheMarketsMs * 10)
+        respondJson(res, 200, payload)
+        await emitProviderEvent({
+          stationId: "provider:alphavantage",
+          status: "end",
+          startMs: startedAt,
+          meta: {
+            providerId: "alphavantage",
+            endpointName: "profile",
+            paramsHash: hashParams({ symbol }),
+            httpStatus: 200,
+          },
+        })
+        return
+      }
+    } catch (err) {
+      await emitProviderEvent({
+        stationId: "provider:alphavantage",
+        status: "error",
+        startMs: startedAt,
+        meta: { providerId: "alphavantage", endpointName: "profile", paramsHash: hashParams({ symbol }) },
+        error: { message: err?.message ? String(err.message) : "Request failed" },
+      })
+    }
+    respondJson(res, 500, { error: "FMP_API_KEY is not configured" })
+    return
+  }
   const url = new URL(`${config.fmpStableBaseUrl}/profile`)
   url.searchParams.set("symbol", symbol)
   url.searchParams.set("apikey", config.fmpKey)
@@ -2911,6 +3270,42 @@ async function handleFmpProfile(req, res, params, replayState) {
   try {
     data = await fetchJson(url.toString())
   } catch (err) {
+    if (isRateLimitError(err)) {
+      try {
+        const overview = await fetchAlphaVantageOverview(symbol)
+        if (overview) {
+          const payload = { symbol, profile: overview, source: "alphavantage" }
+          setCached(cacheKey, payload, config.cacheMarketsMs * 10)
+          respondJson(res, 200, payload)
+          await emitProviderEvent({
+            stationId: "provider:alphavantage",
+            status: "end",
+            startMs: startedAt,
+            meta: {
+              providerId: "alphavantage",
+              endpointName: "profile",
+              paramsHash: hashParams({ symbol }),
+              httpStatus: 200,
+            },
+          })
+          return
+        }
+      } catch (fallbackErr) {
+        await emitProviderEvent({
+          stationId: "provider:alphavantage",
+          status: "error",
+          startMs: startedAt,
+          meta: {
+            providerId: "alphavantage",
+            endpointName: "profile",
+            paramsHash: hashParams({ symbol }),
+          },
+          error: {
+            message: fallbackErr?.message ? String(fallbackErr.message) : "Request failed",
+          },
+        })
+      }
+    }
     await emitProviderEvent({
       stationId: "provider:fmp",
       status: "error",
@@ -2943,10 +3338,6 @@ async function handleFmpSharesFloat(req, res, params, replayState) {
     await handleReplaySharesFloat(res, params, replayState)
     return
   }
-  if (!config.fmpKey) {
-    respondJson(res, 500, { error: "FMP_API_KEY is not configured" })
-    return
-  }
 
   const symbol = (params.get("symbol") || "").toUpperCase().replace(/[/-]/g, "")
   if (!symbol) {
@@ -2962,6 +3353,52 @@ async function handleFmpSharesFloat(req, res, params, replayState) {
   }
 
   const startedAt = Date.now()
+  if (!config.fmpKey) {
+    try {
+      const overview = await fetchAlphaVantageOverview(symbol)
+      const sharesOutstanding = parseNumber(overview?.SharesOutstanding)
+      if (Number.isFinite(sharesOutstanding)) {
+        const payload = {
+          symbol,
+          items: [
+            {
+              symbol,
+              sharesFloat: sharesOutstanding,
+              sharesOutstanding,
+              fallback: "shares_outstanding",
+              source: "alphavantage",
+            },
+          ],
+          source: "alphavantage",
+        }
+        setCached(cacheKey, payload, config.cacheMarketsMs * 10)
+        respondJson(res, 200, payload)
+        await emitProviderEvent({
+          stationId: "provider:alphavantage",
+          status: "end",
+          startMs: startedAt,
+          meta: {
+            providerId: "alphavantage",
+            endpointName: "shares-float",
+            paramsHash: hashParams({ symbol }),
+            httpStatus: 200,
+            count: 1,
+          },
+        })
+        return
+      }
+    } catch (err) {
+      await emitProviderEvent({
+        stationId: "provider:alphavantage",
+        status: "error",
+        startMs: startedAt,
+        meta: { providerId: "alphavantage", endpointName: "shares-float", paramsHash: hashParams({ symbol }) },
+        error: { message: err?.message ? String(err.message) : "Request failed" },
+      })
+    }
+    respondJson(res, 500, { error: "FMP_API_KEY is not configured" })
+    return
+  }
   const url = new URL(`${config.fmpStableBaseUrl}/shares-float`)
   url.searchParams.set("symbol", symbol)
   url.searchParams.set("apikey", config.fmpKey)
@@ -2970,6 +3407,56 @@ async function handleFmpSharesFloat(req, res, params, replayState) {
   try {
     data = await fetchJson(url.toString())
   } catch (err) {
+    if (isRateLimitError(err)) {
+      try {
+        const overview = await fetchAlphaVantageOverview(symbol)
+        const sharesOutstanding = parseNumber(overview?.SharesOutstanding)
+        if (Number.isFinite(sharesOutstanding)) {
+          const payload = {
+            symbol,
+            items: [
+              {
+                symbol,
+                sharesFloat: sharesOutstanding,
+                sharesOutstanding,
+                fallback: "shares_outstanding",
+                source: "alphavantage",
+              },
+            ],
+            source: "alphavantage",
+          }
+          setCached(cacheKey, payload, config.cacheMarketsMs * 10)
+          respondJson(res, 200, payload)
+          await emitProviderEvent({
+            stationId: "provider:alphavantage",
+            status: "end",
+            startMs: startedAt,
+            meta: {
+              providerId: "alphavantage",
+              endpointName: "shares-float",
+              paramsHash: hashParams({ symbol }),
+              httpStatus: 200,
+              count: 1,
+            },
+          })
+          return
+        }
+      } catch (fallbackErr) {
+        await emitProviderEvent({
+          stationId: "provider:alphavantage",
+          status: "error",
+          startMs: startedAt,
+          meta: {
+            providerId: "alphavantage",
+            endpointName: "shares-float",
+            paramsHash: hashParams({ symbol }),
+          },
+          error: {
+            message: fallbackErr?.message ? String(fallbackErr.message) : "Request failed",
+          },
+        })
+      }
+    }
     await emitProviderEvent({
       stationId: "provider:fmp",
       status: "error",
@@ -3603,6 +4090,10 @@ async function fetchFmpHistoricalBars(symbol, interval, fromDate, toDate) {
   if (toDate) url.searchParams.set("to", toDate)
   try {
     const data = await fetchJsonWithRetry(url.toString())
+    const fmpError = parseFmpErrorPayload(data)
+    if (fmpError) {
+      throw new Error(fmpError)
+    }
     return Array.isArray(data) ? data : []
   } catch (err) {
     const message = err?.message ? String(err.message) : ""
@@ -3628,6 +4119,10 @@ async function fetchFmpHistoricalFull(symbol, fromDate, toDate) {
   for (const candidate of candidates) {
     try {
       data = await fetchJsonWithRetry(candidate.toString())
+      const fmpError = parseFmpErrorPayload(data)
+      if (fmpError) {
+        throw new Error(fmpError)
+      }
     } catch (err) {
       const message = err?.message ? String(err.message) : ""
       lastErr = err
@@ -3661,22 +4156,56 @@ async function fetchFmpHistoricalFull(symbol, fromDate, toDate) {
 }
 
 async function fetchFmpProfileData(symbol) {
-  if (!config.fmpKey) throw new Error("FMP API key is not configured")
+  if (!config.fmpKey) {
+    return fetchAlphaVantageOverview(symbol)
+  }
   const url = new URL(`${config.fmpStableBaseUrl}/profile`)
   url.searchParams.set("symbol", symbol)
   url.searchParams.set("apikey", config.fmpKey)
-  const data = await fetchJsonWithRetry(url.toString())
-  if (!Array.isArray(data)) return null
-  return data[0] || null
+  try {
+    const data = await fetchJsonWithRetry(url.toString())
+    const fmpError = parseFmpErrorPayload(data)
+    if (fmpError) {
+      throw new Error(fmpError)
+    }
+    if (!Array.isArray(data)) return null
+    return data[0] || null
+  } catch (err) {
+    if (isRateLimitError(err)) {
+      return fetchAlphaVantageOverview(symbol)
+    }
+    throw err
+  }
 }
 
 async function fetchFmpSharesFloatData(symbol) {
-  if (!config.fmpKey) throw new Error("FMP API key is not configured")
+  if (!config.fmpKey) {
+    const overview = await fetchAlphaVantageOverview(symbol)
+    const sharesOutstanding = parseNumber(overview?.SharesOutstanding)
+    return Number.isFinite(sharesOutstanding)
+      ? [{ symbol, sharesFloat: sharesOutstanding, sharesOutstanding, fallback: "shares_outstanding" }]
+      : []
+  }
   const url = new URL(`${config.fmpStableBaseUrl}/shares-float`)
   url.searchParams.set("symbol", symbol)
   url.searchParams.set("apikey", config.fmpKey)
-  const data = await fetchJsonWithRetry(url.toString())
-  return Array.isArray(data) ? data : []
+  try {
+    const data = await fetchJsonWithRetry(url.toString())
+    const fmpError = parseFmpErrorPayload(data)
+    if (fmpError) {
+      throw new Error(fmpError)
+    }
+    return Array.isArray(data) ? data : []
+  } catch (err) {
+    if (isRateLimitError(err)) {
+      const overview = await fetchAlphaVantageOverview(symbol)
+      const sharesOutstanding = parseNumber(overview?.SharesOutstanding)
+      return Number.isFinite(sharesOutstanding)
+        ? [{ symbol, sharesFloat: sharesOutstanding, sharesOutstanding, fallback: "shares_outstanding" }]
+        : []
+    }
+    throw err
+  }
 }
 
 async function fetchMarketauxNewsForSymbols(symbols, limit) {
