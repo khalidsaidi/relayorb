@@ -9,16 +9,19 @@ export function usePresence() {
   const { user } = useAuth()
   const lastUpdateRef = useRef<number>(0)
   const presenceRef = useRef<(() => void) | null>(null)
+  const activeRef = useRef(true)
 
   useEffect(() => {
     if (!firebaseEnabled || !db || !user) return
 
+    activeRef.current = true
     const userId = user.uid
     const userEmail = user.email || 'unknown'
     const presenceDocRef = doc(db, PRESENCE_COLLECTION, userId)
 
     // Track activity on mount
     const updatePresence = async () => {
+      if (!activeRef.current) return
       const now = Date.now()
       // Rate limit updates to once per 30 seconds to avoid too many writes
       if (now - lastUpdateRef.current < 30000) return
@@ -90,6 +93,7 @@ export function usePresence() {
     }
 
     return () => {
+      activeRef.current = false
       if (presenceRef.current) {
         presenceRef.current()
       }

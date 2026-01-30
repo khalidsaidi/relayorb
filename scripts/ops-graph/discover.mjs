@@ -337,10 +337,25 @@ async function main() {
   }
 
   const providers = []
-  const fmpKey = resolveEnv("FMP_API_KEY", envFile)
-  const fmpBase = resolveEnv("FMP_BASE_URL", envFile) || resolveEnv("FMP_STABLE_BASE_URL", envFile)
-  if (fmpKey || fmpBase) {
-    providers.push({ id: "fmp", enabled: Boolean(fmpKey), host: safeHost(fmpBase) })
+  const finnhubKey = resolveEnv("FINNHUB_API_KEY", envFile)
+  const finnhubBase = resolveEnv("FINNHUB_BASE_URL", envFile)
+  if (finnhubKey || finnhubBase) {
+    providers.push({ id: "finnhub", enabled: Boolean(finnhubKey), host: safeHost(finnhubBase) })
+  }
+  const stockdataKey = resolveEnv("STOCKDATA_API_KEY", envFile) || resolveEnv("STOCKDATA_TOKEN", envFile)
+  const stockdataBase = resolveEnv("STOCKDATA_BASE_URL", envFile)
+  if (stockdataKey || stockdataBase) {
+    providers.push({ id: "stockdata", enabled: Boolean(stockdataKey), host: safeHost(stockdataBase) })
+  }
+  const twelvedataKey = resolveEnv("TWELVEDATA_API_KEY", envFile)
+  const twelvedataBase = resolveEnv("TWELVEDATA_BASE_URL", envFile)
+  if (twelvedataKey || twelvedataBase) {
+    providers.push({ id: "twelvedata", enabled: Boolean(twelvedataKey), host: safeHost(twelvedataBase) })
+  }
+  const alphavantageKey = resolveEnv("ALPHAVANTAGE_API_KEY", envFile)
+  const alphavantageBase = resolveEnv("ALPHAVANTAGE_BASE_URL", envFile)
+  if (alphavantageKey || alphavantageBase) {
+    providers.push({ id: "alphavantage", enabled: Boolean(alphavantageKey), host: safeHost(alphavantageBase) })
   }
   const marketauxKey = resolveEnv("MARKETAUX_API_KEY", envFile)
   const marketauxBase = resolveEnv("MARKETAUX_BASE_URL", envFile)
@@ -349,7 +364,9 @@ async function main() {
   }
 
   if (providers.length === 0) {
-    blockers.push("Provider discovery requires MDG/provider env vars (FMP_API_KEY, MARKETAUX_API_KEY, etc.).")
+    blockers.push(
+      "Provider discovery requires MDG/provider env vars (FINNHUB_API_KEY, STOCKDATA_API_KEY, TWELVEDATA_API_KEY, ALPHAVANTAGE_API_KEY, MARKETAUX_API_KEY, etc.)."
+    )
   }
 
   const providerSummary = [

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { parse } from "date-fns"
 import { fromZonedTime } from "date-fns-tz"
 import type { User } from "firebase/auth"
@@ -15,14 +15,14 @@ const GATEWAY_AUTH_ENABLED = (() => {
   return Boolean(PROXY_URL && GATEWAY_BASE === PROXY_URL)
 })()
 
-type FmpInterval = "1min" | "5min" | "15min" | "30min" | "1hour" | "eod"
+type MarketInterval = "1min" | "5min" | "15min" | "30min" | "1hour" | "eod"
 
 const MISSING_GATEWAY_MESSAGE =
   "Market data endpoint missing (set VITE_MARKET_DATA_PROXY_URL or VITE_MARKET_DATA_GATEWAY_URL)"
 const AUTH_REQUIRED_MESSAGE = "Sign in required to access market data."
 const AUTH_TOKEN_MESSAGE = "Auth token unavailable. Sign out/in and retry."
 
-export type FmpBar = {
+export type MarketBar = {
   time: number // ms since epoch
   open: number
   high: number
@@ -31,7 +31,7 @@ export type FmpBar = {
   volume?: number
 }
 
-type FmpQuote = {
+type MarketQuote = {
   symbol: string
   price: number
   change?: number
@@ -44,7 +44,7 @@ type FmpQuote = {
   timestamp?: number
 }
 
-function normalizeFmpSymbol(symbol: string) {
+function normalizeMarketSymbol(symbol: string) {
   const trimmed = symbol.trim().toUpperCase()
   return trimmed.replace(/[/-]/g, "")
 }
@@ -121,8 +121,8 @@ function getNumber(entry: RawBar, fields: (keyof RawBar)[]) {
   return undefined
 }
 
-function mapBars(raw: unknown[], timeZone?: string): FmpBar[] {
-  const bars: FmpBar[] = []
+function mapBars(raw: unknown[], timeZone?: string): MarketBar[] {
+  const bars: MarketBar[] = []
   for (const item of raw) {
     const entry = item as RawBar
     const close = getNumber(entry, ["close", "price"])
@@ -139,10 +139,16 @@ function mapBars(raw: unknown[], timeZone?: string): FmpBar[] {
   return bars.sort((a, b) => a.time - b.time)
 }
 
-export function useFmpQuote(symbol?: string) {
-  const [quote, setQuote] = useState<FmpQuote | null>(null)
+export function useMarketQuote(symbol?: string) {
+  const [quote, setQuote] = useState<MarketQuote | null>(null)
   const [error, setError] = useState<string | null>(null)
   const { user } = useAuth()
+  const userRef = useRef<User | null>(user ?? null)
+
+  useEffect(() => {
+    userRef.current = user ?? null
+  }, [user])
+
 
   useEffect(() => {
     if (!symbol) return
@@ -152,13 +158,16 @@ export function useFmpQuote(symbol?: string) {
     }
     const resolvedSymbol = symbol
     let cancelled = false
+    let controller: AbortController | null = null
 
     async function load() {
       try {
-        const normalized = normalizeFmpSymbol(resolvedSymbol)
-        const url = buildUrl(`/v1/fmp/quote?symbol=${encodeURIComponent(normalized)}`)
-        const headers = await buildGatewayHeaders(user)
-        const resp = await fetch(url, { headers })
+        controller?.abort()
+        controller = new AbortController()
+        const normalized = normalizeMarketSymbol(resolvedSymbol)
+        const url = buildUrl(`/v1/market/quote?symbol=${encodeURIComponent(normalized)}`)
+        const headers = await buildGatewayHeaders(userRef.current)
+        const resp = await fetch(url, { headers, signal: controller.signal })
         if (!resp.ok) {
           const text = await resp.text()
           throw new Error(`Quote fetch failed (${resp.status}): ${text || resp.statusText}`)
@@ -183,6 +192,7 @@ export function useFmpQuote(symbol?: string) {
         setError(null)
       } catch (err: unknown) {
         if (cancelled) return
+        if (err instanceof DOMException && err.name === "AbortError") return
         const message = err instanceof Error ? err.message : "Quote fetch failed"
         setError(message)
       }
@@ -192,6 +202,7 @@ export function useFmpQuote(symbol?: string) {
     const id = setInterval(load, 8000)
     return () => {
       cancelled = true
+      controller?.abort()
       clearInterval(id)
     }
   }, [symbol, user])
@@ -199,15 +210,21 @@ export function useFmpQuote(symbol?: string) {
   return { quote, error }
 }
 
-export function useFmpChart(
+export function useMarketChart(
   symbol?: string,
-  interval: FmpInterval = "5min",
+  interval: MarketInterval = "5min",
   limit = 120,
   assetClass?: string
 ) {
-  const [bars, setBars] = useState<FmpBar[]>([])
+  const [bars, setBars] = useState<MarketBar[]>([])
   const [error, setError] = useState<string | null>(null)
   const { user } = useAuth()
+  const userRef = useRef<User | null>(user ?? null)
+
+  useEffect(() => {
+    userRef.current = user ?? null
+  }, [user])
+
 
   useEffect(() => {
     if (!symbol) return
@@ -219,18 +236,21 @@ export function useFmpChart(
     const timeZone =
       assetClass === "stock" ? "America/New_York" : assetClass === "forex" ? "UTC" : assetClass === "crypto" ? "UTC" : undefined
     let cancelled = false
+    let controller: AbortController | null = null
 
     async function load() {
       try {
-        const normalized = normalizeFmpSymbol(resolvedSymbol)
+        controller?.abort()
+        controller = new AbortController()
+        const normalized = normalizeMarketSymbol(resolvedSymbol)
         const intervalParam = interval === "eod" ? "1day" : interval
         const assetParam = assetClass ? `&assetClass=${encodeURIComponent(assetClass)}` : ""
-        const path = `/v1/fmp/candles?symbol=${encodeURIComponent(normalized)}&interval=${encodeURIComponent(
+        const path = `/v1/market/candles?symbol=${encodeURIComponent(normalized)}&interval=${encodeURIComponent(
           intervalParam
         )}&limit=${limit}${assetParam}`
         const url = buildUrl(path)
-        const headers = await buildGatewayHeaders(user)
-        const resp = await fetch(url, { headers })
+        const headers = await buildGatewayHeaders(userRef.current)
+        const resp = await fetch(url, { headers, signal: controller.signal })
         if (!resp.ok) {
           const text = await resp.text()
           throw new Error(`Chart fetch failed (${resp.status}): ${text || resp.statusText}`)
@@ -250,6 +270,7 @@ export function useFmpChart(
         setError(null)
       } catch (err: unknown) {
         if (cancelled) return
+        if (err instanceof DOMException && err.name === "AbortError") return
         const message = err instanceof Error ? err.message : "Chart fetch failed"
         setError(message)
       }
@@ -259,6 +280,7 @@ export function useFmpChart(
     const id = setInterval(load, interval === "eod" ? 60000 : 30000)
     return () => {
       cancelled = true
+      controller?.abort()
       clearInterval(id)
     }
   }, [symbol, interval, limit, assetClass, user])
@@ -268,7 +290,7 @@ export function useFmpChart(
   return { bars, latest, error }
 }
 
-export type FmpSearchResult = {
+export type MarketSearchResult = {
   symbol: string
   name?: string
   exchange?: string
@@ -285,7 +307,7 @@ function normalizeSymbolQuery(query: string) {
   return normalizeSearchQuery(query).replace(/[/-]/g, "")
 }
 
-function mapSearchRow(row: RawSearchRow): FmpSearchResult | null {
+function mapSearchRow(row: RawSearchRow): MarketSearchResult | null {
   const symbol = typeof row.symbol === "string" ? row.symbol : ""
   if (!symbol) return null
   const name = typeof row.name === "string" ? row.name : undefined
@@ -301,7 +323,7 @@ function mapSearchRow(row: RawSearchRow): FmpSearchResult | null {
   return { symbol, name, exchange, currency }
 }
 
-function rankSearchResult(result: FmpSearchResult, symbolNeedle: string, nameNeedle: string) {
+function rankSearchResult(result: MarketSearchResult, symbolNeedle: string, nameNeedle: string) {
   const symbol = result.symbol.toUpperCase()
   const name = (result.name || "").toUpperCase()
   let score = 0
@@ -314,7 +336,7 @@ function rankSearchResult(result: FmpSearchResult, symbolNeedle: string, nameNee
   return score
 }
 
-function filterByAssetClass(result: FmpSearchResult, assetClass?: string) {
+function filterByAssetClass(result: MarketSearchResult, assetClass?: string) {
   if (!assetClass) return true
   if (assetClass === "forex") {
     return /^[A-Z]{6}$/.test(result.symbol)
@@ -326,8 +348,8 @@ function filterByAssetClass(result: FmpSearchResult, assetClass?: string) {
   return true
 }
 
-export function useFmpSymbolSearch(query: string, assetClass?: string) {
-  const [results, setResults] = useState<FmpSearchResult[]>([])
+export function useMarketSymbolSearch(query: string, assetClass?: string) {
+  const [results, setResults] = useState<MarketSearchResult[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { user } = useAuth()
@@ -346,16 +368,19 @@ export function useFmpSymbolSearch(query: string, assetClass?: string) {
       return
     }
     let cancelled = false
+    let controller: AbortController | null = null
     const id = setTimeout(async () => {
       setLoading(true)
       try {
+        controller?.abort()
+        controller = new AbortController()
         const symbolNeedle = normalizeSymbolQuery(trimmed)
         const nameNeedle = normalizeSearchQuery(trimmed)
         const headers = await buildGatewayHeaders(user)
         const [symbolRowsResult, nameRowsResult] = await Promise.allSettled([
           (async () => {
-            const url = buildUrl(`/v1/fmp/search-symbol?query=${encodeURIComponent(symbolNeedle)}`)
-            const resp = await fetch(url, { headers })
+            const url = buildUrl(`/v1/market/search-symbol?query=${encodeURIComponent(symbolNeedle)}`)
+            const resp = await fetch(url, { headers, signal: controller.signal })
             if (!resp.ok) {
               const text = await resp.text()
               throw new Error(`Symbol search failed (${resp.status}): ${text || resp.statusText}`)
@@ -373,8 +398,8 @@ export function useFmpSymbolSearch(query: string, assetClass?: string) {
             return data
           })(),
           (async () => {
-            const url = buildUrl(`/v1/fmp/search-name?query=${encodeURIComponent(trimmed)}`)
-            const resp = await fetch(url, { headers })
+            const url = buildUrl(`/v1/market/search-name?query=${encodeURIComponent(trimmed)}`)
+            const resp = await fetch(url, { headers, signal: controller.signal })
             if (!resp.ok) {
               const text = await resp.text()
               throw new Error(`Name search failed (${resp.status}): ${text || resp.statusText}`)
@@ -408,7 +433,7 @@ export function useFmpSymbolSearch(query: string, assetClass?: string) {
           throw errors[0]
         }
         if (cancelled) return
-        const deduped = new Map<string, FmpSearchResult>()
+        const deduped = new Map<string, MarketSearchResult>()
         for (const row of mergedRows) {
           const mapped = mapSearchRow(row)
           if (!mapped) continue
@@ -429,6 +454,7 @@ export function useFmpSymbolSearch(query: string, assetClass?: string) {
         setError(null)
       } catch (err: unknown) {
         if (cancelled) return
+        if (err instanceof DOMException && err.name === "AbortError") return
         const message = err instanceof Error ? err.message : "Search failed"
         setError(message)
       } finally {
@@ -438,6 +464,7 @@ export function useFmpSymbolSearch(query: string, assetClass?: string) {
 
     return () => {
       cancelled = true
+      controller?.abort()
       clearTimeout(id)
     }
   }, [query, assetClass, user])
@@ -465,7 +492,7 @@ export type IndicatorDataPoint = {
   williams?: number
 }
 
-export function useFmpIndicator(
+export function useMarketIndicator(
   symbol?: string,
   indicator: IndicatorType = "sma",
   period = 20,
@@ -484,18 +511,19 @@ export function useFmpIndicator(
       return
     }
     let cancelled = false
+    const controller = new AbortController()
     setLoading(true)
 
     async function load() {
       try {
-        const normalized = normalizeFmpSymbol(symbol!)
+        const normalized = normalizeMarketSymbol(symbol!)
         const url = buildUrl(
-          `/v1/fmp/indicators?symbol=${encodeURIComponent(normalized)}&indicator=${encodeURIComponent(
+          `/v1/market/indicators?symbol=${encodeURIComponent(normalized)}&indicator=${encodeURIComponent(
             indicator
           )}&period=${period}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`
         )
         const headers = await buildGatewayHeaders(user)
-        const resp = await fetch(url, { headers })
+        const resp = await fetch(url, { headers, signal: controller.signal })
         if (!resp.ok) throw new Error(`Indicator fetch failed: ${resp.status}`)
         const payload = await resp.json()
         if (cancelled) return
@@ -504,6 +532,7 @@ export function useFmpIndicator(
         setError(null)
       } catch (err) {
         if (cancelled) return
+        if (err instanceof DOMException && err.name === "AbortError") return
         setError(err instanceof Error ? err.message : "Indicator fetch failed")
       } finally {
         if (!cancelled) setLoading(false)
@@ -511,7 +540,10 @@ export function useFmpIndicator(
     }
 
     load()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
   }, [symbol, indicator, period, timeframe, limit, user])
 
   return { data, loading, error }
@@ -551,7 +583,7 @@ export type CompanyProfile = {
   isAdr?: boolean
 }
 
-export function useFmpProfile(symbol?: string) {
+export function useMarketProfile(symbol?: string) {
   const [profile, setProfile] = useState<CompanyProfile | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -564,14 +596,17 @@ export function useFmpProfile(symbol?: string) {
       return
     }
     let cancelled = false
+    let controller: AbortController | null = null
     setLoading(true)
 
     async function load() {
       try {
-        const normalized = normalizeFmpSymbol(symbol!)
-        const url = buildUrl(`/v1/fmp/profile?symbol=${encodeURIComponent(normalized)}`)
+        controller?.abort()
+        controller = new AbortController()
+        const normalized = normalizeMarketSymbol(symbol!)
+        const url = buildUrl(`/v1/market/profile?symbol=${encodeURIComponent(normalized)}`)
         const headers = await buildGatewayHeaders(user)
-        const resp = await fetch(url, { headers })
+        const resp = await fetch(url, { headers, signal: controller.signal })
         if (!resp.ok) throw new Error(`Profile fetch failed: ${resp.status}`)
         const payload = await resp.json()
         if (cancelled) return
@@ -579,6 +614,7 @@ export function useFmpProfile(symbol?: string) {
         setError(null)
       } catch (err) {
         if (cancelled) return
+        if (err instanceof DOMException && err.name === "AbortError") return
         setError(err instanceof Error ? err.message : "Profile fetch failed")
       } finally {
         if (!cancelled) setLoading(false)
@@ -586,7 +622,10 @@ export function useFmpProfile(symbol?: string) {
     }
 
     load()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      controller?.abort()
+    }
   }, [symbol, user])
 
   return { profile, loading, error }
@@ -606,7 +645,7 @@ export type StockNewsItem = {
   url?: string
 }
 
-export function useFmpNews(symbol?: string, limit = 10) {
+export function useMarketNews(symbol?: string, limit = 10) {
   const [news, setNews] = useState<StockNewsItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -619,16 +658,19 @@ export function useFmpNews(symbol?: string, limit = 10) {
       return
     }
     let cancelled = false
+    let controller: AbortController | null = null
     setLoading(true)
 
     async function load() {
       try {
-        const normalized = normalizeFmpSymbol(symbol!)
+        controller?.abort()
+        controller = new AbortController()
+        const normalized = normalizeMarketSymbol(symbol!)
         const url = buildUrl(
-          `/v1/fmp/news?symbol=${encodeURIComponent(normalized)}&limit=${limit}`
+          `/v1/market/news?symbol=${encodeURIComponent(normalized)}&limit=${limit}`
         )
         const headers = await buildGatewayHeaders(user)
-        const resp = await fetch(url, { headers })
+        const resp = await fetch(url, { headers, signal: controller.signal })
         if (!resp.ok) throw new Error(`News fetch failed: ${resp.status}`)
         const payload = await resp.json()
         if (cancelled) return
@@ -636,6 +678,7 @@ export function useFmpNews(symbol?: string, limit = 10) {
         setError(null)
       } catch (err) {
         if (cancelled) return
+        if (err instanceof DOMException && err.name === "AbortError") return
         setError(err instanceof Error ? err.message : "News fetch failed")
       } finally {
         if (!cancelled) setLoading(false)
@@ -643,7 +686,10 @@ export function useFmpNews(symbol?: string, limit = 10) {
     }
 
     load()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      controller?.abort()
+    }
   }, [symbol, limit, user])
 
   return { news, loading, error }
@@ -661,7 +707,7 @@ export type PriceTarget = {
   targetMedian?: number
 }
 
-export function useFmpPriceTarget(symbol?: string) {
+export function useMarketPriceTarget(symbol?: string) {
   const [priceTarget, setPriceTarget] = useState<PriceTarget | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -674,14 +720,17 @@ export function useFmpPriceTarget(symbol?: string) {
       return
     }
     let cancelled = false
+    let controller: AbortController | null = null
     setLoading(true)
 
     async function load() {
       try {
-        const normalized = normalizeFmpSymbol(symbol!)
-        const url = buildUrl(`/v1/fmp/price-target?symbol=${encodeURIComponent(normalized)}`)
+        controller?.abort()
+        controller = new AbortController()
+        const normalized = normalizeMarketSymbol(symbol!)
+        const url = buildUrl(`/v1/market/price-target?symbol=${encodeURIComponent(normalized)}`)
         const headers = await buildGatewayHeaders(user)
-        const resp = await fetch(url, { headers })
+        const resp = await fetch(url, { headers, signal: controller.signal })
         if (!resp.ok) throw new Error(`Price target fetch failed: ${resp.status}`)
         const payload = await resp.json()
         if (cancelled) return
@@ -689,6 +738,7 @@ export function useFmpPriceTarget(symbol?: string) {
         setError(null)
       } catch (err) {
         if (cancelled) return
+        if (err instanceof DOMException && err.name === "AbortError") return
         setError(err instanceof Error ? err.message : "Price target fetch failed")
       } finally {
         if (!cancelled) setLoading(false)
@@ -696,7 +746,10 @@ export function useFmpPriceTarget(symbol?: string) {
     }
 
     load()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      controller?.abort()
+    }
   }, [symbol, user])
 
   return { priceTarget, loading, error }
@@ -726,7 +779,7 @@ export type AnalystRating = {
   ratingDetailsPBRecommendation?: string
 }
 
-export function useFmpRating(symbol?: string) {
+export function useMarketRating(symbol?: string) {
   const [rating, setRating] = useState<AnalystRating | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -739,14 +792,17 @@ export function useFmpRating(symbol?: string) {
       return
     }
     let cancelled = false
+    let controller: AbortController | null = null
     setLoading(true)
 
     async function load() {
       try {
-        const normalized = normalizeFmpSymbol(symbol!)
-        const url = buildUrl(`/v1/fmp/ratings-snapshot?symbol=${encodeURIComponent(normalized)}`)
+        controller?.abort()
+        controller = new AbortController()
+        const normalized = normalizeMarketSymbol(symbol!)
+        const url = buildUrl(`/v1/market/ratings-snapshot?symbol=${encodeURIComponent(normalized)}`)
         const headers = await buildGatewayHeaders(user)
-        const resp = await fetch(url, { headers })
+        const resp = await fetch(url, { headers, signal: controller.signal })
         if (!resp.ok) throw new Error(`Rating fetch failed: ${resp.status}`)
         const payload = await resp.json()
         if (cancelled) return
@@ -755,6 +811,7 @@ export function useFmpRating(symbol?: string) {
         setError(null)
       } catch (err) {
         if (cancelled) return
+        if (err instanceof DOMException && err.name === "AbortError") return
         setError(err instanceof Error ? err.message : "Rating fetch failed")
       } finally {
         if (!cancelled) setLoading(false)
@@ -762,7 +819,10 @@ export function useFmpRating(symbol?: string) {
     }
 
     load()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      controller?.abort()
+    }
   }, [symbol, user])
 
   return { rating, loading, error }

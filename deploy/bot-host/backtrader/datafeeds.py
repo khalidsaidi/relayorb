@@ -1,6 +1,6 @@
 """
 Data feed providers for Backtrader
-Supports: FMP (stocks/forex/crypto)
+Supports: market-data-gateway (stocks/forex/crypto)
 """
 
 import backtrader as bt
@@ -30,7 +30,7 @@ _price_streamer_cache = {"updated_at": 0.0, "items": {}}
 _price_streamer_lock = threading.Lock()
 _firestore_client = None
 
-def parse_fmp_datetime(value):
+def parse_market_datetime(value):
     if not value:
         return None
     if isinstance(value, datetime):
@@ -56,7 +56,7 @@ def parse_fmp_datetime(value):
     return None
 
 
-def map_fmp_interval(timeframe: str):
+def map_market_interval(timeframe: str):
     mapping = {
         "1min": "1min",
         "5m": "5min",
@@ -77,7 +77,7 @@ def map_fmp_interval(timeframe: str):
     return mapping.get(timeframe, "1day")
 
 
-def normalize_fmp_symbol(symbol: str, asset_class: str):
+def normalize_market_symbol(symbol: str, asset_class: str):
     if not symbol:
         return None
     cleaned = str(symbol).upper().strip()
@@ -220,13 +220,13 @@ def fetch_gateway_json(path: str, params: dict):
     return None
 
 
-def fetch_fmp_candles(symbol: str, asset_class: str, timeframe: str = "1d", days: int = 100):
-    interval = map_fmp_interval(timeframe)
-    normalized = normalize_fmp_symbol(symbol, asset_class)
+def fetch_market_candles(symbol: str, asset_class: str, timeframe: str = "1d", days: int = 100):
+    interval = map_market_interval(timeframe)
+    normalized = normalize_market_symbol(symbol, asset_class)
     if not normalized:
         return None
     payload = fetch_gateway_json(
-        "/v1/fmp/candles",
+        "/v1/market/candles",
         {
             "symbol": normalized,
             "assetClass": asset_class,
@@ -248,7 +248,7 @@ def fetch_fmp_candles(symbol: str, asset_class: str, timeframe: str = "1d", days
 
     bars = []
     for entry in data:
-        dt = parse_fmp_datetime(entry.get("date") or entry.get("time") or entry.get("timestamp"))
+        dt = parse_market_datetime(entry.get("date") or entry.get("time") or entry.get("timestamp"))
         if not dt:
             continue
         try:
@@ -289,8 +289,8 @@ def fetch_fmp_candles(symbol: str, asset_class: str, timeframe: str = "1d", days
     return bars
 
 
-def get_fmp_data(symbol: str, asset_class: str, timeframe: str = "1d", days: int = 100):
-    bars = fetch_fmp_candles(symbol, asset_class, timeframe, days)
+def get_market_data(symbol: str, asset_class: str, timeframe: str = "1d", days: int = 100):
+    bars = fetch_market_candles(symbol, asset_class, timeframe, days)
     if not bars:
         return None
 
@@ -384,11 +384,11 @@ def get_price_streamer_quote(symbol: str, asset_class: str, cache_ttl: float = 1
 
 
 def get_gateway_quote(symbol: str, asset_class: str):
-    normalized = normalize_fmp_symbol(symbol, asset_class)
+    normalized = normalize_market_symbol(symbol, asset_class)
     if not normalized:
         return None
     payload = fetch_gateway_json(
-        "/v1/fmp/quote",
+        "/v1/market/quote",
         {"symbol": normalized, "assetClass": asset_class},
     )
     if not payload or not isinstance(payload, dict):
@@ -462,7 +462,7 @@ class LivePriceData(bt.feeds.DataBase):
         symbol = self.p.symbol
         if not symbol:
             return
-        bars = fetch_fmp_candles(
+        bars = fetch_market_candles(
             symbol,
             self.p.asset_class,
             self.p.timeframe,
@@ -574,7 +574,7 @@ class LivePriceData(bt.feeds.DataBase):
 
 def get_datafeed(symbol: str, asset_class: str, timeframe: str = '1d', days: int = 100):
     """Get appropriate data feed based on asset class"""
-    return get_fmp_data(symbol, asset_class, timeframe, days)
+    return get_market_data(symbol, asset_class, timeframe, days)
 
 
 def get_live_datafeed(

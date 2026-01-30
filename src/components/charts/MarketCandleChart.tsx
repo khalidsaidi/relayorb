@@ -12,7 +12,7 @@ import {
   HistogramSeries,
   type Time,
 } from "lightweight-charts"
-import type { FmpBar } from "@/features/market/use-fmp-data"
+import type { MarketBar } from "@/features/market/use-market-data"
 import { useTranslation } from "react-i18next"
 
 export type SignalMarker = {
@@ -27,8 +27,8 @@ export type NewsMarker = {
   title: string
 }
 
-type FmpCandleChartProps = {
-  bars: FmpBar[]
+type MarketCandleChartProps = {
+  bars: MarketBar[]
   height?: number
   signals?: SignalMarker[]
   news?: NewsMarker[]
@@ -121,7 +121,7 @@ function calculateEmaFromNullable(values: Array<number | null>, period: number) 
   return result
 }
 
-function calculateMacd(bars: FmpBar[], fast = 12, slow = 26, signal = 9) {
+function calculateMacd(bars: MarketBar[], fast = 12, slow = 26, signal = 9) {
   const closes = bars.map((bar) => bar.close)
   const fastEma = calculateEma(closes, fast)
   const slowEma = calculateEma(closes, slow)
@@ -140,7 +140,7 @@ function calculateMacd(bars: FmpBar[], fast = 12, slow = 26, signal = 9) {
   return { macdLine, signalLine, histogram }
 }
 
-export function FmpCandleChart({
+export function MarketCandleChart({
   bars,
   height = 420,
   signals = [],
@@ -152,7 +152,7 @@ export function FmpCandleChart({
   emaPeriod = 9,
   rsiPeriod = 14,
   "data-testid": testId,
-}: FmpCandleChartProps) {
+}: MarketCandleChartProps) {
   const { t } = useTranslation()
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)

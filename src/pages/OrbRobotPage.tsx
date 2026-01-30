@@ -810,7 +810,7 @@ export default function OrbRobotPage() {
     if (source === "default_list") return t("orb.universe.sourceDefault")
     if (source === "profile_symbols") return t("orb.universe.sourceProfile")
     if (source === "replay_symbols") return t("orb.universe.sourceReplay")
-    if (source === "fmp_most_actives") return t("orb.universe.sourceFmp")
+    if (source === "market_most_actives") return t("orb.universe.sourceMarketActives")
     return source
   }, [stateDoc?.lastUniverseSource, t])
   const orbHighHeader = `${t("orb.universe.orbHigh")} (${orbRangeWindowLabel})`

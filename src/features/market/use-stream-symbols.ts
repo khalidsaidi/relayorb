@@ -118,12 +118,19 @@ export function useStreamSymbols(sourceKey: string, options: StreamSymbolsOption
 
   const signature = useMemo(() => JSON.stringify(payload), [payload])
   const lastSignature = useRef<string | null>(null)
+  const signatureRef = useRef(signature)
+  const payloadRef = useRef(payload)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    signatureRef.current = signature
+    payloadRef.current = payload
+  }, [signature, payload])
 
   useEffect(() => {
     if (!enabled || !firebaseEnabled || !db) return
     if (!sourceKey) return
-    if (signature === lastSignature.current) return
+    if (signatureRef.current === lastSignature.current) return
     if (replayActive && !replayRunId) return
 
     const activeDb = db
@@ -136,7 +143,9 @@ export function useStreamSymbols(sourceKey: string, options: StreamSymbolsOption
     }
 
     timeoutRef.current = setTimeout(() => {
-      lastSignature.current = signature
+      const nextSignature = signatureRef.current
+      const nextPayload = payloadRef.current
+      lastSignature.current = nextSignature
       setDoc(
         targetDoc,
         {
@@ -144,7 +153,7 @@ export function useStreamSymbols(sourceKey: string, options: StreamSymbolsOption
           sources: {
             [sourceKey]: {
               updatedAt: serverTimestamp(),
-              symbols: payload,
+              symbols: nextPayload,
             },
           },
         },

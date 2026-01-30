@@ -195,6 +195,10 @@ function TradeList({
             const loading = aiLoading[adviceKey]
             const localizedAnalysis = localizeAnalysis(item.analysis, t, i18n.language)
             const noteKind = findAnalysisNoteKind(item.analysis?.details)
+            const confidenceLabel =
+              typeof item.confidence === "number"
+                ? `${Math.round(item.confidence * 100)}%`
+                : "--"
             return (
               <div
                 key={`${title}-${item.assetClass}-${item.symbol}`}
@@ -253,9 +257,14 @@ function TradeList({
                       {t("tradeNow.oneHour")} {formatChange(item.momentum?.change1h, naLabel)}
                     </div>
                   </div>
-                  <Badge variant="outline" className={scoreTone(item.score)}>
-                    {item.score?.toFixed(1) ?? "--"}
-                  </Badge>
+                  <div className="flex flex-col items-end gap-1">
+                    <Badge variant="outline" className={scoreTone(item.score)}>
+                      {item.score?.toFixed(1) ?? "--"}
+                    </Badge>
+                    <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                      Conf {confidenceLabel}
+                    </Badge>
+                  </div>
                 </div>
                 {item.signals?.total ? (
                   <div className="mt-2 text-[11px] text-muted-foreground">
@@ -468,6 +477,16 @@ export default function TradeNowPage() {
     }
   }, [assetFilter, cryptoEnabled, forexEnabled])
 
+  const activeFilter = useMemo(() => {
+    if (assetFilter === "crypto" && !cryptoEnabled) {
+      return forexEnabled ? "forex" : "stock"
+    }
+    if (assetFilter === "forex" && !forexEnabled) {
+      return cryptoEnabled ? "crypto" : "stock"
+    }
+    return assetFilter
+  }, [assetFilter, cryptoEnabled, forexEnabled])
+
   const streamItems = useMemo(() => {
     const items: MarketHotTrade[] = []
     if (actionBoard?.buys?.length) items.push(...actionBoard.buys)
@@ -522,7 +541,9 @@ export default function TradeNowPage() {
       ? doc(db, "replay", "controls", "runs", replayRunId, "market", "prebreakout")
       : doc(db, "market", "prebreakout")
 
+    let active = true
     const unsubAction = onSnapshot(actionRef, (snap) => {
+      if (!active) return
       if (!snap.exists()) {
         setActionBoard(null)
         return
@@ -531,6 +552,7 @@ export default function TradeNowPage() {
     })
 
     const unsubHotTrades = onSnapshot(hotTradesRef, (snap) => {
+      if (!active) return
       if (!snap.exists()) {
         setHotTrades([])
         setHotTradesUpdatedAt(undefined)
@@ -545,6 +567,7 @@ export default function TradeNowPage() {
     })
 
     const unsubSwing = onSnapshot(swingRef, (snap) => {
+      if (!active) return
       if (!snap.exists()) {
         setSwingOvernight([])
         setSwingOvernightUpdatedAt(undefined)
@@ -555,6 +578,7 @@ export default function TradeNowPage() {
       setSwingOvernightUpdatedAt(data.updatedAt)
     })
     const unsubPrebreakout = onSnapshot(prebreakoutRef, (snap) => {
+      if (!active) return
       if (!snap.exists()) {
         setPrebreakout([])
         setPrebreakoutUpdatedAt(undefined)
@@ -566,6 +590,7 @@ export default function TradeNowPage() {
     })
 
     return () => {
+      active = false
       unsubAction()
       unsubHotTrades()
       unsubSwing()
@@ -583,7 +608,7 @@ export default function TradeNowPage() {
       : hotTrades.filter((item) => item.side === "buy")
     const limit = Number(actionBoard?.meta?.classLimit ?? 10)
 
-    if (assetFilter === "all") {
+    if (activeFilter === "all") {
       return baseBuys
         .filter((item) => {
           if (item.assetClass === "crypto") return cryptoEnabled
@@ -592,14 +617,14 @@ export default function TradeNowPage() {
         })
         .slice(0, limit)
     }
-    if (assetFilter === "crypto" && !cryptoEnabled) return []
-    if (assetFilter === "forex" && !forexEnabled) return []
+    if (activeFilter === "crypto" && !cryptoEnabled) return []
+    if (activeFilter === "forex" && !forexEnabled) return []
 
-    const byAsset = hasActionBoard ? actionBoard?.byAsset?.buys?.[assetFilter] : null
+    const byAsset = hasActionBoard ? actionBoard?.byAsset?.buys?.[activeFilter] : null
     if (byAsset && byAsset.length > 0) return byAsset
 
-    return baseBuys.filter((item) => item.assetClass === assetFilter).slice(0, limit)
-  }, [actionBoard, assetFilter, hasActionBoard, hotTrades, cryptoEnabled, forexEnabled])
+    return baseBuys.filter((item) => item.assetClass === activeFilter).slice(0, limit)
+  }, [actionBoard, activeFilter, hasActionBoard, hotTrades, cryptoEnabled, forexEnabled])
 
   const sells = useMemo(() => {
     const baseSells = hasActionBoard
@@ -607,7 +632,7 @@ export default function TradeNowPage() {
       : hotTrades.filter((item) => item.side === "sell")
     const limit = Number(actionBoard?.meta?.classLimit ?? 10)
 
-    if (assetFilter === "all") {
+    if (activeFilter === "all") {
       return baseSells
         .filter((item) => {
           if (item.assetClass === "crypto") return cryptoEnabled
@@ -616,14 +641,14 @@ export default function TradeNowPage() {
         })
         .slice(0, limit)
     }
-    if (assetFilter === "crypto" && !cryptoEnabled) return []
-    if (assetFilter === "forex" && !forexEnabled) return []
+    if (activeFilter === "crypto" && !cryptoEnabled) return []
+    if (activeFilter === "forex" && !forexEnabled) return []
 
-    const byAsset = hasActionBoard ? actionBoard?.byAsset?.sells?.[assetFilter] : null
+    const byAsset = hasActionBoard ? actionBoard?.byAsset?.sells?.[activeFilter] : null
     if (byAsset && byAsset.length > 0) return byAsset
 
-    return baseSells.filter((item) => item.assetClass === assetFilter).slice(0, limit)
-  }, [actionBoard, assetFilter, hasActionBoard, hotTrades, cryptoEnabled, forexEnabled])
+    return baseSells.filter((item) => item.assetClass === activeFilter).slice(0, limit)
+  }, [actionBoard, activeFilter, hasActionBoard, hotTrades, cryptoEnabled, forexEnabled])
 
   const updatedAt = hasActionBoard ? actionBoard?.updatedAt : hotTradesUpdatedAt
   const swingUpdatedAtLabel = swingOvernightUpdatedAt
@@ -633,11 +658,11 @@ export default function TradeNowPage() {
     ? t("tradeNow.updatedAt", { time: formatRelativeTimestamp(prebreakoutUpdatedAt) })
     : undefined
   const assetLabel =
-    assetFilter === "all"
+    activeFilter === "all"
       ? t("assets.all")
-      : assetFilter === "stock"
+      : activeFilter === "stock"
         ? t("assets.stocks")
-        : assetFilter === "forex"
+        : activeFilter === "forex"
           ? t("assets.fx")
           : t("assets.crypto")
   const fetchStatus = useMemo(() => {
@@ -664,10 +689,10 @@ export default function TradeNowPage() {
   }, [t, cryptoEnabled, forexEnabled])
 
   function resolveEmptyMessage(sideLabel: "buy" | "sell") {
-    if (assetFilter === "all") {
+    if (activeFilter === "all") {
       return t("tradeNow.noSignalsYet", { side: t(`trade.side.${sideLabel}`) })
     }
-    const status = fetchStatus?.[assetFilter]
+    const status = fetchStatus?.[activeFilter]
     const source = status?.source ? String(status.source) : t("tradeNow.dataSource")
     const error = status?.error ? String(status.error) : null
     if (status?.status === "disabled") {
@@ -840,7 +865,7 @@ export default function TradeNowPage() {
                 key={filter.value}
                 type="button"
                 size="sm"
-                variant={assetFilter === filter.value ? "secondary" : "ghost"}
+                variant={activeFilter === filter.value ? "secondary" : "ghost"}
                 className="h-7 rounded-full px-3 text-xs"
                 onClick={() =>
                   setAssetFilter(filter.value as "all" | "crypto" | "stock" | "forex")
@@ -857,22 +882,22 @@ export default function TradeNowPage() {
       </div>
 
       <div className="flex flex-wrap gap-4">
-        {(assetFilter === "all" || assetFilter === "stock") && (
+        {(activeFilter === "all" || activeFilter === "stock") && (
           <MarketStatusBadge assetClass="stock" />
         )}
-        {(assetFilter === "all" || assetFilter === "forex") && forexEnabled && (
+        {(activeFilter === "all" || activeFilter === "forex") && forexEnabled && (
           <MarketStatusBadge assetClass="forex" />
         )}
-        {(assetFilter === "all" || assetFilter === "crypto") && cryptoEnabled && (
+        {(activeFilter === "all" || activeFilter === "crypto") && cryptoEnabled && (
           <MarketStatusBadge assetClass="crypto" />
         )}
       </div>
 
       {/* Show prominent banner when stock market is closed */}
-      {(assetFilter === "all" || assetFilter === "stock") && (
+      {(activeFilter === "all" || activeFilter === "stock") && (
         <MarketStatusBanner assetClass="stock" />
       )}
-      {(assetFilter === "forex") && forexEnabled && (
+      {(activeFilter === "forex") && forexEnabled && (
         <MarketStatusBanner assetClass="forex" />
       )}
 
@@ -938,7 +963,7 @@ export default function TradeNowPage() {
               ibkrDisabledReason={ibkrDisabledReason}
             />
           </div>
-          {(assetFilter === "all" || assetFilter === "stock") && (
+          {(activeFilter === "all" || activeFilter === "stock") && (
             <TradeList
               items={swingOvernight}
               title={t("tradeNow.swingOvernightTitle")}
@@ -968,7 +993,7 @@ export default function TradeNowPage() {
               ibkrDisabledReason={ibkrDisabledReason}
             />
           )}
-          {(assetFilter === "all" || assetFilter === "stock") && (
+          {(activeFilter === "all" || activeFilter === "stock") && (
             <TradeList
               items={prebreakout}
               title={t("tradeNow.prebreakoutTitle")}

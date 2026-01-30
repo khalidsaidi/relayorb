@@ -121,17 +121,17 @@ function resolveProfileFloatShares(profile) {
 }
 
 async function fetchProfile(symbol) {
-  const data = await fetchJson("/v1/fmp/profile", { symbol })
+  const data = await fetchJson("/v1/market/profile", { symbol })
   return data?.profile || null
 }
 
 async function fetchSharesFloat(symbol) {
-  const data = await fetchJson("/v1/fmp/shares-float", { symbol })
+  const data = await fetchJson("/v1/market/shares-float", { symbol })
   return Array.isArray(data?.items) ? data.items[0] : null
 }
 
 async function fetchDaily(symbol) {
-  const data = await fetchJson("/v1/fmp/candles", {
+  const data = await fetchJson("/v1/market/candles", {
     symbol,
     assetClass: "stock",
     interval: "1day",
@@ -240,7 +240,7 @@ function scanDaily(profile, sharesFloat, daily) {
 
 async function main() {
   console.log("Fetching stock list...")
-  const listData = await fetchJson("/v1/fmp/stock-list")
+  const listData = await fetchJson("/v1/market/stock-list")
   const stockList = Array.isArray(listData?.items) ? listData.items : []
   if (stockList.length === 0) throw new Error("Empty stock list")
 

@@ -6,17 +6,17 @@ import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { formatAssetPrice, formatNumber } from "@/lib/format"
 import {
-  useFmpChart,
-  useFmpQuote,
-  useFmpSymbolSearch,
-  useFmpProfile,
-  useFmpNews,
-  useFmpPriceTarget,
-  useFmpRating,
-} from "@/features/market/use-fmp-data"
+  useMarketChart,
+  useMarketQuote,
+  useMarketSymbolSearch,
+  useMarketProfile,
+  useMarketNews,
+  useMarketPriceTarget,
+  useMarketRating,
+} from "@/features/market/use-market-data"
 import { useSymbolSignals } from "@/features/market/use-symbol-signals"
 import { useMarketControls } from "@/features/market/use-market-controls"
-import { FmpCandleChart, type SignalMarker } from "@/components/charts/FmpCandleChart"
+import { MarketCandleChart, type SignalMarker } from "@/components/charts/MarketCandleChart"
 import {
   TrendingUp,
   TrendingDown,
@@ -131,11 +131,11 @@ export default function LiveChartsPage() {
   const assetLabel = t(`assets.${assetClass}`)
   const naLabel = t("common.na")
   const searchQuery = symbolInput.trim()
-  const { results: symbolMatches } = useFmpSymbolSearch(searchQuery, assetClass)
+  const { results: symbolMatches } = useMarketSymbolSearch(searchQuery, assetClass)
 
   // Core data
-  const { quote } = useFmpQuote(normalizedSymbol)
-  const fmpInterval =
+  const { quote } = useMarketQuote(normalizedSymbol)
+  const marketInterval =
     interval === "1m"
       ? "1min"
       : interval === "eod"
@@ -147,20 +147,20 @@ export default function LiveChartsPage() {
             : interval === "15m"
               ? "15min"
               : "5min"
-  const { bars, latest, error: chartError } = useFmpChart(
+  const { bars, latest, error: chartError } = useMarketChart(
     normalizedSymbol,
-    fmpInterval,
+    marketInterval,
     120,
     assetClass
   )
 
   // Enhanced data
-  const { profile } = useFmpProfile(assetClass === "stock" ? normalizedSymbol : undefined)
-  const { news, error: newsError } = useFmpNews(normalizedSymbol, 5)
-  const { priceTarget } = useFmpPriceTarget(
+  const { profile } = useMarketProfile(assetClass === "stock" ? normalizedSymbol : undefined)
+  const { news, error: newsError } = useMarketNews(normalizedSymbol, 5)
+  const { priceTarget } = useMarketPriceTarget(
     assetClass === "stock" ? normalizedSymbol : undefined
   )
-  const { rating } = useFmpRating(assetClass === "stock" ? normalizedSymbol : undefined)
+  const { rating } = useMarketRating(assetClass === "stock" ? normalizedSymbol : undefined)
   const { signals: rawSignals } = useSymbolSignals(normalizedSymbol, 20)
 
   // Convert signals to chart markers
@@ -359,14 +359,14 @@ export default function LiveChartsPage() {
           </TabsList>
           {["1m", "5m", "15m", "30m", "1h", "eod"].map((iv) => (
             <TabsContent key={iv} value={iv} className="m-0">
-              <FmpCandleChart
+              <MarketCandleChart
                 bars={bars}
                 signals={signalMarkers}
                 showSma={showIndicators}
                 showEma={showIndicators}
                 showRsi={showIndicators}
                 height={480}
-                data-testid="fmp-chart-live"
+                data-testid="market-chart-live"
               />
               {chartError && (
                 <div className="mt-2 text-xs text-rose-600">{chartError}</div>

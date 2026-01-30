@@ -23,6 +23,17 @@ const PIPELINE_EVENTS_ENABLED = process.env.PIPELINE_EVENTS_ENABLED !== 'false'
 const PIPELINE_EVENTS_STREAM = process.env.PIPELINE_EVENTS_STREAM || ''
 const PIPELINE_EVENTS_MAXLEN = parseInt(process.env.PIPELINE_EVENTS_MAXLEN || '20000', 10)
 const PIPELINE_EVENTS_RUN_ENV = process.env.PIPELINE_EVENTS_RUN_ENV || 'prod'
+const CORS_ORIGINS =
+  process.env.CHART_PROXY_CORS_ORIGINS ||
+  process.env.CORS_ORIGINS ||
+  process.env.CHART_PROXY_CORS_ORIGIN ||
+  '*'
+const RATE_LIMIT_ENABLED = process.env.CHART_PROXY_RATE_LIMIT_ENABLED !== 'false'
+const RATE_LIMIT_WINDOW_MS = parseInt(
+  process.env.CHART_PROXY_RATE_LIMIT_WINDOW_MS || '60000',
+  10
+)
+const RATE_LIMIT_MAX = parseInt(process.env.CHART_PROXY_RATE_LIMIT_MAX || '120', 10)
 const gatewayAuth = new GoogleAuth()
 let gatewayAuthClient = null
 
@@ -91,6 +102,76 @@ function assertUsWest1(serviceName) {
     )
     process.exit(1)
   }
+}
+
+function parseCorsOrigins(raw) {
+  if (!raw) return []
+  if (Array.isArray(raw)) {
+    return raw.map((item) => String(item).trim()).filter(Boolean)
+  }
+  return String(raw)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+const resolvedCorsOrigins = parseCorsOrigins(CORS_ORIGINS)
+const corsAllowAll = resolvedCorsOrigins.length === 0 || resolvedCorsOrigins.includes('*')
+
+function resolveCorsOrigin(req) {
+  const origin = req?.headers?.origin ? String(req.headers.origin) : ''
+  if (!origin) return corsAllowAll ? '*' : ''
+  if (corsAllowAll) return '*'
+  return resolvedCorsOrigins.includes(origin) ? origin : ''
+}
+
+function isCorsAllowed(req) {
+  const origin = req?.headers?.origin ? String(req.headers.origin) : ''
+  if (!origin) return true
+  if (corsAllowAll) return true
+  return resolvedCorsOrigins.includes(origin)
+}
+
+function applyCors(res, req) {
+  const origin = resolveCorsOrigin(req)
+  if (origin) {
+    res.set('Access-Control-Allow-Origin', origin)
+    res.set('Vary', 'Origin')
+  }
+  res.set('Access-Control-Allow-Methods', 'GET, OPTIONS')
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+  return { allowed: isCorsAllowed(req) }
+}
+
+const rateLimitState = new Map()
+
+function resolveClientIp(req) {
+  const header =
+    req?.headers?.['x-forwarded-for'] ||
+    req?.headers?.['x-real-ip'] ||
+    req?.socket?.remoteAddress ||
+    ''
+  if (Array.isArray(header)) return header[0]
+  if (typeof header === 'string' && header.includes(',')) {
+    return header.split(',')[0].trim()
+  }
+  return String(header || '')
+}
+
+function checkRateLimit(req) {
+  if (!RATE_LIMIT_ENABLED) return { allowed: true }
+  const now = Date.now()
+  const windowMs = Math.max(RATE_LIMIT_WINDOW_MS || 0, 1000)
+  const max = Math.max(RATE_LIMIT_MAX || 0, 1)
+  const key = resolveClientIp(req) || 'unknown'
+  const entry = rateLimitState.get(key) || { count: 0, resetAt: now + windowMs }
+  if (now > entry.resetAt) {
+    entry.count = 0
+    entry.resetAt = now + windowMs
+  }
+  entry.count += 1
+  rateLimitState.set(key, entry)
+  return { allowed: entry.count <= max }
 }
 
 let pipelineRedis = null
@@ -189,7 +270,7 @@ async function publishPipelineEvent(event) {
   }
 }
 
-function mapIntervalToFmp(interval) {
+function mapIntervalToMarket(interval) {
   const mapping = {
     '1min': '1min',
     '5min': '5min',
@@ -230,13 +311,22 @@ function buildSeries(data) {
 
 exports.chartProxy = onRequest(
   {
-    cors: true,
     maxInstances: 10,
     region: 'us-west1',
   },
   async (req, res) => {
     assertRemoteOnly('chart-proxy')
     assertUsWest1('chart-proxy')
+    const cors = applyCors(res, req)
+    if (req.method === 'OPTIONS') {
+      res.status(cors.allowed ? 204 : 403).send('')
+      return
+    }
+    const rate = checkRateLimit(req)
+    if (!rate.allowed) {
+      res.status(429).json({ error: 'Rate limit exceeded.' })
+      return
+    }
     const startedAt = Date.now()
     try {
       const { symbol, assetClass = 'stock', interval = '15min' } = req.query
@@ -253,16 +343,16 @@ exports.chartProxy = onRequest(
         return res.status(400).json({ error: `Unsupported asset class: ${assetClass}` })
       }
 
-      const fmpInterval = mapIntervalToFmp(interval)
+      const marketInterval = mapIntervalToMarket(interval)
       const base = MARKET_DATA_GATEWAY_URL.endsWith('/')
         ? MARKET_DATA_GATEWAY_URL
         : `${MARKET_DATA_GATEWAY_URL}/`
-      const url = new URL('v1/fmp/candles', base)
-      const paramsHash = hashParams({ symbol, assetClass, interval: fmpInterval, limit: '200' })
-      const endpointName = 'v1/fmp/candles'
+      const url = new URL('v1/market/candles', base)
+      const paramsHash = hashParams({ symbol, assetClass, interval: marketInterval, limit: '200' })
+      const endpointName = 'v1/market/candles'
       url.searchParams.set('symbol', symbol)
       url.searchParams.set('assetClass', assetClass)
-      url.searchParams.set('interval', fmpInterval)
+      url.searchParams.set('interval', marketInterval)
       url.searchParams.set('limit', '200')
 
       const authHeaders = await getGatewayAuthHeaders()
@@ -328,13 +418,10 @@ exports.chartProxy = onRequest(
         return res.status(502).json({ error: message })
       }
 
-      res.set('Access-Control-Allow-Origin', '*')
-      res.set('Access-Control-Allow-Methods', 'GET')
-      res.set('Access-Control-Allow-Headers', 'Content-Type')
       res.json({
         series: buildSeries(data.candles),
-        seriesKey: `FMP ${fmpInterval}`,
-        source: data?.source || 'fmp',
+        seriesKey: `Bars ${marketInterval}`,
+        source: data?.source || 'market',
       })
       await publishPipelineEvent(
         buildPipelineEvent({
@@ -347,7 +434,7 @@ exports.chartProxy = onRequest(
           symbolKey: `${assetClass}:${symbol}`,
           meta: {
             interval,
-            source: data?.source || 'fmp',
+            source: data?.source || 'market',
             candleCount: Array.isArray(data?.candles) ? data.candles.length : 0,
           },
           inputs: {

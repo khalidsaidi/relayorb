@@ -16,11 +16,13 @@ export function useIbkrAccount(uid?: string | null) {
   useEffect(() => {
     if (!firebaseEnabled || !db) return
     const unsubs: Array<() => void> = []
+    let active = true
 
     if (brokerAccountKey) {
       const brokerRef = doc(db, "brokerAccounts", brokerAccountKey)
       unsubs.push(
         onSnapshot(brokerRef, (snap) => {
+          if (!active) return
           setBrokerAccountState(snap.exists() ? (snap.data() as BrokerAccountDoc) : null)
         })
       )
@@ -29,11 +31,13 @@ export function useIbkrAccount(uid?: string | null) {
     const controlsRef = doc(db, "trading", "controls")
     unsubs.push(
       onSnapshot(controlsRef, (snap) => {
+        if (!active) return
         setTradingControls(snap.exists() ? (snap.data() as TradingControlsDoc) : null)
       })
     )
 
     return () => {
+      active = false
       unsubs.forEach((unsub) => unsub())
     }
   }, [brokerAccountKey])

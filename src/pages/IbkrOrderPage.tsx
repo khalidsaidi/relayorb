@@ -24,17 +24,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { FmpCandleChart } from "@/components/charts/FmpCandleChart"
+import { MarketCandleChart } from "@/components/charts/MarketCandleChart"
 import { useAuth } from "@/features/auth/auth-context"
 import { useIbkrAccount } from "@/features/ibkr/use-ibkr-account"
 import { useIbkrExecutor } from "@/features/ibkr/use-ibkr-executor"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
 import { useMarketControls } from "@/features/market/use-market-controls"
 import {
-  useFmpChart,
-  useFmpQuote,
-  useFmpSymbolSearch,
-} from "@/features/market/use-fmp-data"
+  useMarketChart,
+  useMarketQuote,
+  useMarketSymbolSearch,
+} from "@/features/market/use-market-data"
 import { useMarketPrices } from "@/features/market/use-market-prices"
 import { db, firebaseEnabled } from "@/lib/firebase"
 import { buildAssetKey } from "@/lib/broker-accounts"
@@ -107,6 +107,23 @@ function normalizeMarketSymbol(symbol: string) {
 function resolveOrderSymbol(symbol: string, assetClass: AssetClass) {
   if (assetClass === "forex") return formatForexSymbol(symbol)
   return symbol.trim().toUpperCase()
+}
+
+function sanitizeOrderSnapshot(snapshot: OrderSnapshot): OrderSnapshot {
+  return {
+    symbol: snapshot.symbol,
+    assetClass: snapshot.assetClass,
+    assetKey: snapshot.assetKey,
+    side: snapshot.side,
+    quantity: snapshot.quantity,
+    orderType: snapshot.orderType,
+    ...(snapshot.timeInForce ? { timeInForce: snapshot.timeInForce } : {}),
+    ...(snapshot.exchange ? { exchange: snapshot.exchange } : {}),
+    ...(snapshot.primaryExchange ? { primaryExchange: snapshot.primaryExchange } : {}),
+    ...(typeof snapshot.limitPrice === "number" ? { limitPrice: snapshot.limitPrice } : {}),
+    ...(typeof snapshot.stopLoss === "number" ? { stopLoss: snapshot.stopLoss } : {}),
+    ...(typeof snapshot.takeProfit === "number" ? { takeProfit: snapshot.takeProfit } : {}),
+  }
 }
 
 export default function IbkrOrderPage() {
@@ -217,7 +234,7 @@ export default function IbkrOrderPage() {
   }, [limitOnly, orderType])
 
   const searchQuery = symbolInput.trim()
-  const { results: symbolMatches, loading: symbolLoading } = useFmpSymbolSearch(
+  const { results: symbolMatches, loading: symbolLoading } = useMarketSymbolSearch(
     searchQuery,
     assetClass
   )
@@ -225,8 +242,8 @@ export default function IbkrOrderPage() {
     () => normalizeMarketSymbol(activeSymbol),
     [activeSymbol]
   )
-  const { quote } = useFmpQuote(normalizedSymbol)
-  const fmpInterval =
+  const { quote } = useMarketQuote(normalizedSymbol)
+  const marketInterval =
     interval === "1m"
       ? "1min"
       : interval === "eod"
@@ -238,9 +255,9 @@ export default function IbkrOrderPage() {
             : interval === "15m"
               ? "15min"
               : "5min"
-  const { bars, latest, error: chartError } = useFmpChart(
+  const { bars, latest, error: chartError } = useMarketChart(
     normalizedSymbol,
-    fmpInterval,
+    marketInterval,
     120,
     assetClass
   )
@@ -436,7 +453,7 @@ export default function IbkrOrderPage() {
       const limitPrice =
         orderType === "limit" ? resolvedInputs.limitPrice : currentPrice ?? resolvedInputs.limitPrice
 
-      const orderSnapshot: OrderSnapshot = {
+      const orderSnapshot: OrderSnapshot = sanitizeOrderSnapshot({
         symbol,
         assetClass,
         assetKey,
@@ -452,7 +469,7 @@ export default function IbkrOrderPage() {
         ...(useBracket && typeof resolvedInputs.takeProfit === "number"
           ? { takeProfit: resolvedInputs.takeProfit }
           : {}),
-      }
+      })
 
       const payload: ExecutionRequestDoc = {
         id,
@@ -696,7 +713,7 @@ export default function IbkrOrderPage() {
                     {t("ibkr.orderPage.chartEmpty")}
                   </div>
                 ) : (
-                  <FmpCandleChart bars={bars} height={320} />
+                  <MarketCandleChart bars={bars} height={320} />
                 )}
               </div>
             </CardContent>

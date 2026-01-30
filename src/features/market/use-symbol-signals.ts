@@ -29,6 +29,7 @@ export function useSymbolSignals(symbol?: string, maxSignals = 20) {
     }
 
     let cancelled = false
+    const controller = new AbortController()
     setLoading(true)
 
     async function loadSignals() {
@@ -47,6 +48,7 @@ export function useSymbolSignals(symbol?: string, maxSignals = 20) {
         )
 
         const snapshot = await getDocsWithRetry(q)
+        if (controller.signal.aborted) return
         if (cancelled) return
 
         const results: SymbolSignal[] = snapshot.docs.map((doc) => {
@@ -68,6 +70,7 @@ export function useSymbolSignals(symbol?: string, maxSignals = 20) {
         setError(null)
       } catch (err) {
         if (cancelled) return
+        if (controller.signal.aborted) return
         console.error("Failed to load signals:", err)
         setError(err instanceof Error ? err.message : "Failed to load signals")
       } finally {
@@ -76,7 +79,10 @@ export function useSymbolSignals(symbol?: string, maxSignals = 20) {
     }
 
     loadSignals()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
   }, [symbol, maxSignals])
 
   return { signals, loading, error }

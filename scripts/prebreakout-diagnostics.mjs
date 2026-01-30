@@ -93,17 +93,17 @@ function computeAtr(candles, period = 14) {
 }
 
 async function fetchProfile(symbol) {
-  const data = await fetchJson("/v1/fmp/profile", { symbol })
+  const data = await fetchJson("/v1/market/profile", { symbol })
   return data?.profile || null
 }
 
 async function fetchSharesFloat(symbol) {
-  const data = await fetchJson("/v1/fmp/shares-float", { symbol })
+  const data = await fetchJson("/v1/market/shares-float", { symbol })
   return Array.isArray(data?.items) ? data.items[0] : null
 }
 
 async function fetchDaily(symbol) {
-  const data = await fetchJson("/v1/fmp/candles", {
+  const data = await fetchJson("/v1/market/candles", {
     symbol,
     assetClass: "stock",
     interval: "1day",

@@ -29,6 +29,25 @@ Env:
   MARKET_DATA_GATEWAY_AUTH       true/false (default: true)
   MARKET_DATA_GATEWAY_AUDIENCE   Optional audience override for ID token
   GATEWAY_SERVICE_NAME           Cloud Run service to resolve URL from
+  FIREBASE_PROJECT_ID            Optional Firebase project override for Firestore
+  PRICE_STREAM_ENABLED           true/false to enable websocket streaming
+  PRICE_STREAM_PROVIDER          Stream provider id (e.g. finnhub)
+  PRICE_STREAM_URL               WebSocket URL for streaming
+  PRICE_STREAM_URLS              Comma-separated WebSocket URLs for failover
+  PRICE_STREAM_PROVIDERS         Optional provider list aligned with URL list
+  PRICE_STREAMS                  Generic stream names (comma-separated)
+  PRICE_STREAM_MAX_SYMBOLS       Cap for symbol subscriptions
+  PRICE_STREAM_MAX_SYMBOLS_FINNHUB    Provider cap override
+  PRICE_STREAM_MAX_SYMBOLS_TWELVEDATA Provider cap override
+  PRICE_STREAM_MAX_SYMBOLS_ALPACA     Provider cap override
+  PRICE_STREAM_FILTER_ENABLED    true/false to filter stream symbols by watchlist
+  PRICE_STREAM_FAILOVER_COOLDOWN_MS  Cooldown between stream provider failovers
+  PRICE_STALE_MS                Price staleness threshold (ms)
+  PRICE_POLL_STALE_MS           Poll staleness threshold (ms)
+  PRICE_HEARTBEAT_STALE_MS      Heartbeat staleness threshold (ms)
+  ALPACA_API_KEY                 Optional Alpaca API key for WS auth
+  ALPACA_API_SECRET              Optional Alpaca API secret for WS auth
+  REMOVE_ENV_VARS                Comma-separated env vars to remove at deploy
 USAGE
 }
 
@@ -70,6 +89,60 @@ build_env_vars() {
     audience="$url"
   fi
   envs="${envs}|MARKET_DATA_GATEWAY_AUDIENCE=${audience}"
+  if [ -n "${PRICE_STREAM_ENABLED:-}" ]; then
+    envs="${envs}|PRICE_STREAM_ENABLED=${PRICE_STREAM_ENABLED}"
+  fi
+  if [ -n "${PRICE_STREAM_PROVIDER:-}" ]; then
+    envs="${envs}|PRICE_STREAM_PROVIDER=${PRICE_STREAM_PROVIDER}"
+  fi
+  if [ -n "${PRICE_STREAM_URL:-}" ]; then
+    envs="${envs}|PRICE_STREAM_URL=${PRICE_STREAM_URL}"
+  fi
+  if [ -n "${PRICE_STREAM_URLS:-}" ]; then
+    envs="${envs}|PRICE_STREAM_URLS=${PRICE_STREAM_URLS}"
+  fi
+  if [ -n "${PRICE_STREAM_PROVIDERS:-}" ]; then
+    envs="${envs}|PRICE_STREAM_PROVIDERS=${PRICE_STREAM_PROVIDERS}"
+  fi
+  if [ -n "${PRICE_STREAMS:-}" ]; then
+    envs="${envs}|PRICE_STREAMS=${PRICE_STREAMS}"
+  fi
+  if [ -n "${PRICE_STREAM_MAX_SYMBOLS:-}" ]; then
+    envs="${envs}|PRICE_STREAM_MAX_SYMBOLS=${PRICE_STREAM_MAX_SYMBOLS}"
+  fi
+  if [ -n "${PRICE_STREAM_MAX_SYMBOLS_FINNHUB:-}" ]; then
+    envs="${envs}|PRICE_STREAM_MAX_SYMBOLS_FINNHUB=${PRICE_STREAM_MAX_SYMBOLS_FINNHUB}"
+  fi
+  if [ -n "${PRICE_STREAM_MAX_SYMBOLS_TWELVEDATA:-}" ]; then
+    envs="${envs}|PRICE_STREAM_MAX_SYMBOLS_TWELVEDATA=${PRICE_STREAM_MAX_SYMBOLS_TWELVEDATA}"
+  fi
+  if [ -n "${PRICE_STREAM_MAX_SYMBOLS_ALPACA:-}" ]; then
+    envs="${envs}|PRICE_STREAM_MAX_SYMBOLS_ALPACA=${PRICE_STREAM_MAX_SYMBOLS_ALPACA}"
+  fi
+  if [ -n "${PRICE_STREAM_FILTER_ENABLED:-}" ]; then
+    envs="${envs}|PRICE_STREAM_FILTER_ENABLED=${PRICE_STREAM_FILTER_ENABLED}"
+  fi
+  if [ -n "${PRICE_STREAM_FAILOVER_COOLDOWN_MS:-}" ]; then
+    envs="${envs}|PRICE_STREAM_FAILOVER_COOLDOWN_MS=${PRICE_STREAM_FAILOVER_COOLDOWN_MS}"
+  fi
+  if [ -n "${PRICE_STALE_MS:-}" ]; then
+    envs="${envs}|PRICE_STALE_MS=${PRICE_STALE_MS}"
+  fi
+  if [ -n "${PRICE_POLL_STALE_MS:-}" ]; then
+    envs="${envs}|PRICE_POLL_STALE_MS=${PRICE_POLL_STALE_MS}"
+  fi
+  if [ -n "${PRICE_HEARTBEAT_STALE_MS:-}" ]; then
+    envs="${envs}|PRICE_HEARTBEAT_STALE_MS=${PRICE_HEARTBEAT_STALE_MS}"
+  fi
+  if [ -n "${FIREBASE_PROJECT_ID:-}" ]; then
+    envs="${envs}|FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID}"
+  fi
+  if [ -n "${ALPACA_API_KEY:-}" ]; then
+    envs="${envs}|ALPACA_API_KEY=${ALPACA_API_KEY}"
+  fi
+  if [ -n "${ALPACA_API_SECRET:-}" ]; then
+    envs="${envs}|ALPACA_API_SECRET=${ALPACA_API_SECRET}"
+  fi
   echo "$envs"
 }
 

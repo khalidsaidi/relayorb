@@ -27,7 +27,12 @@ Env:
   MARKET_DATA_GATEWAY_URL        Gateway base URL (auto-resolved if unset)
   MARKET_DATA_GATEWAY_AUTH       true/false (default: true)
   MARKET_DATA_GATEWAY_AUDIENCE   Optional audience override for ID token
+  FIREBASE_PROJECT_ID            Optional Firebase project override for Firestore
   ORB_REQUESTED_BY_UID           Approved UID to attach to ORB requests
+  ORB_CORS_ORIGINS               Comma-separated allowed browser origins
+  ORB_RATE_LIMIT_ENABLED         true/false (default: true)
+  ORB_RATE_LIMIT_WINDOW_MS       Rate limit window (ms)
+  ORB_RATE_LIMIT_MAX             Max requests per window
   GATEWAY_SERVICE_NAME           Cloud Run service to resolve URL from
   ALLOW_CREATE                   Create the service if it does not exist
   ALLOW_UNAUTHENTICATED          Make service public (default: false)
@@ -74,9 +79,24 @@ build_env_vars() {
     audience="$url"
   fi
   envs="${envs}|MARKET_DATA_GATEWAY_AUDIENCE=${audience}"
+  if [ -n "${FIREBASE_PROJECT_ID:-}" ]; then
+    envs="${envs}|FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID}"
+  fi
   requested_by="${ORB_REQUESTED_BY_UID:-}"
   if [ -n "$requested_by" ]; then
     envs="${envs}|ORB_REQUESTED_BY_UID=${requested_by}"
+  fi
+  if [ -n "${ORB_CORS_ORIGINS:-}" ]; then
+    envs="${envs}|ORB_CORS_ORIGINS=${ORB_CORS_ORIGINS}"
+  fi
+  if [ -n "${ORB_RATE_LIMIT_ENABLED:-}" ]; then
+    envs="${envs}|ORB_RATE_LIMIT_ENABLED=${ORB_RATE_LIMIT_ENABLED}"
+  fi
+  if [ -n "${ORB_RATE_LIMIT_WINDOW_MS:-}" ]; then
+    envs="${envs}|ORB_RATE_LIMIT_WINDOW_MS=${ORB_RATE_LIMIT_WINDOW_MS}"
+  fi
+  if [ -n "${ORB_RATE_LIMIT_MAX:-}" ]; then
+    envs="${envs}|ORB_RATE_LIMIT_MAX=${ORB_RATE_LIMIT_MAX}"
   fi
   echo "$envs"
 }

@@ -26,6 +26,22 @@ Env:
   ALLOW_UNAUTHENTICATED  Make service public (default: false)
   FINNHUB_API_KEY        Optional Finnhub key for fallback stock quotes
   FINNHUB_BASE_URL       Optional Finnhub base URL override
+  ALPACA_API_KEY         Optional Alpaca API key for intraday candles
+  ALPACA_API_SECRET      Optional Alpaca API secret for intraday candles
+  ALPACA_DATA_BASE_URL   Optional Alpaca data base URL
+  POLYGON_API_KEY        Optional Polygon API key for intraday candles
+  POLYGON_BASE_URL       Optional Polygon base URL
+  TIINGO_API_KEY         Optional Tiingo API key for intraday candles
+  TIINGO_BASE_URL        Optional Tiingo base URL
+  INTRINIO_API_KEY       Optional Intrinio API key for intraday candles
+  INTRINIO_BASE_URL      Optional Intrinio base URL
+  MDG_PROVIDER_ROTATION  Optional provider rotation strategy (round_robin/off)
+  MDG_PROVIDER_COOLDOWN_MS         Optional provider cooldown (ms)
+  MDG_RATE_LIMIT_COOLDOWN_MS       Optional rate-limit cooldown (ms)
+  MDG_CORS_ORIGINS                 Optional comma-separated browser origins
+  MDG_RATE_LIMIT_ENABLED           true/false (default: true)
+  MDG_RATE_LIMIT_WINDOW_MS         Rate limit window (ms)
+  MDG_RATE_LIMIT_MAX               Max requests per window
 USAGE
 }
 
@@ -67,6 +83,69 @@ case "$command" in
         envs="FINNHUB_BASE_URL=${FINNHUB_BASE_URL}"
       fi
     fi
+    if [ -n "${ALPACA_API_KEY:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|ALPACA_API_KEY=${ALPACA_API_KEY}"
+      else
+        envs="ALPACA_API_KEY=${ALPACA_API_KEY}"
+      fi
+    fi
+    if [ -n "${ALPACA_API_SECRET:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|ALPACA_API_SECRET=${ALPACA_API_SECRET}"
+      else
+        envs="ALPACA_API_SECRET=${ALPACA_API_SECRET}"
+      fi
+    fi
+    if [ -n "${ALPACA_DATA_BASE_URL:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|ALPACA_DATA_BASE_URL=${ALPACA_DATA_BASE_URL}"
+      else
+        envs="ALPACA_DATA_BASE_URL=${ALPACA_DATA_BASE_URL}"
+      fi
+    fi
+    if [ -n "${POLYGON_API_KEY:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|POLYGON_API_KEY=${POLYGON_API_KEY}"
+      else
+        envs="POLYGON_API_KEY=${POLYGON_API_KEY}"
+      fi
+    fi
+    if [ -n "${POLYGON_BASE_URL:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|POLYGON_BASE_URL=${POLYGON_BASE_URL}"
+      else
+        envs="POLYGON_BASE_URL=${POLYGON_BASE_URL}"
+      fi
+    fi
+    if [ -n "${TIINGO_API_KEY:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|TIINGO_API_KEY=${TIINGO_API_KEY}"
+      else
+        envs="TIINGO_API_KEY=${TIINGO_API_KEY}"
+      fi
+    fi
+    if [ -n "${TIINGO_BASE_URL:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|TIINGO_BASE_URL=${TIINGO_BASE_URL}"
+      else
+        envs="TIINGO_BASE_URL=${TIINGO_BASE_URL}"
+      fi
+    fi
+    if [ -n "${INTRINIO_API_KEY:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|INTRINIO_API_KEY=${INTRINIO_API_KEY}"
+      else
+        envs="INTRINIO_API_KEY=${INTRINIO_API_KEY}"
+      fi
+    fi
+    if [ -n "${INTRINIO_BASE_URL:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|INTRINIO_BASE_URL=${INTRINIO_BASE_URL}"
+      else
+        envs="INTRINIO_BASE_URL=${INTRINIO_BASE_URL}"
+      fi
+    fi
     if [ -n "${STOCKDATA_BASE_URL:-}" ]; then
       if [ -n "$envs" ]; then
         envs="${envs}|STOCKDATA_BASE_URL=${STOCKDATA_BASE_URL}"
@@ -86,6 +165,55 @@ case "$command" in
         envs="${envs}|ALPHAVANTAGE_BASE_URL=${ALPHAVANTAGE_BASE_URL}"
       else
         envs="ALPHAVANTAGE_BASE_URL=${ALPHAVANTAGE_BASE_URL}"
+      fi
+    fi
+    if [ -n "${MDG_PROVIDER_ROTATION:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|MDG_PROVIDER_ROTATION=${MDG_PROVIDER_ROTATION}"
+      else
+        envs="MDG_PROVIDER_ROTATION=${MDG_PROVIDER_ROTATION}"
+      fi
+    fi
+    if [ -n "${MDG_PROVIDER_COOLDOWN_MS:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|MDG_PROVIDER_COOLDOWN_MS=${MDG_PROVIDER_COOLDOWN_MS}"
+      else
+        envs="MDG_PROVIDER_COOLDOWN_MS=${MDG_PROVIDER_COOLDOWN_MS}"
+      fi
+    fi
+    if [ -n "${MDG_RATE_LIMIT_COOLDOWN_MS:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|MDG_RATE_LIMIT_COOLDOWN_MS=${MDG_RATE_LIMIT_COOLDOWN_MS}"
+      else
+        envs="MDG_RATE_LIMIT_COOLDOWN_MS=${MDG_RATE_LIMIT_COOLDOWN_MS}"
+      fi
+    fi
+    if [ -n "${MDG_CORS_ORIGINS:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|MDG_CORS_ORIGINS=${MDG_CORS_ORIGINS}"
+      else
+        envs="MDG_CORS_ORIGINS=${MDG_CORS_ORIGINS}"
+      fi
+    fi
+    if [ -n "${MDG_RATE_LIMIT_ENABLED:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|MDG_RATE_LIMIT_ENABLED=${MDG_RATE_LIMIT_ENABLED}"
+      else
+        envs="MDG_RATE_LIMIT_ENABLED=${MDG_RATE_LIMIT_ENABLED}"
+      fi
+    fi
+    if [ -n "${MDG_RATE_LIMIT_WINDOW_MS:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|MDG_RATE_LIMIT_WINDOW_MS=${MDG_RATE_LIMIT_WINDOW_MS}"
+      else
+        envs="MDG_RATE_LIMIT_WINDOW_MS=${MDG_RATE_LIMIT_WINDOW_MS}"
+      fi
+    fi
+    if [ -n "${MDG_RATE_LIMIT_MAX:-}" ]; then
+      if [ -n "$envs" ]; then
+        envs="${envs}|MDG_RATE_LIMIT_MAX=${MDG_RATE_LIMIT_MAX}"
+      else
+        envs="MDG_RATE_LIMIT_MAX=${MDG_RATE_LIMIT_MAX}"
       fi
     fi
     deploy_run_service "$SERVICE_NAME" "$(resolve_image "$SERVICE_NAME")" "$REGION" "$ALLOW_UNAUTHENTICATED" "$envs"

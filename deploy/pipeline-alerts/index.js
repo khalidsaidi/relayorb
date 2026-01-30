@@ -823,7 +823,7 @@ async function sendAlertEmail(results) {
     <h2>🔧 Recommended Actions</h2>
     <ul>
       ${errorAlerts.some(a => a.category === "services") ? "<li>Check Cloud Run service logs for errors</li>" : ""}
-      ${errorAlerts.some(a => a.category === "prices") ? "<li>Verify relayorb-price-streamer is running and FMP API key is valid</li>" : ""}
+      ${errorAlerts.some(a => a.category === "prices") ? "<li>Verify relayorb-price-streamer is running and market-data providers are healthy</li>" : ""}
       ${errorAlerts.some(a => a.name.includes("_stale")) ? "<li>Check if scheduled jobs are running on time</li>" : ""}
       <li>Run verification: <code>node scripts/verify-pipeline.cjs</code></li>
       <li>View logs: <a href="https://console.cloud.google.com/logs?project=relayorb">Cloud Console</a></li>

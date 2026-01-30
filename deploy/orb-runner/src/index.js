@@ -33,6 +33,17 @@ const config = {
   healthWriteMs: parseInt(process.env.ORB_HEALTH_WRITE_MS || "30000", 10),
   healthStartupGraceMs: parseInt(process.env.ORB_HEALTH_STARTUP_GRACE_MS || "120000", 10),
   gatewayDegradedMs: parseInt(process.env.ORB_GATEWAY_DEGRADED_MS || "300000", 10),
+  firestoreStaleMs: parseInt(process.env.ORB_FIRESTORE_STALE_MS || "120000", 10),
+  marketPricesMaxAgeMs: parseInt(process.env.ORB_MARKET_PRICES_MAX_AGE_MS || "300000", 10),
+  lockTtlMs: parseInt(process.env.ORB_LOCK_TTL_MS || "60000", 10),
+  corsOrigins:
+    process.env.ORB_CORS_ORIGINS ||
+    process.env.CORS_ORIGINS ||
+    process.env.ORB_CORS_ORIGIN ||
+    "*",
+  rateLimitEnabled: process.env.ORB_RATE_LIMIT_ENABLED !== "false",
+  rateLimitWindowMs: parseInt(process.env.ORB_RATE_LIMIT_WINDOW_MS || "60000", 10),
+  rateLimitMax: parseInt(process.env.ORB_RATE_LIMIT_MAX || "120", 10),
 }
 
 const DEFAULT_DAILY_PROFILE = {
@@ -67,6 +78,7 @@ const DEFAULT_DAILY_PROFILE = {
     stop_pct: 2,
     time_stop_minutes: null,
     force_flat_minutes_before_close: 5,
+    liquidation_retry_minutes: 2,
   },
   risk: {
     max_trades_per_day: 10,
@@ -100,6 +112,7 @@ const DEFAULT_SINGLE_PROFILE = {
     stop_pct: 0.8,
     time_stop_minutes: null,
     force_flat_minutes_before_close: 5,
+    liquidation_retry_minutes: 2,
   },
   risk: {
     max_trades_per_day: 1,
@@ -111,6 +124,7 @@ const DEFAULT_SINGLE_PROFILE = {
 }
 
 const ORB_HEALTH_DOC = "pipeline/orb_runner"
+const ORB_LOCK_DOC = "orb/runner_lock"
 const bootedAt = Date.now()
 let lastHealthWriteAt = 0
 
@@ -131,6 +145,14 @@ const ORB_STATE_COLLECTION = "orbStates"
 
 const REQUEST_SOURCE = "orb"
 const REQUEST_STRATEGY = "orb_profile"
+const EXECUTION_TERMINAL_STATUSES = new Set([
+  "filled",
+  "cancelled",
+  "canceled",
+  "rejected",
+  "expired",
+  "error",
+])
 
 const EXPECTED_REGION = "us-west1"
 const DMI_PRODUCT_PATHS = [
@@ -366,10 +388,37 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max)
 }
 
+function compactObject(value) {
+  if (!value || typeof value !== "object") return value
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entryValue]) => entryValue !== undefined)
+  )
+}
+
 function parseNumber(value) {
   if (value === undefined || value === null) return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function getEffectiveNowMs(now) {
+  if (now instanceof Date && Number.isFinite(now.getTime())) return now.getTime()
+  return Date.now()
+}
+
+function isServerTimestamp(value) {
+  return value && typeof value === "object" && value._methodName === "serverTimestamp"
+}
+
+function normalizeLocalPatch(patch) {
+  if (!patch || typeof patch !== "object") return patch
+  const now = Date.now()
+  return Object.fromEntries(
+    Object.entries(patch).map(([key, value]) => [
+      key,
+      isServerTimestamp(value) ? now : value,
+    ])
+  )
 }
 
 const clockCache = { value: null, expiresAt: 0 }
@@ -408,12 +457,15 @@ async function resolveClock() {
     }
   }
   if (!clock) {
+    if (config.marketDataGatewayUrl) {
+      error = error || new Error("Clock fallback to system time")
+    }
     clock = {
       mode: "live",
       now: new Date(),
       nowMs: Date.now(),
       replay: null,
-      source: "system",
+      source: "system_fallback",
     }
   }
   if (error) {
@@ -542,6 +594,14 @@ async function loadMarketPricesMap(clock) {
     const snap = await db.doc(path).get()
     if (!snap.exists) return new Map()
     const data = snap.data() || {}
+    const updatedAt =
+      typeof data.updatedAt?.toDate === "function" ? data.updatedAt.toDate() : null
+    if (updatedAt) {
+      const ageMs = getEffectiveNowMs(clock?.now) - updatedAt.getTime()
+      if (ageMs > config.marketPricesMaxAgeMs) {
+        return new Map()
+      }
+    }
     const items = Array.isArray(data.items) ? data.items : []
     const map = new Map()
     items.forEach((item) => {
@@ -816,17 +876,60 @@ function labelsChanged(state, labels) {
   return Object.entries(labels).some(([key, value]) => state?.[key] !== value)
 }
 
+function buildSingleSymbolResetState(market, symbol, mode, labels) {
+  return {
+    sessionKey: market.dateKey,
+    symbol,
+    status: "running",
+    mode,
+    tradesToday: 0,
+    entryPending: false,
+    exitPending: false,
+    inPosition: false,
+    managedPosition: false,
+    externalPosition: false,
+    entryPrice: null,
+    entryTimeMs: null,
+    entryRequestId: null,
+    exitRequestId: null,
+    activeStop: null,
+    orbRange: null,
+    orbHighs: {},
+    orbLows: {},
+    barsSinceBreakout: 0,
+    sessionStartNetLiq: null,
+    lastOpenRangeAt: null,
+    lastEntryCheckAt: null,
+    lastEntryAt: null,
+    lastExitAt: null,
+    lastForceFlatAt: null,
+    lastLiquidationAt: null,
+    lastError: null,
+    ...labels,
+  }
+}
+
 async function mapWithConcurrency(items, limit, mapper) {
   const results = new Array(items.length)
+  const errors = []
   let index = 0
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (index < items.length) {
       const current = index
       index += 1
-      results[current] = await mapper(items[current], current)
+      try {
+        results[current] = await mapper(items[current], current)
+      } catch (err) {
+        errors.push(err)
+        results[current] = null
+      }
     }
   })
   await Promise.all(workers)
+  if (errors.length) {
+    const error = errors[0]
+    throw error instanceof Error ? error : new Error(String(error))
+  }
   return results
 }
 
@@ -837,7 +940,7 @@ function resolveCandleLimit(market) {
 }
 
 async function fetchCandles(symbol, limit) {
-  const payload = await fetchGatewayJson("/v1/fmp/candles", {
+  const payload = await fetchGatewayJson("/v1/market/candles", {
     symbol,
     assetClass: "stock",
     interval: "1min",
@@ -874,7 +977,7 @@ async function fetchQuoteDetails(symbols) {
   )
   const results = await mapWithConcurrency(uniqueSymbols, 6, async (symbol) => {
     try {
-      const payload = await fetchGatewayJson("/v1/fmp/quote", {
+      const payload = await fetchGatewayJson("/v1/market/quote", {
         symbol,
         assetClass: "stock",
       })
@@ -923,7 +1026,7 @@ async function fetchUniverse(profile, clock) {
     isReplayMode && clock?.replay?.datasetId ? clock.replay.datasetId : null
   let candidates = []
   let quoteDetails = new Map()
-  let source = "fmp_most_actives"
+  let source = "market_most_actives"
   let fallback = false
 
   if (isReplayMode && !replayDatasetId) {
@@ -952,7 +1055,7 @@ async function fetchUniverse(profile, clock) {
     source = "replay_symbols"
   } else {
     try {
-      const payload = await fetchGatewayJson("/v1/fmp/most-actives", {
+      const payload = await fetchGatewayJson("/v1/market/most-actives", {
         limit: String(limit),
       })
       const items = Array.isArray(payload?.data) ? payload.data : []
@@ -1096,7 +1199,7 @@ function computeVwap(candles) {
 function computeAtr(candles, period) {
   if (!Array.isArray(candles) || candles.length < 2) return null
   const length = Math.min(period, candles.length - 1)
-  const start = candles.length - length
+  const start = Math.max(candles.length - length, 1)
   let total = 0
   let counted = 0
   for (let index = start; index < candles.length; index += 1) {
@@ -1134,7 +1237,7 @@ function computeBarsSinceBreakout(candles, orbRange, market, rangeMinutes) {
 }
 
 async function fetchQuote(symbol) {
-  const payload = await fetchGatewayJson("/v1/fmp/quote", {
+  const payload = await fetchGatewayJson("/v1/market/quote", {
     symbol,
     assetClass: "stock",
   })
@@ -1166,6 +1269,12 @@ async function loadBrokerAccount(brokerAccountKey) {
 async function loadAccountSummary(brokerAccountKey) {
   const ref = db.doc(`brokerAccountSummaries/${brokerAccountKey}`)
   const snap = await ref.get()
+  return snap.exists ? snap.data() : null
+}
+
+async function loadExecutionRequest(requestId) {
+  if (!requestId) return null
+  const snap = await db.doc(`executionRequests/${requestId}`).get()
   return snap.exists ? snap.data() : null
 }
 
@@ -1205,15 +1314,17 @@ function validateAccountSummaryMode(accountSummary, requiredMode, context) {
 function resolveOrderQuantity(price, positionPct, accountSummary, caps) {
   const netLiq = accountSummary?.values?.netLiquidation
   const buyingPower = accountSummary?.values?.buyingPower
+  const priceValue = parseNumber(price)
+  if (!Number.isFinite(priceValue) || priceValue <= 0) return 0
   const baseValue = parseNumber(netLiq) ?? parseNumber(buyingPower) ?? 0
   let notional = baseValue * positionPct
   const maxNotional = parseNumber(caps?.maxNotionalPerTrade)
   if (Number.isFinite(maxNotional) && maxNotional > 0) {
     notional = Math.min(notional, maxNotional)
   }
-  if (!Number.isFinite(notional) || notional <= 0) return 1
-  const qty = Math.floor(notional / price)
-  return qty > 0 ? qty : 1
+  if (!Number.isFinite(notional) || notional <= 0) return 0
+  const qty = Math.floor(notional / priceValue)
+  return qty > 0 ? qty : 0
 }
 
 function resolveOrderType(tradingControls, controls) {
@@ -1243,20 +1354,87 @@ function resolveRequesterUid(controls, brokerAccount) {
   return candidates[0] || config.requestedByUid
 }
 
-function applyCorsHeaders(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*")
+function parseCorsOrigins(raw) {
+  if (!raw) return []
+  if (Array.isArray(raw)) {
+    return raw.map((item) => String(item).trim()).filter(Boolean)
+  }
+  return String(raw)
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+const resolvedCorsOrigins = parseCorsOrigins(config.corsOrigins)
+const corsAllowAll = resolvedCorsOrigins.length === 0 || resolvedCorsOrigins.includes("*")
+
+function resolveCorsOrigin(req) {
+  const origin = req?.headers?.origin ? String(req.headers.origin) : ""
+  if (!origin) return corsAllowAll ? "*" : ""
+  if (corsAllowAll) return "*"
+  return resolvedCorsOrigins.includes(origin) ? origin : ""
+}
+
+function isCorsAllowed(req) {
+  const origin = req?.headers?.origin ? String(req.headers.origin) : ""
+  if (!origin) return true
+  if (corsAllowAll) return true
+  return resolvedCorsOrigins.includes(origin)
+}
+
+function applyCorsHeaders(res, req) {
+  const origin = resolveCorsOrigin(req)
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin)
+    res.setHeader("Vary", "Origin")
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization")
   res.setHeader("Access-Control-Max-Age", "86400")
+  return { origin, allowed: isCorsAllowed(req) }
+}
+
+const rateLimitState = new Map()
+
+function resolveClientIp(req) {
+  const header =
+    req?.headers?.["x-forwarded-for"] ||
+    req?.headers?.["x-real-ip"] ||
+    req?.socket?.remoteAddress ||
+    ""
+  if (Array.isArray(header)) return header[0]
+  if (typeof header === "string" && header.includes(",")) {
+    return header.split(",")[0].trim()
+  }
+  return String(header || "")
+}
+
+function checkRateLimit(req) {
+  if (!config.rateLimitEnabled) return { allowed: true }
+  const now = Date.now()
+  const windowMs = Math.max(config.rateLimitWindowMs || 0, 1000)
+  const max = Math.max(config.rateLimitMax || 0, 1)
+  const key = resolveClientIp(req) || "unknown"
+  const entry = rateLimitState.get(key) || { count: 0, resetAt: now + windowMs }
+  if (now > entry.resetAt) {
+    entry.count = 0
+    entry.resetAt = now + windowMs
+  }
+  entry.count += 1
+  rateLimitState.set(key, entry)
+  return { allowed: entry.count <= max }
 }
 
 const controlsByAccount = new Map()
 const stateByAccount = new Map()
-let runInProgress = false
+const INSTANCE_ID = `${process.env.K_REVISION || process.env.K_SERVICE || "orb-runner"}:${Math.random()
+  .toString(36)
+  .slice(2, 8)}`
 
 async function updateOrbState(brokerAccountKey, patch) {
   const current = stateByAccount.get(brokerAccountKey) || {}
-  stateByAccount.set(brokerAccountKey, { ...current, ...(patch || {}) })
+  const localPatch = normalizeLocalPatch(patch || {})
+  stateByAccount.set(brokerAccountKey, { ...current, ...localPatch })
   await db.doc(`${ORB_STATE_COLLECTION}/${brokerAccountKey}`).set(
     {
       ...patch,
@@ -1458,25 +1636,25 @@ async function createExecutionRequest({
   const expiresAt = admin.firestore.Timestamp.fromMillis(now + config.requestTtlMs)
   const resolvedRequestedBy = requestedByUid || config.requestedByUid
   const assetKey = `stock:${symbol}`
-  const orderSnapshot = {
+  const orderSnapshot = compactObject({
     symbol,
     assetClass: "stock",
     assetKey,
     side,
     quantity,
     orderType,
-    limitPrice: orderType === "limit" ? limitPrice : undefined,
-    stopLoss,
-    takeProfit,
+    ...(orderType === "limit" && typeof limitPrice === "number" ? { limitPrice } : {}),
+    ...(typeof stopLoss === "number" ? { stopLoss } : {}),
+    ...(typeof takeProfit === "number" ? { takeProfit } : {}),
     timeInForce: "DAY",
-  }
-  const payload = {
+  })
+  const payload = compactObject({
     id,
     brokerAccountKey,
     proposalId: `orb:${brokerAccountKey}:${sessionKey}:${symbol}:${now}`,
     requestedByUid: resolvedRequestedBy,
     approvedByUid: resolvedRequestedBy,
-    ibAccountCodeSnapshot: accountCode || undefined,
+    ...(accountCode ? { ibAccountCodeSnapshot: accountCode } : {}),
     approvedAt: FieldValue.serverTimestamp(),
     mode: mode || "paper",
     status: "approved",
@@ -1486,7 +1664,7 @@ async function createExecutionRequest({
     strategy: strategy || REQUEST_STRATEGY,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
-  }
+  })
   await db.doc(`executionRequests/${id}`).set(payload)
   return id
 }
@@ -1530,6 +1708,7 @@ async function runDailyUniverseCycle({
       lastOpenRangeAt: null,
       lastBreakoutAt: null,
       lastLiquidationAt: null,
+      lastLiquidationAttemptMinute: null,
       tradePlaced: [],
       tradeCounts: {},
       lastTradeMinutes: {},
@@ -1551,6 +1730,7 @@ async function runDailyUniverseCycle({
       lastOpenRangeAt: null,
       lastBreakoutAt: null,
       lastLiquidationAt: null,
+      lastLiquidationAttemptMinute: null,
       tradePlaced: [],
       tradeCounts: {},
       lastTradeMinutes: {},
@@ -1736,6 +1916,13 @@ async function runDailyUniverseCycle({
                   (total, count) => total + (Number.isFinite(count) ? count : 0),
                   0
                 )
+          const computedTrades = Object.values(tradeCounts).reduce(
+            (total, count) => total + (Number.isFinite(count) ? count : 0),
+            0
+          )
+          if (!Number.isFinite(tradesToday) || tradesToday < computedTrades) {
+            tradesToday = computedTrades
+          }
 
           const maxTradesPerDay = clamp(
             Math.round(profile.risk.max_trades_per_day ?? 1),
@@ -1853,7 +2040,18 @@ async function runDailyUniverseCycle({
 
   state = getState()
   const liquidationMinute = market.closeMinutes - profile.exit.force_flat_minutes_before_close
-  if (inSession && !state?.lastLiquidationAt && market.minutes >= liquidationMinute) {
+  const liquidationRetryMinutes = clamp(
+    Math.round(profile.exit.liquidation_retry_minutes ?? 2),
+    1,
+    30
+  )
+  const shouldAttemptLiquidation =
+    inSession &&
+    market.minutes >= liquidationMinute &&
+    (!Number.isFinite(state?.lastLiquidationAttemptMinute) ||
+      market.minutes - state.lastLiquidationAttemptMinute >= liquidationRetryMinutes)
+
+  if (shouldAttemptLiquidation && !state?.lastLiquidationAt) {
     const tradedSymbols = Array.isArray(state?.tradePlaced) ? state.tradePlaced : []
     if (!tradedSymbols.length) {
       await setState({
@@ -1870,10 +2068,12 @@ async function runDailyUniverseCycle({
     }
 
     try {
+      await setState({ lastLiquidationAttemptMinute: market.minutes })
       const positions = await loadOpenPositions(accountKey, tradedSymbols)
       if (!positions.length) {
         await setState({
           lastLiquidationAt: FieldValue.serverTimestamp(),
+          lastLiquidationAttemptMinute: market.minutes,
           lastError: null,
         })
         return
@@ -1883,35 +2083,44 @@ async function runDailyUniverseCycle({
       const symbols = positions.map((pos) => pos.symbol)
       const priceMap = await fetchQuoteMap(symbols)
       const orderType = resolveOrderType(tradingControls, resolvedControls)
+      let hadError = false
 
       for (const pos of positions) {
         const quantity = Math.abs(parseNumber(pos.position) || 0)
         if (!quantity) continue
         const price = priceMap.get(pos.symbol)
         if (!price) continue
-        await createExecutionRequest({
-          brokerAccountKey: accountKey,
-          mode: resolvedControls.mode,
-          symbol: pos.symbol,
-          side: "sell",
-          quantity,
-          orderType,
-          limitPrice: price,
-          stopLoss: undefined,
-          takeProfit: undefined,
-          accountCode: brokerAccount?.ibAccountCode,
-          sessionKey: market.dateKey,
-          requestedByUid,
-          strategy: "orb_universe",
-        })
+        try {
+          await createExecutionRequest({
+            brokerAccountKey: accountKey,
+            mode: resolvedControls.mode,
+            symbol: pos.symbol,
+            side: "sell",
+            quantity,
+            orderType,
+            limitPrice: price,
+            stopLoss: undefined,
+            takeProfit: undefined,
+            accountCode: brokerAccount?.ibAccountCode,
+            sessionKey: market.dateKey,
+            requestedByUid,
+            strategy: "orb_universe",
+          })
+        } catch (error) {
+          hadError = true
+        }
       }
 
       await setState({
-        lastLiquidationAt: FieldValue.serverTimestamp(),
+        ...(hadError ? {} : { lastLiquidationAt: FieldValue.serverTimestamp() }),
+        lastLiquidationAttemptMinute: market.minutes,
         lastError: null,
       })
     } catch (error) {
-      await setState({ lastError: `Liquidation failed: ${error.message}` })
+      await setState({
+        lastLiquidationAttemptMinute: market.minutes,
+        lastError: `Liquidation failed: ${error.message}`,
+      })
     }
   }
 }
@@ -1923,7 +2132,8 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
 
   let state = stateByAccount.get(accountKey) || {}
   const setState = async (patch) => {
-    state = { ...state, ...(patch || {}) }
+    const localPatch = normalizeLocalPatch(patch || {})
+    state = { ...state, ...localPatch }
     await updateOrbState(accountKey, patch)
   }
   const getState = () => state
@@ -2008,60 +2218,8 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
 
   const needsReset = state?.sessionKey !== market.dateKey || state?.symbol !== symbol
   if (needsReset) {
-    state = {
-      sessionKey: market.dateKey,
-      symbol,
-      status: "running",
-      tradesToday: 0,
-      entryPending: false,
-      exitPending: false,
-      inPosition: false,
-      entryPrice: null,
-      entryTimeMs: null,
-      entryRequestId: null,
-      exitRequestId: null,
-      activeStop: null,
-      orbRange: null,
-      orbHighs: {},
-      orbLows: {},
-      barsSinceBreakout: 0,
-      sessionStartNetLiq: null,
-      lastOpenRangeAt: null,
-      lastEntryCheckAt: null,
-      lastEntryAt: null,
-      lastExitAt: null,
-      lastForceFlatAt: null,
-      lastLiquidationAt: null,
-      lastError: null,
-    }
-    await setState({
-      status: "running",
-      sessionKey: market.dateKey,
-      symbol,
-      mode,
-      tradesToday: 0,
-      entryPending: false,
-      exitPending: false,
-      inPosition: false,
-      entryPrice: null,
-      entryTimeMs: null,
-      entryRequestId: null,
-      exitRequestId: null,
-      activeStop: null,
-      orbRange: null,
-      orbHighs: {},
-      orbLows: {},
-      barsSinceBreakout: 0,
-      sessionStartNetLiq: null,
-      lastOpenRangeAt: null,
-      lastEntryCheckAt: null,
-      lastEntryAt: null,
-      lastExitAt: null,
-      lastForceFlatAt: null,
-      lastLiquidationAt: null,
-      lastError: null,
-      ...labels,
-    })
+    state = buildSingleSymbolResetState(market, symbol, mode, labels)
+    await setState(buildSingleSymbolResetState(market, symbol, mode, labels))
   } else if (state?.status !== "running" || labelsChanged(state, labels)) {
     await setState({ status: "running", symbol, mode, ...labels })
   }
@@ -2098,10 +2256,28 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
     await setState({ inPosition })
   }
 
+  const positionManaged = Boolean(
+    state?.managedPosition || state?.entryRequestId || state?.entryPrice || state?.entryTimeMs
+  )
+
+  if (inPosition && !positionManaged && !state?.externalPosition) {
+    await setState({
+      externalPosition: true,
+      managedPosition: false,
+      lastError: "External position detected; ORB will not manage it.",
+    })
+  }
+
+  if (inPosition && positionManaged && !state?.managedPosition) {
+    await setState({ managedPosition: true, externalPosition: false })
+  }
+
   if (!inPosition && state?.inPosition) {
     await setState({
       entryPending: false,
       exitPending: false,
+      managedPosition: false,
+      externalPosition: false,
       entryPrice: null,
       entryTimeMs: null,
       entryRequestId: null,
@@ -2110,11 +2286,40 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
     })
   }
 
+  if (state?.entryPending && state?.entryRequestId) {
+    const entryRequest = await loadExecutionRequest(state.entryRequestId)
+    const status = entryRequest?.status
+    if (status && EXECUTION_TERMINAL_STATUSES.has(status)) {
+      const nextTradesToday =
+        status === "filled" || inPosition
+          ? state?.tradesToday || 0
+          : Math.max((state?.tradesToday || 0) - 1, 0)
+      await setState({
+        entryPending: false,
+        entryRequestId: null,
+        tradesToday: nextTradesToday,
+        lastError: status === "filled" ? null : `Entry ${status}`,
+      })
+    }
+  }
+
+  if (state?.exitPending && state?.exitRequestId) {
+    const exitRequest = await loadExecutionRequest(state.exitRequestId)
+    const status = exitRequest?.status
+    if (status && EXECUTION_TERMINAL_STATUSES.has(status)) {
+      await setState({
+        exitPending: false,
+        exitRequestId: null,
+        lastError: status === "filled" ? null : `Exit ${status}`,
+      })
+    }
+  }
+
   if (inPosition && state?.entryPending) {
     await setState({ entryPending: false })
   }
 
-  if (inPosition && !state?.entryPrice) {
+  if (inPosition && state?.managedPosition && !state?.entryPrice) {
     const inferredEntry =
       parseNumber(activePosition?.avgCost) ??
       parseNumber(activePosition?.marketPrice) ??
@@ -2154,6 +2359,12 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
   let cachedCandles = null
   let cachedQuote = null
   let cachedSnapshot = null
+
+  function clearSnapshotCache() {
+    cachedCandles = null
+    cachedQuote = null
+    cachedSnapshot = null
+  }
 
   async function loadSessionCandles() {
     if (cachedCandles) return cachedCandles
@@ -2220,8 +2431,9 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
     }
   }
 
+  const rangeCaptureEnd = Math.min(rangeEndMinute + 5, market.closeMinutes)
   const shouldCaptureRange =
-    !state?.orbRange && market.minutes >= rangeEndMinute && market.minutes <= market.closeMinutes
+    !state?.orbRange && market.minutes >= rangeEndMinute && market.minutes <= rangeCaptureEnd
 
   if (shouldCaptureRange) {
     try {
@@ -2279,6 +2491,11 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
 
   if (forceFlatWindow) {
     if (inPosition && !state?.exitPending) {
+      clearSnapshotCache()
+      if (state?.externalPosition) {
+        await setState({ lastError: "Force-flat skipped: external position" })
+        return
+      }
       const tradingControls = await loadTradingControls()
       if (tradingControls?.ibkrEnabled === false) {
         await setState({ lastError: "Force-flat skipped: IBKR disabled" })
@@ -2438,9 +2655,14 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
           accountSummary,
           tradingControls?.caps
         )
+        if (!quantity) {
+          await setState({ lastError: "Entry skipped: invalid position size" })
+          return
+        }
         const initialStop = exitBehavior.initialStop(context)
         const bracket = resolveBracket(snapshot.price, initialStop, tradingControls)
 
+        await setState({ entryPending: true })
         const entryRequestId = await createExecutionRequest({
           brokerAccountKey: accountKey,
           mode: resolvedControls.mode,
@@ -2458,8 +2680,9 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
         })
 
         await setState({
-          entryPending: true,
           entryRequestId,
+          managedPosition: true,
+          externalPosition: false,
           tradesToday: (state?.tradesToday || 0) + 1,
           entryPrice: snapshot.price,
           entryTimeMs: nowMs,
@@ -2468,12 +2691,20 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
           lastError: null,
         })
       } catch (error) {
-        await setState({ lastError: `Entry failed: ${error.message}` })
+        await setState({
+          entryPending: false,
+          lastError: `Entry failed: ${error.message}`,
+        })
       }
     }
   }
 
   if (inPosition && !state?.exitPending) {
+    clearSnapshotCache()
+    if (state?.externalPosition) {
+      await setState({ lastError: "Exit skipped: external position" })
+      return
+    }
     try {
       const snapshot = await getMarketSnapshot()
       if (!snapshot.price) {
@@ -2565,10 +2796,57 @@ async function runOrbCycleForAccount(brokerAccountKey, controls, clock) {
   }
 }
 
-async function runOrbCycle() {
-  if (runInProgress) return
-  runInProgress = true
+async function acquireRunLock() {
+  const now = Date.now()
+  const expiresAt = now + config.lockTtlMs
+  const ref = db.doc(ORB_LOCK_DOC)
   try {
+    const acquired = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref)
+      const data = snap.exists ? snap.data() || {} : {}
+      const currentExpiry = typeof data.expiresAtMs === "number" ? data.expiresAtMs : 0
+      const currentOwner = data.owner || null
+      if (currentExpiry > now && currentOwner && currentOwner !== INSTANCE_ID) {
+        return false
+      }
+      tx.set(
+        ref,
+        {
+          owner: INSTANCE_ID,
+          acquiredAt: FieldValue.serverTimestamp(),
+          expiresAtMs: expiresAt,
+        },
+        { merge: true }
+      )
+      return true
+    })
+    if (!acquired) {
+      console.warn("ORB lock held; skipping cycle")
+    }
+    return acquired
+  } catch (err) {
+    console.error("ORB lock acquire failed:", err.message)
+    return false
+  }
+}
+
+async function releaseRunLock() {
+  const ref = db.doc(ORB_LOCK_DOC)
+  await ref.set(
+    {
+      owner: INSTANCE_ID,
+      releasedAt: FieldValue.serverTimestamp(),
+      expiresAtMs: Date.now(),
+    },
+    { merge: true }
+  )
+}
+
+async function runOrbCycle() {
+  let lockAcquired = false
+  try {
+    lockAcquired = await acquireRunLock()
+    if (!lockAcquired) return
     const entries = Array.from(controlsByAccount.entries())
     if (!entries.length) return
     const clock = await resolveClock()
@@ -2581,7 +2859,11 @@ async function runOrbCycle() {
       }
     }
   } finally {
-    runInProgress = false
+    if (lockAcquired) {
+      releaseRunLock().catch((err) =>
+        console.error("ORB lock release error:", err.message)
+      )
+    }
     writeHealthStatus().catch((err) =>
       console.error("ORB health tick error:", err.message)
     )
@@ -2637,41 +2919,83 @@ async function start() {
   await seedControlsSnapshot()
   await seedStateSnapshot()
 
-  db.collection(ORB_CONTROLS_COLLECTION).onSnapshot((snap) => {
-    snap.docChanges().forEach((change) => {
-      const accountKey = change.doc.id
-      if (change.type === "removed") {
-        controlsByAccount.delete(accountKey)
-        return
-      }
-      const controls = resolveControls(change.doc.data(), accountKey)
-      controlsByAccount.set(accountKey, controls)
-      ensureStateDoc(accountKey).catch((error) => {
-        console.error(`Failed to ensure state doc for ${accountKey}:`, error.message)
-      })
-    })
-    healthState.lastControlsSnapshotAt = Date.now()
-    healthState.controlsDocCount = snap.size
-  }, (error) => {
-    healthState.lastFirestoreError = { message: error.message, at: Date.now() }
-    console.error("ORB controls snapshot error:", error.message)
-  })
+  let controlsUnsub = null
+  let stateUnsub = null
 
-  db.collection(ORB_STATE_COLLECTION).onSnapshot((snap) => {
-    snap.docChanges().forEach((change) => {
-      const accountKey = change.doc.id
-      if (change.type === "removed") {
-        stateByAccount.delete(accountKey)
-        return
+  const attachSnapshots = () => {
+    if (controlsUnsub) controlsUnsub()
+    if (stateUnsub) stateUnsub()
+
+    controlsUnsub = db.collection(ORB_CONTROLS_COLLECTION).onSnapshot(
+      (snap) => {
+        snap.docChanges().forEach((change) => {
+          const accountKey = change.doc.id
+          if (change.type === "removed") {
+            controlsByAccount.delete(accountKey)
+            return
+          }
+          const controls = resolveControls(change.doc.data(), accountKey)
+          controlsByAccount.set(accountKey, controls)
+          ensureStateDoc(accountKey).catch((error) => {
+            console.error(`Failed to ensure state doc for ${accountKey}:`, error.message)
+          })
+        })
+        healthState.lastControlsSnapshotAt = Date.now()
+        healthState.controlsDocCount = snap.size
+      },
+      (error) => {
+        healthState.lastFirestoreError = { message: error.message, at: Date.now() }
+        console.error("ORB controls snapshot error:", error.message)
       }
-      stateByAccount.set(accountKey, change.doc.data() || {})
-    })
-    healthState.lastStateSnapshotAt = Date.now()
-    healthState.stateDocCount = snap.size
-  }, (error) => {
-    healthState.lastFirestoreError = { message: error.message, at: Date.now() }
-    console.error("ORB state snapshot error:", error.message)
-  })
+    )
+
+    stateUnsub = db.collection(ORB_STATE_COLLECTION).onSnapshot(
+      (snap) => {
+        snap.docChanges().forEach((change) => {
+          const accountKey = change.doc.id
+          if (change.type === "removed") {
+            stateByAccount.delete(accountKey)
+            return
+          }
+          stateByAccount.set(accountKey, change.doc.data() || {})
+        })
+        healthState.lastStateSnapshotAt = Date.now()
+        healthState.stateDocCount = snap.size
+      },
+      (error) => {
+        healthState.lastFirestoreError = { message: error.message, at: Date.now() }
+        console.error("ORB state snapshot error:", error.message)
+      }
+    )
+  }
+
+  attachSnapshots()
+
+  setInterval(() => {
+    const now = Date.now()
+    const staleAfter = config.firestoreStaleMs
+    if (healthState.lastControlsSnapshotAt && now - healthState.lastControlsSnapshotAt > staleAfter) {
+      healthState.lastFirestoreError = {
+        message: `Controls snapshot stale (${now - healthState.lastControlsSnapshotAt}ms)`,
+        at: now,
+      }
+    }
+    if (healthState.lastStateSnapshotAt && now - healthState.lastStateSnapshotAt > staleAfter) {
+      healthState.lastFirestoreError = {
+        message: `State snapshot stale (${now - healthState.lastStateSnapshotAt}ms)`,
+        at: now,
+      }
+    }
+    const resubscribeAfter = staleAfter * 2
+    if (
+      (healthState.lastControlsSnapshotAt &&
+        now - healthState.lastControlsSnapshotAt > resubscribeAfter) ||
+      (healthState.lastStateSnapshotAt && now - healthState.lastStateSnapshotAt > resubscribeAfter)
+    ) {
+      console.warn("ORB snapshot stale; resubscribing to Firestore")
+      attachSnapshots()
+    }
+  }, Math.max(Math.floor(config.firestoreStaleMs / 2), 10000))
 
   setInterval(() => {
     runOrbCycle().catch((err) => console.error("ORB tick error:", err.message))
@@ -2689,10 +3013,16 @@ async function start() {
   )
 
   const server = http.createServer(async (req, res) => {
-    applyCorsHeaders(res)
+    const cors = applyCorsHeaders(res, req)
     if (req.method === "OPTIONS") {
-      res.writeHead(204)
+      res.writeHead(cors.allowed ? 204 : 403)
       res.end()
+      return
+    }
+    const rate = checkRateLimit(req)
+    if (!rate.allowed) {
+      res.writeHead(429, { "Content-Type": "application/json" })
+      res.end(JSON.stringify({ ok: false, error: "Rate limit exceeded." }))
       return
     }
     const requestUrl = new URL(req.url || "/", "http://localhost")

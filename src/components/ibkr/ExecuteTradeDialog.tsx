@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { doc, onSnapshot, serverTimestamp, setDoc, Timestamp } from "firebase/firestore"
 import { toast } from "sonner"
 import { db, firebaseEnabled } from "@/lib/firebase"
@@ -100,7 +100,7 @@ function sanitizeOrderSnapshot(snapshot: OrderSnapshot): OrderSnapshot {
     side: snapshot.side,
     quantity: snapshot.quantity,
     orderType: snapshot.orderType,
-    timeInForce: snapshot.timeInForce,
+    ...(snapshot.timeInForce ? { timeInForce: snapshot.timeInForce } : {}),
     ...(snapshot.exchange ? { exchange: snapshot.exchange } : {}),
     ...(snapshot.primaryExchange ? { primaryExchange: snapshot.primaryExchange } : {}),
     ...(typeof snapshot.limitPrice === "number" ? { limitPrice: snapshot.limitPrice } : {}),
@@ -150,6 +150,19 @@ export function ExecuteTradeDialog({
       takeProfit: typeof next.takeProfit === "number" ? String(next.takeProfit) : "",
     }
   })
+  const proposalKey = useMemo(() => {
+    if (!proposal) return "none"
+    const base = proposal.id || proposal.symbol || "proposal"
+    return [
+      base,
+      proposal.side,
+      proposal.quantity,
+      proposal.price,
+      proposal.stopLoss,
+      proposal.takeProfit,
+    ].join("|")
+  }, [proposal])
+  const proposalKeyRef = useRef(proposalKey)
 
   useEffect(() => {
     if (open) {
@@ -163,6 +176,29 @@ export function ExecuteTradeDialog({
       })
     }
   }, [open, proposal])
+
+  useEffect(() => {
+    if (!open) return
+    if (proposalKeyRef.current === proposalKey) return
+    proposalKeyRef.current = proposalKey
+    const next = buildOrderSnapshotFromProposal(proposal)
+    setDraft(next)
+    setDraftInputs({
+      limitPrice: typeof next.limitPrice === "number" ? String(next.limitPrice) : "",
+      quantity: typeof next.quantity === "number" ? String(next.quantity) : "",
+      stopLoss: typeof next.stopLoss === "number" ? String(next.stopLoss) : "",
+      takeProfit: typeof next.takeProfit === "number" ? String(next.takeProfit) : "",
+    })
+    setRequestId(null)
+    setRequestDoc(null)
+    setBrokerOrder(null)
+    setSubmitting(false)
+    setTerminalHandled(false)
+    setSuccessHandled(false)
+    setStatusToastDismissed(false)
+    setStatusSnapshot(null)
+    setStatusTrail([])
+  }, [open, proposalKey, proposal])
 
   useEffect(() => {
     if (!open && confirmLiveOpen) {

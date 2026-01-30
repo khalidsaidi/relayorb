@@ -31,6 +31,7 @@ export function useMarketPrices() {
         if (!db) return
         if (replayBlocked) return
 
+        let active = true
         const pricesRef = replayRunId
             ? doc(db, "replay", "controls", "runs", replayRunId, "market", "prices")
             : doc(db, "market", "prices")
@@ -38,6 +39,7 @@ export function useMarketPrices() {
         const unsub = onSnapshotWithRetry(
             pricesRef,
             (snap) => {
+                if (!active) return
                 if (snap.exists()) {
                     const data = snap.data()
                     const items = data.items || []
@@ -54,18 +56,23 @@ export function useMarketPrices() {
                 setLiveLoaded(true)
             },
             (err) => {
+                if (!active) return
                 console.error("Market prices subscription failed after retries:", err)
                 setLiveLoaded(true)
             }
         )
 
-        return () => unsub()
+        return () => {
+            active = false
+            unsub()
+        }
     }, [replayActive, replayRunId, replayBlocked])
 
     useEffect(() => {
         if (!db) return
         if (replayBlocked) return
 
+        let active = true
         const snapshotRef = replayRunId
             ? doc(db, "replay", "controls", "runs", replayRunId, "market", "prices_snapshot")
             : doc(db, "market", "prices_snapshot")
@@ -73,6 +80,7 @@ export function useMarketPrices() {
         const unsub = onSnapshotWithRetry(
             snapshotRef,
             (snap) => {
+                if (!active) return
                 if (snap.exists()) {
                     const data = snap.data()
                     const items = data.items || []
@@ -89,12 +97,16 @@ export function useMarketPrices() {
                 setSnapshotLoaded(true)
             },
             (err) => {
+                if (!active) return
                 console.error("Market price snapshot subscription failed after retries:", err)
                 setSnapshotLoaded(true)
             }
         )
 
-        return () => unsub()
+        return () => {
+            active = false
+            unsub()
+        }
     }, [replayActive, replayRunId, replayBlocked])
 
     return { prices, livePrices, loading }

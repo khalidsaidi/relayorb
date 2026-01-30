@@ -120,6 +120,12 @@ deploy_run_service() {
   else
     args+=(--no-allow-unauthenticated)
   fi
+  if [ -n "${SERVICE_ACCOUNT:-}" ]; then
+    args+=(--service-account "${SERVICE_ACCOUNT}")
+  fi
+  if [ -n "${REMOVE_ENV_VARS:-}" ]; then
+    args+=(--remove-env-vars "${REMOVE_ENV_VARS}")
+  fi
   local envs="RUN_REGION=$EXPECTED_REGION"
   if [ -n "$extra_env" ]; then
     envs="${envs}|${extra_env}"

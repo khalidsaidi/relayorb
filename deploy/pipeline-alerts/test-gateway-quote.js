@@ -11,7 +11,7 @@ async function testQuote() {
 
   for (const symbol of symbols) {
     try {
-      const url = new URL('/v1/fmp/quote', GATEWAY_URL);
+      const url = new URL('/v1/market/quote', GATEWAY_URL);
       url.searchParams.set('symbol', symbol);
       url.searchParams.set('assetClass', 'stock');
 

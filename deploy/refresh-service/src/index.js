@@ -25,7 +25,7 @@ const config = {
     .split(",")
     .map((email) => email.trim().toLowerCase())
     .filter(Boolean),
-  corsOrigin: process.env.CORS_ORIGIN || "*",
+  corsOrigins: process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || "*",
   port: parseInt(process.env.PORT || "8080", 10),
   openaiKey: process.env.OPENAI_API_KEY || "",
   openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
@@ -56,6 +56,10 @@ const config = {
   orbRunnerUrl: process.env.ORB_RUNNER_URL || "",
   orbRunnerAuth: process.env.ORB_RUNNER_AUTH !== "false",
   orbRunnerAudience: process.env.ORB_RUNNER_AUDIENCE || "",
+  rateLimitEnabled: process.env.REFRESH_RATE_LIMIT_ENABLED !== "false",
+  rateLimitWindowMs: parseInt(process.env.REFRESH_RATE_LIMIT_WINDOW_MS || "60000", 10),
+  rateLimitMax: parseInt(process.env.REFRESH_RATE_LIMIT_MAX || "120", 10),
+  healthWriteMs: parseInt(process.env.REFRESH_HEALTH_WRITE_MS || "30000", 10),
 }
 
 const EXPECTED_REGION = "us-west1"
@@ -147,6 +151,8 @@ const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-pl
 const idTokenAuth = new GoogleAuth()
 let gatewayAuthClient = null
 let orbRunnerAuthClient = null
+const REFRESH_HEALTH_DOC = "pipeline/refresh_service"
+let lastHealthWriteAt = 0
 
 let pipelineRedis = null
 let pipelineRedisReady = false
@@ -210,23 +216,108 @@ async function initPipelineRedis() {
   }
 }
 
+async function writeHealthStatus() {
+  const now = Date.now()
+  if (now - lastHealthWriteAt < Math.max(config.healthWriteMs, 5000)) return
+  lastHealthWriteAt = now
+  try {
+    await db.doc(REFRESH_HEALTH_DOC).set(
+      {
+        status: "ok",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        details: {
+          jobs: config.jobs,
+          redisConnected: pipelineRedisReady,
+        },
+      },
+      { merge: true }
+    )
+  } catch (err) {
+    console.error("Refresh health write failed:", err?.message || err)
+  }
+}
+
 function compactObject(obj) {
   return Object.fromEntries(
     Object.entries(obj).filter(([, value]) => value !== undefined)
   )
 }
 
-function setCors(res) {
-  res.setHeader("Access-Control-Allow-Origin", config.corsOrigin)
+function parseCorsOrigins(raw) {
+  if (!raw) return []
+  if (Array.isArray(raw)) {
+    return raw.map((item) => String(item).trim()).filter(Boolean)
+  }
+  return String(raw)
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+const resolvedCorsOrigins = parseCorsOrigins(config.corsOrigins)
+const corsAllowAll = resolvedCorsOrigins.length === 0 || resolvedCorsOrigins.includes("*")
+
+function resolveCorsOrigin(req) {
+  const origin = req?.headers?.origin ? String(req.headers.origin) : ""
+  if (!origin) return corsAllowAll ? "*" : ""
+  if (corsAllowAll) return "*"
+  return resolvedCorsOrigins.includes(origin) ? origin : ""
+}
+
+function isCorsAllowed(req) {
+  const origin = req?.headers?.origin ? String(req.headers.origin) : ""
+  if (!origin) return true
+  if (corsAllowAll) return true
+  return resolvedCorsOrigins.includes(origin)
+}
+
+function setCors(res, req) {
+  const origin = resolveCorsOrigin(req)
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin)
+    res.setHeader("Vary", "Origin")
+  }
   res.setHeader(
     "Access-Control-Allow-Headers",
     "Authorization, Content-Type, X-RelayOrb-User-Token, X-User-Token"
   )
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+  return { allowed: isCorsAllowed(req) }
 }
 
-function sendJson(res, status, payload) {
-  setCors(res)
+const rateLimitState = new Map()
+
+function resolveClientIp(req) {
+  const header =
+    req?.headers?.["x-forwarded-for"] ||
+    req?.headers?.["x-real-ip"] ||
+    req?.socket?.remoteAddress ||
+    ""
+  if (Array.isArray(header)) return header[0]
+  if (typeof header === "string" && header.includes(",")) {
+    return header.split(",")[0].trim()
+  }
+  return String(header || "")
+}
+
+function checkRateLimit(req) {
+  if (!config.rateLimitEnabled) return { allowed: true }
+  const now = Date.now()
+  const windowMs = Math.max(config.rateLimitWindowMs || 0, 1000)
+  const max = Math.max(config.rateLimitMax || 0, 1)
+  const key = resolveClientIp(req) || "unknown"
+  const entry = rateLimitState.get(key) || { count: 0, resetAt: now + windowMs }
+  if (now > entry.resetAt) {
+    entry.count = 0
+    entry.resetAt = now + windowMs
+  }
+  entry.count += 1
+  rateLimitState.set(key, entry)
+  return { allowed: entry.count <= max }
+}
+
+function sendJson(res, status, payload, req) {
+  setCors(res, req)
   res.writeHead(status, { "Content-Type": "application/json" })
   res.end(JSON.stringify(payload))
 }
@@ -776,7 +867,7 @@ async function handleOpsEvents(req, res) {
   const sinceParam = url?.searchParams.get("since") || ""
   let lastId = sinceParam || "$"
 
-  setCors(res)
+  setCors(res, req)
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache, no-transform",
@@ -1396,7 +1487,7 @@ async function handleOpsEventsSearch(req, res) {
     await client.quit().catch(() => {})
   }
 
-  setCors(res)
+  setCors(res, req)
   return sendJson(res, 200, {
     ok: true,
     events: results,
@@ -1507,7 +1598,7 @@ async function handleGatewayProxy(req, res) {
   })
 
   const text = await response.text()
-  setCors(res)
+  setCors(res, req)
   res.statusCode = response.status
   const upstreamType = response.headers.get("content-type")
   if (upstreamType) {
@@ -1566,7 +1657,7 @@ async function handleOrbRunnerProxy(req, res) {
   })
 
   const text = await response.text()
-  setCors(res)
+  setCors(res, req)
   res.statusCode = response.status
   const upstreamType = response.headers.get("content-type")
   if (upstreamType) {
@@ -1576,11 +1667,15 @@ async function handleOrbRunnerProxy(req, res) {
 }
 
 const server = http.createServer(async (req, res) => {
+  const cors = setCors(res, req)
   if (req.method === "OPTIONS") {
-    setCors(res)
-    res.writeHead(204)
+    res.writeHead(cors.allowed ? 204 : 403)
     res.end()
     return
+  }
+  const rate = checkRateLimit(req)
+  if (!rate.allowed) {
+    return sendJson(res, 429, { ok: false, error: "Rate limit exceeded." })
   }
 
   const normalizedUrl = normalizeProxyUrl(req.url || "")
@@ -1682,3 +1777,8 @@ startBatchPoller()
 startRedisEventListener().catch((err) => {
   console.error("Redis listener failed", err.message || err)
 })
+
+setInterval(() => {
+  writeHealthStatus().catch(() => {})
+}, Math.max(config.healthWriteMs, 5000))
+writeHealthStatus().catch(() => {})

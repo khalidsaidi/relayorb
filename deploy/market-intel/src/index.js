@@ -49,10 +49,13 @@ const config = {
   snapshotKeep: parseInt(process.env.SNAPSHOT_KEEP || "6", 10),
   moverTopLimit: parseInt(process.env.MOVER_TOP_LIMIT || "200", 10),
   moverEnrichLimit: parseInt(process.env.MOVER_ENRICH_LIMIT || "50", 10),
-  moverMinPrice: parseFloat(process.env.MOVER_MIN_PRICE || "1"),
+  moverMinPrice: parseFloat(process.env.MOVER_MIN_PRICE || "0"),
   moverMinVolume: parseFloat(process.env.MOVER_MIN_VOLUME || "50000"),
   moverTurnoverMinPct: parseFloat(process.env.MOVER_TURNOVER_MIN_PCT || "5"),
   moverTurnoverMaxPct: parseFloat(process.env.MOVER_TURNOVER_MAX_PCT || "300"),
+  moverMaxPrice: parseFloat(process.env.MOVER_MAX_PRICE || "0"),
+  momentumBackfillEnabled: process.env.MOMENTUM_BACKFILL_ENABLED !== "false",
+  momentumBackfillLimit: parseInt(process.env.MOMENTUM_BACKFILL_LIMIT || "40", 10),
   watchlistScoreBoost: parseFloat(process.env.WATCHLIST_SCORE_BOOST || "4"),
   primaryScoreBoost: parseFloat(process.env.PRIMARY_SCORE_BOOST || "3"),
   momentumRatioMax: parseFloat(process.env.MOMENTUM_RATIO_MAX || "2"),
@@ -509,6 +512,27 @@ function parsePercent(value) {
   return parseNumber(cleaned)
 }
 
+function resolveCandleChange(candles, windowMinutes) {
+  if (!Array.isArray(candles) || candles.length < 2) return null
+  const last = candles[candles.length - 1]
+  if (!last || typeof last.time !== "number") return null
+  const targetTime = last.time - windowMinutes * 60 * 1000
+  let baseline = null
+  for (let i = candles.length - 1; i >= 0; i -= 1) {
+    const candle = candles[i]
+    if (!candle || typeof candle.time !== "number") continue
+    if (candle.time <= targetTime) {
+      baseline = candle
+      break
+    }
+  }
+  if (!baseline || typeof baseline.close !== "number" || baseline.close === 0) return null
+  const latestPrice =
+    typeof last.close === "number" ? last.close : typeof last.price === "number" ? last.price : null
+  if (!latestPrice || latestPrice === 0) return null
+  return ((latestPrice - baseline.close) / baseline.close) * 100
+}
+
 function hashParams(value) {
   if (!value) return null
   try {
@@ -727,6 +751,28 @@ function resolveTurnoverConfig(controls) {
     applyToMovers: scope.movers !== false,
     applyToTrending: scope.trending !== false,
     applyToHotTrades: scope.hotTrades !== false,
+  }
+}
+
+function resolvePriceConfig(controls) {
+  const minRaw = parseNumber(controls?.moverPriceMin)
+  const maxRaw = parseNumber(controls?.moverPriceMax)
+  const minPrice =
+    Number.isFinite(minRaw) && minRaw >= 0
+      ? minRaw
+      : Number.isFinite(config.moverMinPrice) && config.moverMinPrice > 0
+        ? config.moverMinPrice
+        : null
+  const maxPrice =
+    Number.isFinite(maxRaw) && maxRaw > 0
+      ? maxRaw
+      : Number.isFinite(config.moverMaxPrice) && config.moverMaxPrice > 0
+        ? config.moverMaxPrice
+        : null
+  return {
+    minPrice,
+    maxPrice,
+    active: Boolean(minPrice || maxPrice),
   }
 }
 
@@ -977,6 +1023,63 @@ function normalizeSnapshotForex(item) {
   })
 }
 
+async function backfillCandidateMomentum(candidates, controls) {
+  if (!config.momentumBackfillEnabled) return candidates
+  if (!config.marketDataGatewayUrl) return candidates
+  if (!Array.isArray(candidates) || candidates.length === 0) return candidates
+  const limit = Math.max(0, config.momentumBackfillLimit || 0)
+  if (!limit) return candidates
+  const needsBackfill = candidates.filter((candidate) => {
+    if (!candidate || candidate.assetClass !== "stock" || !candidate.symbol) return false
+    const hasChange =
+      typeof candidate.change1m === "number" ||
+      typeof candidate.change5m === "number" ||
+      typeof candidate.change15m === "number"
+    return !hasChange
+  })
+  if (needsBackfill.length === 0) return candidates
+
+  const targets = needsBackfill.slice(0, limit)
+  const updates = await mapWithConcurrency(targets, 6, async (candidate) => {
+    const symbol = candidate.symbol
+    const candles = await fetchMarketCandles(symbol, "stock", "1min", 20, {
+      dailyHistoryMode: controls?.dailyHistoryMode,
+    })
+    if (!candles || candles.length === 0) return null
+    const change1m = resolveCandleChange(candles, 1)
+    const change5m = resolveCandleChange(candles, 5)
+    const change15m = resolveCandleChange(candles, 15)
+    return {
+      symbol,
+      assetClass: candidate.assetClass,
+      change1m,
+      change5m,
+      change15m,
+    }
+  })
+
+  const updateMap = new Map()
+  updates.forEach((entry) => {
+    if (entry?.symbol) updateMap.set(entry.symbol, entry)
+  })
+  if (updateMap.size === 0) return candidates
+
+  return candidates.map((candidate) => {
+    if (!candidate || candidate.assetClass !== "stock") return candidate
+    const update = updateMap.get(candidate.symbol)
+    if (!update) return candidate
+    return compactObject({
+      ...candidate,
+      change1m:
+        typeof candidate.change1m === "number" ? candidate.change1m : update.change1m,
+      change5m:
+        typeof candidate.change5m === "number" ? candidate.change5m : update.change5m,
+      change15m:
+        typeof candidate.change15m === "number" ? candidate.change15m : update.change15m,
+    })
+  })
+}
+
 async function writeSnapshot(db, collectionName, items, createdAt, meta = {}) {
   const snapshotId = String(createdAt.getTime())
   const chunks = chunkItems(items, config.snapshotChunkSize)
@@ -1076,10 +1179,10 @@ async function fetchFloatSharesForSymbol(symbol) {
   if (floatSharesCache.has(symbol)) return floatSharesCache.get(symbol)
   let floatShares = null
   try {
-    const sharesFloat = await fetchFmpSharesFloat(symbol)
+    const sharesFloat = await fetchMarketSharesFloat(symbol)
     floatShares = resolveProfileFloatShares(sharesFloat)
     if (!Number.isFinite(floatShares)) {
-      const profile = await fetchFmpProfile(symbol)
+      const profile = await fetchMarketProfile(symbol)
       floatShares = resolveProfileFloatShares(profile)
     }
   } catch (error) {
@@ -1110,7 +1213,7 @@ async function fetchDailyVolumeForSymbol(symbol) {
   if (dailyVolumeCache.has(symbol)) return dailyVolumeCache.get(symbol)
   let volume = null
   try {
-    const quote = await fetchFmpQuote(symbol, "stock")
+    const quote = await fetchMarketQuote(symbol, "stock")
     volume = parseNumber(quote?.volume)
   } catch (error) {
     console.error(`Daily volume fetch failed for ${symbol}:`, error.message)
@@ -1135,6 +1238,20 @@ async function fetchDailyVolumeMap(symbols) {
   return map
 }
 
+function resolveEffectiveMinVolume(items, minVolume) {
+  if (!Number.isFinite(minVolume) || minVolume <= 0) return 0
+  if (!Array.isArray(items) || items.length === 0) return minVolume
+  const volumes = items
+    .map((item) => (item && typeof item.volume === "number" ? item.volume : null))
+    .filter((value) => typeof value === "number" && value > 0)
+  if (volumes.length === 0) return 0
+  const maxVolume = Math.max(...volumes)
+  if (maxVolume < minVolume * 0.1) {
+    return 0
+  }
+  return minVolume
+}
+
 function computeSnapshotMovers(currentItems, previousItems, options = {}) {
   const prevMap = new Map()
   previousItems.forEach((item) => {
@@ -1146,6 +1263,10 @@ function computeSnapshotMovers(currentItems, previousItems, options = {}) {
     typeof options.minPrice === "number" && options.minPrice >= 0
       ? options.minPrice
       : 0
+  const maxPrice =
+    typeof options.maxPrice === "number" && options.maxPrice > 0
+      ? options.maxPrice
+      : null
   const minVolume =
     typeof options.minVolume === "number" && options.minVolume >= 0
       ? options.minVolume
@@ -1179,6 +1300,7 @@ function computeSnapshotMovers(currentItems, previousItems, options = {}) {
     if (!prev || typeof prev.price !== "number" || prev.price === 0) return
     const change15m = ((item.price - prev.price) / prev.price) * 100
     if (item.price < minPrice) return
+    if (maxPrice !== null && item.price > maxPrice) return
     if (!meetsVolume(item)) return
     if (!meetsTurnover(item)) return
     candidates.push({
@@ -1190,7 +1312,12 @@ function computeSnapshotMovers(currentItems, previousItems, options = {}) {
   const gainers = [...candidates].sort((a, b) => (b.change15m || 0) - (a.change15m || 0))
   const losers = [...candidates].sort((a, b) => (a.change15m || 0) - (b.change15m || 0))
   const actives = [...currentItems]
-    .filter((item) => typeof item?.volume === "number" && meetsVolume(item) && meetsTurnover(item))
+    .filter((item) => {
+      if (typeof item?.volume !== "number") return false
+      if (item?.price && item.price < minPrice) return false
+      if (maxPrice !== null && typeof item?.price === "number" && item.price > maxPrice) return false
+      return meetsVolume(item) && meetsTurnover(item)
+    })
     .sort((a, b) => (b.volume || 0) - (a.volume || 0))
 
   return { candidates, gainers, losers, actives }
@@ -1454,6 +1581,12 @@ async function fetchGatewayJson(path, params) {
   }
 }
 
+async function fetchGatewayJsonSoft(path, params) {
+  const url = buildGatewayUrl(path, params)
+  const authHeaders = await getGatewayAuthHeaders()
+  return fetchJson(url, authHeaders ? { headers: authHeaders } : undefined)
+}
+
 // Cache for tape symbols to avoid repeated fetches
 let tapeSymbolsCache = { datasetId: null, symbols: [], fetchedAt: 0 }
 
@@ -1486,14 +1619,14 @@ function resolveCryptoInterval(interval) {
   return "15min"
 }
 
-async function fetchFmpChange(pair, interval) {
+async function fetchMarketChange(pair, interval) {
   const normalized = normalizeSymbol(pair)
   if (!normalized) return null
-  const fmpInterval = resolveCryptoInterval(interval)
-  const data = await fetchGatewayJson("/v1/fmp/candles", {
+  const seriesInterval = resolveCryptoInterval(interval)
+  const data = await fetchGatewayJson("/v1/market/candles", {
     symbol: normalized,
     assetClass: "crypto",
-    interval: fmpInterval,
+    interval: seriesInterval,
     limit: "2",
   })
   const candles = Array.isArray(data?.candles) ? data.candles : []
@@ -1508,7 +1641,7 @@ async function fetchCryptoIntradayChanges(pairs, interval) {
   const results = new Map()
   for (const pair of pairs) {
     try {
-      const change = await fetchFmpChange(pair, interval)
+      const change = await fetchMarketChange(pair, interval)
       if (change !== null && change !== undefined) {
         results.set(normalizeSymbol(pair), change)
       }
@@ -1525,7 +1658,7 @@ async function fetchCryptoWatchlist(pairs) {
     const normalized = normalizeSymbol(pair)
     if (!normalized) continue
     try {
-      const data = await fetchFmpQuote(normalized, "crypto")
+      const data = await fetchMarketQuote(normalized, "crypto")
       if (!data) continue
       results.push({
         assetClass: "crypto",
@@ -1537,7 +1670,7 @@ async function fetchCryptoWatchlist(pairs) {
         volume: data.volume,
         watchlisted: true,
         origins: ["user_universe"],
-        source: "fmp",
+        source: "market",
       })
     } catch (err) {
       continue
@@ -1804,6 +1937,16 @@ async function readControls(db) {
     trending: data?.moverTurnoverScope?.trending !== false,
     hotTrades: data?.moverTurnoverScope?.hotTrades !== false,
   }
+  const parsedPriceMin = parseNumber(data?.moverPriceMin)
+  const moverPriceMin =
+    Number.isFinite(parsedPriceMin) && parsedPriceMin >= 0
+      ? parsedPriceMin
+      : config.moverMinPrice
+  const parsedPriceMax = parseNumber(data?.moverPriceMax)
+  const moverPriceMax =
+    Number.isFinite(parsedPriceMax) && parsedPriceMax > 0
+      ? parsedPriceMax
+      : config.moverMaxPrice
 
   return {
     cryptoEnabled,
@@ -1827,6 +1970,8 @@ async function readControls(db) {
     moverTurnoverMinPct,
     moverTurnoverMaxPct,
     moverTurnoverScope,
+    moverPriceMin,
+    moverPriceMax,
     dailyHistoryMode,
     autoTuneEnabled:
       data?.autoTuneEnabled === undefined ? config.autoTuneEnabled : Boolean(data.autoTuneEnabled),
@@ -1896,7 +2041,7 @@ async function refreshStockSymbolCache(db, controls) {
   console.log("Refreshing stock symbol cache")
   let data = null
   try {
-    data = await fetchGatewayJson("/v1/fmp/stock-list")
+    data = await fetchGatewayJson("/v1/market/stock-list")
   } catch (error) {
     console.error("Stock symbol cache refresh failed:", error.message)
     return
@@ -1935,7 +2080,7 @@ async function refreshStockSymbolCache(db, controls) {
     {
       stocksUpdatedAt: updatedAt,
       stocksCount: limited.length,
-      stocksSource: data?.source || "fmp",
+      stocksSource: data?.source || "market",
     },
     { merge: true }
   )
@@ -1977,7 +2122,7 @@ async function fetchCrypto(db, preferences = {}) {
       if (key) liveMap.set(key, item)
     })
 
-  const payload = await fetchGatewayJson("/v1/fmp/crypto", {
+  const payload = await fetchGatewayJson("/v1/market/crypto", {
     limit: String(config.cryptoLimit),
   })
   const data = Array.isArray(payload?.data) ? payload.data : []
@@ -1985,7 +2130,7 @@ async function fetchCrypto(db, preferences = {}) {
 
   const baseItems = data
     .map((item, index) => {
-      // FMP crypto symbols are like "BTCUSD", normalize to "BTC/USD"
+      // Gateway crypto symbols are like "BTCUSD", normalize to "BTC/USD"
       const rawSymbol = String(item.symbol || "")
       let symbol = rawSymbol
       if (!rawSymbol.includes("/") && rawSymbol.endsWith("USD") && rawSymbol.length > 3) {
@@ -2013,7 +2158,7 @@ async function fetchCrypto(db, preferences = {}) {
         liquidityRank: index + 1,
         watchlisted,
         origins,
-        source: "fmp",
+        source: "market",
       }
     })
     .filter((item) => {
@@ -2090,9 +2235,9 @@ async function fetchCrypto(db, preferences = {}) {
 
 // Staleness thresholds for data sources
 const STALENESS_THRESHOLDS = {
-  prices: 180000,    // 3 minutes - price data should be fresh
-  signals: 3600000,  // 1 hour - bot signals can be slightly older
-  pipeline: 600000,  // 10 minutes - overall pipeline health
+  prices: parseInt(process.env.PRICE_STALE_MS || "180000", 10), // price data should be fresh
+  signals: parseInt(process.env.SIGNALS_STALE_MS || "3600000", 10), // bot signals can be slightly older
+  pipeline: parseInt(process.env.PIPELINE_STALE_MS || "600000", 10), // overall pipeline health
 }
 
 function resolveStockMarketStatus(asOfMs = getEffectiveNowMs()) {
@@ -2212,6 +2357,7 @@ async function fetchLiveSnapshotMovers(db, options) {
     livePrices,
     source,
     turnoverConfig,
+    priceConfig,
   } = options
   const resolvedMode = resolveUniverseMode(mode)
   const allowTrending = resolvedMode !== "universe_only"
@@ -2222,11 +2368,23 @@ async function fetchLiveSnapshotMovers(db, options) {
     livePrices && Array.isArray(livePrices.items) ? livePrices : await readLivePrices(db)
   const snapshotSource = priceSnapshot?.source || source || "stream"
   const rawItems = Array.isArray(priceSnapshot?.items) ? priceSnapshot.items : []
-  const currentItems = rawItems
+  let currentItems = rawItems
     .filter((item) => item?.assetClass === assetClass)
     .filter((item) => (typeof filterItem === "function" ? filterItem(item) : true))
     .map((item) => normalizeItem(item, exchangeHint))
     .filter(Boolean)
+
+  if (assetClass === "stock" && priceConfig?.active) {
+    const minPrice = priceConfig.minPrice
+    const maxPrice = priceConfig.maxPrice
+    currentItems = currentItems.filter((item) => {
+      const price = parseNumber(item?.price)
+      if (!Number.isFinite(price)) return false
+      if (Number.isFinite(minPrice) && price < minPrice) return false
+      if (Number.isFinite(maxPrice) && maxPrice > 0 && price > maxPrice) return false
+      return true
+    })
+  }
 
   if (currentItems.length === 0) {
     return { items: [], movers: null, snapshot: null }
@@ -2315,9 +2473,20 @@ async function fetchLiveSnapshotMovers(db, options) {
   let losers = []
   let actives = []
   if (previous) {
+    const effectiveMinVolume =
+      assetClass === "stock"
+        ? resolveEffectiveMinVolume(currentItems, config.moverMinVolume)
+        : 0
     const snapshotMoves = computeSnapshotMovers(currentItems, previous.items, {
-      minPrice: assetClass === "stock" ? config.moverMinPrice : 0,
-      minVolume: assetClass === "stock" ? config.moverMinVolume : 0,
+      minPrice:
+        assetClass === "stock"
+          ? (priceConfig?.active ? priceConfig?.minPrice : config.moverMinPrice)
+          : 0,
+      maxPrice:
+        assetClass === "stock" && priceConfig?.active
+          ? priceConfig?.maxPrice
+          : null,
+      minVolume: effectiveMinVolume,
       turnoverMap,
       turnoverMinPct: turnoverConfig?.applyToMovers ? turnoverConfig?.minPct : null,
       turnoverMaxPct: turnoverConfig?.applyToMovers ? turnoverConfig?.maxPct : null,
@@ -2488,10 +2657,10 @@ async function fetchLiveSnapshotMovers(db, options) {
   }
 }
 
-async function fetchFmpQuote(symbol, assetClass = "stock") {
+async function fetchMarketQuote(symbol, assetClass = "stock") {
   if (!config.marketDataGatewayUrl) return null
   try {
-    const data = await fetchGatewayJson("/v1/fmp/quote", {
+    const data = await fetchGatewayJson("/v1/market/quote", {
       symbol,
       assetClass,
     })
@@ -2503,41 +2672,41 @@ async function fetchFmpQuote(symbol, assetClass = "stock") {
       change24h: parseNumber(data?.changePercent),
       volume: parseNumber(data?.volume),
       watchlisted: true,
-      source: data?.source || "fmp",
+      source: data?.source || "market",
     }
   } catch (error) {
-    console.error(`Failed to fetch FMP quote for ${symbol}:`, error.message)
+    console.error(`Failed to fetch market quote for ${symbol}:`, error.message)
     return null
   }
 }
 
-async function fetchFmpProfile(symbol) {
+async function fetchMarketProfile(symbol) {
   if (!config.marketDataGatewayUrl) return null
   if (!symbol) return null
   try {
-    const data = await fetchGatewayJson("/v1/fmp/profile", { symbol })
+    const data = await fetchGatewayJsonSoft("/v1/market/profile", { symbol })
     return data?.profile || null
   } catch (error) {
-    console.error(`Failed to fetch FMP profile for ${symbol}:`, error.message)
+    console.error(`Failed to fetch market profile for ${symbol}:`, error.message)
     return null
   }
 }
 
-async function fetchFmpSharesFloat(symbol) {
+async function fetchMarketSharesFloat(symbol) {
   if (!config.marketDataGatewayUrl) return null
   if (!symbol) return null
   try {
-    const data = await fetchGatewayJson("/v1/fmp/shares-float", { symbol })
+    const data = await fetchGatewayJsonSoft("/v1/market/shares-float", { symbol })
     const items = Array.isArray(data?.items) ? data.items : []
     return items[0] || null
   } catch (error) {
-    console.error(`Failed to fetch FMP shares float for ${symbol}:`, error.message)
+    console.error(`Failed to fetch shares float for ${symbol}:`, error.message)
     return null
   }
 }
 
 async function fetchStockQuote(symbol) {
-  return fetchFmpQuote(symbol, "stock")
+  return fetchMarketQuote(symbol, "stock")
 }
 
 async function fetchStocks(db, preferences = {}, controls = null) {
@@ -2582,6 +2751,7 @@ async function fetchStocks(db, preferences = {}, controls = null) {
       ...turnoverConfig,
       computeCandidates: turnoverNeeded,
     },
+    priceConfig: resolvePriceConfig(controls),
   })
 
   const items = usResult.items
@@ -2612,7 +2782,7 @@ async function fetchStocks(db, preferences = {}, controls = null) {
       const quote = await fetchStockQuote(symbol)
       if (quote) {
         results.set(symbol, quote)
-        source = source || quote.source || "fmp"
+        source = source || quote.source || "market"
       }
     }
   }
@@ -2664,7 +2834,7 @@ async function fetchForex(db, preferences = {}) {
     const normalized = normalizeSymbol(pair)
     if (!normalized) continue
     try {
-      const quote = await fetchFmpQuote(normalized, "forex")
+      const quote = await fetchMarketQuote(normalized, "forex")
       if (!quote || typeof quote.price !== "number") continue
       results.push({
         assetClass: "forex",
@@ -3144,6 +3314,9 @@ function buildTrending(candidates, signalMap, scoreOptions, newsScoreMap) {
         signalWeight: scoreOptions?.signalWeight,
         horizon,
         newsScore: newsData?.sentiment ?? null,
+        priceMin: scoreOptions?.priceMin ?? null,
+        priceMax: scoreOptions?.priceMax ?? null,
+        volumeMin: scoreOptions?.volumeMin ?? null,
       })
       const scoreComponents = formatScoreComponents(scoreDetail.components)
 
@@ -3226,6 +3399,20 @@ function applyTurnoverFilter(candidates, turnoverConfig, scope) {
     if (!Number.isFinite(turnoverPct)) return false
     if (turnoverConfig.minPct && turnoverPct < turnoverConfig.minPct) return false
     if (turnoverConfig.maxPct && turnoverPct > turnoverConfig.maxPct) return false
+    return true
+  })
+}
+
+function applyPriceFilter(candidates, priceConfig) {
+  if (!Array.isArray(candidates) || !priceConfig?.active) return candidates
+  const minPrice = priceConfig.minPrice
+  const maxPrice = priceConfig.maxPrice
+  return candidates.filter((candidate) => {
+    if (candidate?.assetClass !== "stock") return true
+    const price = parseNumber(candidate.price)
+    if (!Number.isFinite(price)) return true
+    if (Number.isFinite(minPrice) && price < minPrice) return false
+    if (Number.isFinite(maxPrice) && maxPrice > 0 && price > maxPrice) return false
     return true
   })
 }
@@ -3341,7 +3528,7 @@ async function fetchMarketauxNews(symbols, entityTypes) {
 async function fetchAnalystConsensus(symbol) {
   if (!config.marketDataGatewayUrl || !symbol) return null
   try {
-    const data = await fetchGatewayJson("/v1/fmp/grades-consensus", { symbol })
+    const data = await fetchGatewayJsonSoft("/v1/market/grades-consensus", { symbol })
     return data?.consensus || null
   } catch (err) {
     console.error(`Analyst consensus fetch failed for ${symbol}:`, err.message)
@@ -4149,9 +4336,11 @@ function scoreTrade(candidate, signalData, side, options = {}) {
   // - Logarithmic scaling for large moves (so 30% move scores higher than 3%)
   // - Asset-class specific thresholds
   const momentumThresholds = {
-    crypto: { low: 1, mid: 5, high: 15 },   // Crypto is more volatile
-    stock: { low: 0.5, mid: 2, high: 5 },   // Stocks move less
-    forex: { low: 0.1, mid: 0.5, high: 1.5 }, // Forex even less
+    // Calibrated to typical 1m/5m blends so scores are meaningful in live conditions
+    // (stock median ~0.06%, p75 ~0.15%, p95 ~0.35%)
+    crypto: { low: 0.3, mid: 1.0, high: 3.0 },   // Crypto is more volatile
+    stock: { low: 0.05, mid: 0.15, high: 0.35 }, // Stocks move less
+    forex: { low: 0.02, mid: 0.05, high: 0.15 }, // Forex even less
   }
   const thresholds = momentumThresholds[candidate.assetClass] || momentumThresholds.stock
   
@@ -4172,7 +4361,7 @@ function scoreTrade(candidate, signalData, side, options = {}) {
     typeof candidate.universeBoost === "number" ? candidate.universeBoost : 0
   const primaryBoost = candidate.primary ? config.primaryScoreBoost : 0
   const universeScore = universeBoost + primaryBoost
-  // Analyst consensus boost for stocks (from FMP grades-consensus)
+  // Analyst consensus boost for stocks (when available).
   const analystBoost = candidate.assetClass === "stock" && options.analystConsensusMap
     ? calcAnalystBoost(candidate.symbol, side, options.analystConsensusMap)
     : 0
@@ -4197,21 +4386,37 @@ function scoreTrade(candidate, signalData, side, options = {}) {
   }
   score -= liquidityPenalty + spreadPenalty + sentimentPenalty
 
+  const priceMin =
+    typeof options.priceMin === "number" && Number.isFinite(options.priceMin)
+      ? options.priceMin
+      : null
+  const priceMax =
+    typeof options.priceMax === "number" && Number.isFinite(options.priceMax)
+      ? options.priceMax
+      : null
   let pricePenalty = 0
   if (
     candidate.assetClass === "stock" &&
     typeof candidate.price === "number" &&
-    candidate.price < config.moverMinPrice
+    (priceMin !== null || priceMax !== null)
   ) {
-    pricePenalty = 10
+    if (priceMin > 0 && candidate.price < priceMin) {
+      pricePenalty = 10
+    } else if (priceMax > 0 && candidate.price > priceMax) {
+      pricePenalty = 10
+    }
   }
   score -= pricePenalty
   let volumePenalty = 0
+  const volumeMin =
+    typeof options.volumeMin === "number" && Number.isFinite(options.volumeMin)
+      ? options.volumeMin
+      : 0
   if (
     candidate.assetClass === "stock" &&
     typeof candidate.volume === "number" &&
-    config.moverMinVolume > 0 &&
-    candidate.volume < config.moverMinVolume
+    volumeMin > 0 &&
+    candidate.volume < volumeMin
   ) {
     volumePenalty = 10
   }
@@ -4278,7 +4483,7 @@ function scoreTrade(candidate, signalData, side, options = {}) {
   }
 }
 
-async function fetchFmpCandles(
+async function fetchMarketCandles(
   symbol,
   assetClass,
   interval = "15min",
@@ -4293,7 +4498,7 @@ async function fetchFmpCandles(
   const dailyMode =
     typeof options.dailyHistoryMode === "string" ? options.dailyHistoryMode : null
   try {
-    const data = await fetchGatewayJson("/v1/fmp/candles", {
+    const data = await fetchGatewayJson("/v1/market/candles", {
       symbol,
       assetClass,
       interval,
@@ -4305,12 +4510,12 @@ async function fetchFmpCandles(
     const candles = Array.isArray(data?.candles) ? data.candles : []
     const debugSymbols = parseList(process.env.SWING_DEBUG_SYMBOLS || "")
     if (debugSymbols.includes(symbol) && interval === "1day") {
-      console.log(`fetchFmpCandles ${symbol} ${interval}: received ${candles.length} candles, source=${data?.source}`)
+      console.log(`fetchMarketCandles ${symbol} ${interval}: received ${candles.length} candles, source=${data?.source}`)
     }
     if (candles.length === 0) return []
     return candles.slice(-limit)
   } catch (error) {
-    console.error(`Failed to fetch FMP candles for ${symbol}:`, error.message)
+    console.error(`Failed to fetch candles for ${symbol}:`, error.message)
     return []
   }
 }
@@ -4475,7 +4680,7 @@ async function buildRecommendations(trades, limit = 50) {
   const recommendations = new Map()
 
   await mapWithConcurrency(capped, 5, async (trade) => {
-    const candles = await fetchFmpCandles(trade.symbol, trade.assetClass, "15min")
+    const candles = await fetchMarketCandles(trade.symbol, trade.assetClass, "15min")
     const atrPct = computeAtrPercent(candles)
     const recommendation = computeRecommendation(trade, atrPct)
     const key = getAssetKey(trade.assetClass, trade.symbol)
@@ -4828,6 +5033,9 @@ function buildHotTrades(candidates, signalMap, scoreOptions, newsScoreMap = null
       horizon: scoreOptions?.horizon || "15m",
       newsScore: newsSentiment,
       analystConsensusMap: scoreOptions?.analystConsensusMap,
+      priceMin: scoreOptions?.priceMin ?? null,
+      priceMax: scoreOptions?.priceMax ?? null,
+      volumeMin: scoreOptions?.volumeMin ?? null,
     })
     const scoreComponents = formatScoreComponents(scoreDetail.components)
 
@@ -4878,6 +5086,35 @@ function buildHotTrades(candidates, signalMap, scoreOptions, newsScoreMap = null
   })
 
   return scored.sort((a, b) => (b.score || 0) - (a.score || 0))
+}
+
+function scoreCandidates(candidates, signalMap, scoreOptions, newsScoreMap = null) {
+  if (!Array.isArray(candidates)) return []
+  return candidates.map((candidate) => {
+    const symbolKey = getCandidateKey(candidate)
+    const signalData = symbolKey ? signalMap.get(symbolKey) : null
+    const assetKey = getAssetKey(candidate.assetClass, candidate.symbol)
+    const newsData = newsScoreMap && assetKey ? newsScoreMap.get(assetKey) : null
+    const side = resolveTradeSide(candidate, signalData)
+    const scoreDetail = scoreTrade(candidate, signalData, side, {
+      weights: scoreOptions?.weights,
+      signalWeight: scoreOptions?.signalWeight,
+      horizon: scoreOptions?.horizon || "15m",
+      newsScore: newsData?.sentiment ?? null,
+      analystConsensusMap: scoreOptions?.analystConsensusMap,
+      priceMin: scoreOptions?.priceMin ?? null,
+      priceMax: scoreOptions?.priceMax ?? null,
+      volumeMin: scoreOptions?.volumeMin ?? null,
+    })
+    const scoreComponents = formatScoreComponents(scoreDetail.components)
+    return compactObject({
+      ...candidate,
+      score: Number(scoreDetail.score.toFixed(2)),
+      confidence: Number(scoreDetail.confidence.toFixed(2)),
+      scoreComponents: scoreComponents || undefined,
+      sideHint: candidate.sideHint || side || null,
+    })
+  })
 }
 
 function resolveSwingEntryWindow(asOf) {
@@ -5185,10 +5422,10 @@ async function buildSwingOvernight({
       debugRecord.passed = debugRecord.reasons.length === 0
       debugMap[symbol] = debugRecord
     }
-    const dailyCandles = await fetchFmpCandles(symbol, "stock", "1day", 80, {
+    const dailyCandles = await fetchMarketCandles(symbol, "stock", "1day", 80, {
       dailyHistoryMode: controls?.dailyHistoryMode,
     })
-    const intradayCandles = await fetchFmpCandles(symbol, "stock", "30min", 500)
+    const intradayCandles = await fetchMarketCandles(symbol, "stock", "30min", 500)
     if (debugRecord) {
       debugRecord.metrics.dailyCandles = dailyCandles.length
       debugRecord.metrics.intradayCandles = intradayCandles.length
@@ -5330,7 +5567,7 @@ async function buildSwingOvernight({
       .filter((key) => key < todayKey)
       .sort()
       .slice(-SWING_RULES.volumeLookbackSessions)
-    // Allow fewer prior sessions - FMP intraday history is limited (typically 5-10 days)
+    // Allow fewer prior sessions when intraday history is limited.
     // Replay mode: 1 session minimum, Live mode: 3 sessions minimum (uses more if available)
     const minRequiredSessions = replayState.mode === "replay" ? 1 : Math.min(3, SWING_RULES.volumeLookbackSessions)
     if (priorSessionKeys.length < minRequiredSessions) {
@@ -5682,8 +5919,8 @@ async function buildPrebreakout({
       }
       debugMap[symbol] = debugRecord
     }
-    const profile = await fetchFmpProfile(symbol)
-    const sharesFloat = await fetchFmpSharesFloat(symbol)
+    const profile = await fetchMarketProfile(symbol)
+    const sharesFloat = await fetchMarketSharesFloat(symbol)
     const marketCap = resolveProfileMarketCap(profile)
     const floatShares = resolveProfileFloatShares(sharesFloat || profile)
     if (debugRecord) {
@@ -5726,10 +5963,10 @@ async function buildPrebreakout({
       return null
     }
 
-    const dailyCandles = await fetchFmpCandles(symbol, "stock", "1day", 90, {
+    const dailyCandles = await fetchMarketCandles(symbol, "stock", "1day", 90, {
       dailyHistoryMode: controls?.dailyHistoryMode,
     })
-    const intradayCandles = await fetchFmpCandles(symbol, "stock", "5min", 200)
+    const intradayCandles = await fetchMarketCandles(symbol, "stock", "5min", 200)
     if (dailyCandles.length === 0 || intradayCandles.length === 0) {
       if (dailyCandles.length === 0) {
         dailyHistory.missingDailyCount += 1
@@ -6704,6 +6941,9 @@ function buildCandidateBatch(candidates, limit) {
         volatility1m: candidate.volatility1m,
         volatility5m: candidate.volatility5m,
         spreadPct: candidate.spreadPct,
+        score: candidate.score,
+        confidence: candidate.confidence,
+        scoreComponents: candidate.scoreComponents,
         sideHint: candidate.sideHint,
         watchlisted: candidate.watchlisted,
         primary: candidate.primary,
@@ -7321,11 +7561,38 @@ async function run() {
     focusSet.size > 0 && focusSet.size < 3
       ? rawCandidates.filter((candidate) => focusSet.has(candidate.assetClass))
       : rawCandidates
+  const priceConfig = resolvePriceConfig(controls)
   let candidates = applyVolumeScores(markPrimary(focusedCandidates, primarySets))
+  if (priceConfig.active) {
+    candidates = applyPriceFilter(candidates, priceConfig)
+  }
   if (testFilter) {
     candidates = candidates.filter((candidate) => testFilter.allow(candidate))
   }
-  const candidateBatch = buildCandidateBatch(candidates, config.candidatePublishLimit)
+  candidates = await backfillCandidateMomentum(candidates, controls)
+  const newsData = await loadNewsData(db, candidates, controls, universe, runId, runConfig)
+  // Load analyst consensus for stock candidates (if available)
+  const stockSymbols = candidates
+    .filter((c) => c.assetClass === "stock")
+    .map((c) => c.symbol)
+  const analystConsensusMap = await loadAnalystConsensusData(stockSymbols)
+  const scoreOptions = {
+    weights: controls.trendWeights,
+    signalWeight,
+    horizon: "15m",
+    riskProfile: controls.riskProfile,
+    analystConsensusMap,
+    priceMin: priceConfig.active ? priceConfig.minPrice : null,
+    priceMax: priceConfig.active ? priceConfig.maxPrice : null,
+    volumeMin: resolveEffectiveMinVolume(candidates, config.moverMinVolume),
+  }
+  const scoredCandidates = scoreCandidates(
+    candidates,
+    botSignals,
+    scoreOptions,
+    newsData.scoreMap
+  )
+  const candidateBatch = buildCandidateBatch(scoredCandidates, config.candidatePublishLimit)
   const candidateBatchCounts = countCandidates(candidateBatch)
   const originBreakdown = summarizeOrigins(candidateBatch)
   const sampleOrigins = (list) =>
@@ -7414,12 +7681,6 @@ async function run() {
     },
     items: candidateBatch,
   })
-  const newsData = await loadNewsData(db, candidates, controls, universe, runId, runConfig)
-  // Load analyst consensus for stock candidates (uses FMP grades-consensus)
-  const stockSymbols = candidates
-    .filter(c => c.assetClass === "stock")
-    .map(c => c.symbol)
-  const analystConsensusMap = await loadAnalystConsensusData(stockSymbols)
   const turnoverConfig = resolveTurnoverConfig(controls)
   const hotTradesCandidates = applyTurnoverFilter(candidates, turnoverConfig, "hotTrades")
   const trendingCandidates = applyTurnoverFilter(candidates, turnoverConfig, "trending")
@@ -7440,13 +7701,6 @@ async function run() {
     origins: candidateOriginCounts,
     sampleMover15m: stockCandidates.filter((c) => (c.origins || []).includes("mover15m")).slice(0, 5).map((c) => c.symbol),
   })
-  const scoreOptions = {
-    weights: controls.trendWeights,
-    signalWeight,
-    horizon: "15m",
-    riskProfile: controls.riskProfile,
-    analystConsensusMap,
-  }
   const hotTrades = buildHotTrades(hotTradesCandidates, botSignals, scoreOptions, newsData.scoreMap)
   const scoreSummary = hotTrades.reduce(
     (acc, trade) => {

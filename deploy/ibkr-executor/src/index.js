@@ -33,7 +33,7 @@ const config = {
   claimTimeoutMs: parseInt(process.env.CLAIM_TIMEOUT_MS || "5000", 10),
   requestExpiryMs: parseInt(process.env.REQUEST_EXPIRY_MS || "60000", 10),
   ibReconnectDelayMs: parseInt(process.env.IB_RECONNECT_DELAY_MS || "5000", 10),
-  ibOrderDelayMs: parseInt(process.env.IB_ORDER_DELAY_MS || "50", 10), // Delay between parent and child orders
+  ibOrderDelayMs: parseInt(process.env.IB_ORDER_DELAY_MS || "500", 10), // Delay between parent and child orders
   ibOpenOrdersRefreshMs: parseInt(process.env.IB_OPEN_ORDERS_REFRESH_MS || "60000", 10),
 }
 
@@ -168,6 +168,8 @@ const state = {
   accountSummaryReqId: null,
   accountSummary: {},
   ibMode: null,
+  reconnectTimer: null,
+  reconnectAttempts: 0,
   stats: {
     claimed: 0,
     submitted: 0,
@@ -180,6 +182,11 @@ const state = {
   lastConnectionAtMs: null,
   lastConnectError: null,
   startedAt: null,
+  orderStatusCache: new Map(), // orderId -> { status, filled, remaining, avgFillPrice }
+  execIdCache: new Set(), // execId -> seen
+  orderContracts: new Map(), // orderId -> contract
+  bracketOrders: new Map(), // parentOrderId -> { requestId, tpOrderId, slOrderId, tpOrder, slOrder, lastAdjustedQty }
+  positionUpdateMeta: new Map(), // assetKey -> { source, updatedAtMs }
 }
 
 // ============================================================================
@@ -447,10 +454,23 @@ async function upsertBrokerPosition({
   unrealizedPnl,
   realizedPnl,
   account,
+  source,
 }) {
   const asset = buildAssetFromContract(contract)
   if (!asset) return
   const { assetKey, assetClass, symbol } = asset
+  const positionValue = parseNumber(position)
+  if (!Number.isFinite(positionValue)) return
+  const now = Date.now()
+  const meta = state.positionUpdateMeta.get(assetKey)
+  if (meta) {
+    if (meta.source === "updatePortfolio" && source === "position") {
+      if (now - meta.updatedAtMs < 30000) {
+        return
+      }
+    }
+  }
+  state.positionUpdateMeta.set(assetKey, { source: source || "unknown", updatedAtMs: now })
   const docId = buildPositionDocId(assetKey)
   const ref = db.doc(`brokerPositions/${docId}`)
   await ref.set(
@@ -463,14 +483,14 @@ async function upsertBrokerPosition({
       exchange: contract.exchange || null,
       primaryExchange: contract.primaryExch || null,
       currency: contract.currency || "USD",
-      position,
-      avgCost: averageCost ?? null,
-      marketPrice: marketPrice ?? null,
-      marketValue: marketValue ?? null,
-      unrealizedPnl: unrealizedPnl ?? null,
-      realizedPnl: realizedPnl ?? null,
+      position: positionValue,
+      avgCost: Number.isFinite(parseNumber(averageCost)) ? parseNumber(averageCost) : null,
+      marketPrice: Number.isFinite(parseNumber(marketPrice)) ? parseNumber(marketPrice) : null,
+      marketValue: Number.isFinite(parseNumber(marketValue)) ? parseNumber(marketValue) : null,
+      unrealizedPnl: Number.isFinite(parseNumber(unrealizedPnl)) ? parseNumber(unrealizedPnl) : null,
+      realizedPnl: Number.isFinite(parseNumber(realizedPnl)) ? parseNumber(realizedPnl) : null,
       account: account || state.ibAccount || state.brokerAccount?.ibAccountCode || null,
-      isOpen: position !== 0,
+      isOpen: positionValue !== 0,
       updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true }
@@ -521,6 +541,21 @@ function getIbClientId(mode) {
     : Number.isFinite(paperId) ? paperId : 1
 }
 
+function scheduleReconnect() {
+  if (state.reconnectTimer) return
+  const attempt = state.reconnectAttempts || 0
+  const base = Math.max(1000, config.ibReconnectDelayMs)
+  const delay = Math.min(base * Math.pow(2, Math.min(attempt, 6)), 60000)
+  const jitter = Math.floor(Math.random() * 500)
+  state.reconnectAttempts = attempt + 1
+  state.reconnectTimer = setTimeout(() => {
+    state.reconnectTimer = null
+    if (!state.ibConnected && state.brokerAccount?.enabled) {
+      connectToIb(state.ibMode || "paper")
+    }
+  }, delay + jitter)
+}
+
 function connectToIb(mode = "paper") {
   if (state.ib) {
     try {
@@ -550,6 +585,11 @@ function connectToIb(mode = "paper") {
   state.ib.on(EventName.connected, () => {
     console.log("IBKR: Connected")
     state.ibConnected = true
+    state.reconnectAttempts = 0
+    if (state.reconnectTimer) {
+      clearTimeout(state.reconnectTimer)
+      state.reconnectTimer = null
+    }
     state.lastConnectionAtMs = Date.now()
     state.lastConnectError = null
     state.ib.reqIds()
@@ -570,12 +610,7 @@ function connectToIb(mode = "paper") {
       clearInterval(state.ordersRefreshInterval)
       state.ordersRefreshInterval = null
     }
-    // Schedule reconnect
-    setTimeout(() => {
-      if (!state.ibConnected && state.brokerAccount?.enabled) {
-        connectToIb(state.ibMode || "paper")
-      }
-    }, config.ibReconnectDelayMs)
+    scheduleReconnect()
   })
 
   state.ib.on(EventName.error, (err, code, reqId) => {
@@ -626,10 +661,17 @@ function connectToIb(mode = "paper") {
   // Order status updates
   state.ib.on(EventName.orderStatus, (orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice) => {
     console.log(`IBKR OrderStatus: orderId=${orderId} status=${status} filled=${filled} remaining=${remaining} avgFillPrice=${avgFillPrice}`)
-
+    if (!cacheOrderStatus(orderId, status, filled, remaining, avgFillPrice)) {
+      return
+    }
     const pending = state.pendingOrders.get(orderId)
     const docId = pending?.requestId || state.orderIdToDocId.get(orderId)
     const requestId = pending?.requestId || null
+    if (pending?.type === "parent") {
+      adjustBracketChildren(orderId, filled).catch((err) => {
+        console.warn(`Bracket adjust failed for ${orderId}: ${err.message}`)
+      })
+    }
     if (docId) {
       updateOrderStatus(
         docId,
@@ -650,6 +692,7 @@ function connectToIb(mode = "paper") {
 
   // Open order snapshots (backfill)
   state.ib.on(EventName.openOrder, (orderId, contract, order, orderState) => {
+    registerOrderContract(orderId, contract)
     upsertBrokerOrderFromIb({ orderId, contract, order, orderState, source: "openOrder" }).catch(err => {
       console.error(`Failed to upsert openOrder ${orderId}: ${err.message}`)
     })
@@ -662,6 +705,7 @@ function connectToIb(mode = "paper") {
   state.ib.on(EventName.completedOrder, (contract, order, orderState) => {
     const orderId = order?.orderId
     if (!orderId) return
+    registerOrderContract(orderId, contract)
     upsertBrokerOrderFromIb({ orderId, contract, order, orderState, source: "completedOrder" }).catch(err => {
       console.error(`Failed to upsert completedOrder ${orderId}: ${err.message}`)
     })
@@ -673,6 +717,15 @@ function connectToIb(mode = "paper") {
 
   // Execution details
   state.ib.on(EventName.execDetails, (reqId, contract, execution) => {
+    const execId = execution?.execId ? String(execution.execId) : null
+    if (execId) {
+      if (state.execIdCache.has(execId)) return
+      state.execIdCache.add(execId)
+      if (state.execIdCache.size > 10000) {
+        const entries = Array.from(state.execIdCache)
+        entries.slice(0, state.execIdCache.size - 5000).forEach((id) => state.execIdCache.delete(id))
+      }
+    }
     console.log(`IBKR ExecDetails: orderId=${execution.orderId} execId=${execution.execId} shares=${execution.shares} price=${execution.price}`)
   })
 
@@ -684,14 +737,13 @@ function connectToIb(mode = "paper") {
       state.ibAccount = accounts[0]
     }
     startPortfolioStreams()
-    startOrderStreams()
   })
 
   // Account summary updates
   state.ib.on(EventName.accountSummary, (reqId, account, tag, value, currency) => {
     if (!account) return
     const numeric = Number.parseFloat(value)
-    const normalized = Number.isFinite(numeric) ? numeric : value
+    const normalized = Number.isFinite(numeric) ? numeric : null
     switch (tag) {
       case "NetLiquidation":
         state.accountSummary.netLiquidation = normalized
@@ -733,6 +785,7 @@ function connectToIb(mode = "paper") {
         unrealizedPnl: unrealizedPNL,
         realizedPnl: realizedPNL,
         account: accountName,
+        source: "updatePortfolio",
       }).catch((err) => {
         console.warn(`Failed to update broker position: ${err.message}`)
       })
@@ -750,6 +803,7 @@ function connectToIb(mode = "paper") {
       unrealizedPnl: null,
       realizedPnl: null,
       account,
+      source: "position",
     }).catch((err) => {
       console.warn(`Failed to update broker position snapshot: ${err.message}`)
     })
@@ -961,6 +1015,7 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
       state.pendingContracts.set(reqId, {
         symbol: pairLabel,
         cacheKey,
+        createdAt: Date.now(),
         resolve: (resolvedContract) => {
           clearTimeout(timeout)
           const resolvedMinTick = parseNumber(resolvedContract.minTick)
@@ -1020,11 +1075,12 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
       reject(new Error(`Contract resolution timeout for ${symbol}`))
     }, 10000)
 
-    state.pendingContracts.set(reqId, {
-      symbol,
-      cacheKey,
-      resolve: (resolvedContract) => {
-        clearTimeout(timeout)
+      state.pendingContracts.set(reqId, {
+        symbol,
+        cacheKey,
+        createdAt: Date.now(),
+        resolve: (resolvedContract) => {
+          clearTimeout(timeout)
         const resolvedMinTick = parseNumber(resolvedContract.minTick)
         const cachePayload = {
           assetKey: cacheKeyBase,
@@ -1058,6 +1114,38 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
 
     state.ib.reqContractDetails(reqId, contract)
   })
+}
+
+function prunePendingContracts() {
+  if (state.pendingContracts.size === 0) return
+  const now = Date.now()
+  const expired = []
+  state.pendingContracts.forEach((pending, reqId) => {
+    if (!pending?.createdAt) return
+    if (now - pending.createdAt > 20000) {
+      expired.push(reqId)
+      try {
+        pending.reject(new Error(`Contract resolution timeout for ${pending.symbol}`))
+      } catch (_) {
+        // ignore
+      }
+    }
+  })
+  expired.forEach((reqId) => state.pendingContracts.delete(reqId))
+  const maxPending = 1000
+  if (state.pendingContracts.size > maxPending) {
+    const entries = Array.from(state.pendingContracts.entries())
+      .sort((a, b) => (a[1]?.createdAt || 0) - (b[1]?.createdAt || 0))
+    const toRemove = entries.slice(0, state.pendingContracts.size - maxPending)
+    toRemove.forEach(([reqId, pending]) => {
+      try {
+        pending?.reject?.(new Error("Contract resolution evicted"))
+      } catch (_) {
+        // ignore
+      }
+      state.pendingContracts.delete(reqId)
+    })
+  }
 }
 
 // ============================================================================
@@ -1095,7 +1183,7 @@ function mapIbOrderType(orderType) {
     case OrderType.STP:
       return "stop"
     default:
-      return orderType.toLowerCase()
+      return undefined
   }
 }
 
@@ -1117,6 +1205,63 @@ const IB_TERMINAL_STATUSES = new Set([
   "Rejected",
   "Inactive",
 ])
+
+function cacheOrderStatus(orderId, status, filledQty, remainingQty, avgPrice) {
+  const statusKey = status ? String(status) : ""
+  const filledValue = parseNumber(filledQty)
+  const remainingValue = parseNumber(remainingQty)
+  const avgFillValue = parseNumber(avgPrice)
+  const cached = state.orderStatusCache.get(orderId)
+  if (
+    cached &&
+    cached.status === statusKey &&
+    cached.filled === filledValue &&
+    cached.remaining === remainingValue &&
+    cached.avgFillPrice === avgFillValue
+  ) {
+    return false
+  }
+  state.orderStatusCache.set(orderId, {
+    status: statusKey,
+    filled: filledValue,
+    remaining: remainingValue,
+    avgFillPrice: avgFillValue,
+  })
+  return true
+}
+
+function registerOrderContract(orderId, contract) {
+  if (!orderId || !contract) return
+  state.orderContracts.set(orderId, contract)
+}
+
+async function adjustBracketChildren(parentOrderId, filledQty) {
+  const bracket = state.bracketOrders.get(parentOrderId)
+  if (!bracket || !state.ib || !state.ibConnected) return
+  const filledValue = parseNumber(filledQty)
+  if (!Number.isFinite(filledValue) || filledValue <= 0) return
+  if (bracket.lastAdjustedQty && filledValue <= bracket.lastAdjustedQty) return
+  const quantity = filledValue
+  const contract = bracket.contract || state.orderContracts.get(parentOrderId)
+  if (!contract) return
+  const updates = []
+  if (bracket.tpOrder) {
+    updates.push({ orderId: bracket.tpOrderId, order: { ...bracket.tpOrder, totalQuantity: quantity } })
+  }
+  if (bracket.slOrder) {
+    updates.push({ orderId: bracket.slOrderId, order: { ...bracket.slOrder, totalQuantity: quantity } })
+  }
+  if (updates.length === 0) return
+  for (const update of updates) {
+    try {
+      state.ib.placeOrder(update.orderId, contract, update.order)
+      await new Promise((resolve) => setTimeout(resolve, config.ibOrderDelayMs))
+    } catch (err) {
+      console.warn(`Failed to adjust bracket child ${update.orderId}: ${err.message}`)
+    }
+  }
+  bracket.lastAdjustedQty = filledValue
+}
 
 async function updateOrderStatus(
   docId,
@@ -1186,6 +1331,9 @@ async function updateOrderStatus(
   }
 
   if (requestId) {
+    if (!state.orderIdToDocId.has(orderId)) {
+      state.orderIdToDocId.set(orderId, requestId)
+    }
     const requestRef = db.doc(`executionRequests/${requestId}`)
     const requestUpdate = {
       status: finalStatus,
@@ -1200,6 +1348,17 @@ async function updateOrderStatus(
   }
 
   await Promise.all(writes)
+
+  const isTerminal =
+    (ibStatus && IB_TERMINAL_STATUSES.has(ibStatus)) ||
+    EXECUTION_TERMINAL_STATUSES.has(finalStatus)
+  if (isTerminal) {
+    state.pendingOrders.delete(orderId)
+    state.orderStatusCache.delete(orderId)
+    if (state.bracketOrders.has(orderId)) {
+      state.bracketOrders.delete(orderId)
+    }
+  }
 }
 
 async function resolveBrokerOrderDocId(orderId, orderRef) {
@@ -1304,6 +1463,13 @@ async function upsertBrokerOrderFromIb({ orderId, contract, order, orderState, s
   }
 
   await brokerOrderRef.set(payload, { merge: true })
+  if (
+    (ibStatus && IB_TERMINAL_STATUSES.has(String(ibStatus))) ||
+    EXECUTION_TERMINAL_STATUSES.has(status)
+  ) {
+    state.pendingOrders.delete(orderId)
+    state.orderStatusCache.delete(orderId)
+  }
 }
 
 function getNextOrderId() {
@@ -1315,12 +1481,35 @@ function getNextOrderId() {
   return orderId
 }
 
-async function submitBracketOrder(request, contract, orderSnapshot) {
+function ensureIbConnectedOrThrow() {
+  if (!state.ib || !state.ibConnected) {
+    throw new Error("IBKR not connected")
+  }
+}
+
+async function placeOrderSafe(orderId, contract, order, mode) {
+  try {
+    ensureIbConnectedOrThrow()
+    state.ib.placeOrder(orderId, contract, order)
+    return
+  } catch (err) {
+    const message = err?.message ? String(err.message).toLowerCase() : ""
+    if (message.includes("not connected") || message.includes("connection")) {
+      await ensureIbConnection(mode)
+      ensureIbConnectedOrThrow()
+      state.ib.placeOrder(orderId, contract, order)
+      return
+    }
+    throw err
+  }
+}
+
+async function submitBracketOrder(request, contract, orderSnapshot, orderIds = {}) {
   const snapshot = orderSnapshot || request.orderSnapshot
   const orderTif = snapshot.timeInForce || "DAY"
-  const parentOrderId = getNextOrderId()
-  const tpOrderId = getNextOrderId()
-  const slOrderId = getNextOrderId()
+  const parentOrderId = Number.isFinite(orderIds.parentOrderId) ? orderIds.parentOrderId : getNextOrderId()
+  const tpOrderId = Number.isFinite(orderIds.tpOrderId) ? orderIds.tpOrderId : getNextOrderId()
+  const slOrderId = Number.isFinite(orderIds.slOrderId) ? orderIds.slOrderId : getNextOrderId()
 
   const action = snapshot.side === "buy" ? OrderAction.BUY : OrderAction.SELL
   const reverseAction = snapshot.side === "buy" ? OrderAction.SELL : OrderAction.BUY
@@ -1332,6 +1521,9 @@ async function submitBracketOrder(request, contract, orderSnapshot) {
   state.orderIdToDocId.set(parentOrderId, request.id)
   state.orderIdToDocId.set(tpOrderId, request.id)
   state.orderIdToDocId.set(slOrderId, request.id)
+  registerOrderContract(parentOrderId, contract)
+  registerOrderContract(tpOrderId, contract)
+  registerOrderContract(slOrderId, contract)
 
   // Parent order (entry)
   const parentOrder = {
@@ -1381,20 +1573,42 @@ async function submitBracketOrder(request, contract, orderSnapshot) {
   console.log(`  TP: orderId=${tpOrderId} ${reverseAction} @ ${snapshot.takeProfit}`)
   console.log(`  SL: orderId=${slOrderId} ${reverseAction} @ ${snapshot.stopLoss}`)
 
+  state.bracketOrders.set(parentOrderId, {
+    requestId: request.id,
+    tpOrderId,
+    slOrderId,
+    tpOrder,
+    slOrder,
+    contract,
+    lastAdjustedQty: 0,
+  })
+
   // Place parent order
-  state.ib.placeOrder(parentOrderId, contract, parentOrder)
+  try {
+    await placeOrderSafe(parentOrderId, contract, parentOrder, request.mode)
+  } catch (err) {
+    throw new Error(`Parent order submit failed: ${err.message}`)
+  }
 
   // Small delay to ensure parent is processed (IB recommendation)
   await new Promise(resolve => setTimeout(resolve, config.ibOrderDelayMs))
 
   // Place take profit order
-  state.ib.placeOrder(tpOrderId, contract, tpOrder)
+  try {
+    await placeOrderSafe(tpOrderId, contract, tpOrder, request.mode)
+  } catch (err) {
+    throw new Error(`Take-profit order submit failed: ${err.message}`)
+  }
 
   // Small delay
   await new Promise(resolve => setTimeout(resolve, config.ibOrderDelayMs))
 
   // Place stop loss order (this transmits all)
-  state.ib.placeOrder(slOrderId, contract, slOrder)
+  try {
+    await placeOrderSafe(slOrderId, contract, slOrder, request.mode)
+  } catch (err) {
+    throw new Error(`Stop-loss order submit failed: ${err.message}`)
+  }
 
   return {
     parentOrderId,
@@ -1425,12 +1639,66 @@ async function submitOrder(request) {
     throw new Error("Bracket required but SL/TP not provided")
   }
 
+  const isBracket = Boolean(orderSnapshot.stopLoss && orderSnapshot.takeProfit)
+  const preparedIds = isBracket
+    ? {
+        parentOrderId: getNextOrderId(),
+        tpOrderId: getNextOrderId(),
+        slOrderId: getNextOrderId(),
+      }
+    : { parentOrderId: getNextOrderId() }
+  const preparedOrderIds = isBracket
+    ? [preparedIds.parentOrderId, preparedIds.tpOrderId, preparedIds.slOrderId]
+    : [preparedIds.parentOrderId]
+
+  // Pre-write tracking docs before placing order to avoid orphaned live orders
+  const requestRef = db.doc(`executionRequests/${request.id}`)
+  const brokerOrderRef = db.doc(`brokerOrders/${request.id}`)
+  await Promise.all([
+    requestRef.update({
+      status: "submitting",
+      submittingAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }),
+    brokerOrderRef.set(
+      {
+        id: request.id,
+        brokerAccountKey: config.brokerAccountKey,
+        ibAccountCode: state.ibAccount || state.brokerAccount?.ibAccountCode,
+        gatewayInstanceId: `${config.brokerAccountKey}:${state.ibMode || mode}`,
+        executionRequestId: request.id,
+        requestedByUid: request.requestedByUid || null,
+        requestSource: request.source || null,
+        requestStrategy: request.strategy || null,
+        symbol: orderSnapshot.symbol,
+        assetKey: orderSnapshot.assetKey,
+        side: orderSnapshot.side,
+        quantity: orderSnapshot.quantity,
+        orderType: orderSnapshot.orderType,
+        timeInForce: orderSnapshot.timeInForce || "DAY",
+        limitPrice: orderSnapshot.limitPrice || null,
+        stopLoss: orderSnapshot.stopLoss || null,
+        takeProfit: orderSnapshot.takeProfit || null,
+        conId: contract.conId,
+        parentOrderId: preparedIds.parentOrderId,
+        tpOrderId: preparedIds.tpOrderId || null,
+        slOrderId: preparedIds.slOrderId || null,
+        orderIds: preparedOrderIds,
+        status: "submitting",
+        source: "request",
+        submittingAt: FieldValue.serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    ),
+  ])
+
   let orderResult
-  if (orderSnapshot.stopLoss && orderSnapshot.takeProfit) {
-    orderResult = await submitBracketOrder(request, contract, orderSnapshot)
+  if (isBracket) {
+    orderResult = await submitBracketOrder(request, contract, orderSnapshot, preparedIds)
   } else {
     // Simple order without bracket
-    const orderId = getNextOrderId()
+    const orderId = preparedIds.parentOrderId
     const action = orderSnapshot.side === "buy" ? OrderAction.BUY : OrderAction.SELL
 
     const order = {
@@ -1449,48 +1717,55 @@ async function submitOrder(request) {
 
     state.pendingOrders.set(orderId, { requestId: request.id, type: "single" })
     state.orderIdToDocId.set(orderId, request.id)
-    state.ib.placeOrder(orderId, contract, order)
+    registerOrderContract(orderId, contract)
+    try {
+      await placeOrderSafe(orderId, contract, order, mode)
+    } catch (err) {
+      throw new Error(`Order submit failed: ${err.message}`)
+    }
     orderResult = { parentOrderId: orderId, orderIds: [orderId] }
   }
 
   // Update Firestore
-  const requestRef = db.doc(`executionRequests/${request.id}`)
-  const brokerOrderRef = db.doc(`brokerOrders/${request.id}`)
+  try {
+    await requestRef.update({
+      status: "submitted",
+      submittedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    })
 
-  await requestRef.update({
-    status: "submitted",
-    submittedAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  })
-
-  await brokerOrderRef.set({
-    id: request.id,
-    brokerAccountKey: config.brokerAccountKey,
-    ibAccountCode: state.ibAccount || state.brokerAccount?.ibAccountCode,
-    gatewayInstanceId: `${config.brokerAccountKey}:${state.ibMode || mode}`,
-    executionRequestId: request.id,
-    requestedByUid: request.requestedByUid || null,
-    requestSource: request.source || null,
-    requestStrategy: request.strategy || null,
-    symbol: orderSnapshot.symbol,
-    assetKey: orderSnapshot.assetKey,
-    side: orderSnapshot.side,
-    quantity: orderSnapshot.quantity,
-    orderType: orderSnapshot.orderType,
-    timeInForce: orderSnapshot.timeInForce || "DAY",
-    limitPrice: orderSnapshot.limitPrice || null,
-    stopLoss: orderSnapshot.stopLoss || null,
-    takeProfit: orderSnapshot.takeProfit || null,
-    conId: contract.conId,
-    parentOrderId: orderResult.parentOrderId,
-    tpOrderId: orderResult.tpOrderId || null,
-    slOrderId: orderResult.slOrderId || null,
-    orderIds: orderResult.orderIds,
-    status: "submitted",
-    source: "request",
-    submittedAt: FieldValue.serverTimestamp(),
-    createdAt: FieldValue.serverTimestamp(),
-  })
+    await brokerOrderRef.set({
+      id: request.id,
+      brokerAccountKey: config.brokerAccountKey,
+      ibAccountCode: state.ibAccount || state.brokerAccount?.ibAccountCode,
+      gatewayInstanceId: `${config.brokerAccountKey}:${state.ibMode || mode}`,
+      executionRequestId: request.id,
+      requestedByUid: request.requestedByUid || null,
+      requestSource: request.source || null,
+      requestStrategy: request.strategy || null,
+      symbol: orderSnapshot.symbol,
+      assetKey: orderSnapshot.assetKey,
+      side: orderSnapshot.side,
+      quantity: orderSnapshot.quantity,
+      orderType: orderSnapshot.orderType,
+      timeInForce: orderSnapshot.timeInForce || "DAY",
+      limitPrice: orderSnapshot.limitPrice || null,
+      stopLoss: orderSnapshot.stopLoss || null,
+      takeProfit: orderSnapshot.takeProfit || null,
+      conId: contract.conId,
+      parentOrderId: orderResult.parentOrderId,
+      tpOrderId: orderResult.tpOrderId || null,
+      slOrderId: orderResult.slOrderId || null,
+      orderIds: orderResult.orderIds,
+      status: "submitted",
+      source: "request",
+      submittedAt: FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
+    })
+  } catch (err) {
+    state.stats.errors += 1
+    console.error(`Failed to finalize order ${request.id}: ${err.message}`)
+  }
 
   return { success: true, ...orderResult }
 }
@@ -1539,7 +1814,7 @@ async function processCancelRequest(orderDocId, orderData) {
       )
       return
     }
-    if (!orderIds.length) {
+    if (!orderIds.length && !orderData.parentOrderId) {
       await brokerOrderRef.set(
         {
           cancelRequested: false,
@@ -1552,6 +1827,22 @@ async function processCancelRequest(orderDocId, orderData) {
       return
     }
 
+    const parentOrderId = Number(orderData.parentOrderId || 0)
+    const filledValue = parseNumber(orderData.filledQuantity)
+    const parentFilled =
+      (orderData.status && (orderData.status === "filled" || orderData.status === "partial")) ||
+      (Number.isFinite(filledValue) && filledValue > 0)
+    let cancelIds = orderIds.length ? orderIds.slice() : []
+    if (!cancelIds.length && Number.isFinite(parentOrderId) && parentOrderId > 0) {
+      cancelIds = [parentOrderId]
+    } else if (Number.isFinite(parentOrderId) && parentOrderId > 0) {
+      const childIds = cancelIds.filter((id) => id !== parentOrderId)
+      if (childIds.length) {
+        cancelIds = parentFilled ? [parentOrderId, ...childIds] : [parentOrderId]
+      }
+    }
+    cancelIds = Array.from(new Set(cancelIds))
+
     await brokerOrderRef.set(
       {
         cancelInProgressAt: FieldValue.serverTimestamp(),
@@ -1561,7 +1852,7 @@ async function processCancelRequest(orderDocId, orderData) {
     )
 
     const errors = []
-    for (const orderId of orderIds) {
+    for (const orderId of cancelIds) {
       try {
         state.ib.cancelOrder(orderId)
       } catch (err) {
@@ -1577,7 +1868,20 @@ async function processCancelRequest(orderDocId, orderData) {
     if (errors.length) {
       update.cancelError = errors.join("; ")
     }
-    await brokerOrderRef.set(update, { merge: true })
+    try {
+      await brokerOrderRef.set(update, { merge: true })
+    } catch (err) {
+      console.error(`Failed to persist cancel status for ${orderDocId}: ${err.message}`)
+      await brokerOrderRef.set(
+        {
+          cancelRequested: true,
+          cancelError: `firestore:${err.message}`,
+          cancelInProgressAt: FieldValue.delete(),
+          lastUpdateAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      )
+    }
   } finally {
     state.cancelInFlight.delete(orderDocId)
   }
@@ -1792,11 +2096,22 @@ async function processRequest(requestId, requestData) {
   } catch (err) {
     console.error(`Order submission failed for ${requestId}:`, err.message)
     const requestRef = db.doc(`executionRequests/${requestId}`)
-    await requestRef.update({
-      status: "error",
-      statusReason: err.message,
-      updatedAt: FieldValue.serverTimestamp(),
-    })
+    const brokerOrderRef = db.doc(`brokerOrders/${requestId}`)
+    await Promise.all([
+      requestRef.update({
+        status: "error",
+        statusReason: err.message,
+        updatedAt: FieldValue.serverTimestamp(),
+      }),
+      brokerOrderRef.set(
+        {
+          status: "error",
+          statusReason: err.message,
+          lastUpdateAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      ),
+    ])
     state.stats.errors++
   }
 }
@@ -1984,6 +2299,9 @@ async function run() {
   // Periodic heartbeat
   setInterval(writeHeartbeat, config.heartbeatIntervalMs)
   writeHeartbeat()
+
+  // Periodic cleanup
+  setInterval(prunePendingContracts, 15000)
 
   // Periodic state refresh fallback
   setInterval(async () => {

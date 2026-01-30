@@ -38,7 +38,11 @@ Env:
   MARKET_DATA_GATEWAY_AUTH      true/false (default: true)
   MARKET_DATA_GATEWAY_AUDIENCE  Optional audience override for ID token
   MARKET_DATA_GATEWAY_SERVICE_NAME  Cloud Run service name (default: relayorb-market-data-gateway)
-  CORS_ORIGIN             Allowed browser origin (default: *)
+  CORS_ORIGINS            Allowed browser origins (comma-separated)
+  CORS_ORIGIN             Allowed browser origin (legacy)
+  REFRESH_RATE_LIMIT_ENABLED    true/false (default: true)
+  REFRESH_RATE_LIMIT_WINDOW_MS  Rate limit window (ms)
+  REFRESH_RATE_LIMIT_MAX        Max requests per window
   ADMIN_ALLOWLIST         Comma-separated admin emails allowed to call this service
 USAGE
 }
@@ -97,7 +101,7 @@ resolve_market_data_gateway_auth() {
 }
 
 build_env_vars() {
-  local url auth envs audience gateway_url gateway_auth gateway_audience cors_origin allowlist
+  local url auth envs audience gateway_url gateway_auth gateway_audience cors_origin allowlist cors_origins
   url=$(require_orb_runner_url)
   auth=$(resolve_orb_runner_auth)
   envs="ORB_RUNNER_URL=${url}|ORB_RUNNER_AUTH=${auth}"
@@ -118,9 +122,21 @@ build_env_vars() {
     gateway_audience="$gateway_url"
   fi
   envs="${envs}|MARKET_DATA_GATEWAY_AUDIENCE=${gateway_audience}"
+  cors_origins="${CORS_ORIGINS:-}"
   cors_origin="${CORS_ORIGIN:-}"
-  if [ -n "$cors_origin" ]; then
+  if [ -n "$cors_origins" ]; then
+    envs="${envs}|CORS_ORIGINS=${cors_origins}"
+  elif [ -n "$cors_origin" ]; then
     envs="${envs}|CORS_ORIGIN=${cors_origin}"
+  fi
+  if [ -n "${REFRESH_RATE_LIMIT_ENABLED:-}" ]; then
+    envs="${envs}|REFRESH_RATE_LIMIT_ENABLED=${REFRESH_RATE_LIMIT_ENABLED}"
+  fi
+  if [ -n "${REFRESH_RATE_LIMIT_WINDOW_MS:-}" ]; then
+    envs="${envs}|REFRESH_RATE_LIMIT_WINDOW_MS=${REFRESH_RATE_LIMIT_WINDOW_MS}"
+  fi
+  if [ -n "${REFRESH_RATE_LIMIT_MAX:-}" ]; then
+    envs="${envs}|REFRESH_RATE_LIMIT_MAX=${REFRESH_RATE_LIMIT_MAX}"
   fi
   allowlist="${ADMIN_ALLOWLIST:-}"
   if [ -n "$allowlist" ]; then

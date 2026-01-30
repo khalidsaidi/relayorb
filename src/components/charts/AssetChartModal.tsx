@@ -9,8 +9,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import type { MarketHotTrade } from "@/lib/types"
 import { formatAssetPrice } from "@/lib/format"
-import { useFmpChart, useFmpQuote } from "@/features/market/use-fmp-data"
-import { FmpCandleChart } from "@/components/charts/FmpCandleChart"
+import { useMarketChart, useMarketQuote } from "@/features/market/use-market-data"
+import { MarketCandleChart } from "@/components/charts/MarketCandleChart"
 import { useTranslation } from "react-i18next"
 
 type AssetChartModalProps = {
@@ -22,7 +22,7 @@ type AssetChartModalProps = {
 export function AssetChartModal({ open, onOpenChange, asset }: AssetChartModalProps) {
   const { t } = useTranslation()
   const [interval, setInterval] = useState<"1m" | "5m" | "15m" | "30m" | "1h" | "eod">("5m")
-  const fmpInterval =
+  const marketInterval =
     interval === "1m"
       ? "1min"
       : interval === "eod"
@@ -35,10 +35,10 @@ export function AssetChartModal({ open, onOpenChange, asset }: AssetChartModalPr
               ? "15min"
               : "30min"
 
-  const { quote } = useFmpQuote(asset?.symbol)
-  const { bars, latest, error: chartError } = useFmpChart(
+  const { quote } = useMarketQuote(asset?.symbol)
+  const { bars, latest, error: chartError } = useMarketChart(
     asset?.symbol,
-    fmpInterval,
+    marketInterval,
     120,
     asset?.assetClass
   )
@@ -114,27 +114,27 @@ export function AssetChartModal({ open, onOpenChange, asset }: AssetChartModalPr
             </TabsList>
 
             <TabsContent value="1m" className="m-0">
-              <FmpCandleChart bars={bars} data-testid="fmp-chart-modal" />
+              <MarketCandleChart bars={bars} data-testid="market-chart-modal" />
               {chartError && <div className="text-xs text-rose-600 mt-2">{chartError}</div>}
             </TabsContent>
             <TabsContent value="5m" className="m-0">
-              <FmpCandleChart bars={bars} data-testid="fmp-chart-modal" />
+              <MarketCandleChart bars={bars} data-testid="market-chart-modal" />
               {chartError && <div className="text-xs text-rose-600 mt-2">{chartError}</div>}
             </TabsContent>
             <TabsContent value="15m" className="m-0">
-              <FmpCandleChart bars={bars} data-testid="fmp-chart-modal" />
+              <MarketCandleChart bars={bars} data-testid="market-chart-modal" />
               {chartError && <div className="text-xs text-rose-600 mt-2">{chartError}</div>}
             </TabsContent>
             <TabsContent value="30m" className="m-0">
-              <FmpCandleChart bars={bars} data-testid="fmp-chart-modal" />
+              <MarketCandleChart bars={bars} data-testid="market-chart-modal" />
               {chartError && <div className="text-xs text-rose-600 mt-2">{chartError}</div>}
             </TabsContent>
             <TabsContent value="1h" className="m-0">
-              <FmpCandleChart bars={bars} data-testid="fmp-chart-modal" />
+              <MarketCandleChart bars={bars} data-testid="market-chart-modal" />
               {chartError && <div className="text-xs text-rose-600 mt-2">{chartError}</div>}
             </TabsContent>
             <TabsContent value="eod" className="m-0">
-              <FmpCandleChart bars={bars} data-testid="fmp-chart-modal" />
+              <MarketCandleChart bars={bars} data-testid="market-chart-modal" />
               {chartError && <div className="text-xs text-rose-600 mt-2">{chartError}</div>}
             </TabsContent>
           </Tabs>

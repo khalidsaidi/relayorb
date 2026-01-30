@@ -7,13 +7,31 @@ const { createClient } = require("redis")
 const WebSocket = require("ws")
 const { createCircuitBreaker } = require("../../shared/circuit-breaker")
 const { generateRequestId, withRequestId, attachRequestId, createRequestLogger } = require("../../shared/request-id")
+const STREAM_URLS = (process.env.PRICE_STREAM_URLS || process.env.PRICE_STREAM_URL || "")
+  .split(",")
+  .map((url) => url.trim())
+  .filter(Boolean)
+const STREAM_PROVIDERS = (process.env.PRICE_STREAM_PROVIDERS || process.env.PRICE_STREAM_PROVIDER || "")
+  .split(",")
+  .map((provider) => provider.trim())
+  .filter(Boolean)
+const STREAM_SYMBOL_LIMITS = {
+  finnhub: parseInt(process.env.PRICE_STREAM_MAX_SYMBOLS_FINNHUB || "10", 10),
+  twelvedata: parseInt(process.env.PRICE_STREAM_MAX_SYMBOLS_TWELVEDATA || "120", 10),
+  alpaca: parseInt(process.env.PRICE_STREAM_MAX_SYMBOLS_ALPACA || "120", 10),
+}
 const config = {
   projectId:
     process.env.FIREBASE_PROJECT_ID ||
     process.env.GCLOUD_PROJECT ||
     process.env.GOOGLE_CLOUD_PROJECT ||
     "relayorb",
-  fmpKey: process.env.FMP_API_KEY || "",
+  alpacaKey: process.env.ALPACA_API_KEY || process.env.ALPACA_KEY || "",
+  alpacaSecret:
+    process.env.ALPACA_API_SECRET ||
+    process.env.ALPACA_API_SECRET_KEY ||
+    process.env.ALPACA_SECRET ||
+    "",
   marketDataGatewayUrl: process.env.MARKET_DATA_GATEWAY_URL || "",
   marketDataGatewayAuth: process.env.MARKET_DATA_GATEWAY_AUTH !== "false",
   marketDataGatewayAudience: process.env.MARKET_DATA_GATEWAY_AUDIENCE || "",
@@ -21,7 +39,7 @@ const config = {
   cryptoPollMs: parseInt(process.env.CRYPTO_POLL_MS || "30000", 10),
   stockPollMs: parseInt(process.env.STOCK_POLL_MS || "30000", 10),
   stockExtendedPollMs: parseInt(process.env.STOCK_EXTENDED_POLL_MS || "300000", 10),
-  stockClosedPollMs: parseInt(process.env.STOCK_CLOSED_POLL_MS || "1800000", 10),
+  stockClosedPollMs: parseInt(process.env.STOCK_CLOSED_POLL_MS || "300000", 10),
   forexPollMs: parseInt(process.env.FOREX_POLL_MS || "30000", 10),
   forexClosedPollMs: parseInt(process.env.FOREX_CLOSED_POLL_MS || "1800000", 10),
   writeMs: parseInt(process.env.PRICE_WRITE_MS || "2000", 10),
@@ -33,7 +51,7 @@ const config = {
     process.env.PRICE_STREAM_STOCK_UNIVERSE_REFRESH_MS || "21600000",
     10
   ),
-  historyMinutes: parseInt(process.env.PRICE_HISTORY_MINUTES || "10", 10),
+  historyMinutes: parseInt(process.env.PRICE_HISTORY_MINUTES || "120", 10),
   quoteConcurrency: parseInt(process.env.PRICE_STREAM_CONCURRENCY || "5", 10),
   quoteBatchDelayMs: parseInt(process.env.PRICE_STREAM_BATCH_DELAY_MS || "200", 10),
   redisUrl: process.env.REDIS_URL || "",
@@ -53,23 +71,41 @@ const config = {
   replayControlsCacheMs: parseInt(process.env.REPLAY_CONTROLS_CACHE_MS || "1500", 10),
   replayAckIntervalMs: parseInt(process.env.REPLAY_ACK_INTERVAL_MS || "15000", 10),
   replayTickMs: parseInt(process.env.REPLAY_TICK_MS || "1000", 10),
-  // Rate limiting: 300 calls/minute on FMP plan
-  rateLimitPerMinute: parseInt(process.env.FMP_RATE_LIMIT_PER_MINUTE || "300", 10),
-  rateLimitWarningPct: parseFloat(process.env.FMP_RATE_LIMIT_WARNING_PCT || "0.83"),
-  rateLimitCriticalPct: parseFloat(process.env.FMP_RATE_LIMIT_CRITICAL_PCT || "0.93"),
-  fmpStreamEnabled: process.env.FMP_STREAM_ENABLED === "true",
-  fmpStreamUrl: process.env.FMP_STREAM_URL || "",
-  fmpStreamStreams: (process.env.FMP_STREAMS || "")
+  // Rate limiting for provider-backed quote polling.
+  rateLimitPerMinute: parseInt(process.env.PRICE_STREAM_RATE_LIMIT_PER_MINUTE || "300", 10),
+  rateLimitWarningPct: parseFloat(process.env.PRICE_STREAM_RATE_LIMIT_WARNING_PCT || "0.83"),
+  rateLimitCriticalPct: parseFloat(process.env.PRICE_STREAM_RATE_LIMIT_CRITICAL_PCT || "0.93"),
+  stalenessPriceMs: parseInt(process.env.PRICE_STALE_MS || "180000", 10),
+  stalenessPollMs: parseInt(
+    process.env.PRICE_POLL_STALE_MS || process.env.PRICE_STALE_MS || "180000",
+    10
+  ),
+  stalenessHeartbeatMs: parseInt(process.env.PRICE_HEARTBEAT_STALE_MS || "300000", 10),
+  streamEnabled: process.env.PRICE_STREAM_ENABLED === "true",
+  streamUrl: process.env.PRICE_STREAM_URL || "",
+  streamUrls: STREAM_URLS,
+  streamProvider: process.env.PRICE_STREAM_PROVIDER || "",
+  streamProviders: STREAM_PROVIDERS,
+  streamNames: (process.env.PRICE_STREAMS || "")
     .split(",")
     .map((stream) => stream.trim())
     .filter(Boolean),
-  fmpStreamFilterEnabled: process.env.FMP_STREAM_FILTER_ENABLED !== "false",
-  fmpStreamReconnectMs: parseInt(process.env.FMP_STREAM_RECONNECT_MS || "1500", 10),
-  fmpStreamMaxReconnectMs: parseInt(process.env.FMP_STREAM_MAX_RECONNECT_MS || "30000", 10),
-  fmpStreamHeartbeatTimeoutMs: parseInt(
-    process.env.FMP_STREAM_HEARTBEAT_TIMEOUT_MS || "30000",
+  streamFilterEnabled: process.env.PRICE_STREAM_FILTER_ENABLED !== "false",
+  streamReconnectMs: parseInt(process.env.PRICE_STREAM_RECONNECT_MS || "1500", 10),
+  streamMaxReconnectMs: parseInt(process.env.PRICE_STREAM_MAX_RECONNECT_MS || "30000", 10),
+  streamHeartbeatTimeoutMs: parseInt(
+    process.env.PRICE_STREAM_HEARTBEAT_TIMEOUT_MS || "30000",
     10
   ),
+  streamFailoverCooldownMs: parseInt(
+    process.env.PRICE_STREAM_FAILOVER_COOLDOWN_MS || "60000",
+    10
+  ),
+  streamRotateEnabled: process.env.PRICE_STREAM_ROTATE_ENABLED !== "false",
+  streamRotateMs: parseInt(process.env.PRICE_STREAM_ROTATE_MS || "60000", 10),
+  streamRotateStridePct: parseFloat(process.env.PRICE_STREAM_ROTATE_STRIDE_PCT || "1"),
+  streamBlockTtlMs: parseInt(process.env.STREAM_BLOCK_TTL_MS || "3600000", 10),
+  streamMaxSymbolsByProvider: STREAM_SYMBOL_LIMITS,
 }
 
 const EXPECTED_REGION = "us-west1"
@@ -643,9 +679,9 @@ async function refreshReplayState() {
 
   if (modeChanged) {
     if (state.replay.mode === "replay") {
-      stopFmpStream("replay_mode")
-    } else if (config.fmpStreamEnabled) {
-      startFmpStream()
+      stopStream("replay_mode")
+    } else if (config.streamEnabled) {
+      startStream()
     }
   }
 }
@@ -774,7 +810,7 @@ const state = {
   lastWatchHash: "",
   lastFlushAt: null,
   lastFlushError: null,
-  fmpBackoffUntil: 0,
+  streamBackoffUntil: 0,
   redis: null,
   redisReady: false,
   lastRedisSnapshotAt: 0,
@@ -811,7 +847,13 @@ const state = {
     cursor: 0,
   },
   stream: {
-    enabled: config.fmpStreamEnabled,
+    enabled: config.streamEnabled,
+    provider: null,
+    providerUrl: null,
+    providers: [],
+    providerCursor: 0,
+    providerMaxSymbols: {},
+    providerLimitErrors: {},
     ws: null,
     connecting: false,
     connected: false,
@@ -822,6 +864,7 @@ const state = {
     lastLoginAt: null,
     lastLoginStatus: null,
     pendingSubscriptions: [],
+    subscribedSymbols: new Set(),
     filter: {
       crypto: new Set(),
       stock: new Set(),
@@ -846,10 +889,14 @@ const state = {
     parseErrorCount: 0,
     lastParseErrorAt: null,
     lastParseErrorSample: null,
-    reconnectDelayMs: config.fmpStreamReconnectMs,
+    reconnectDelayMs: config.streamReconnectMs,
     reconnectTimer: null,
     errors: 0,
     lastError: null,
+    failoverCount: 0,
+    rotationCursor: {},
+    rotationTimer: null,
+    blockedSymbols: {},
   },
   replay: {
     mode: "live",
@@ -871,9 +918,9 @@ const state = {
 
 // Staleness thresholds (in ms)
 const STALENESS_THRESHOLDS = {
-  price: 120000,      // 2 minutes - prices should update every 30s
-  poll: 90000,        // 90 seconds - polls should happen every 30s
-  heartbeat: 300000,  // 5 minutes - heartbeat interval
+  price: config.stalenessPriceMs,
+  poll: config.stalenessPollMs,
+  heartbeat: config.stalenessHeartbeatMs,
 }
 
 const DATA_PROFILES = ["normal", "balanced", "survival"]
@@ -955,10 +1002,84 @@ function resolveRedisKey(suffix, replayState = state.replay) {
   return `${prefix}${suffix}`
 }
 
-function resolveFmpStreamUrl() {
-  if (config.fmpStreamUrl) return config.fmpStreamUrl
-  if (config.fmpKey) return `wss://socket.financialmodelingprep.com?apikey=${config.fmpKey}`
-  return null
+function resolveStreamUrlList() {
+  if (Array.isArray(config.streamUrls) && config.streamUrls.length) return config.streamUrls
+  if (config.streamUrl) return [config.streamUrl]
+  return []
+}
+
+function resolveStreamProviderForUrl(url, index) {
+  const explicitList = Array.isArray(config.streamProviders) ? config.streamProviders : []
+  const explicitAtIndex = explicitList[index]
+  const explicit = String(explicitAtIndex || config.streamProvider || "").trim().toLowerCase()
+  if (explicit) return explicit
+  const lower = String(url || "").toLowerCase()
+  if (lower.includes("finnhub.io")) return "finnhub"
+  return "generic"
+}
+
+function ensureStreamProviders() {
+  if (!state.stream) return []
+  const urls = resolveStreamUrlList()
+  const next = urls.map((url, index) => {
+    const provider = resolveStreamProviderForUrl(url, index)
+    const existing = state.stream.providers.find(
+      (entry) => entry.url === url && entry.provider === provider
+    )
+    return {
+      url,
+      provider,
+      cooldownUntil: existing?.cooldownUntil || 0,
+      failures: existing?.failures || 0,
+      lastFailureAt: existing?.lastFailureAt || null,
+    }
+  })
+  state.stream.providers = next
+  if (state.stream.providerCursor >= next.length) {
+    state.stream.providerCursor = 0
+  }
+  return next
+}
+
+function pickStreamProvider() {
+  if (!state.stream) return null
+  const providers = ensureStreamProviders()
+  if (!providers.length) return null
+  const now = Date.now()
+  for (let i = 0; i < providers.length; i += 1) {
+    const idx = (state.stream.providerCursor + i) % providers.length
+    const candidate = providers[idx]
+    if (!candidate.cooldownUntil || now >= candidate.cooldownUntil) {
+      state.stream.providerCursor = (idx + 1) % providers.length
+      return { ...candidate, index: idx }
+    }
+  }
+  const idx = state.stream.providerCursor % providers.length
+  state.stream.providerCursor = (idx + 1) % providers.length
+  return { ...providers[idx], index: idx }
+}
+
+function markStreamProviderFailure(reason, err) {
+  if (!state.stream) return
+  const activeUrl = state.stream.providerUrl
+  const activeProvider = state.stream.provider
+  if (!activeUrl || !activeProvider) return
+  const entry = state.stream.providers.find(
+    (provider) => provider.url === activeUrl && provider.provider === activeProvider
+  )
+  if (!entry) return
+  const now = Date.now()
+  entry.failures = (entry.failures || 0) + 1
+  entry.lastFailureAt = now
+  entry.cooldownUntil = now + config.streamFailoverCooldownMs
+  state.stream.failoverCount += 1
+  console.warn("ps_stream_failover", {
+    reason,
+    provider: activeProvider,
+    url: activeUrl,
+    cooldownMs: config.streamFailoverCooldownMs,
+    error: err?.message ? String(err.message) : undefined,
+  })
 }
 
 function resolveStreamAssetClass(streamName, exchangeHint) {
@@ -974,12 +1095,12 @@ function resolveStreamAssetClass(streamName, exchangeHint) {
 }
 
 const STREAM_ALIASES = {
-  "fmp-us-equities-stream": ["FMP US Equities Stream"],
-  "fmp-us-otc-stream": ["FMP US OTC Stream"],
-  "fmp-crypto-stream": ["FMP Cryptocurrency Stream"],
-  "fmp-currency-stream": ["FMP Currency Stream"],
-  "fmp-index-stream": ["FMP Index Stream"],
-  "fmp-commodity-stream": ["FMP Commodity Stream"],
+  "us-equities-stream": ["US Equities Stream"],
+  "us-otc-stream": ["US OTC Stream"],
+  "crypto-stream": ["Crypto Stream"],
+  "fx-stream": ["FX Stream"],
+  "index-stream": ["Index Stream"],
+  "commodity-stream": ["Commodity Stream"],
   "nasdaq-basic-w-nls-plus": ["Nasdaq Basic with NLS Plus"],
   "iex-tops": ["IEX TOPS"],
   "cboe-index-main": ["Cboe Index Main"],
@@ -997,6 +1118,39 @@ function resolveStreamAliases(streamName) {
   return Array.from(aliases)
 }
 
+function resolveStreamSymbolsForProvider(provider) {
+  const symbols = Array.from(state.watchlist.stock)
+  if (symbols.length === 0) return []
+  const providerCap =
+    (state.stream?.providerMaxSymbols || {})[provider] ||
+    (config.streamMaxSymbolsByProvider || {})[provider]
+  const resolvedCap = Number.isFinite(providerCap) ? providerCap : config.maxSymbols
+  const cap = Math.max(1, Math.min(config.maxSymbols, resolvedCap))
+  if (!state.stream) return symbols.slice(0, cap)
+  const blocked = state.stream.blockedSymbols?.[provider]
+  let eligible = symbols
+  if (blocked instanceof Map && blocked.size > 0) {
+    const now = Date.now()
+    blocked.forEach((until, symbol) => {
+      if (!until || until <= now) blocked.delete(symbol)
+    })
+    if (blocked.size > 0) {
+      eligible = symbols.filter((symbol) => !blocked.has(symbol))
+    }
+  }
+  if (eligible.length <= cap) return eligible
+  const cursor = state.stream.rotationCursor?.[provider] || 0
+  const start = cursor % eligible.length
+  const end = start + cap
+  if (end <= eligible.length) return eligible.slice(start, end)
+  return eligible.slice(start).concat(eligible.slice(0, end - eligible.length))
+}
+
+function resolveStreamSymbols() {
+  const provider = state.stream?.provider || ""
+  return resolveStreamSymbolsForProvider(provider)
+}
+
 function refreshStreamFilterFromWatchlist() {
   if (!state.stream) return
   state.stream.filter = {
@@ -1005,10 +1159,49 @@ function refreshStreamFilterFromWatchlist() {
     forex: new Set(state.watchlist.forex),
   }
   state.stream.filterUpdatedAt = Date.now()
+  if (
+    ["finnhub", "alpaca", "twelvedata"].includes(state.stream.provider || "") &&
+    state.stream.connected
+  ) {
+    state.stream.pendingSubscriptions = resolveStreamSymbols()
+    sendStreamSubscriptions("watchlist")
+  }
+}
+
+function shouldRotateStream(provider, cap, total) {
+  if (!config.streamRotateEnabled) return false
+  if (!provider || !state.stream?.connected) return false
+  if (!["finnhub", "alpaca", "twelvedata"].includes(provider)) return false
+  if (!Number.isFinite(config.streamRotateMs) || config.streamRotateMs <= 0) return false
+  if (!Number.isFinite(cap) || cap <= 0) return false
+  if (!Number.isFinite(total) || total <= cap) return false
+  return true
+}
+
+function rotateStreamSubscriptions(reason = "rotate") {
+  if (!state.stream) return
+  const provider = state.stream.provider || ""
+  if (!provider || !state.stream.connected) return
+  const allSymbols = Array.from(state.watchlist.stock)
+  if (allSymbols.length === 0) return
+  const providerCap =
+    state.stream.providerMaxSymbols?.[provider] ||
+    (config.streamMaxSymbolsByProvider || {})[provider] ||
+    config.maxSymbols
+  const cap = Math.max(1, Math.min(config.maxSymbols, providerCap))
+  if (!shouldRotateStream(provider, cap, allSymbols.length)) return
+  const stridePct = Number.isFinite(config.streamRotateStridePct)
+    ? Math.max(0.1, Math.min(1, config.streamRotateStridePct))
+    : 1
+  const stride = Math.max(1, Math.floor(cap * stridePct))
+  const current = state.stream.rotationCursor?.[provider] || 0
+  state.stream.rotationCursor[provider] = (current + stride) % allSymbols.length
+  state.stream.pendingSubscriptions = resolveStreamSymbolsForProvider(provider)
+  sendStreamSubscriptions(reason)
 }
 
 function streamAllowsSymbol(assetClass, symbol) {
-  if (!config.fmpStreamFilterEnabled) return true
+  if (!config.streamFilterEnabled) return true
   const filterSet = state.stream?.filter?.[assetClass]
   if (!filterSet || filterSet.size === 0) return false
   return filterSet.has(symbol)
@@ -1023,15 +1216,19 @@ function isStreamHealthyFor(assetClass) {
   if (!hasCoverage) return false
   const lastMessage = state.stream.lastAssetMessageAt?.[assetClass]
   if (!lastMessage) return false
-  return Date.now() - lastMessage <= config.fmpStreamHeartbeatTimeoutMs
+  return Date.now() - lastMessage <= config.streamHeartbeatTimeoutMs
 }
 
 function shouldUseStreamFor(assetClass) {
   if (assetClass === "stock") {
     if (state.stockQuoteMode === "poll_only") return false
-    if (state.stockQuoteMode === "stream_only") return true
+    if (state.stockQuoteMode === "stream_only") {
+      if (!config.streamEnabled) return false
+      if (isReplayMode()) return false
+      return isStreamHealthyFor(assetClass)
+    }
   }
-  if (!config.fmpStreamEnabled) return false
+  if (!config.streamEnabled) return false
   if (isReplayMode()) return false
   return isStreamHealthyFor(assetClass)
 }
@@ -1062,7 +1259,7 @@ async function refreshStockUniverseCache() {
     return
   }
   try {
-    const data = await fetchGatewayJson("/v1/fmp/stock-list")
+    const data = await fetchGatewayJsonSoft("/v1/market/stock-list")
     const items = Array.isArray(data?.items) ? data.items : []
     const symbols = items
       .map((item) => normalizeSymbolForKey(item?.symbol, "stock"))
@@ -1097,7 +1294,7 @@ function fillFromStockUniverse(targetSet, cap) {
   state.stockUniverse.cursor = (cursor + added) % symbols.length
 }
 
-function handleFmpStreamQuote(quote, streamName) {
+function handleStreamQuote(quote, streamName) {
   if (!quote || typeof quote !== "object") return
   const rawSymbol = quote.symbol || quote.s || quote.ticker || quote.sym
   if (!rawSymbol) return
@@ -1123,7 +1320,7 @@ function handleFmpStreamQuote(quote, streamName) {
   }
 
   const price = parseNumber(
-    quote.price ?? quote.last ?? quote.close ?? quote.c ?? quote.lastPrice
+    quote.price ?? quote.last ?? quote.close ?? quote.p ?? quote.c ?? quote.lastPrice
   )
   if (!Number.isFinite(price)) return
 
@@ -1141,37 +1338,221 @@ function handleFmpStreamQuote(quote, streamName) {
   if (Number.isFinite(changePct)) extra.change24h = changePct
   if (typeof quote.exchange === "string") extra.exchange = quote.exchange
 
-  updatePrice(assetClass, normalizedSymbol, Number(price), "fmp_stream", extra)
+  updatePrice(assetClass, normalizedSymbol, Number(price), "stream", extra)
 
   if (state.stream) {
     state.stream.lastMessageAt = now
     state.stream.lastAssetMessageAt[assetClass] = now
   }
-  state.lastPollAt[assetClass] = getEffectiveNow()
-  if (state.pollErrors[assetClass]) state.pollErrors[assetClass] = 0
 }
 
-function handleFmpStreamPayload(payload, streamHint) {
+function handleStreamPayload(payload, streamHint) {
   if (!payload) return
   if (typeof payload === "string") {
     try {
       const parsed = JSON.parse(payload)
-      handleFmpStreamPayload(parsed, streamHint)
+      handleStreamPayload(parsed, streamHint)
     } catch (_) {
       // ignore malformed string payloads
     }
     return
   }
   if (Array.isArray(payload)) {
-    payload.forEach((entry) => handleFmpStreamQuote(entry, streamHint))
+    payload.forEach((entry) => handleStreamQuote(entry, streamHint))
     return
   }
   if (typeof payload === "object") {
-    handleFmpStreamQuote(payload, streamHint)
+    handleStreamQuote(payload, streamHint)
   }
 }
 
-function handleFmpStreamMessage(raw) {
+function handleStreamTooManySymbols(message, provider) {
+  const activeProvider = provider || state.stream?.provider
+  if (!activeProvider || !state.stream) return
+  const currentCap =
+    state.stream.providerMaxSymbols[activeProvider] ||
+    (config.streamMaxSymbolsByProvider || {})[activeProvider] ||
+    config.maxSymbols
+  const nextCap = Math.max(10, Math.floor(currentCap * 0.5))
+  const errorCount = (state.stream.providerLimitErrors[activeProvider] || 0) + 1
+  state.stream.providerLimitErrors[activeProvider] = errorCount
+  if (nextCap >= currentCap) {
+    if (errorCount >= 3) {
+      console.warn("ps_stream_limit_failover", { provider: activeProvider, errorCount })
+      markStreamProviderFailure("limit", new Error(message || "too_many_symbols"))
+      state.stream.ws?.close()
+    }
+    return
+  }
+  state.stream.providerMaxSymbols[activeProvider] = nextCap
+  state.stream.pendingSubscriptions = resolveStreamSymbols()
+  console.warn("ps_stream_symbol_cap_reduced", {
+    provider: activeProvider,
+    prevCap: currentCap,
+    nextCap,
+    errorCount,
+    message,
+  })
+  sendStreamSubscriptions("cap_adjust")
+}
+
+function handleAlpacaStream(parsed) {
+  if (!parsed) return
+  const entries = Array.isArray(parsed) ? parsed : [parsed]
+  entries.forEach((entry) => {
+    if (!entry || typeof entry !== "object") return
+    const type = entry.T
+    if (type === "success") {
+      const msg = String(entry.msg || "").toLowerCase()
+      if (msg.includes("authenticated")) {
+        if (state.stream) {
+          state.stream.authenticated = true
+          state.stream.lastLoginAt = Date.now()
+          state.stream.lastLoginStatus = "authenticated"
+        }
+        sendStreamSubscriptions("login")
+      }
+      return
+    }
+    if (type === "error") {
+      const message = entry.msg || entry
+      console.warn("ps_stream_error", { message })
+      if (String(message || "").toLowerCase().includes("too many")) {
+        handleStreamTooManySymbols(message, "alpaca")
+        return
+      }
+      markStreamProviderFailure("error", new Error(entry.msg || "alpaca_error"))
+      return
+    }
+    const symbol = entry.S || entry.symbol
+    if (!symbol) return
+    if (type === "q") {
+      const bid = parseNumber(entry.bp)
+      const ask = parseNumber(entry.ap)
+      const mid =
+        Number.isFinite(bid) && Number.isFinite(ask)
+          ? (Number(bid) + Number(ask)) / 2
+          : Number.isFinite(bid)
+            ? bid
+            : Number.isFinite(ask)
+              ? ask
+              : undefined
+      if (!Number.isFinite(mid)) return
+      handleStreamQuote(
+        { symbol, price: mid, bid, ask, exchange: entry.x },
+        "alpaca"
+      )
+      return
+    }
+    if (type === "t") {
+      handleStreamQuote(
+        { symbol, price: entry.p, volume: entry.s, exchange: entry.x },
+        "alpaca"
+      )
+      return
+    }
+    if (type === "b") {
+      handleStreamQuote(
+        {
+          symbol,
+          price: entry.c,
+          open: entry.o,
+          high: entry.h,
+          low: entry.l,
+          close: entry.c,
+          volume: entry.v,
+          exchange: entry.x,
+        },
+        "alpaca"
+      )
+    }
+  })
+}
+
+function handleTwelveDataStream(parsed) {
+  if (!parsed) return
+  if (parsed.event === "heartbeat" || parsed.event === "ping") {
+    if (state.stream) {
+      const now = Date.now()
+      state.stream.lastHeartbeatAt = now
+      state.stream.lastMessageAt = now
+    }
+    return
+  }
+  if (parsed.event === "price" || parsed.event === "quote") {
+    handleStreamQuote(parsed, "twelvedata")
+    return
+  }
+  if (Array.isArray(parsed.data)) {
+    handleStreamPayload(parsed.data, "twelvedata")
+    return
+  }
+  if (parsed.status === "error" || parsed.event === "error") {
+    const message = parsed?.message || parsed
+    const fails = Array.isArray(parsed?.fails) ? parsed.fails : []
+    const failSymbols = new Set()
+    const failMessages = []
+    fails.forEach((entry) => {
+      if (entry && typeof entry === "object") {
+        const symbol = entry.symbol || entry.s || entry.ticker
+        if (symbol) failSymbols.add(String(symbol))
+        const errMsg = entry.message || entry.error || entry.reason
+        if (errMsg) failMessages.push(String(errMsg))
+      } else if (typeof entry === "string") {
+        failMessages.push(entry)
+      }
+    })
+    const errText = [String(message || ""), ...failMessages].join(" ").toLowerCase()
+    console.warn("ps_stream_error", {
+      message,
+      failCount: fails.length,
+      sampleFail: fails.slice(0, 3),
+    })
+    if (errText.includes("too many") || errText.includes("limit") || errText.includes("exceed")) {
+      handleStreamTooManySymbols(message, "twelvedata")
+      return
+    }
+    if (failSymbols.size > 0 && state.stream) {
+      if (!state.stream.blockedSymbols.twelvedata) {
+        state.stream.blockedSymbols.twelvedata = new Map()
+      }
+      const blockUntil = Date.now() + Math.max(60000, config.streamBlockTtlMs || 0)
+      failSymbols.forEach((symbol) => {
+        state.stream.blockedSymbols.twelvedata.set(symbol, blockUntil)
+      })
+      const requested = Array.isArray(state.stream.pendingSubscriptions)
+        ? state.stream.pendingSubscriptions
+        : []
+      if (requested.length > 0 && failSymbols.size >= requested.length * 0.8) {
+        handleStreamTooManySymbols(message, "twelvedata")
+        return
+      }
+      if (requested.length > 0) {
+        const allowed = requested.filter((symbol) => !failSymbols.has(symbol))
+        if (allowed.length > 0 && allowed.length < requested.length) {
+          state.stream.pendingSubscriptions = allowed
+          state.stream.subscribedSymbols = new Set(allowed)
+          state.stream.providerMaxSymbols.twelvedata = Math.min(
+            state.stream.providerMaxSymbols.twelvedata || allowed.length,
+            allowed.length
+          )
+          console.warn("ps_stream_twelvedata_filtered", {
+            requested: requested.length,
+            allowed: allowed.length,
+            filtered: requested.length - allowed.length,
+          })
+          sendStreamSubscriptions("filter_failures")
+          return
+        }
+      }
+    }
+    markStreamProviderFailure("error", new Error(parsed?.message || "twelvedata_error"))
+    return
+  }
+  handleStreamPayload(parsed, "twelvedata")
+}
+
+function handleStreamMessage(raw) {
   if (!raw) return
   let parsed = null
   try {
@@ -1198,6 +1579,35 @@ function handleFmpStreamMessage(raw) {
     }
     return
   }
+  const activeProvider = state.stream?.provider
+  if (activeProvider === "alpaca") {
+    handleAlpacaStream(parsed)
+    return
+  }
+  if (activeProvider === "twelvedata") {
+    handleTwelveDataStream(parsed)
+    return
+  }
+  if (parsed?.type === "trade" && Array.isArray(parsed.data)) {
+    handleStreamPayload(parsed.data, "finnhub")
+    return
+  }
+  if (parsed?.type === "ping") {
+    if (state.stream) {
+      state.stream.lastHeartbeatAt = now
+      state.stream.lastMessageAt = now
+    }
+    return
+  }
+  if (parsed?.type === "error") {
+    const message = parsed?.message || parsed?.msg || parsed
+    console.warn("ps_stream_error", { message })
+    if (String(message || "").toLowerCase().includes("too many")) {
+      handleStreamTooManySymbols(message, "finnhub")
+      return
+    }
+    return
+  }
   if (parsed?.event === "login") {
     if (state.stream) {
       state.stream.lastLoginAt = now
@@ -1210,38 +1620,90 @@ function handleFmpStreamMessage(raw) {
     return
   }
   if (parsed?.event && parsed?.data) {
-    handleFmpStreamPayload(parsed.data, parsed?.data?.stream || parsed?.stream)
+    handleStreamPayload(parsed.data, parsed?.data?.stream || parsed?.stream)
     return
   }
-  handleFmpStreamPayload(parsed, parsed?.stream)
+  handleStreamPayload(parsed, parsed?.stream)
 }
 
 function sendStreamSubscriptions(reason) {
   if (!state.stream?.ws) return
+  const provider = state.stream.provider || "generic"
   const subscriptions = state.stream.pendingSubscriptions || []
   if (!subscriptions.length) return
+  if (provider === "finnhub") {
+    const next = new Set(subscriptions)
+    const prev = state.stream.subscribedSymbols || new Set()
+    const toSubscribe = []
+    const toUnsubscribe = []
+    next.forEach((symbol) => {
+      if (!prev.has(symbol)) toSubscribe.push(symbol)
+    })
+    prev.forEach((symbol) => {
+      if (!next.has(symbol)) toUnsubscribe.push(symbol)
+    })
+    toSubscribe.forEach((symbol) => {
+      state.stream.ws.send(JSON.stringify({ type: "subscribe", symbol }))
+    })
+    toUnsubscribe.forEach((symbol) => {
+      state.stream.ws.send(JSON.stringify({ type: "unsubscribe", symbol }))
+    })
+    state.stream.subscribedSymbols = next
+    console.log("ps_stream_subscribed", {
+      reason,
+      provider,
+      subscribe: toSubscribe.length,
+      unsubscribe: toUnsubscribe.length,
+    })
+    return
+  }
+  if (provider === "alpaca") {
+    if (!state.stream.authenticated) {
+      console.warn("ps_stream_subscribe_skipped", { reason: "not_authenticated", provider })
+      return
+    }
+    const unique = Array.from(new Set(subscriptions))
+    const payload = {
+      action: "subscribe",
+      trades: unique,
+      quotes: unique,
+    }
+    state.stream.ws.send(JSON.stringify(payload))
+    state.stream.subscribedSymbols = new Set(unique)
+    console.log("ps_stream_subscribed", { reason, provider, symbols: unique.length })
+    return
+  }
+  if (provider === "twelvedata") {
+    const unique = Array.from(new Set(subscriptions))
+    state.stream.ws.send(
+      JSON.stringify({ action: "subscribe", params: { symbols: unique.join(",") } })
+    )
+    state.stream.subscribedSymbols = new Set(unique)
+    console.log("ps_stream_subscribed", { reason, provider, symbols: unique.length })
+    return
+  }
   subscriptions.forEach((stream) => {
     state.stream.ws.send(JSON.stringify({ event: "subscribe", data: { stream } }))
   })
-  console.log("ps_stream_subscribed", { reason, streams: subscriptions })
+  console.log("ps_stream_subscribed", { reason, provider: "generic", streams: subscriptions })
 }
 
-function scheduleFmpStreamReconnect(reason) {
+function scheduleStreamReconnect(reason) {
   if (!state.stream || !state.stream.shouldReconnect) return
   if (state.stream.reconnectTimer) return
-  const delay = Math.min(state.stream.reconnectDelayMs, config.fmpStreamMaxReconnectMs)
+  const delay = Math.min(state.stream.reconnectDelayMs, config.streamMaxReconnectMs)
   state.stream.reconnectTimer = setTimeout(() => {
     state.stream.reconnectTimer = null
     state.stream.reconnectDelayMs = Math.min(
       state.stream.reconnectDelayMs * 1.8,
-      config.fmpStreamMaxReconnectMs
+      config.streamMaxReconnectMs
     )
-    startFmpStream()
+    startStream()
   }, delay)
   console.warn("ps_stream_reconnect_scheduled", { reason, delayMs: delay })
 }
 
-function stopFmpStream(reason = "stop") {
+function stopStream(reason = "stop") {
   if (!state.stream) return
   state.stream.shouldReconnect = false
   if (state.stream.reconnectTimer) {
@@ -1258,44 +1720,64 @@ function stopFmpStream(reason = "stop") {
   state.stream.ws = null
   state.stream.connected = false
   state.stream.connecting = false
+  state.stream.pendingSubscriptions = []
+  state.stream.subscribedSymbols = new Set()
+  state.stream.provider = null
+  state.stream.providerUrl = null
   console.log("ps_stream_stopped", { reason })
 }
 
-function startFmpStream() {
-  if (!config.fmpStreamEnabled) return
+function startStream() {
+  if (!config.streamEnabled) return
   if (isReplayMode()) return
   if (!state.stream) return
   if (state.stream.connected || state.stream.connecting) return
   refreshStreamFilterFromWatchlist()
 
-  const url = resolveFmpStreamUrl()
-  if (!url) {
+  const candidate = pickStreamProvider()
+  const url = candidate?.url
+  const provider = candidate?.provider
+  if (!url || !provider) {
     console.warn("ps_stream_disabled", { reason: "missing_url_or_key" })
     return
   }
-
-  const streams = config.fmpStreamStreams.length ? config.fmpStreamStreams : []
-  if (!streams.length) {
-    console.warn("ps_stream_disabled", { reason: "no_streams_configured" })
-    return
-  }
-  const subscriptions = streams.flatMap((stream) => resolveStreamAliases(stream))
-  if (!subscriptions.length) {
-    console.warn("ps_stream_disabled", { reason: "no_streams_resolved" })
-    return
+  let streams = []
+  let subscriptions = []
+  if (["finnhub", "alpaca", "twelvedata"].includes(provider)) {
+    subscriptions = resolveStreamSymbolsForProvider(provider)
+    if (!subscriptions.length) {
+      console.warn("ps_stream_disabled", { reason: "no_symbols_configured", provider })
+      return
+    }
+    streams = [provider]
+  } else {
+    streams = config.streamNames.length ? config.streamNames : []
+    if (!streams.length) {
+      console.warn("ps_stream_disabled", { reason: "no_streams_configured", provider: "generic" })
+      return
+    }
+    subscriptions = streams.flatMap((stream) => resolveStreamAliases(stream))
+    if (!subscriptions.length) {
+      console.warn("ps_stream_disabled", { reason: "no_streams_resolved", provider: "generic" })
+      return
+    }
   }
 
   state.stream.shouldReconnect = true
   state.stream.connecting = true
   state.stream.streams = streams
-  state.stream.streamAssetClass = Object.fromEntries(
-    streams.map((stream) => [stream, resolveStreamAssetClass(stream)])
-  )
+  state.stream.provider = provider
+  state.stream.providerUrl = url
+  state.stream.streamAssetClass =
+    provider === "finnhub"
+      ? { finnhub: "stock" }
+      : Object.fromEntries(streams.map((stream) => [stream, resolveStreamAssetClass(stream)]))
   state.stream.pendingSubscriptions = subscriptions
+  state.stream.subscribedSymbols = new Set()
   state.stream.authenticated = false
   state.stream.lastLoginAt = null
   state.stream.lastLoginStatus = null
-  state.stream.reconnectDelayMs = config.fmpStreamReconnectMs
+  state.stream.reconnectDelayMs = config.streamReconnectMs
 
   const ws = new WebSocket(url)
   state.stream.ws = ws
@@ -1307,20 +1789,25 @@ function startFmpStream() {
     state.stream.errors = 0
     state.stream.lastMessageAt = Date.now()
     state.stream.lastHeartbeatAt = Date.now()
-    if (config.fmpKey) {
-      try {
-        ws.send(JSON.stringify({ event: "login", data: { apiKey: config.fmpKey } }))
-      } catch (_) {
-        // ignore login send failures
+    if (provider === "alpaca") {
+      if (!config.alpacaKey || !config.alpacaSecret) {
+        console.warn("ps_stream_disabled", { reason: "missing_alpaca_keys" })
+        markStreamProviderFailure("missing_alpaca_keys")
+        state.stream.ws?.close()
+        return
       }
-    } else {
-      sendStreamSubscriptions("open")
+      state.stream.authenticated = false
+      state.stream.ws.send(
+        JSON.stringify({ action: "auth", key: config.alpacaKey, secret: config.alpacaSecret })
+      )
+      return
     }
+    sendStreamSubscriptions("open")
     console.log("ps_stream_connected", { streams })
   })
 
   ws.on("message", (data) => {
-    handleFmpStreamMessage(data)
+    handleStreamMessage(data)
   })
 
   ws.on("close", () => {
@@ -1329,7 +1816,8 @@ function startFmpStream() {
     state.stream.connecting = false
     state.stream.ws = null
     if (state.stream.shouldReconnect) {
-      scheduleFmpStreamReconnect("close")
+      markStreamProviderFailure("close")
+      scheduleStreamReconnect("close")
     }
   })
 
@@ -1337,18 +1825,19 @@ function startFmpStream() {
     if (!state.stream) return
     state.stream.errors += 1
     state.stream.lastError = err?.message ? String(err.message) : "stream_error"
+    markStreamProviderFailure("error", err)
     if (state.stream.connected || state.stream.connecting) {
-      scheduleFmpStreamReconnect("error")
+      scheduleStreamReconnect("error")
     }
   })
 }
 
-function checkFmpStreamHealth() {
+function checkStreamHealth() {
   if (!state.stream || !state.stream.shouldReconnect) return
   if (!state.stream.connected) return
   const now = Date.now()
   const lastMessage = state.stream.lastMessageAt
-  if (lastMessage && now - lastMessage > config.fmpStreamHeartbeatTimeoutMs) {
+  if (lastMessage && now - lastMessage > config.streamHeartbeatTimeoutMs) {
     console.warn("ps_stream_stale", { ageMs: now - lastMessage })
     try {
       state.stream.ws?.close()
@@ -1377,17 +1866,69 @@ async function initRedis() {
   }
 }
 
-function isFmpRateLimited() {
-  return state.fmpBackoffUntil && Date.now() < state.fmpBackoffUntil
+async function hydratePriceHistoryFromRedis() {
+  if (!state.redis || !state.redisReady) return
+  if (isReplayMode()) return
+  const now = Date.now()
+  const cutoff = now - config.historyMinutes * 60 * 1000
+  const indexKey = resolveRedisKey("prices:snapshots", state.replay)
+  let snapshotKeys = []
+  try {
+    snapshotKeys = await state.redis.zRangeByScore(indexKey, cutoff, now)
+  } catch (err) {
+    console.error("Redis history scan failed:", err?.message || err)
+    return
+  }
+  if (!snapshotKeys.length) return
+  const multi = state.redis.multi()
+  snapshotKeys.forEach((key) => multi.get(key))
+  let results = []
+  try {
+    results = await multi.exec()
+  } catch (err) {
+    console.error("Redis history read failed:", err?.message || err)
+    return
+  }
+  let snapshotsLoaded = 0
+  let pointsLoaded = 0
+  results.forEach((entry) => {
+    const value = Array.isArray(entry) ? entry[1] : entry
+    if (!value) return
+    try {
+      const payload = JSON.parse(value)
+      const updatedAt = Number(payload?.updatedAt) || now
+      const items = Array.isArray(payload?.items) ? payload.items : []
+      items.forEach((item) => {
+        const assetClass = item?.assetClass
+        const symbol = item?.symbol
+        const price = parseNumber(item?.price)
+        if (!assetClass || !symbol || typeof price !== "number") return
+        recordPriceHistory(`${assetClass}:${symbol}`, price, updatedAt)
+        pointsLoaded += 1
+      })
+      snapshotsLoaded += 1
+    } catch (err) {
+      return
+    }
+  })
+  console.log("ps_history_hydrated", {
+    snapshotsLoaded,
+    pointsLoaded,
+    symbols: state.priceHistory.size,
+  })
 }
 
-function markFmpRateLimited() {
+function isRateLimited() {
+  return state.streamBackoffUntil && Date.now() < state.streamBackoffUntil
+}
+
+function markRateLimited() {
   const now = Date.now()
   const backoffMs = 60 * 1000
-  if (!state.fmpBackoffUntil || now >= state.fmpBackoffUntil) {
-    console.warn(`FMP rate limit hit; backing off for ${backoffMs / 1000}s`)
+  if (!state.streamBackoffUntil || now >= state.streamBackoffUntil) {
+    console.warn(`Quote rate limit hit; backing off for ${backoffMs / 1000}s`)
   }
-  state.fmpBackoffUntil = now + backoffMs
+  state.streamBackoffUntil = now + backoffMs
 }
 
 function normalizeSymbol(raw) {
@@ -1462,7 +2003,7 @@ function normalizeSymbolForKey(raw, assetClass) {
   return normalized
 }
 
-function normalizeFmpQuoteSymbol(raw, assetClass) {
+function normalizeQuoteSymbol(raw, assetClass) {
   if (!raw) return null
   if (assetClass === "stock") return normalizeTicker(raw)
   if (assetClass === "forex") {
@@ -1644,13 +2185,31 @@ async function fetchGatewayJson(path, params) {
   }
 }
 
-async function fetchFmpQuote(symbol, assetClass = "stock") {
+async function fetchGatewayJsonUnsafe(path, params) {
+  const url = buildGatewayUrl(path, params)
+  if (!url) return null
+  const authHeaders = await getGatewayAuthHeaders()
+  return fetchJson(url, authHeaders ? { headers: authHeaders } : undefined)
+}
+
+async function fetchGatewayJsonSoft(path, params) {
+  const url = buildGatewayUrl(path, params)
+  if (!url) return null
+  const authHeaders = await getGatewayAuthHeaders()
+  try {
+    return await fetchJson(url, authHeaders ? { headers: authHeaders } : undefined)
+  } catch (err) {
+    return null
+  }
+}
+
+async function fetchMarketQuote(symbol, assetClass = "stock") {
   if (!symbol) return null
 
   if (isReplayMode()) {
     if (!config.marketDataGatewayUrl) return null
     try {
-      const data = await fetchGatewayJson("/v1/fmp/quote", {
+      const data = await fetchGatewayJsonUnsafe("/v1/market/quote", {
         symbol,
         assetClass,
       })
@@ -1683,7 +2242,7 @@ async function fetchFmpQuote(symbol, assetClass = "stock") {
 
   try {
     trackApiCall()
-    const data = await fetchGatewayJson("/v1/fmp/quote", {
+    const data = await fetchGatewayJsonUnsafe("/v1/market/quote", {
       symbol,
       assetClass,
     })
@@ -1706,7 +2265,7 @@ async function fetchFmpQuote(symbol, assetClass = "stock") {
 
 /**
  * Fetch quotes for multiple symbols using parallel single-quote requests.
- * This replaces batch quotes which don't work on all FMP plans.
+ * This replaces batch quotes when providers don't support multi-symbol requests.
  * 
  * @param {string[]} symbols - Symbols to fetch
  * @param {string} assetClass - 'stock', 'crypto', or 'forex'
@@ -1731,7 +2290,7 @@ async function fetchQuotesParallel(symbols, assetClass) {
     
     const promises = chunk.map(async (symbol) => {
       try {
-        const quote = await fetchFmpQuote(symbol, assetClass)
+        const quote = await fetchMarketQuote(symbol, assetClass)
         return { symbol, quote, error: null }
       } catch (err) {
         return { symbol, quote: null, error: err.message }
@@ -1756,7 +2315,7 @@ async function fetchQuotesParallel(symbols, assetClass) {
 
 /**
  * Fetch extended hours (pre-market / after-hours) quote for a stock symbol
- * Uses market-data-gateway's /v1/fmp/aftermarket-quote endpoint
+ * Uses market-data-gateway's /v1/market/aftermarket-quote endpoint
  *
  * @param {string} symbol - Stock symbol
  * @returns {Promise<{symbol: string, price: number, bid: number, ask: number, source: string}|null>}
@@ -1768,7 +2327,7 @@ async function fetchExtendedHoursQuote(symbol) {
 
   try {
     trackApiCall()
-    const data = await fetchGatewayJson("/v1/fmp/aftermarket-quote", { symbol })
+    const data = await fetchGatewayJsonUnsafe("/v1/market/aftermarket-quote", { symbol })
 
     if (!data) return null
 
@@ -1819,7 +2378,7 @@ async function fetchStockQuotesWithExtendedHours(symbols) {
     const promises = chunk.map(async (symbol) => {
       try {
         // Try regular quote first
-        let quote = await fetchFmpQuote(symbol, "stock")
+        let quote = await fetchMarketQuote(symbol, "stock")
         
         // If no regular quote and we're in extended hours, try extended hours endpoint
         if (!quote && useExtendedHours) {
@@ -1844,7 +2403,7 @@ async function fetchStockQuotesWithExtendedHours(symbols) {
 }
 
 /**
- * Fetch FMP biggest-gainers/losers/most-actives endpoints (only returns data during market hours)
+ * Fetch movers (biggest-gainers/losers/most-actives) during market hours.
  * Returns top 10 from each category for a total of up to 30 discovery symbols
  * @param {Object} priceFilter - Optional price filter { minPrice, maxPrice, apply }
  */
@@ -1870,15 +2429,15 @@ async function fetchStockMovers(priceFilter = {}) {
 
   const discoveredSymbols = new Set()
   const endpoints = [
-    { path: "/v1/fmp/biggest-gainers", name: "gainers" },
-    { path: "/v1/fmp/biggest-losers", name: "losers" },
-    { path: "/v1/fmp/most-actives", name: "actives" },
+    { path: "/v1/market/biggest-gainers", name: "gainers" },
+    { path: "/v1/market/biggest-losers", name: "losers" },
+    { path: "/v1/market/most-actives", name: "actives" },
   ]
 
   for (const { path, name } of endpoints) {
     try {
       trackApiCall()
-      const response = await fetchGatewayJson(path)
+      const response = await fetchGatewayJsonSoft(path)
       const data = Array.isArray(response?.data)
         ? response.data
         : Array.isArray(response)
@@ -2203,10 +2762,13 @@ function buildHealthPayload() {
   }
 
   const streamHealth = state.stream
-    ? {
-        enabled: config.fmpStreamEnabled,
+      ? {
+        enabled: config.streamEnabled,
         connected: state.stream.connected,
         streams: state.stream.streams,
+        provider: state.stream.provider,
+        providerUrl: state.stream.providerUrl,
+        failoverCount: state.stream.failoverCount,
         lastMessageAt: state.stream.lastMessageAt
           ? new Date(state.stream.lastMessageAt).toISOString()
           : null,
@@ -2256,7 +2818,7 @@ function buildHealthPayload() {
         errors: state.stream.errors,
         lastError: state.stream.lastError,
       }
-    : { enabled: config.fmpStreamEnabled }
+    : { enabled: config.streamEnabled }
   
   // Determine overall health status
   const hasStaleData = isPriceStale || Object.values(pollHealth).some(p => p.isStale)
@@ -2398,7 +2960,7 @@ async function refreshWatchlist() {
       state.stockQuoteMode = stockQuoteMode
       console.log("ps_stock_quote_mode", { mode: stockQuoteMode })
     }
-    if (stockQuoteMode === "stream_only" && !config.fmpStreamEnabled) {
+    if (stockQuoteMode === "stream_only" && !config.streamEnabled) {
       console.warn("ps_stream_only_disabled", { reason: "stream_disabled" })
     }
     const hotTrades = hotTradesSnap.exists ? hotTradesSnap.data()?.items || [] : []
@@ -2558,7 +3120,7 @@ async function refreshWatchlist() {
 
     // Stock Discovery: Add gainers/losers/actives during market hours
     // This runs only when US stock market is open
-    if (config.fmpKey && !isReplayMode()) {
+    if (config.marketDataGatewayUrl && !isReplayMode()) {
       const priceFilter = resolveMoverPriceFilter(controls)
       if (priceFilter.apply) {
         console.log("ps_discovery_price_filter", {
@@ -2673,7 +3235,7 @@ async function pollCryptoPrices() {
   }
   if (shouldUseStreamFor("crypto")) return
   const allSymbols = Array.from(state.watchlist.crypto)
-  if ((!config.fmpKey && !config.marketDataGatewayUrl) || allSymbols.length === 0) return
+  if (!config.marketDataGatewayUrl || allSymbols.length === 0) return
 
   const slice = getPollSlice("crypto", allSymbols, config.cryptoPollMs)
   if (slice.symbols.length === 0) {
@@ -2719,7 +3281,7 @@ async function pollCryptoPrices() {
       if (!normalizedSymbol || typeof quote.price !== "number") return
       
       successCount++
-      updatePrice("crypto", normalizedSymbol, quote.price, quote.source || "fmp", {
+      updatePrice("crypto", normalizedSymbol, quote.price, quote.source || "gateway", {
         bid: quote.bid,
         ask: quote.ask,
         volume: quote.volume,
@@ -2763,9 +3325,12 @@ async function pollStockPrices() {
   ) {
     return
   }
-  if (!isReplayMode() && shouldUseStreamFor("stock")) return
   const allSymbols = Array.from(state.watchlist.stock)
-  if ((!config.fmpKey && !config.marketDataGatewayUrl) || allSymbols.length === 0) return
+  const streamSymbols = shouldUseStreamFor("stock") ? new Set(resolveStreamSymbols()) : new Set()
+  const pollUniverse =
+    streamSymbols.size > 0 ? allSymbols.filter((symbol) => !streamSymbols.has(symbol)) : allSymbols
+  if (!isReplayMode() && shouldUseStreamFor("stock") && pollUniverse.length === 0) return
+  if (!config.marketDataGatewayUrl || pollUniverse.length === 0) return
   if (isReplayMode() && !config.marketDataGatewayUrl) {
     console.error("Replay mode requires MARKET_DATA_GATEWAY_URL for price polling")
     return
@@ -2773,7 +3338,7 @@ async function pollStockPrices() {
   
   const marketStatus = getMarketStatus("stock")
   if (!isReplayMode() && shouldThrottlePolling("stock", marketStatus.status)) return
-  const slice = getPollSlice("stock", allSymbols, config.stockPollMs)
+  const slice = getPollSlice("stock", pollUniverse, config.stockPollMs)
   if (slice.symbols.length === 0) {
     if (slice.total > 0) {
       console.warn("ps_poll_skip", {
@@ -2822,9 +3387,9 @@ async function pollStockPrices() {
       if (!normalizedSymbol || typeof quote.price !== "number") return
       
       successCount++
-      if (quote.source === "fmp_extended") extendedCount++
+      if (quote.source === "gateway_extended") extendedCount++
       
-      updatePrice("stock", normalizedSymbol, quote.price, quote.source || "fmp", {
+      updatePrice("stock", normalizedSymbol, quote.price, quote.source || "gateway", {
         bid: quote.bid,
         ask: quote.ask,
         volume: quote.volume,
@@ -2872,7 +3437,7 @@ async function pollForexPrices() {
   }
   if (shouldUseStreamFor("forex")) return
   const allSymbols = Array.from(state.watchlist.forex)
-  if ((!config.fmpKey && !config.marketDataGatewayUrl) || allSymbols.length === 0) return
+  if (!config.marketDataGatewayUrl || allSymbols.length === 0) return
   
   const marketStatus = getMarketStatus("forex")
   if (shouldThrottlePolling("forex", marketStatus.status)) return
@@ -2920,7 +3485,7 @@ async function pollForexPrices() {
       if (!normalizedSymbol || typeof quote.price !== "number") return
       
       successCount++
-      updatePrice("forex", normalizedSymbol, quote.price, quote.source || "fmp", {
+      updatePrice("forex", normalizedSymbol, quote.price, quote.source || "gateway", {
         bid: quote.bid,
         ask: quote.ask,
         volume: quote.volume,
@@ -2990,6 +3555,8 @@ async function flushPrices() {
     const history = state.priceHistory.get(key) || []
     const change1m = computeChangePct(history, 60 * 1000, now, item.price)
     const change5m = computeChangePct(history, 5 * 60 * 1000, now, item.price)
+    const change15m = computeChangePct(history, 15 * 60 * 1000, now, item.price)
+    const change1h = computeChangePct(history, 60 * 60 * 1000, now, item.price)
     const volatility1m = computeRangePct(history, 60 * 1000, now, item.price)
     const volatility5m = computeRangePct(history, 5 * 60 * 1000, now, item.price)
     const spreadPct =
@@ -3000,6 +3567,8 @@ async function flushPrices() {
       ...item,
       change1m: Number.isFinite(change1m) ? change1m : undefined,
       change5m: Number.isFinite(change5m) ? change5m : undefined,
+      change15m: Number.isFinite(change15m) ? change15m : undefined,
+      change1h: Number.isFinite(change1h) ? change1h : undefined,
       volatility1m: Number.isFinite(volatility1m) ? volatility1m : undefined,
       volatility5m: Number.isFinite(volatility5m) ? volatility5m : undefined,
       spreadPct: Number.isFinite(spreadPct) ? spreadPct : undefined,
@@ -3015,21 +3584,9 @@ async function flushPrices() {
       console.error("Replay mode active without runId; skipping writes")
       return
     }
-    const stockSource = config.marketDataGatewayUrl
-      ? "gateway"
-      : config.fmpKey
-        ? "fmp"
-        : "disabled"
-    const forexSource = config.marketDataGatewayUrl
-      ? "gateway"
-      : config.fmpKey
-        ? "fmp"
-        : "disabled"
-    const cryptoSource = config.marketDataGatewayUrl
-      ? "gateway"
-      : config.fmpKey
-        ? "fmp"
-        : "disabled"
+    const stockSource = config.marketDataGatewayUrl ? "gateway" : "disabled"
+    const forexSource = config.marketDataGatewayUrl ? "gateway" : "disabled"
+    const cryptoSource = config.marketDataGatewayUrl ? "gateway" : "disabled"
 
     const meta = {
       runId: isReplay ? state.replay.runId : runId,
@@ -3133,13 +3690,20 @@ async function flushPrices() {
 
 async function run() {
   state.redis = await initRedis()
+  await hydratePriceHistoryFromRedis()
   await refreshReplayState()
   await maybeAckReplayState()
   await refreshWatchlist()
 
-  if (config.fmpStreamEnabled && !isReplayMode()) {
-    startFmpStream()
-    setInterval(checkFmpStreamHealth, 5000)
+  if (config.streamEnabled && !isReplayMode()) {
+    startStream()
+    setInterval(checkStreamHealth, 5000)
+    if (config.streamRotateEnabled) {
+      state.stream.rotationTimer = setInterval(
+        () => rotateStreamSubscriptions("timer"),
+        Math.max(10000, config.streamRotateMs)
+      )
+    }
   }
 
   setInterval(refreshWatchlist, Math.max(config.watchlistRefreshMs, 15000))
@@ -3180,7 +3744,11 @@ run().catch((err) => {
 })
 
 function shutdown() {
-  stopFmpStream("shutdown")
+  stopStream("shutdown")
+  if (state.stream?.rotationTimer) {
+    clearInterval(state.stream.rotationTimer)
+    state.stream.rotationTimer = null
+  }
   if (state.redis) {
     state.redis.quit().catch(() => {})
   }

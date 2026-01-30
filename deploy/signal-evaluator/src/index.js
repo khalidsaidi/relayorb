@@ -75,6 +75,8 @@ const config = {
   replayAckIntervalMs: parseInt(process.env.REPLAY_ACK_INTERVAL_MS || "15000", 10),
 }
 
+const SIGNAL_HEALTH_DOC = "pipeline/signal_evaluator"
+
 const gatewayAuth = new GoogleAuth()
 let gatewayAuthClient = null
 
@@ -169,12 +171,12 @@ assertRemoteOnly("signal-evaluator")
 assertUsWest1("signal-evaluator")
 
 const caches = {
-  fmpStocksDaily: new Map(),
-  fmpStocksIntraday: new Map(),
-  fmpForexDaily: new Map(),
-  fmpForexIntraday: new Map(),
-  fmpCryptoDaily: new Map(),
-  fmpCryptoIntraday: new Map(),
+  marketStocksDaily: new Map(),
+  marketStocksIntraday: new Map(),
+  marketForexDaily: new Map(),
+  marketForexIntraday: new Map(),
+  marketCryptoDaily: new Map(),
+  marketCryptoIntraday: new Map(),
 }
 
 let marketPriceCache = null
@@ -688,7 +690,7 @@ async function fetchGatewayJson(path, params) {
   }
 }
 
-function normalizeFmpSymbol(symbol, assetClass) {
+function normalizeMarketSymbol(symbol, assetClass) {
   if (!symbol) return null
   const cleaned = String(symbol).trim().toUpperCase()
   if (!cleaned) return null
@@ -698,7 +700,7 @@ function normalizeFmpSymbol(symbol, assetClass) {
   return cleaned.replace(/\s+/g, "")
 }
 
-function parseFmpSeries(data) {
+function parseMarketSeries(data) {
   if (!Array.isArray(data)) return null
   const entries = data
     .map((entry) => {
@@ -713,16 +715,16 @@ function parseFmpSeries(data) {
   return entries.length > 0 ? entries : null
 }
 
-function getFmpCache(assetClass, interval) {
+function getMarketCache(assetClass, interval) {
   if (assetClass === "forex") {
-    return interval === "15min" ? caches.fmpForexIntraday : caches.fmpForexDaily
+    return interval === "15min" ? caches.marketForexIntraday : caches.marketForexDaily
   }
   if (assetClass === "crypto") {
     return interval === "15min" || interval === "1h"
-      ? caches.fmpCryptoIntraday
-      : caches.fmpCryptoDaily
+      ? caches.marketCryptoIntraday
+      : caches.marketCryptoDaily
   }
-  return interval === "15min" ? caches.fmpStocksIntraday : caches.fmpStocksDaily
+  return interval === "15min" ? caches.marketStocksIntraday : caches.marketStocksDaily
 }
 
 function getCacheKeyPrefix() {
@@ -732,22 +734,22 @@ function getCacheKeyPrefix() {
   return "live"
 }
 
-async function fetchFmpSeries(symbol, assetClass, interval) {
+async function fetchMarketSeries(symbol, assetClass, interval) {
   if (!config.marketDataGatewayUrl) return null
-  const normalized = normalizeFmpSymbol(symbol, assetClass)
+  const normalized = normalizeMarketSymbol(symbol, assetClass)
   if (!normalized) return null
-  const cache = getFmpCache(assetClass, interval)
+  const cache = getMarketCache(assetClass, interval)
   const key = `${getCacheKeyPrefix()}:${normalized}|${interval}`
   if (cache.has(key)) return cache.get(key)
 
   try {
-    const data = await fetchGatewayJson("/v1/fmp/candles", {
+    const data = await fetchGatewayJson("/v1/market/candles", {
       symbol,
       assetClass,
       interval,
       limit: "500",
     })
-    const series = parseFmpSeries(data?.candles)
+    const series = parseMarketSeries(data?.candles)
     cache.set(key, series)
     return series
   } catch (err) {
@@ -756,17 +758,17 @@ async function fetchFmpSeries(symbol, assetClass, interval) {
   }
 }
 
-async function getFmpPrice(symbol, assetClass, interval, timestampMs) {
-  const series = await fetchFmpSeries(symbol, assetClass, interval)
+async function getMarketPrice(symbol, assetClass, interval, timestampMs) {
+  const series = await fetchMarketSeries(symbol, assetClass, interval)
   if (!series) return null
   const close = findIntradayClose(series, timestampMs)
   if (!close) return null
-  return { price: close, source: "fmp" }
+  return { price: close, source: "market" }
 }
 
 async function getCryptoPrice(pair, timestampMs, horizonKey) {
   const interval = horizonKey === "1h" ? "1h" : "1day"
-  return getFmpPrice(pair, "crypto", interval, timestampMs)
+  return getMarketPrice(pair, "crypto", interval, timestampMs)
 }
 
 function findIntradayClose(entries, targetTime) {
@@ -785,15 +787,15 @@ function findIntradayClose(entries, targetTime) {
 }
 
 async function getStockPrice(symbol, timestampMs) {
-  return getFmpPrice(symbol, "stock", "1day", timestampMs)
+  return getMarketPrice(symbol, "stock", "1day", timestampMs)
 }
 
 async function getStockIntradayPrice(symbol, timestampMs) {
-  return getFmpPrice(symbol, "stock", "15min", timestampMs)
+  return getMarketPrice(symbol, "stock", "15min", timestampMs)
 }
 
 async function getFxIntradayPrice(pair, timestampMs) {
-  return getFmpPrice(pair, "forex", "15min", timestampMs)
+  return getMarketPrice(pair, "forex", "15min", timestampMs)
 }
 
 function getSnapshotKey(assetClass, symbol) {
@@ -1018,22 +1020,22 @@ async function evaluateSignals(db) {
           priceAtHorizon = second?.price ?? null
           source = first?.source || second?.source || null
         } else {
-          const fmpStart = await getFmpPrice(
+          const marketStart = await getMarketPrice(
             classification.symbol,
             "forex",
             "1day",
             adjustedStartMs
           )
-          const fmpEnd = await getFmpPrice(
+          const marketEnd = await getMarketPrice(
             classification.symbol,
             "forex",
             "1day",
             adjustedHorizonMs
           )
-          if (fmpStart && fmpEnd) {
-            priceAtSignal = fmpStart.price ?? null
-            priceAtHorizon = fmpEnd.price ?? null
-            source = fmpStart.source || fmpEnd.source || null
+          if (marketStart && marketEnd) {
+            priceAtSignal = marketStart.price ?? null
+            priceAtHorizon = marketEnd.price ?? null
+            source = marketStart.source || marketEnd.source || null
           }
         }
       }
@@ -1529,6 +1531,25 @@ async function buildPerformanceReport(db) {
   )
 }
 
+async function writeHealthStatus(db, status, errorMessage) {
+  if (!db) return
+  try {
+    await db.doc(SIGNAL_HEALTH_DOC).set(
+      {
+        status,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        error: errorMessage || null,
+        details: {
+          runId: getActiveRunId() || null,
+        },
+      },
+      { merge: true }
+    )
+  } catch (err) {
+    console.error("Signal evaluator health write failed", err?.message || err)
+  }
+}
+
 async function run() {
   const db = initAdmin()
   const replayControls = await loadReplayControls(db)
@@ -1547,6 +1568,8 @@ async function run() {
   await buildPerformanceReport(db)
   console.log("se_performance_updated", { runId })
 
+  await writeHealthStatus(db, "ok", null)
+
   if (redis) {
     await redis.quit().catch(() => {})
   }
@@ -1554,5 +1577,8 @@ async function run() {
 
 run().catch((err) => {
   console.error("Signal evaluator failed", err)
-  process.exit(1)
+  const db = initAdmin()
+  writeHealthStatus(db, "error", err?.message || "Signal evaluator failed").finally(() => {
+    process.exit(1)
+  })
 })

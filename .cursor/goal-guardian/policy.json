@@ -1,0 +1,190 @@
+{
+  "requirePermitForShell": true,
+  "requirePermitForMcp": true,
+  "requirePermitForRead": false,
+  "autoRevertUnauthorizedEdits": false,
+  "alwaysAllow": {
+    "shell": [
+      "git status*",
+      "git diff*",
+      "ls*",
+      "pwd"
+    ],
+    "mcp": [
+      "goal-guardian/*"
+    ],
+    "read": [
+      ".cursor/goal-guardian/**",
+      ".cursor/hooks.json",
+      ".cursor/mcp.json"
+    ]
+  },
+  "alwaysDeny": {
+    "shell": [
+      "rm -rf /*",
+      "rm -rf /",
+      "*curl*|*sh*",
+      "*wget*|*sh*"
+    ],
+    "mcp": [],
+    "read": [
+      ".ai/goal-guardian/**",
+      ".git/**",
+      "**/.env",
+      "**/.env.*",
+      "**/*.pem",
+      "**/*.key"
+    ]
+  },
+  "warningConfig": {
+    "maxWarningsBeforeBlock": 3,
+    "warningResetMinutes": 60,
+    "showGoalReminder": true
+  },
+  "shellRules": [
+    {
+      "pattern": "rm -rf /",
+      "severity": "HARD_BLOCK",
+      "reason": "Catastrophic filesystem deletion"
+    },
+    {
+      "pattern": "rm -rf /*",
+      "severity": "HARD_BLOCK",
+      "reason": "Catastrophic filesystem deletion"
+    },
+    {
+      "pattern": "*curl*|*sh*",
+      "severity": "HARD_BLOCK",
+      "reason": "Remote code execution"
+    },
+    {
+      "pattern": "*wget*|*sh*",
+      "severity": "HARD_BLOCK",
+      "reason": "Remote code execution"
+    },
+    {
+      "pattern": "*curl*|*bash*",
+      "severity": "HARD_BLOCK",
+      "reason": "Remote code execution"
+    },
+    {
+      "pattern": "*wget*|*bash*",
+      "severity": "HARD_BLOCK",
+      "reason": "Remote code execution"
+    },
+    {
+      "pattern": "rm -rf *",
+      "severity": "WARN",
+      "reason": "Recursive force delete"
+    },
+    {
+      "pattern": "*--force*",
+      "severity": "WARN",
+      "reason": "Force flag bypasses safety checks"
+    },
+    {
+      "pattern": "git reset --hard*",
+      "severity": "WARN",
+      "reason": "Destructive git operation"
+    },
+    {
+      "pattern": "git push --force*",
+      "severity": "WARN",
+      "reason": "Force push can overwrite history"
+    },
+    {
+      "pattern": "git push -f*",
+      "severity": "WARN",
+      "reason": "Force push can overwrite history"
+    },
+    {
+      "pattern": "npm publish*",
+      "severity": "WARN",
+      "reason": "Publishing to npm registry"
+    },
+    {
+      "pattern": "*sudo *",
+      "severity": "WARN",
+      "reason": "Elevated privileges requested"
+    },
+    {
+      "pattern": "git status*",
+      "severity": "ALLOWED",
+      "reason": "Read-only git operation"
+    },
+    {
+      "pattern": "git diff*",
+      "severity": "ALLOWED",
+      "reason": "Read-only git operation"
+    },
+    {
+      "pattern": "git log*",
+      "severity": "ALLOWED",
+      "reason": "Read-only git operation"
+    },
+    {
+      "pattern": "ls*",
+      "severity": "ALLOWED",
+      "reason": "List directory contents"
+    },
+    {
+      "pattern": "pwd",
+      "severity": "ALLOWED",
+      "reason": "Print working directory"
+    },
+    {
+      "pattern": "cat *",
+      "severity": "ALLOWED",
+      "reason": "Read file contents"
+    },
+    {
+      "pattern": "node -v",
+      "severity": "ALLOWED",
+      "reason": "Version check"
+    },
+    {
+      "pattern": "npm -v",
+      "severity": "ALLOWED",
+      "reason": "Version check"
+    }
+  ],
+  "mcpRules": [
+    {
+      "pattern": "goal-guardian/*",
+      "severity": "ALLOWED",
+      "reason": "Goal Guardian MCP tools"
+    }
+  ],
+  "readRules": [
+    {
+      "pattern": "**/.env",
+      "severity": "HARD_BLOCK",
+      "reason": "Environment secrets"
+    },
+    {
+      "pattern": "**/.env.*",
+      "severity": "HARD_BLOCK",
+      "reason": "Environment secrets"
+    },
+    {
+      "pattern": "**/*.pem",
+      "severity": "HARD_BLOCK",
+      "reason": "Private key file"
+    },
+    {
+      "pattern": "**/*.key",
+      "severity": "HARD_BLOCK",
+      "reason": "Private key file"
+    },
+    {
+      "pattern": ".git/**",
+      "severity": "HARD_BLOCK",
+      "reason": "Git internals"
+    },
+    {
+      "pattern": ".cursor/goal-guardian/**",
+      "severity": "ALLOWED",
+      "reason": "Guardian configuration"
+    }
+  ]
+}
