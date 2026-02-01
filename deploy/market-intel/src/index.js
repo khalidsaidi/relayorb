@@ -7048,7 +7048,6 @@ async function dispatchSignalRequests(db, picks, controls) {
   if (symbols.length === 0) return
 
   const botsSnap = await db.collection("bots").get()
-  const batch = db.batch()
   let botCommandCount = 0
 
   const resolveBotAssetClasses = (botData = {}) => {

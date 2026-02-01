@@ -2952,7 +2952,8 @@ async function start() {
         if (
           healthState.lastFirestoreError &&
           typeof healthState.lastFirestoreError.message === "string" &&
-          healthState.lastFirestoreError.message.includes("snapshot stale")
+          (healthState.lastFirestoreError.message.includes("snapshot stale") ||
+            healthState.lastFirestoreError.message.includes("snapshots stale"))
         ) {
           healthState.lastFirestoreError = null
         }
@@ -2978,7 +2979,8 @@ async function start() {
         if (
           healthState.lastFirestoreError &&
           typeof healthState.lastFirestoreError.message === "string" &&
-          healthState.lastFirestoreError.message.includes("snapshot stale")
+          (healthState.lastFirestoreError.message.includes("snapshot stale") ||
+            healthState.lastFirestoreError.message.includes("snapshots stale"))
         ) {
           healthState.lastFirestoreError = null
         }
@@ -3012,18 +3014,11 @@ async function start() {
       healthState.lastFirestoreWarning = null
     }
 
-    if (controlsStale && stateStale) {
-      healthState.lastFirestoreError = {
-        message: `Firestore snapshots stale (${now - Math.min(
-          healthState.lastControlsSnapshotAt,
-          healthState.lastStateSnapshotAt
-        )}ms)`,
-        at: now,
-      }
-    } else if (
+    if (
       healthState.lastFirestoreError &&
       typeof healthState.lastFirestoreError.message === "string" &&
-      healthState.lastFirestoreError.message.includes("snapshot stale")
+      (healthState.lastFirestoreError.message.includes("snapshot stale") ||
+        healthState.lastFirestoreError.message.includes("snapshots stale"))
     ) {
       healthState.lastFirestoreError = null
     }
