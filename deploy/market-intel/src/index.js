@@ -82,6 +82,8 @@ const config = {
     process.env.MARKET_SIGNAL_BACKFILL_MINUTES || "0",
     10
   ),
+  botSignalSymbolLimit: parseInt(process.env.BOT_SIGNAL_SYMBOL_LIMIT || "50", 10),
+  botSignalEnabled: process.env.BOT_SIGNAL_ENABLED !== "false",
   ibkrProposalTtlMs: parseInt(process.env.IBKR_PROPOSAL_TTL_MS || "300000", 10),
   ibkrProposalQuantity: parseFloat(process.env.IBKR_PROPOSAL_QUANTITY || "1"),
   fxPairs: parseList(
@@ -6500,6 +6502,71 @@ function buildActionBoard(hotTrades, newsScoreMap, limit) {
   return { buys, sells, byAsset, allPicks, newsWeight, classLimit: cap }
 }
 
+async function updateBotSignalUniverse(db, items, controls, runId) {
+  if (!db || !config.botSignalEnabled) return
+  const limit = Number.isFinite(config.botSignalSymbolLimit)
+    ? Math.max(5, config.botSignalSymbolLimit)
+    : 50
+  if (!Array.isArray(items) || items.length === 0) return
+
+  const cryptoEnabled = controls?.cryptoEnabled !== false
+  const forexEnabled = controls?.forexEnabled !== false
+
+  const stockSymbols = uniqueList(
+    items.filter((item) => item?.assetClass === "stock").map((item) => item.symbol)
+  ).slice(0, limit)
+  const forexSymbols = uniqueList(
+    items.filter((item) => item?.assetClass === "forex").map((item) => item.symbol)
+  ).slice(0, limit)
+  const cryptoSymbols = uniqueList(
+    items.filter((item) => item?.assetClass === "crypto").map((item) => item.symbol)
+  ).slice(0, limit)
+
+  const updates = [
+    {
+      id: "backtrader-stocks",
+      enabled: stockSymbols.length > 0,
+      symbols: stockSymbols,
+    },
+    {
+      id: "backtrader-forex",
+      enabled: forexEnabled && forexSymbols.length > 0,
+      symbols: forexSymbols,
+    },
+    {
+      id: "backtrader-crypto",
+      enabled: cryptoEnabled && cryptoSymbols.length > 0,
+      symbols: cryptoSymbols,
+    },
+  ]
+
+  const batch = db.batch()
+  updates.forEach((entry) => {
+    if (!entry.enabled) return
+    const ref = db.collection("bots").doc(entry.id)
+    batch.set(
+      ref,
+      {
+        desiredConfig: {
+          symbols: entry.symbols,
+          symbolsSource: "market-intel",
+          symbolsUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          symbolsRunId: runId || null,
+        },
+        desiredConfigUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+  })
+  await batch.commit()
+  console.log("bot_signal_universe_updated", {
+    runId,
+    stock: stockSymbols.length,
+    forex: forexSymbols.length,
+    crypto: cryptoSymbols.length,
+  })
+}
+
 function buildTrendLookup(byHorizon, horizon) {
   const resolved = TREND_HORIZONS.includes(horizon) ? horizon : TREND_HORIZONS[0]
   const buckets = byHorizon?.[resolved] || {}
@@ -7747,6 +7814,16 @@ async function run() {
     const recommendation = key ? recommendationMap.get(key) : null
     return recommendation ? { ...trade, recommendation } : trade
   })
+  try {
+    await updateBotSignalUniverse(
+      db,
+      hotTradesWithRecommendations.length > 0 ? hotTradesWithRecommendations : candidates,
+      controls,
+      runId
+    )
+  } catch (err) {
+    console.error("Failed to update bot signal universe:", err.message)
+  }
   const trendingByHorizon = buildTrending(
     trendingCandidates,
     botSignals,
