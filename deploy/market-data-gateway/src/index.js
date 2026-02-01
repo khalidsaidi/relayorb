@@ -2852,6 +2852,19 @@ async function handleReplayNews(res, params, replayState) {
   })
 }
 
+function buildUnavailableQuote(symbol, assetClass, errorMessage) {
+  return {
+    symbol,
+    assetClass,
+    price: null,
+    change: null,
+    changePercent: null,
+    volume: null,
+    source: "unavailable",
+    error: errorMessage || "Quote unavailable",
+  }
+}
+
 async function handleQuote(req, res, params, replayState) {
   if (replayState?.mode === "replay") {
     await handleReplayQuote(res, params, replayState)
@@ -2883,7 +2896,9 @@ async function handleQuote(req, res, params, replayState) {
       })
       return
     }
-    respondError(res, 503, "QUOTE_UNAVAILABLE", "Quote unavailable")
+    const fallback = buildUnavailableQuote(normalized, assetClass, "Quote unavailable")
+    setCached(cacheKey, fallback, Math.max(1000, Math.round(config.cacheDefaultMs / 2)))
+    respondJson(res, 200, fallback)
     return
   }
   setCached(cacheKey, payload, config.cacheDefaultMs)
@@ -2916,7 +2931,9 @@ async function handleAftermarketQuote(req, res, params) {
       })
       return
     }
-    respondError(res, 503, "AFTERMARKET_QUOTE_UNAVAILABLE", "Aftermarket quote unavailable")
+    const fallback = buildUnavailableQuote(normalized, "stock", "Aftermarket quote unavailable")
+    setCached(cacheKey, fallback, Math.max(1000, Math.round(config.cacheDefaultMs / 2)))
+    respondJson(res, 200, fallback)
     return
   }
   setCached(cacheKey, payload, config.cacheDefaultMs)
@@ -2975,6 +2992,10 @@ async function handleQuotes(req, res, params, replayState) {
             stale: true,
             staleAgeMs: Date.now() - (staleEntry.storedAt || Date.now()),
           })
+        } else {
+          const fallback = buildUnavailableQuote(symbol, assetClass, "Quote unavailable")
+          setCached(cacheKey, fallback, Math.max(1000, Math.round(config.cacheDefaultMs / 2)))
+          items.push(fallback)
         }
         continue
       }
@@ -3113,7 +3134,14 @@ async function handleCandles(req, res, params, replayState) {
       })
       return
     }
-    respondError(res, 502, "CANDLES_UNAVAILABLE", "Candles unavailable")
+    respondJson(res, 200, {
+      symbol,
+      assetClass,
+      interval: seriesInterval,
+      candles: [],
+      source: "unavailable",
+      error: "Candles unavailable",
+    })
     return
   }
   if (!Array.isArray(data) || data.length === 0) {
@@ -3126,7 +3154,14 @@ async function handleCandles(req, res, params, replayState) {
       })
       return
     }
-    respondError(res, 503, "CANDLES_UNAVAILABLE", "Candles unavailable")
+    respondJson(res, 200, {
+      symbol,
+      assetClass,
+      interval: seriesInterval,
+      candles: [],
+      source: "unavailable",
+      error: "Candles unavailable",
+    })
     return
   }
   const candles = data
@@ -3395,7 +3430,14 @@ async function handleProfile(req, res, params, replayState) {
       meta: { providerId: "alphavantage", endpointName: "profile", paramsHash: hashParams({ symbol }) },
       error: { message: err?.message ? String(err.message) : "Request failed" },
     })
-    respondJson(res, 502, { error: "Profile unavailable" })
+    const payload = {
+      symbol,
+      profile: null,
+      source: "unavailable",
+      error: "Profile unavailable",
+    }
+    setCached(cacheKey, payload, config.cacheMarketsMs)
+    respondJson(res, 200, payload)
   }
 }
 
@@ -3460,7 +3502,14 @@ async function handleSharesFloat(req, res, params, replayState) {
       meta: { providerId: "alphavantage", endpointName: "shares-float", paramsHash: hashParams({ symbol }) },
       error: { message: err?.message ? String(err.message) : "Request failed" },
     })
-    respondJson(res, 502, { error: "Shares float unavailable" })
+    const payload = {
+      symbol,
+      items: [],
+      source: "unavailable",
+      error: "Shares float unavailable",
+    }
+    setCached(cacheKey, payload, config.cacheMarketsMs)
+    respondJson(res, 200, payload)
   }
 }
 
@@ -3963,12 +4012,17 @@ async function handleReplayBuildTape(req, res, params) {
     return
   }
 
-  const date = params.get("date") || body?.date
+  const dateInput = params.get("date") || body?.date
+  const date = normalizeTapeDate(dateInput)
   if (!date) {
-    respondJson(res, 400, { error: "Missing date (YYYY-MM-DD)" })
+    respondJson(res, 400, { error: "Missing or invalid date (YYYY-MM-DD)" })
     return
   }
-  const datasetId = params.get("datasetId") || body?.datasetId || date
+  const datasetId = String(params.get("datasetId") || body?.datasetId || date).trim()
+  if (!datasetId) {
+    respondJson(res, 400, { error: "Missing datasetId" })
+    return
+  }
   const assetClass = (body?.assetClass || params.get("assetClass") || "stock").toLowerCase()
   const includeProfile = body?.includeProfile !== false
   const includeSharesFloat = body?.includeSharesFloat !== false

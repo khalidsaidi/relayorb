@@ -83,6 +83,30 @@ function resolveRuntimeRegion() {
   )
 }
 
+function getEasternTimeParts() {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
+  const parts = formatter.formatToParts(new Date())
+  const lookup = new Map(parts.map((part) => [part.type, part.value]))
+  return {
+    weekday: lookup.get("weekday") || "",
+    hour: parseInt(lookup.get("hour") || "0", 10),
+    minute: parseInt(lookup.get("minute") || "0", 10),
+  }
+}
+
+function isUsMarketOpenNow() {
+  const { weekday, hour, minute } = getEasternTimeParts()
+  if (weekday === "Sat" || weekday === "Sun") return false
+  const minutes = hour * 60 + minute
+  return minutes >= 9 * 60 + 30 && minutes < 16 * 60
+}
+
 function assertUsWest1(serviceName) {
   const region = resolveRuntimeRegion()
   if (region !== EXPECTED_REGION) {
@@ -559,8 +583,14 @@ async function runVerification() {
     }
 
     // Check bot signals freshness and zombie detection
+    const controlsDoc = await db.doc("market/controls").get()
+    const controls = controlsDoc.exists ? controlsDoc.data() : null
+    const cryptoEnabled = controls?.cryptoEnabled !== false
+    const forexEnabled = controls?.forexEnabled !== false
+
     const botsSnap = await db.collection("bots").get()
     const foundBotIds = new Set()
+    const usMarketOpen = isUsMarketOpenNow()
 
     for (const botDoc of botsSnap.docs) {
       const bot = botDoc.data()
@@ -568,6 +598,15 @@ async function runVerification() {
 
       // Skip market-intel pseudo-bot (it's a pipeline, not a trading bot)
       if (bot.engine === "market-intel") continue
+      const inferredAssetClass =
+        bot.desiredConfig?.assetClass ||
+        (botDoc.id.includes("crypto") ? "crypto" : botDoc.id.includes("forex") ? "forex" : "stock")
+      if (inferredAssetClass === "crypto" && !cryptoEnabled) continue
+      if (inferredAssetClass === "forex" && !forexEnabled) continue
+
+      if (inferredAssetClass === "stock" && !usMarketOpen) {
+        continue
+      }
 
       const signalsSnap = await db.collection("bots").doc(botDoc.id).collection("signals")
         .orderBy("createdAt", "desc")
@@ -605,6 +644,8 @@ async function runVerification() {
 
     // Check for expected bots that are missing
     for (const expectedBot of config.expectedBots) {
+      if (expectedBot.id.includes("crypto") && !cryptoEnabled) continue
+      if (expectedBot.id.includes("forex") && !forexEnabled) continue
       if (!foundBotIds.has(expectedBot.id)) {
         const severity = expectedBot.required ? "failed" : "warning"
         addCheck("bots", `${expectedBot.id}_missing`, severity,

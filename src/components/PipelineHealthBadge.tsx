@@ -10,6 +10,27 @@ import { getStatusLabel, getStatusBgColor, formatAge, type PipelineHealthStatus 
 import { usePipelineHealthContext } from "@/features/ops/pipeline-health-context"
 import { useTranslation } from "react-i18next"
 
+function formatReconnectTime(nextReconnectAt?: string | null) {
+  if (!nextReconnectAt) return null
+  const next = new Date(nextReconnectAt)
+  const deltaMs = next.getTime() - Date.now()
+  if (!Number.isFinite(deltaMs)) return null
+  if (deltaMs <= 0) return "now"
+  const seconds = Math.round(deltaMs / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.round(seconds / 60)
+  return `${minutes}m`
+}
+
+type StreamHealthDetails = {
+  nextReconnectAt?: string | null
+  lastError?: string | null
+}
+
+type PriceStreamerDetails = {
+  stream?: StreamHealthDetails | null
+}
+
 function StatusIcon({ status }: { status: PipelineHealthStatus["status"] }) {
   switch (status) {
     case "ok":
@@ -75,13 +96,29 @@ export function PipelineHealthBadge({ showLabel = false, size = "sm" }: Pipeline
         {Object.entries(health.services).map(([name, service]) => {
           const serviceLabel = t(`pipeline.service.${name}`)
           const statusLabel = statusLabels[service.status] ?? service.status
+          const details = service.details as PriceStreamerDetails | undefined
+          const streamDetails = name === "price_streamer" ? details?.stream || null : null
+          const reconnectIn = formatReconnectTime(streamDetails?.nextReconnectAt)
+          const lastError = streamDetails?.lastError || null
           return (
-            <div key={name} className="flex items-center justify-between gap-4">
-              <span className="capitalize">{serviceLabel}</span>
-              <span className={getStatusBgColor(service.status).split(" ")[1]}>
-                {statusLabel}{" "}
-                {service.ageMs !== null && `(${formatAge(service.ageMs, ageLabels)})`}
-              </span>
+            <div key={name} className="space-y-1">
+              <div className="flex items-center justify-between gap-4">
+                <span className="capitalize">{serviceLabel}</span>
+                <span className={getStatusBgColor(service.status).split(" ")[1]}>
+                  {statusLabel}{" "}
+                  {service.ageMs !== null && `(${formatAge(service.ageMs, ageLabels)})`}
+                </span>
+              </div>
+              {name === "price_streamer" && (reconnectIn || lastError) && (
+                <div className="flex flex-col gap-0.5 text-xs text-muted-foreground pl-2">
+                  {reconnectIn && (
+                    <span>{t("pipeline.details.reconnectIn")}: {reconnectIn}</span>
+                  )}
+                  {lastError && (
+                    <span>{t("pipeline.details.lastError")}: {String(lastError)}</span>
+                  )}
+                </div>
+              )}
             </div>
           )
         })}

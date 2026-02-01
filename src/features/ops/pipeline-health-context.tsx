@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, type ReactNode } from "react"
 import { usePipelineHealth } from "@/features/ops/use-pipeline-health"
 
@@ -12,5 +13,6 @@ export function PipelineHealthProvider({ children }: { children: ReactNode }) {
 
 export function usePipelineHealthContext() {
   const ctx = useContext(PipelineHealthContext)
-  return ctx ?? usePipelineHealth()
+  const fallback = usePipelineHealth()
+  return ctx ?? fallback
 }

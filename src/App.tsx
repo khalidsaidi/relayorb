@@ -12,6 +12,7 @@ import OrbRobotPage from "@/pages/OrbRobotPage"
 import { RequireAuth } from "@/features/auth/RequireAuth"
 import { AppShell } from "@/components/layout/AppShell"
 import { PipelineHealthProvider } from "@/features/ops/pipeline-health-context"
+import { MarketDataProvider } from "@/features/market/market-data-context"
 import { Toaster } from "@/components/ui/sonner"
 
 export default function App() {
@@ -24,7 +25,9 @@ export default function App() {
           <Route
             element={
               <PipelineHealthProvider>
-                <AppShell />
+                <MarketDataProvider>
+                  <AppShell />
+                </MarketDataProvider>
               </PipelineHealthProvider>
             }
           >

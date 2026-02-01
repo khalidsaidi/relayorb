@@ -993,6 +993,7 @@ const zhCN = {
   },
   market: {
     market: "市场",
+    dataStale: "数据可能过期",
     closesIn: "距离收盘还有",
     opensIn: "距离开盘还有",
     regularOpensIn: "常规交易时段开始还有",

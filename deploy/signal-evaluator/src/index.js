@@ -58,6 +58,9 @@ const config = {
   evalMaxSignals: parseInt(process.env.EVAL_MAX_SIGNALS || "120", 10),
   evalPageSize: parseInt(process.env.EVAL_PAGE_SIZE || "200", 10),
   evalOverlapMs: parseInt(process.env.EVAL_OVERLAP_MS || "2000", 10),
+  evalContinuous: process.env.EVAL_CONTINUOUS === "true",
+  evalLoopMs: parseInt(process.env.EVAL_LOOP_MS || "30000", 10),
+  evalMaxCycles: parseInt(process.env.EVAL_MAX_CYCLES || "0", 10),
   aggLookbackDays: parseInt(process.env.EVAL_AGG_LOOKBACK_DAYS || "30", 10),
   aggMaxSignals: parseInt(process.env.EVAL_AGG_MAX_SIGNALS || "600", 10),
   minBotSignals: parseInt(process.env.EVAL_MIN_BOT_SIGNALS || "3", 10),
@@ -949,7 +952,6 @@ async function evaluateSignals(db) {
   const nowMs = getEffectiveNowMs()
   const cutoff = new Date(nowMs - config.evalLookbackHours * 60 * 60 * 1000)
   const minHorizonMinutes = Math.min(...Object.values(HORIZONS))
-  const eligibleBefore = new Date(nowMs - minHorizonMinutes * 60 * 1000)
   const priceSnapshot = await getMarketPriceSnapshot(db)
   const evalState = await loadSignalEvalState(db)
   const overlapMs = Number.isFinite(config.evalOverlapMs) ? Math.max(config.evalOverlapMs, 0) : 0
@@ -966,16 +968,16 @@ async function evaluateSignals(db) {
   const baseQuery = db
     .collectionGroup("signals")
     .where("createdAt", ">=", admin.firestore.Timestamp.fromDate(startAt))
-    .where("createdAt", "<=", admin.firestore.Timestamp.fromDate(eligibleBefore))
     .orderBy("createdAt", "asc")
 
-  const processed = { updated: 0, skipped: 0, scanned: 0 }
+  const processed = { updated: 0, skipped: 0, scanned: 0, pending: 0 }
   const seenStockSymbols = new Set()
   const seenFxPairs = new Set()
   let lastDoc = null
   let lastProcessedAt = evalState.lastEvaluatedAt
   let lastProcessedId = evalState.lastEvaluatedId
 
+  let stopForPending = false
   while (processed.scanned < config.evalMaxSignals) {
     let query = baseQuery.limit(pageSize)
     if (lastDoc) {
@@ -998,8 +1000,8 @@ async function evaluateSignals(db) {
         processed.skipped += 1
         continue
       }
+      const createdMs = createdAt.getTime()
       if (lastProcessedAt) {
-        const createdMs = createdAt.getTime()
         const lastMs = lastProcessedAt.getTime()
         if (createdMs < lastMs) {
           processed.skipped += 1
@@ -1010,8 +1012,6 @@ async function evaluateSignals(db) {
           continue
         }
       }
-      lastProcessedAt = createdAt
-      lastProcessedId = doc.id
       const referenceCapturedAt = parseTimestamp(data?.data?.referenceCapturedAt)
       const referenceFresh =
         referenceCapturedAt &&
@@ -1022,6 +1022,16 @@ async function evaluateSignals(db) {
       if (!classification) {
         processed.skipped += 1
         continue
+      }
+      const readinessCheck = adjustEvaluationTime(
+        classification.assetClass,
+        createdMs,
+        minHorizonMinutes
+      )
+      if (nowMs < readinessCheck.adjustedHorizonTime.getTime()) {
+        processed.pending += 1
+        stopForPending = true
+        break
       }
 
       if (classification.assetClass === "stock") {
@@ -1046,7 +1056,7 @@ async function evaluateSignals(db) {
       for (const [horizonKey, minutes] of Object.entries(HORIZONS)) {
         if (existingHorizons[horizonKey]?.returnPct !== undefined) continue
 
-        const startMs = createdAt.getTime()
+        const startMs = createdMs
 
         // Adjust evaluation times for market hours
         const adjustment = adjustEvaluationTime(classification.assetClass, startMs, minutes)
@@ -1197,8 +1207,11 @@ async function evaluateSignals(db) {
       )
 
       processed.updated += 1
+      lastProcessedAt = createdAt
+      lastProcessedId = doc.id
     }
 
+    if (stopForPending) break
     lastDoc = snap.docs[snap.docs.length - 1]
     if (snap.size < pageSize) break
   }
@@ -1223,6 +1236,7 @@ async function evaluateSignals(db) {
         updated: processed.updated,
         skipped: processed.skipped,
         signalsScanned: processed.scanned,
+        pending: processed.pending,
       },
       inputs: {
         firestoreDocs: ["bots/*/signals"],
@@ -1627,7 +1641,7 @@ async function writeHealthStatus(db, status, errorMessage) {
   }
 }
 
-async function run() {
+async function runOnce() {
   const db = initAdmin()
   const replayControls = await loadReplayControls(db)
   applyReplayControls(replayControls)
@@ -1652,7 +1666,33 @@ async function run() {
   }
 }
 
-run().catch((err) => {
+async function runLoop() {
+  let cycles = 0
+  while (true) {
+    const startedAt = Date.now()
+    try {
+      await runOnce()
+    } catch (err) {
+      console.error("Signal evaluator failed", err)
+      const db = initAdmin()
+      await writeHealthStatus(db, "error", err?.message || "Signal evaluator failed")
+    }
+    cycles += 1
+    if (Number.isFinite(config.evalMaxCycles) && config.evalMaxCycles > 0 && cycles >= config.evalMaxCycles) {
+      break
+    }
+    const loopDelay = Math.max(
+      5000,
+      Number.isFinite(config.evalLoopMs) ? config.evalLoopMs : 30000
+    )
+    const elapsed = Date.now() - startedAt
+    const sleepMs = Math.max(1000, loopDelay - elapsed)
+    await new Promise((resolve) => setTimeout(resolve, sleepMs))
+  }
+}
+
+const runner = config.evalContinuous ? runLoop : runOnce
+runner().catch((err) => {
   console.error("Signal evaluator failed", err)
   const db = initAdmin()
   writeHealthStatus(db, "error", err?.message || "Signal evaluator failed").finally(() => {

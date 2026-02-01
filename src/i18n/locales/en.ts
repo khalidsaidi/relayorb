@@ -996,6 +996,7 @@ const en = {
   },
   market: {
     market: "Market",
+    dataStale: "Data stale",
     closesIn: "Closes in ",
     opensIn: "Opens in ",
     regularOpensIn: "Regular session opens in ",

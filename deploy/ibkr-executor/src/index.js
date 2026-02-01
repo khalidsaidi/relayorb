@@ -349,6 +349,21 @@ function parseNumber(value) {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
+const CONTRACT_INVALID_CODES = new Set([200, 201, 321, 354])
+
+function isContractInvalidError(code, message) {
+  if (Number.isFinite(code) && CONTRACT_INVALID_CODES.has(Number(code))) return true
+  const text = String(message || "").toLowerCase()
+  if (!text) return false
+  return (
+    text.includes("no security definition") ||
+    text.includes("unknown contract") ||
+    text.includes("contract not found") ||
+    text.includes("invalid contract") ||
+    text.includes("security definition not found")
+  )
+}
+
 function isContractCacheStale(cachedAtMs) {
   if (!Number.isFinite(cachedAtMs) || cachedAtMs <= 0) return false
   if (!Number.isFinite(config.contractCacheTtlMs) || config.contractCacheTtlMs <= 0) {
@@ -374,6 +389,28 @@ function getCachedContract(cacheKey, requireMinTick) {
 function setCachedContract(cacheKey, contract) {
   if (!cacheKey || !contract) return
   state.contractCache.set(cacheKey, { contract, cachedAtMs: Date.now() })
+}
+
+async function evictContractCache(cacheKey, reason) {
+  if (!cacheKey) return
+  state.contractCache.delete(cacheKey)
+  try {
+    const docId = toSafeDocId(cacheKey)
+    await db.doc(`brokerInstruments/${docId}`).delete()
+  } catch (err) {
+    console.warn(`Failed to evict brokerInstruments cache (${cacheKey}): ${err.message}`)
+    try {
+      await db.doc(`brokerInstruments/${toSafeDocId(cacheKey)}`).set(
+        {
+          invalidatedAt: FieldValue.serverTimestamp(),
+          invalidatedReason: reason || "contract_invalid",
+        },
+        { merge: true }
+      )
+    } catch (_) {
+      // ignore
+    }
+  }
 }
 
 async function loadRequestMeta(requestId) {
@@ -656,6 +693,22 @@ function connectToIb(mode = "paper") {
       // "Missing parent order" - need to add delay
       console.warn("IBKR: Missing parent order error - may need longer delay")
     }
+
+    const pending = state.pendingContracts.get(reqId)
+    if (pending && isContractInvalidError(code, err?.message || err)) {
+      console.warn("IBKR: Contract invalid, evicting cache", {
+        symbol: pending.symbol,
+        cacheKey: pending.cacheKey,
+        code,
+      })
+      evictContractCache(pending.cacheKey, `ibkr_error_${code || "unknown"}`).catch(() => {})
+      try {
+        pending.reject(new Error(`Contract invalid for ${pending.symbol}`))
+      } catch (_) {
+        // ignore
+      }
+      state.pendingContracts.delete(reqId)
+    }
   })
 
   // Next valid order ID
@@ -683,6 +736,7 @@ function connectToIb(mode = "paper") {
     const pending = state.pendingContracts.get(reqId)
     if (pending && !getCachedContract(pending.cacheKey)) {
       pending.reject(new Error(`Contract not found for ${pending.symbol}`))
+      evictContractCache(pending.cacheKey, "contract_not_found").catch(() => {})
       state.pendingContracts.delete(reqId)
     }
   })
@@ -1816,10 +1870,31 @@ async function submitOrder(request) {
 // Cancel Requests
 // ============================================================================
 
+async function writeCancelUpdate(orderDocId, brokerPatch, requestPatch) {
+  const brokerOrderRef = db.doc(`brokerOrders/${orderDocId}`)
+  const requestRef = db.doc(`executionRequests/${orderDocId}`)
+  const batch = db.batch()
+  batch.set(brokerOrderRef, brokerPatch, { merge: true })
+  if (requestPatch) {
+    batch.set(requestRef, requestPatch, { merge: true })
+  } else {
+    batch.set(
+      requestRef,
+      {
+        updatedAt: FieldValue.serverTimestamp(),
+        cancelRequestedAt: brokerPatch.cancelRequestedAt || null,
+        cancelSubmittedAt: brokerPatch.cancelSubmittedAt || null,
+        cancelError: brokerPatch.cancelError || null,
+      },
+      { merge: true }
+    )
+  }
+  await batch.commit()
+}
+
 async function processCancelRequest(orderDocId, orderData) {
   if (state.cancelInFlight.has(orderDocId)) return
   state.cancelInFlight.add(orderDocId)
-  const brokerOrderRef = db.doc(`brokerOrders/${orderDocId}`)
 
   try {
     const requestedAtMs = readTimestampMillis(orderData.cancelRequestedAt)
@@ -1831,40 +1906,49 @@ async function processCancelRequest(orderDocId, orderData) {
       (orderData.status && EXECUTION_TERMINAL_STATUSES.has(orderData.status)) ||
       (orderData.ibStatus && IB_TERMINAL_STATUSES.has(orderData.ibStatus))
     if (terminalStatus) {
-      await brokerOrderRef.set(
+      await writeCancelUpdate(
+        orderDocId,
         {
           cancelRequested: false,
           cancelSubmittedAt: FieldValue.serverTimestamp(),
           cancelError: "already_terminal",
           lastUpdateAt: FieldValue.serverTimestamp(),
         },
-        { merge: true }
+        {
+          updatedAt: FieldValue.serverTimestamp(),
+        }
       )
       return
     }
 
     const orderIds = Array.isArray(orderData.orderIds) ? orderData.orderIds : []
     if (!state.ib || !state.ibConnected) {
-      await brokerOrderRef.set(
+      await writeCancelUpdate(
+        orderDocId,
         {
           cancelRequested: false,
           cancelSubmittedAt: FieldValue.serverTimestamp(),
           cancelError: "ib_not_connected",
           lastUpdateAt: FieldValue.serverTimestamp(),
         },
-        { merge: true }
+        {
+          updatedAt: FieldValue.serverTimestamp(),
+        }
       )
       return
     }
     if (!orderIds.length && !orderData.parentOrderId) {
-      await brokerOrderRef.set(
+      await writeCancelUpdate(
+        orderDocId,
         {
           cancelRequested: false,
           cancelSubmittedAt: FieldValue.serverTimestamp(),
           cancelError: "missing_order_ids",
           lastUpdateAt: FieldValue.serverTimestamp(),
         },
-        { merge: true }
+        {
+          updatedAt: FieldValue.serverTimestamp(),
+        }
       )
       return
     }
@@ -1885,12 +1969,15 @@ async function processCancelRequest(orderDocId, orderData) {
     }
     cancelIds = Array.from(new Set(cancelIds))
 
-    await brokerOrderRef.set(
+    await writeCancelUpdate(
+      orderDocId,
       {
         cancelInProgressAt: FieldValue.serverTimestamp(),
         lastUpdateAt: FieldValue.serverTimestamp(),
       },
-      { merge: true }
+      {
+        updatedAt: FieldValue.serverTimestamp(),
+      }
     )
 
     const errors = []
@@ -1911,17 +1998,29 @@ async function processCancelRequest(orderDocId, orderData) {
       update.cancelError = errors.join("; ")
     }
     try {
-      await brokerOrderRef.set(update, { merge: true })
+      await writeCancelUpdate(
+        orderDocId,
+        update,
+        {
+          updatedAt: FieldValue.serverTimestamp(),
+          cancelError: update.cancelError || null,
+          cancelSubmittedAt: update.cancelSubmittedAt,
+        }
+      )
     } catch (err) {
       console.error(`Failed to persist cancel status for ${orderDocId}: ${err.message}`)
-      await brokerOrderRef.set(
+      await writeCancelUpdate(
+        orderDocId,
         {
           cancelRequested: true,
           cancelError: `firestore:${err.message}`,
           cancelInProgressAt: FieldValue.delete(),
           lastUpdateAt: FieldValue.serverTimestamp(),
         },
-        { merge: true }
+        {
+          updatedAt: FieldValue.serverTimestamp(),
+          cancelError: `firestore:${err.message}`,
+        }
       )
     }
   } finally {
@@ -2143,6 +2242,17 @@ function checkRiskLimits(request) {
   return { pass: true }
 }
 
+function checkRequestGuards(request, brokerAccount, tradingControls, replayControls) {
+  if (!tradingControls?.ibkrEnabled) return "ibkr_disabled"
+  if (tradingControls?.killSwitch) return "kill_switch_active"
+  if (!brokerAccount?.enabled) return "account_disabled"
+  const mode = request?.mode || "paper"
+  if (mode === "live" && !brokerAccount?.liveEnabled) return "live_not_enabled"
+  if (mode === "paper" && !brokerAccount?.paperEnabled) return "paper_not_enabled"
+  if (replayControls?.desiredMode === "replay") return "replay_mode_active"
+  return null
+}
+
 // ============================================================================
 // Request Processing
 // ============================================================================
@@ -2213,6 +2323,34 @@ async function processRequest(requestId, requestData) {
     state.stats.rejected++
     return
   }
+
+  // Re-validate guards right before submit to avoid partial toggle/apply races
+  const latestBrokerAccount = await loadBrokerAccount()
+  const latestTradingControls = await loadTradingControls()
+  const latestReplayControls = await loadReplayControls()
+  const guardReason = checkRequestGuards(
+    claimResult.request,
+    latestBrokerAccount,
+    latestTradingControls,
+    latestReplayControls
+  )
+  if (guardReason) {
+    console.log(`Request ${requestId} blocked after claim: ${guardReason}`)
+    await db.doc(`executionRequests/${requestId}`).set(
+      {
+        status: "rejected",
+        statusReason: `guards_changed:${guardReason}`,
+        rejectedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+    state.stats.rejected++
+    return
+  }
+  state.brokerAccount = latestBrokerAccount
+  state.tradingControls = latestTradingControls
+  state.replayControls = latestReplayControls
 
   // Submit order
   try {

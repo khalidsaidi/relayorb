@@ -13,6 +13,7 @@ import {
   getMarketStatusColor,
   type MarketSessionStatus,
 } from "@/features/market/use-market-status"
+import { useMarketDataContext } from "@/features/market/market-data-context"
 
 function StatusIcon({ status }: { status: MarketSessionStatus }) {
   switch (status) {
@@ -43,12 +44,16 @@ export function MarketStatusBadge({
   const status = marketStatus[assetClass]
   const colorClass = getMarketStatusColor(status.status)
   const { t } = useTranslation()
+  const { prices } = useMarketDataContext()
   const assetLabel = t(`market.asset.${assetClass}`)
   const timeLabels = {
     now: t("common.now"),
     hourShort: t("common.hourShort"),
     minuteShort: t("common.minuteShort"),
   }
+  const dataAgeMs = prices.liveAgeMs ?? prices.snapshotAgeMs
+  const showStale = prices.stale && dataAgeMs !== null
+  const staleMinutes = dataAgeMs !== null ? Math.round(dataAgeMs / 60000) : null
 
   const tooltipContent = (
     <div className="space-y-1 text-xs">
@@ -56,6 +61,11 @@ export function MarketStatusBadge({
         {assetLabel} {t("market.market")}
       </div>
       <div className="text-muted-foreground">{status.label}</div>
+      {showStale && (
+        <div className="text-amber-600">
+          {t("market.dataStale")} {staleMinutes !== null ? `(${staleMinutes}m)` : ""}
+        </div>
+      )}
       {status.timeUntilChange && (
         <div className="text-muted-foreground">
           {status.status === "open" ? t("market.closesIn") : t("market.opensIn")}

@@ -659,6 +659,9 @@ export type ExecutionRequestDoc = {
   submittedAt?: FirestoreTimestamp
   filledAt?: FirestoreTimestamp
   cancelledAt?: FirestoreTimestamp
+  cancelRequestedAt?: FirestoreTimestamp
+  cancelSubmittedAt?: FirestoreTimestamp
+  cancelError?: string
   rejectedAt?: FirestoreTimestamp
   source?: string
   strategy?: string

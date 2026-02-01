@@ -3096,6 +3096,11 @@ async function start() {
         requestUrl.searchParams.get("brokerAccountKey") ||
         requestUrl.searchParams.get("broker_account_key")
       const targets = targetAccount ? [targetAccount] : null
+      if (targetAccount && !controlsByAccount.has(targetAccount)) {
+        res.writeHead(400, { "Content-Type": "application/json" })
+        res.end(JSON.stringify({ ok: false, error: "Unknown brokerAccountKey" }))
+        return
+      }
       recordRunRequested(targets).catch((err) => {
         console.error("ORB run record failed:", err.message)
       })

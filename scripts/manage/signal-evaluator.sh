@@ -71,6 +71,9 @@ build_env_vars() {
     audience="$url"
   fi
   envs="${envs}|MARKET_DATA_GATEWAY_AUDIENCE=${audience}"
+  envs="${envs}|EVAL_CONTINUOUS=${EVAL_CONTINUOUS:-true}"
+  envs="${envs}|EVAL_LOOP_MS=${EVAL_LOOP_MS:-30000}"
+  envs="${envs}|EVAL_MAX_CYCLES=${EVAL_MAX_CYCLES:-1}"
   echo "$envs"
 }
 
