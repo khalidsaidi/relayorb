@@ -947,9 +947,9 @@ function normalizeSnapshotStock(item, exchangeHint = null) {
   const change24h = parsePercent(
     item.change24h ?? item.changesPercentage ?? item.changePercentage ?? item.changePercent ?? item.change
   )
-  const change1m = parseNumber(item.change1m)
-  const change5m = parseNumber(item.change5m)
-  const change15m = parseNumber(item.change15m)
+  const change1m = parsePercent(item.change1m)
+  const change5m = parsePercent(item.change5m)
+  const change15m = parsePercent(item.change15m)
   const volatility1m = parseNumber(item.volatility1m)
   const volatility5m = parseNumber(item.volatility5m)
   const spreadPct =
@@ -998,9 +998,9 @@ function normalizeSnapshotForex(item) {
   const change24h = parsePercent(
     item.change24h ?? item.changesPercentage ?? item.changePercentage ?? item.changePercent ?? item.change
   )
-  const change1m = parseNumber(item.change1m)
-  const change5m = parseNumber(item.change5m)
-  const change15m = parseNumber(item.change15m)
+  const change1m = parsePercent(item.change1m)
+  const change5m = parsePercent(item.change5m)
+  const change15m = parsePercent(item.change15m)
   const volatility1m = parseNumber(item.volatility1m)
   const volatility5m = parseNumber(item.volatility5m)
   const spreadPct =
