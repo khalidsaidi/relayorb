@@ -56,6 +56,8 @@ const config = {
   redisLatestMaxAgeMs: parseInt(process.env.REDIS_LATEST_MAX_AGE_MS || "120000", 10),
   evalLookbackHours: parseInt(process.env.EVAL_LOOKBACK_HOURS || "168", 10),
   evalMaxSignals: parseInt(process.env.EVAL_MAX_SIGNALS || "120", 10),
+  evalPageSize: parseInt(process.env.EVAL_PAGE_SIZE || "200", 10),
+  evalOverlapMs: parseInt(process.env.EVAL_OVERLAP_MS || "2000", 10),
   aggLookbackDays: parseInt(process.env.EVAL_AGG_LOOKBACK_DAYS || "30", 10),
   aggMaxSignals: parseInt(process.env.EVAL_AGG_MAX_SIGNALS || "600", 10),
   minBotSignals: parseInt(process.env.EVAL_MIN_BOT_SIGNALS || "3", 10),
@@ -76,6 +78,7 @@ const config = {
 }
 
 const SIGNAL_HEALTH_DOC = "pipeline/signal_evaluator"
+const SIGNAL_EVAL_STATE_DOC = "signal_evaluator_state"
 
 const gatewayAuth = new GoogleAuth()
 let gatewayAuthClient = null
@@ -322,6 +325,46 @@ function resolveBotAnalyticsDocPath(botId, docId) {
     return `replay/controls/runs/${replayState.runId}/bots/${botId}/analytics/${docId}`
   }
   return `bots/${botId}/analytics/${docId}`
+}
+
+async function loadSignalEvalState(db) {
+  if (isReplayMode()) {
+    return { lastEvaluatedAt: null, lastEvaluatedId: null }
+  }
+  try {
+    const ref = db.doc(resolveAnalyticsDocPath(SIGNAL_EVAL_STATE_DOC))
+    const snap = await ref.get()
+    if (!snap.exists) {
+      return { lastEvaluatedAt: null, lastEvaluatedId: null }
+    }
+    const data = snap.data() || {}
+    return {
+      lastEvaluatedAt: parseTimestamp(data.lastEvaluatedAt),
+      lastEvaluatedId: typeof data.lastEvaluatedId === "string" ? data.lastEvaluatedId : null,
+    }
+  } catch (err) {
+    console.error("Signal eval state load failed:", err.message)
+    return { lastEvaluatedAt: null, lastEvaluatedId: null }
+  }
+}
+
+async function saveSignalEvalState(db, state) {
+  if (isReplayMode()) return
+  try {
+    const ref = db.doc(resolveAnalyticsDocPath(SIGNAL_EVAL_STATE_DOC))
+    await ref.set(
+      {
+        lastEvaluatedAt: state.lastEvaluatedAt
+          ? admin.firestore.Timestamp.fromDate(state.lastEvaluatedAt)
+          : null,
+        lastEvaluatedId: state.lastEvaluatedId || null,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+  } catch (err) {
+    console.error("Signal eval state save failed:", err.message)
+  }
 }
 
 async function initRedis() {
@@ -908,229 +951,263 @@ async function evaluateSignals(db) {
   const minHorizonMinutes = Math.min(...Object.values(HORIZONS))
   const eligibleBefore = new Date(nowMs - minHorizonMinutes * 60 * 1000)
   const priceSnapshot = await getMarketPriceSnapshot(db)
-  const snap = await db
+  const evalState = await loadSignalEvalState(db)
+  const overlapMs = Number.isFinite(config.evalOverlapMs) ? Math.max(config.evalOverlapMs, 0) : 0
+  const startAt = evalState.lastEvaluatedAt
+    ? new Date(evalState.lastEvaluatedAt.getTime() - overlapMs)
+    : cutoff
+  const pageSize = Math.max(
+    10,
+    Math.min(
+      Number.isFinite(config.evalPageSize) ? config.evalPageSize : config.evalMaxSignals,
+      config.evalMaxSignals
+    )
+  )
+  const baseQuery = db
     .collectionGroup("signals")
-    .where("createdAt", ">=", admin.firestore.Timestamp.fromDate(cutoff))
+    .where("createdAt", ">=", admin.firestore.Timestamp.fromDate(startAt))
     .where("createdAt", "<=", admin.firestore.Timestamp.fromDate(eligibleBefore))
-    .orderBy("createdAt", "desc")
-    .limit(config.evalMaxSignals)
-    .get()
+    .orderBy("createdAt", "asc")
 
-  const processed = { updated: 0, skipped: 0 }
+  const processed = { updated: 0, skipped: 0, scanned: 0 }
   const seenStockSymbols = new Set()
   const seenFxPairs = new Set()
+  let lastDoc = null
+  let lastProcessedAt = evalState.lastEvaluatedAt
+  let lastProcessedId = evalState.lastEvaluatedId
 
-  for (const doc of snap.docs) {
-    const data = doc.data() || {}
-    const side = typeof data.side === "string" ? data.side.toLowerCase() : null
-    if (!side || !["buy", "sell"].includes(side)) {
-      processed.skipped += 1
-      continue
+  while (processed.scanned < config.evalMaxSignals) {
+    let query = baseQuery.limit(pageSize)
+    if (lastDoc) {
+      query = query.startAfter(lastDoc)
     }
-    const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : null
-    if (!createdAt) {
-      processed.skipped += 1
-      continue
-    }
-    const referenceCapturedAt = parseTimestamp(data?.data?.referenceCapturedAt)
-    const referenceFresh =
-      referenceCapturedAt &&
-      Math.abs(referenceCapturedAt.getTime() - createdAt.getTime()) <= REFERENCE_TOLERANCE_MS
+    const snap = await query.get()
+    if (snap.empty) break
 
-    const extracted = extractSymbolFromSignal(data)
-    const classification = classifySymbol(extracted || "")
-    if (!classification) {
-      processed.skipped += 1
-      continue
-    }
-
-    if (classification.assetClass === "stock") {
-      seenStockSymbols.add(classification.symbol)
-      if (seenStockSymbols.size > config.maxStockSymbols) {
+    for (const doc of snap.docs) {
+      if (processed.scanned >= config.evalMaxSignals) break
+      processed.scanned += 1
+      const data = doc.data() || {}
+      const side = typeof data.side === "string" ? data.side.toLowerCase() : null
+      if (!side || !["buy", "sell"].includes(side)) {
         processed.skipped += 1
         continue
       }
-    }
-    if (classification.assetClass === "forex") {
-      seenFxPairs.add(classification.symbol)
-      if (seenFxPairs.size > config.maxFxPairs) {
+      const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : null
+      if (!createdAt) {
         processed.skipped += 1
         continue
       }
-    }
+      if (lastProcessedAt) {
+        const createdMs = createdAt.getTime()
+        const lastMs = lastProcessedAt.getTime()
+        if (createdMs < lastMs) {
+          processed.skipped += 1
+          continue
+        }
+        if (createdMs === lastMs && lastProcessedId && doc.id <= lastProcessedId) {
+          processed.skipped += 1
+          continue
+        }
+      }
+      lastProcessedAt = createdAt
+      lastProcessedId = doc.id
+      const referenceCapturedAt = parseTimestamp(data?.data?.referenceCapturedAt)
+      const referenceFresh =
+        referenceCapturedAt &&
+        Math.abs(referenceCapturedAt.getTime() - createdAt.getTime()) <= REFERENCE_TOLERANCE_MS
 
-    const existingEval = data.evaluation || {}
-    const existingHorizons = existingEval.horizons || {}
-    const newHorizons = {}
+      const extracted = extractSymbolFromSignal(data)
+      const classification = classifySymbol(extracted || "")
+      if (!classification) {
+        processed.skipped += 1
+        continue
+      }
 
-    for (const [horizonKey, minutes] of Object.entries(HORIZONS)) {
-      if (existingHorizons[horizonKey]?.returnPct !== undefined) continue
+      if (classification.assetClass === "stock") {
+        seenStockSymbols.add(classification.symbol)
+        if (seenStockSymbols.size > config.maxStockSymbols) {
+          processed.skipped += 1
+          continue
+        }
+      }
+      if (classification.assetClass === "forex") {
+        seenFxPairs.add(classification.symbol)
+        if (seenFxPairs.size > config.maxFxPairs) {
+          processed.skipped += 1
+          continue
+        }
+      }
 
-      const horizonMs = minutes * 60 * 1000
-      const startMs = createdAt.getTime()
+      const existingEval = data.evaluation || {}
+      const existingHorizons = existingEval.horizons || {}
+      const newHorizons = {}
 
-      // Adjust evaluation times for market hours
-      const adjustment = adjustEvaluationTime(
-        classification.assetClass,
-        startMs,
-        minutes
-      )
-      const adjustedStartMs = adjustment.adjustedSignalTime.getTime()
-      const adjustedHorizonMs = adjustment.adjustedHorizonTime.getTime()
-      const marketWasOpen = isMarketOpen(classification.assetClass, startMs)
+      for (const [horizonKey, minutes] of Object.entries(HORIZONS)) {
+        if (existingHorizons[horizonKey]?.returnPct !== undefined) continue
 
-      // Check if enough time has passed for the adjusted horizon
-      if (nowMs < adjustedHorizonMs) continue
+        const startMs = createdAt.getTime()
 
-      let priceAtSignal = null
-      let priceAtHorizon = null
-      let source = null
-      let usedReferencePrice = false
-      let usedSnapshotPrice = false
+        // Adjust evaluation times for market hours
+        const adjustment = adjustEvaluationTime(classification.assetClass, startMs, minutes)
+        const adjustedStartMs = adjustment.adjustedSignalTime.getTime()
+        const adjustedHorizonMs = adjustment.adjustedHorizonTime.getTime()
+        const marketWasOpen = isMarketOpen(classification.assetClass, startMs)
 
-      if (classification.assetClass === "crypto") {
-        const first = await getCryptoPrice(classification.symbol, adjustedStartMs, horizonKey)
-        const second = await getCryptoPrice(
-          classification.symbol,
-          adjustedHorizonMs,
-          horizonKey
-        )
-        priceAtSignal = first?.price ?? null
-        priceAtHorizon = second?.price ?? null
-        source = first?.source || second?.source || null
-      } else if (classification.assetClass === "stock") {
-        const useIntraday = horizonKey === "1h"
-        const first = useIntraday
-          ? await getStockIntradayPrice(classification.symbol, adjustedStartMs)
-          : await getStockPrice(classification.symbol, adjustedStartMs)
-        const second = useIntraday
-          ? await getStockIntradayPrice(classification.symbol, adjustedHorizonMs)
-          : await getStockPrice(classification.symbol, adjustedHorizonMs)
-        priceAtSignal = first?.price ?? null
-        priceAtHorizon = second?.price ?? null
-        source = first?.source || second?.source || null
-  } else if (classification.assetClass === "forex") {
-        if (horizonKey === "1h") {
-          const first = await getFxIntradayPrice(classification.symbol, adjustedStartMs)
-          const second = await getFxIntradayPrice(
-            classification.symbol,
-            adjustedHorizonMs
-          )
+        // Check if enough time has passed for the adjusted horizon
+        if (nowMs < adjustedHorizonMs) continue
+
+        let priceAtSignal = null
+        let priceAtHorizon = null
+        let source = null
+        let usedReferencePrice = false
+        let usedSnapshotPrice = false
+
+        if (classification.assetClass === "crypto") {
+          const first = await getCryptoPrice(classification.symbol, adjustedStartMs, horizonKey)
+          const second = await getCryptoPrice(classification.symbol, adjustedHorizonMs, horizonKey)
           priceAtSignal = first?.price ?? null
           priceAtHorizon = second?.price ?? null
           source = first?.source || second?.source || null
-        } else {
-          const marketStart = await getMarketPrice(
-            classification.symbol,
-            "forex",
-            "1day",
-            adjustedStartMs
-          )
-          const marketEnd = await getMarketPrice(
-            classification.symbol,
-            "forex",
-            "1day",
-            adjustedHorizonMs
-          )
-          if (marketStart && marketEnd) {
-            priceAtSignal = marketStart.price ?? null
-            priceAtHorizon = marketEnd.price ?? null
-            source = marketStart.source || marketEnd.source || null
+        } else if (classification.assetClass === "stock") {
+          const useIntraday = horizonKey === "1h"
+          const first = useIntraday
+            ? await getStockIntradayPrice(classification.symbol, adjustedStartMs)
+            : await getStockPrice(classification.symbol, adjustedStartMs)
+          const second = useIntraday
+            ? await getStockIntradayPrice(classification.symbol, adjustedHorizonMs)
+            : await getStockPrice(classification.symbol, adjustedHorizonMs)
+          priceAtSignal = first?.price ?? null
+          priceAtHorizon = second?.price ?? null
+          source = first?.source || second?.source || null
+        } else if (classification.assetClass === "forex") {
+          if (horizonKey === "1h") {
+            const first = await getFxIntradayPrice(classification.symbol, adjustedStartMs)
+            const second = await getFxIntradayPrice(classification.symbol, adjustedHorizonMs)
+            priceAtSignal = first?.price ?? null
+            priceAtHorizon = second?.price ?? null
+            source = first?.source || second?.source || null
+          } else {
+            const marketStart = await getMarketPrice(
+              classification.symbol,
+              "forex",
+              "1day",
+              adjustedStartMs
+            )
+            const marketEnd = await getMarketPrice(
+              classification.symbol,
+              "forex",
+              "1day",
+              adjustedHorizonMs
+            )
+            if (marketStart && marketEnd) {
+              priceAtSignal = marketStart.price ?? null
+              priceAtHorizon = marketEnd.price ?? null
+              source = marketStart.source || marketEnd.source || null
+            }
           }
         }
-      }
 
-      if (!priceAtSignal) {
-        const referencePrice = parseNumber(
-          data?.data?.referencePrice ?? data?.data?.price
-        )
-        if (referencePrice !== null && referenceFresh) {
-          priceAtSignal = referencePrice
-          usedReferencePrice = true
-          source =
-            source ||
-            data?.data?.referenceSource ||
-            data?.data?.priceSource ||
-            "market-intel"
+        if (!priceAtSignal) {
+          const referencePrice = parseNumber(data?.data?.referencePrice ?? data?.data?.price)
+          if (referencePrice !== null && referenceFresh) {
+            priceAtSignal = referencePrice
+            usedReferencePrice = true
+            source =
+              source ||
+              data?.data?.referenceSource ||
+              data?.data?.priceSource ||
+              "market-intel"
+          }
         }
-      }
 
-      if (!priceAtHorizon) {
-        const snapshot = lookupSnapshotPrice(
-          priceSnapshot,
-          classification.assetClass,
-          classification.symbol
-        )
-        const snapshotUpdatedAtMs = priceSnapshot?.updatedAt?.getTime?.() ?? null
-        if (
-          snapshot?.price !== undefined &&
-          snapshotUpdatedAtMs &&
-          snapshotUpdatedAtMs >= adjustedHorizonMs
-        ) {
-          priceAtHorizon = snapshot.price
-          usedSnapshotPrice = true
-          source = source || snapshot.source || "market-intel"
+        if (!priceAtHorizon) {
+          const snapshot = lookupSnapshotPrice(
+            priceSnapshot,
+            classification.assetClass,
+            classification.symbol
+          )
+          const snapshotUpdatedAtMs = priceSnapshot?.updatedAt?.getTime?.() ?? null
+          if (
+            snapshot?.price !== undefined &&
+            snapshotUpdatedAtMs &&
+            snapshotUpdatedAtMs >= adjustedHorizonMs
+          ) {
+            priceAtHorizon = snapshot.price
+            usedSnapshotPrice = true
+            source = source || snapshot.source || "market-intel"
+          }
         }
+
+        if (!priceAtSignal || !priceAtHorizon) continue
+        if (usedReferencePrice && usedSnapshotPrice && priceAtSignal === priceAtHorizon) {
+          continue
+        }
+
+        const delta = priceAtHorizon - priceAtSignal
+        const returnPct = side === "buy"
+          ? (delta / priceAtSignal) * 100
+          : (-delta / priceAtSignal) * 100
+
+        // Build horizon evaluation result
+        const horizonResult = {
+          returnPct: Number(returnPct.toFixed(4)),
+          hit: returnPct > 0,
+          priceAtSignal,
+          priceAtHorizon,
+          source,
+          marketOpenAtSignal: marketWasOpen,
+        }
+
+        // Add adjusted times if market hours adjustment was needed
+        if (adjustment.wasAdjusted) {
+          horizonResult.adjustedSignalTime = admin.firestore.Timestamp.fromDate(
+            adjustment.adjustedSignalTime
+          )
+          horizonResult.adjustedHorizonTime = admin.firestore.Timestamp.fromDate(
+            adjustment.adjustedHorizonTime
+          )
+        }
+
+        newHorizons[horizonKey] = horizonResult
       }
 
-      if (!priceAtSignal || !priceAtHorizon) continue
-      if (usedReferencePrice && usedSnapshotPrice && priceAtSignal === priceAtHorizon) {
+      const resolvedSymbol = classification.symbol
+      const needsSymbolUpdate = resolvedSymbol && data.symbol !== resolvedSymbol
+
+      if (Object.keys(newHorizons).length === 0 && !needsSymbolUpdate) {
+        processed.skipped += 1
         continue
       }
 
-      const delta = priceAtHorizon - priceAtSignal
-      const returnPct = side === "buy"
-        ? (delta / priceAtSignal) * 100
-        : (-delta / priceAtSignal) * 100
-
-      // Build horizon evaluation result
-      const horizonResult = {
-        returnPct: Number(returnPct.toFixed(4)),
-        hit: returnPct > 0,
-        priceAtSignal,
-        priceAtHorizon,
-        source,
-        marketOpenAtSignal: marketWasOpen,
-      }
-
-      // Add adjusted times if market hours adjustment was needed
-      if (adjustment.wasAdjusted) {
-        horizonResult.adjustedSignalTime = admin.firestore.Timestamp.fromDate(
-          adjustment.adjustedSignalTime
-        )
-        horizonResult.adjustedHorizonTime = admin.firestore.Timestamp.fromDate(
-          adjustment.adjustedHorizonTime
-        )
-      }
-
-      newHorizons[horizonKey] = horizonResult
-    }
-
-    const resolvedSymbol = classification.symbol
-    const needsSymbolUpdate = resolvedSymbol && data.symbol !== resolvedSymbol
-
-    if (Object.keys(newHorizons).length === 0 && !needsSymbolUpdate) {
-      processed.skipped += 1
-      continue
-    }
-
-    await doc.ref.set(
-      {
-        symbol: resolvedSymbol || data.symbol || null,
-        evaluation: {
-          assetClass: classification.assetClass,
-          symbol: resolvedSymbol,
-          evaluatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          horizons: {
-            ...existingHorizons,
-            ...newHorizons,
+      await doc.ref.set(
+        {
+          symbol: resolvedSymbol || data.symbol || null,
+          evaluation: {
+            assetClass: classification.assetClass,
+            symbol: resolvedSymbol,
+            evaluatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            horizons: {
+              ...existingHorizons,
+              ...newHorizons,
+            },
           },
         },
-      },
-      { merge: true }
-    )
+        { merge: true }
+      )
 
-    processed.updated += 1
+      processed.updated += 1
+    }
+
+    lastDoc = snap.docs[snap.docs.length - 1]
+    if (snap.size < pageSize) break
+  }
+
+  if (lastProcessedAt) {
+    await saveSignalEvalState(db, {
+      lastEvaluatedAt: lastProcessedAt,
+      lastEvaluatedId: lastProcessedId,
+    })
   }
 
   await publishPipelineEvent(
@@ -1145,7 +1222,7 @@ async function evaluateSignals(db) {
       meta: {
         updated: processed.updated,
         skipped: processed.skipped,
-        signalsScanned: snap.size,
+        signalsScanned: processed.scanned,
       },
       inputs: {
         firestoreDocs: ["bots/*/signals"],

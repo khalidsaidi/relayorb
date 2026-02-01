@@ -86,9 +86,13 @@ function parseNumberInput(value: string): number | null {
     }
   }
 
+  if (cleaned.length > 24) return null
+  if (/^[+-]?$/.test(cleaned)) return null
   if (!/^[+-]?\d*(\.\d*)?$/.test(cleaned)) return null
   const parsed = Number.parseFloat(cleaned)
-  return Number.isFinite(parsed) ? parsed : null
+  if (!Number.isFinite(parsed)) return null
+  if (Math.abs(parsed) > 1e12) return null
+  return parsed
 }
 
 function formatForexSymbol(value: string) {

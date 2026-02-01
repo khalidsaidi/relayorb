@@ -6,13 +6,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import {
-  usePipelineHealth,
-  getStatusLabel,
-  getStatusBgColor,
-  formatAge,
-  type PipelineHealthStatus,
-} from "@/features/ops/use-pipeline-health"
+import { getStatusLabel, getStatusBgColor, formatAge, type PipelineHealthStatus } from "@/features/ops/use-pipeline-health"
+import { usePipelineHealthContext } from "@/features/ops/pipeline-health-context"
 import { useTranslation } from "react-i18next"
 
 function StatusIcon({ status }: { status: PipelineHealthStatus["status"] }) {
@@ -36,7 +31,7 @@ type PipelineHealthBadgeProps = {
 }
 
 export function PipelineHealthBadge({ showLabel = false, size = "sm" }: PipelineHealthBadgeProps) {
-  const { health, loading, error, documentExists } = usePipelineHealth()
+  const { health, loading, error, documentExists } = usePipelineHealthContext()
   const { t } = useTranslation()
   const statusLabels = {
     ok: t("pipeline.status.ok"),

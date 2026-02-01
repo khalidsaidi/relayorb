@@ -1,0 +1,11 @@
+{
+  "preferredReducer": "json",
+  "strictMode": true,
+  "snapshotInterval": 25,
+  "syncContractFromState": true,
+  "invariants": {
+    "singleActiveTask": true,
+    "requireDecisionForTaskSwitch": true,
+    "disallowTodoToDone": true
+  }
+}

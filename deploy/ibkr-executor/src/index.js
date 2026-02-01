@@ -1351,9 +1351,8 @@ async function updateOrderStatus(
     orderUpdate.mktCapPrice = mktCapValue
   }
 
-  const writes = [
-    brokerOrderRef.set(orderUpdate, { merge: true }),
-  ]
+  const batch = db.batch()
+  batch.set(brokerOrderRef, orderUpdate, { merge: true })
 
   if (finalStatus === "filled") {
     state.stats.filled++
@@ -1373,10 +1372,9 @@ async function updateOrderStatus(
       requestUpdate.filledAt = FieldValue.serverTimestamp()
     }
 
-    writes.push(requestRef.update(requestUpdate))
+    batch.set(requestRef, requestUpdate, { merge: true })
   }
-
-  await Promise.all(writes)
+  await batch.commit()
 
   const isTerminal =
     (ibStatus && IB_TERMINAL_STATUSES.has(ibStatus)) ||
@@ -1683,44 +1681,49 @@ async function submitOrder(request) {
   // Pre-write tracking docs before placing order to avoid orphaned live orders
   const requestRef = db.doc(`executionRequests/${request.id}`)
   const brokerOrderRef = db.doc(`brokerOrders/${request.id}`)
-  await Promise.all([
-    requestRef.update({
+  const preBatch = db.batch()
+  preBatch.set(
+    requestRef,
+    {
       status: "submitting",
       submittingAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
-    }),
-    brokerOrderRef.set(
-      {
-        id: request.id,
-        brokerAccountKey: config.brokerAccountKey,
-        ibAccountCode: state.ibAccount || state.brokerAccount?.ibAccountCode,
-        gatewayInstanceId: `${config.brokerAccountKey}:${state.ibMode || mode}`,
-        executionRequestId: request.id,
-        requestedByUid: request.requestedByUid || null,
-        requestSource: request.source || null,
-        requestStrategy: request.strategy || null,
-        symbol: orderSnapshot.symbol,
-        assetKey: orderSnapshot.assetKey,
-        side: orderSnapshot.side,
-        quantity: orderSnapshot.quantity,
-        orderType: orderSnapshot.orderType,
-        timeInForce: orderSnapshot.timeInForce || "DAY",
-        limitPrice: orderSnapshot.limitPrice || null,
-        stopLoss: orderSnapshot.stopLoss || null,
-        takeProfit: orderSnapshot.takeProfit || null,
-        conId: contract.conId,
-        parentOrderId: preparedIds.parentOrderId,
-        tpOrderId: preparedIds.tpOrderId || null,
-        slOrderId: preparedIds.slOrderId || null,
-        orderIds: preparedOrderIds,
-        status: "submitting",
-        source: "request",
-        submittingAt: FieldValue.serverTimestamp(),
-        createdAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    ),
-  ])
+    },
+    { merge: true }
+  )
+  preBatch.set(
+    brokerOrderRef,
+    {
+      id: request.id,
+      brokerAccountKey: config.brokerAccountKey,
+      ibAccountCode: state.ibAccount || state.brokerAccount?.ibAccountCode,
+      gatewayInstanceId: `${config.brokerAccountKey}:${state.ibMode || mode}`,
+      executionRequestId: request.id,
+      requestedByUid: request.requestedByUid || null,
+      requestSource: request.source || null,
+      requestStrategy: request.strategy || null,
+      symbol: orderSnapshot.symbol,
+      assetKey: orderSnapshot.assetKey,
+      side: orderSnapshot.side,
+      quantity: orderSnapshot.quantity,
+      orderType: orderSnapshot.orderType,
+      timeInForce: orderSnapshot.timeInForce || "DAY",
+      limitPrice: orderSnapshot.limitPrice || null,
+      stopLoss: orderSnapshot.stopLoss || null,
+      takeProfit: orderSnapshot.takeProfit || null,
+      conId: contract.conId,
+      parentOrderId: preparedIds.parentOrderId,
+      tpOrderId: preparedIds.tpOrderId || null,
+      slOrderId: preparedIds.slOrderId || null,
+      orderIds: preparedOrderIds,
+      status: "submitting",
+      source: "request",
+      submittingAt: FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  )
+  await preBatch.commit()
 
   let orderResult
   if (isBracket) {
@@ -1757,40 +1760,50 @@ async function submitOrder(request) {
 
   // Update Firestore
   try {
-    await requestRef.update({
-      status: "submitted",
-      submittedAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-    })
+    const finalBatch = db.batch()
+    finalBatch.set(
+      requestRef,
+      {
+        status: "submitted",
+        submittedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
 
-    await brokerOrderRef.set({
-      id: request.id,
-      brokerAccountKey: config.brokerAccountKey,
-      ibAccountCode: state.ibAccount || state.brokerAccount?.ibAccountCode,
-      gatewayInstanceId: `${config.brokerAccountKey}:${state.ibMode || mode}`,
-      executionRequestId: request.id,
-      requestedByUid: request.requestedByUid || null,
-      requestSource: request.source || null,
-      requestStrategy: request.strategy || null,
-      symbol: orderSnapshot.symbol,
-      assetKey: orderSnapshot.assetKey,
-      side: orderSnapshot.side,
-      quantity: orderSnapshot.quantity,
-      orderType: orderSnapshot.orderType,
-      timeInForce: orderSnapshot.timeInForce || "DAY",
-      limitPrice: orderSnapshot.limitPrice || null,
-      stopLoss: orderSnapshot.stopLoss || null,
-      takeProfit: orderSnapshot.takeProfit || null,
-      conId: contract.conId,
-      parentOrderId: orderResult.parentOrderId,
-      tpOrderId: orderResult.tpOrderId || null,
-      slOrderId: orderResult.slOrderId || null,
-      orderIds: orderResult.orderIds,
-      status: "submitted",
-      source: "request",
-      submittedAt: FieldValue.serverTimestamp(),
-      createdAt: FieldValue.serverTimestamp(),
-    })
+    finalBatch.set(
+      brokerOrderRef,
+      {
+        id: request.id,
+        brokerAccountKey: config.brokerAccountKey,
+        ibAccountCode: state.ibAccount || state.brokerAccount?.ibAccountCode,
+        gatewayInstanceId: `${config.brokerAccountKey}:${state.ibMode || mode}`,
+        executionRequestId: request.id,
+        requestedByUid: request.requestedByUid || null,
+        requestSource: request.source || null,
+        requestStrategy: request.strategy || null,
+        symbol: orderSnapshot.symbol,
+        assetKey: orderSnapshot.assetKey,
+        side: orderSnapshot.side,
+        quantity: orderSnapshot.quantity,
+        orderType: orderSnapshot.orderType,
+        timeInForce: orderSnapshot.timeInForce || "DAY",
+        limitPrice: orderSnapshot.limitPrice || null,
+        stopLoss: orderSnapshot.stopLoss || null,
+        takeProfit: orderSnapshot.takeProfit || null,
+        conId: contract.conId,
+        parentOrderId: orderResult.parentOrderId,
+        tpOrderId: orderResult.tpOrderId || null,
+        slOrderId: orderResult.slOrderId || null,
+        orderIds: orderResult.orderIds,
+        status: "submitted",
+        source: "request",
+        submittedAt: FieldValue.serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+    await finalBatch.commit()
   } catch (err) {
     state.stats.errors += 1
     console.error(`Failed to finalize order ${request.id}: ${err.message}`)
@@ -2047,6 +2060,42 @@ async function claimRequest(requestId) {
 // Risk Checks
 // ============================================================================
 
+function validateExecutionRequest(request) {
+  if (!request || typeof request !== "object") {
+    return { valid: false, reason: "missing_request" }
+  }
+  const snapshot = request.orderSnapshot || {}
+  const symbol = typeof snapshot.symbol === "string" ? snapshot.symbol.trim() : ""
+  if (!symbol) {
+    return { valid: false, reason: "symbol_missing" }
+  }
+  const side = typeof snapshot.side === "string" ? snapshot.side.toLowerCase() : ""
+  if (!["buy", "sell"].includes(side)) {
+    return { valid: false, reason: "invalid_side" }
+  }
+  const quantity = parseNumber(snapshot.quantity)
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    return { valid: false, reason: "invalid_quantity" }
+  }
+  const orderType = typeof snapshot.orderType === "string" ? snapshot.orderType.toLowerCase() : ""
+  if (!["limit", "market"].includes(orderType)) {
+    return { valid: false, reason: "invalid_order_type" }
+  }
+  if (orderType === "limit") {
+    const limitPrice = parseNumber(snapshot.limitPrice)
+    if (!Number.isFinite(limitPrice) || limitPrice <= 0) {
+      return { valid: false, reason: "limit_price_missing" }
+    }
+  }
+  if (snapshot.assetClass) {
+    const assetClass = String(snapshot.assetClass).toLowerCase()
+    if (!["stock", "forex", "crypto"].includes(assetClass)) {
+      return { valid: false, reason: "invalid_asset_class" }
+    }
+  }
+  return { valid: true }
+}
+
 function checkRiskLimits(request) {
   const caps = state.tradingControls?.caps || {}
   const snapshot = request.orderSnapshot || {}
@@ -2133,6 +2182,23 @@ async function processRequest(requestId, requestData) {
     return
   }
 
+  const validation = validateExecutionRequest(claimResult.request)
+  if (!validation.valid) {
+    console.log(`Validation failed for ${requestId}: ${validation.reason}`)
+    const requestRef = db.doc(`executionRequests/${requestId}`)
+    await requestRef.set(
+      {
+        status: "rejected",
+        statusReason: validation.reason,
+        rejectedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+    state.stats.rejected++
+    return
+  }
+
   // Risk checks
   const riskCheck = checkRiskLimits(claimResult.request)
   if (!riskCheck.pass) {
@@ -2161,21 +2227,26 @@ async function processRequest(requestId, requestData) {
     console.error(`Order submission failed for ${requestId}:`, err.message)
     const requestRef = db.doc(`executionRequests/${requestId}`)
     const brokerOrderRef = db.doc(`brokerOrders/${requestId}`)
-    await Promise.all([
-      requestRef.update({
+    const errorBatch = db.batch()
+    errorBatch.set(
+      requestRef,
+      {
         status: "error",
         statusReason: err.message,
         updatedAt: FieldValue.serverTimestamp(),
-      }),
-      brokerOrderRef.set(
-        {
-          status: "error",
-          statusReason: err.message,
-          lastUpdateAt: FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      ),
-    ])
+      },
+      { merge: true }
+    )
+    errorBatch.set(
+      brokerOrderRef,
+      {
+        status: "error",
+        statusReason: err.message,
+        lastUpdateAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+    await errorBatch.commit()
     state.stats.errors++
   }
 }

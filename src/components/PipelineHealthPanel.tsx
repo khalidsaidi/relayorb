@@ -17,13 +17,13 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
-  usePipelineHealth,
   getStatusLabel,
   getStatusBgColor,
   formatAge,
   type ServiceHealth,
   type PipelineHealthStatus,
 } from "@/features/ops/use-pipeline-health"
+import { usePipelineHealthContext } from "@/features/ops/pipeline-health-context"
 import { useTranslation } from "react-i18next"
 
 function StatusIcon({ status, size = "md" }: { status: PipelineHealthStatus["status"]; size?: "sm" | "md" | "lg" }) {
@@ -70,6 +70,35 @@ function ServiceCard({ name, health }: { name: string; health: ServiceHealth }) 
     orbDetails && typeof orbDetails.enabledCount === "number" ? (orbDetails.enabledCount as number) : null
   const orbGatewayState =
     orbGateway && typeof orbGateway.circuitState === "string" ? (orbGateway.circuitState as string) : null
+  const priceDetails =
+    name === "price_streamer" ? (health.details as Record<string, unknown> | undefined) : undefined
+  const streamDetails =
+    priceDetails && typeof priceDetails.stream === "object"
+      ? (priceDetails.stream as Record<string, unknown>)
+      : undefined
+  const priceAgeMs =
+    priceDetails && typeof priceDetails.priceAgeMs === "number"
+      ? (priceDetails.priceAgeMs as number)
+      : null
+  const streamConnected =
+    streamDetails && typeof streamDetails.connected === "boolean"
+      ? (streamDetails.connected as boolean)
+      : null
+  const streamProvider =
+    streamDetails && typeof streamDetails.provider === "string"
+      ? (streamDetails.provider as string)
+      : null
+  const streamLastError =
+    streamDetails && typeof streamDetails.lastError === "string"
+      ? (streamDetails.lastError as string)
+      : null
+  const nextReconnectAt =
+    streamDetails && typeof streamDetails.nextReconnectAt === "string"
+      ? (streamDetails.nextReconnectAt as string)
+      : null
+  const reconnectAtMs = nextReconnectAt ? new Date(nextReconnectAt).getTime() : null
+  const reconnectInMs =
+    reconnectAtMs && Number.isFinite(reconnectAtMs) ? reconnectAtMs - Date.now() : null
   const statusLabels = {
     ok: t("pipeline.status.ok"),
     degraded: t("pipeline.status.degraded"),
@@ -83,6 +112,13 @@ function ServiceCard({ name, health }: { name: string; health: ServiceHealth }) 
     secondsAgo: t("common.secondsAgo"),
     minutesAgo: t("common.minutesAgo"),
     hoursAgo: t("common.hoursAgo"),
+  }
+  const countdownLabels = {
+    never: t("common.na"),
+    justNow: t("common.justNow"),
+    secondsAgo: "s",
+    minutesAgo: "m",
+    hoursAgo: "h",
   }
   const displayName = t(`pipeline.service.${name}`)
   const statusLabel = statusLabels[health.status] ?? health.status
@@ -125,6 +161,36 @@ function ServiceCard({ name, health }: { name: string; health: ServiceHealth }) 
             )}
           </div>
         )}
+        {name === "price_streamer" && (
+          <div className="mt-1 text-xs text-muted-foreground flex flex-wrap gap-x-3 gap-y-1">
+            {priceAgeMs !== null && (
+              <span>
+                {t("pipeline.details.priceAge")}: {formatAge(priceAgeMs, ageLabels)}
+              </span>
+            )}
+            {streamProvider && (
+              <span>
+                {t("pipeline.details.provider")}: {streamProvider}
+              </span>
+            )}
+            {streamConnected !== null && (
+              <span>
+                {t("pipeline.details.stream")}:{" "}
+                {streamConnected ? t("pipeline.stream.connected") : t("pipeline.stream.disconnected")}
+              </span>
+            )}
+            {reconnectInMs !== null && reconnectInMs > 0 && (
+              <span>
+                {t("pipeline.details.reconnectIn")}: {formatAge(reconnectInMs, countdownLabels)}
+              </span>
+            )}
+            {streamLastError && (
+              <span className="text-rose-600">
+                {t("pipeline.details.lastError")}: {streamLastError}
+              </span>
+            )}
+          </div>
+        )}
         {health.isStale && health.status !== "unknown" && (
           <div className="mt-1 text-xs text-amber-600 flex items-center gap-1">
             <AlertCircle className="h-3 w-3" />
@@ -142,7 +208,7 @@ type PipelineHealthPanelProps = {
 }
 
 export function PipelineHealthPanel({ defaultExpanded = true, showTitle = true }: PipelineHealthPanelProps) {
-  const { health, loading, error, documentExists } = usePipelineHealth()
+  const { health, loading, error, documentExists } = usePipelineHealthContext()
   const [isOpen, setIsOpen] = useState(defaultExpanded)
   const { t } = useTranslation()
   const statusLabels = {

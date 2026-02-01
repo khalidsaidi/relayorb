@@ -891,6 +891,7 @@ const state = {
     lastParseErrorSample: null,
     reconnectDelayMs: config.streamReconnectMs,
     reconnectTimer: null,
+    nextReconnectAt: null,
     errors: 0,
     lastError: null,
     failoverCount: 0,
@@ -1692,8 +1693,10 @@ function scheduleStreamReconnect(reason) {
   if (!state.stream || !state.stream.shouldReconnect) return
   if (state.stream.reconnectTimer) return
   const delay = Math.min(state.stream.reconnectDelayMs, config.streamMaxReconnectMs)
+  state.stream.nextReconnectAt = Date.now() + delay
   state.stream.reconnectTimer = setTimeout(() => {
     state.stream.reconnectTimer = null
+    state.stream.nextReconnectAt = null
     state.stream.reconnectDelayMs = Math.min(
       state.stream.reconnectDelayMs * 1.8,
       config.streamMaxReconnectMs
@@ -1710,6 +1713,7 @@ function stopStream(reason = "stop") {
     clearTimeout(state.stream.reconnectTimer)
     state.stream.reconnectTimer = null
   }
+  state.stream.nextReconnectAt = null
   if (state.stream.ws) {
     try {
       state.stream.ws.close()
@@ -1778,6 +1782,7 @@ function startStream() {
   state.stream.lastLoginAt = null
   state.stream.lastLoginStatus = null
   state.stream.reconnectDelayMs = config.streamReconnectMs
+  state.stream.nextReconnectAt = null
 
   const ws = new WebSocket(url)
   state.stream.ws = ws
@@ -1787,6 +1792,7 @@ function startStream() {
     state.stream.connected = true
     state.stream.connecting = false
     state.stream.errors = 0
+    state.stream.nextReconnectAt = null
     state.stream.lastMessageAt = Date.now()
     state.stream.lastHeartbeatAt = Date.now()
     if (provider === "alpaca") {
@@ -2810,6 +2816,10 @@ function buildHealthPayload() {
           ? new Date(state.stream.lastLoginAt).toISOString()
           : null,
         lastLoginStatus: state.stream.lastLoginStatus,
+        reconnectDelayMs: state.stream.reconnectDelayMs,
+        nextReconnectAt: state.stream.nextReconnectAt
+          ? new Date(state.stream.nextReconnectAt).toISOString()
+          : null,
         filterCounts: {
           crypto: state.stream.filter.crypto.size,
           stock: state.stream.filter.stock.size,

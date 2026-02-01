@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "goal": "Relar orb working",
+  "definition_of_done": [
+    "Every single feature in relay orb working as expected."
+  ],
+  "constraints": [
+    "No silent scope expansion: every step must map to explicit success criteria IDs.",
+    "Prefer deterministic enforcement via hooks over prompt-only guidance.",
+    "Never log to stdout inside the MCP server except JSON-RPC."
+  ],
+  "active_task": null,
+  "tasks": [],
+  "queue": [],
+  "open_questions": [],
+  "decisions": [],
+  "pinned_context": [],
+  "_meta": {
+    "lastActionId": null,
+    "lastUpdated": "2026-01-31T23:32:25.069Z",
+    "actionCount": 0,
+    "hash": "a1ecce45c55b9af28f90ec865535b4e20731d234b76550da66da07267bc526b8"
+  }
+}

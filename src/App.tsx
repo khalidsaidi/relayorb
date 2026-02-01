@@ -11,6 +11,7 @@ import IbkrOrderPage from "@/pages/IbkrOrderPage"
 import OrbRobotPage from "@/pages/OrbRobotPage"
 import { RequireAuth } from "@/features/auth/RequireAuth"
 import { AppShell } from "@/components/layout/AppShell"
+import { PipelineHealthProvider } from "@/features/ops/pipeline-health-context"
 import { Toaster } from "@/components/ui/sonner"
 
 export default function App() {
@@ -20,7 +21,13 @@ export default function App() {
         <Route path="/signin" element={<SignInPage />} />
 
         <Route element={<RequireAuth />}>
-          <Route element={<AppShell />}>
+          <Route
+            element={
+              <PipelineHealthProvider>
+                <AppShell />
+              </PipelineHealthProvider>
+            }
+          >
             <Route path="/" element={<TradeNowPage />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/signals" element={<SignalsPage />} />

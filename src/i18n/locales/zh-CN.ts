@@ -1041,6 +1041,15 @@ const zhCN = {
     details: {
       accounts: "账户",
       gateway: "网关",
+      stream: "数据流",
+      provider: "提供方",
+      priceAge: "价格延迟",
+      reconnectIn: "重连倒计时",
+      lastError: "最近错误",
+    },
+    stream: {
+      connected: "已连接",
+      disconnected: "未连接",
     },
     lastSeen: "最近心跳：{{age}}",
     noHeartbeat: "未收到心跳",

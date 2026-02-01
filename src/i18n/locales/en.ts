@@ -1044,6 +1044,15 @@ const en = {
     details: {
       accounts: "Accounts",
       gateway: "Gateway",
+      stream: "Stream",
+      provider: "Provider",
+      priceAge: "Price age",
+      reconnectIn: "Reconnect in",
+      lastError: "Last error",
+    },
+    stream: {
+      connected: "Connected",
+      disconnected: "Disconnected",
     },
     lastSeen: "Last seen: {{age}}",
     noHeartbeat: "No heartbeat received",
