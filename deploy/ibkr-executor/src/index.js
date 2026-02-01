@@ -35,6 +35,8 @@ const config = {
   ibReconnectDelayMs: parseInt(process.env.IB_RECONNECT_DELAY_MS || "5000", 10),
   ibOrderDelayMs: parseInt(process.env.IB_ORDER_DELAY_MS || "500", 10), // Delay between parent and child orders
   ibOpenOrdersRefreshMs: parseInt(process.env.IB_OPEN_ORDERS_REFRESH_MS || "60000", 10),
+  contractCacheTtlMs: parseInt(process.env.IBKR_CONTRACT_CACHE_TTL_MS || "86400000", 10),
+  maxEquityPct: parseFloat(process.env.IBKR_MAX_EQUITY_PCT || "1"),
 }
 
 const EXPECTED_REGION = "us-west1"
@@ -347,6 +349,33 @@ function parseNumber(value) {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
+function isContractCacheStale(cachedAtMs) {
+  if (!Number.isFinite(cachedAtMs) || cachedAtMs <= 0) return false
+  if (!Number.isFinite(config.contractCacheTtlMs) || config.contractCacheTtlMs <= 0) {
+    return false
+  }
+  return Date.now() - cachedAtMs > config.contractCacheTtlMs
+}
+
+function getCachedContract(cacheKey, requireMinTick) {
+  const entry = state.contractCache.get(cacheKey)
+  if (!entry) return null
+  const contract = entry.contract || entry
+  const cachedAtMs = entry.cachedAtMs
+  if (isContractCacheStale(cachedAtMs)) {
+    state.contractCache.delete(cacheKey)
+    return null
+  }
+  const cachedMinTick = parseNumber(contract?.minTick)
+  if (requireMinTick && !Number.isFinite(cachedMinTick)) return null
+  return contract
+}
+
+function setCachedContract(cacheKey, contract) {
+  if (!cacheKey || !contract) return
+  state.contractCache.set(cacheKey, { contract, cachedAtMs: Date.now() })
+}
+
 async function loadRequestMeta(requestId) {
   if (!requestId) return null
   if (state.requestMetaCache.has(requestId)) {
@@ -644,7 +673,7 @@ function connectToIb(mode = "paper") {
       const resolvedContract =
         Number.isFinite(minTick) ? { ...contract, minTick } : contract
       console.log(`IBKR: Contract resolved for ${pending.symbol}: conId=${contract.conId}`)
-      state.contractCache.set(pending.cacheKey, resolvedContract)
+      setCachedContract(pending.cacheKey, resolvedContract)
       pending.resolve(resolvedContract)
       state.pendingContracts.delete(reqId)
     }
@@ -652,7 +681,7 @@ function connectToIb(mode = "paper") {
 
   state.ib.on(EventName.contractDetailsEnd, (reqId) => {
     const pending = state.pendingContracts.get(reqId)
-    if (pending && !state.contractCache.has(pending.cacheKey)) {
+    if (pending && !getCachedContract(pending.cacheKey)) {
       pending.reject(new Error(`Contract not found for ${pending.symbol}`))
       state.pendingContracts.delete(reqId)
     }
@@ -959,12 +988,9 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
   }
 
   // Check cache first
-  const cached = state.contractCache.get(cacheKey)
+  const cached = getCachedContract(cacheKey, requireMinTick)
   if (cached) {
-    const cachedMinTick = parseNumber(cached.minTick)
-    if (!requireMinTick || Number.isFinite(cachedMinTick)) {
-      return cached
-    }
+    return cached
   }
 
   // Check Firestore cache
@@ -973,7 +999,10 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
   const cacheSnap = await cacheRef.get()
   if (cacheSnap.exists) {
     const data = cacheSnap.data()
-    if (data.conId) {
+    const cachedAtMs = data.cachedAt?.toMillis?.() || 0
+    if (isContractCacheStale(cachedAtMs)) {
+      // ignore stale cache entry
+    } else if (data.conId) {
       const minTick = parseNumber(data.minTick)
       const contract = {
         conId: data.conId,
@@ -985,7 +1014,7 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
         minTick: Number.isFinite(minTick) ? minTick : undefined,
       }
       if (!requireMinTick || Number.isFinite(minTick)) {
-        state.contractCache.set(cacheKey, contract)
+        setCachedContract(cacheKey, contract)
         return contract
       }
     }
@@ -1041,7 +1070,7 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
             .catch((err) => {
               console.warn(`Failed to cache contract: ${err.message}`)
             })
-          state.contractCache.set(cacheKey, cachedContract)
+          setCachedContract(cacheKey, cachedContract)
           resolve(cachedContract)
         },
         reject: (err) => {
@@ -1103,7 +1132,7 @@ async function resolveContract(assetKey, fallbackSymbol, options = {}) {
         cacheRef.set(cachePayload, { merge: true }).catch(err => {
           console.warn(`Failed to cache contract: ${err.message}`)
         })
-        state.contractCache.set(cacheKey, cachedContract)
+        setCachedContract(cacheKey, cachedContract)
         resolve(cachedContract)
       },
       reject: (err) => {
@@ -2023,9 +2052,31 @@ function checkRiskLimits(request) {
   const snapshot = request.orderSnapshot || {}
 
   // Check max notional per trade
-  const notional = (snapshot.quantity || 0) * (snapshot.limitPrice || 0)
+  const priceForNotional =
+    parseNumber(snapshot.limitPrice) ??
+    parseNumber(snapshot.price) ??
+    parseNumber(snapshot.lastPrice)
+  const notional = (snapshot.quantity || 0) * (priceForNotional || 0)
+  if (!Number.isFinite(priceForNotional) || priceForNotional <= 0) {
+    return { pass: false, reason: "price_missing_for_risk_check" }
+  }
   if (caps.maxNotionalPerTrade && notional > caps.maxNotionalPerTrade) {
     return { pass: false, reason: `notional_exceeds_limit:${notional}>${caps.maxNotionalPerTrade}` }
+  }
+
+  // Check notional against account equity / buying power
+  const buyingPower =
+    parseNumber(state.accountSummary?.buyingPower) ??
+    parseNumber(state.accountSummary?.availableFunds) ??
+    parseNumber(state.accountSummary?.netLiquidation)
+  if (Number.isFinite(buyingPower) && buyingPower > 0) {
+    const maxEquityPct = Number.isFinite(config.maxEquityPct)
+      ? Math.min(Math.max(config.maxEquityPct, 0.1), 1)
+      : 1
+    const maxNotional = buyingPower * maxEquityPct
+    if (notional > maxNotional) {
+      return { pass: false, reason: `notional_exceeds_equity:${notional}>${maxNotional}` }
+    }
   }
 
   // Check requireBracket
@@ -2068,6 +2119,19 @@ async function processRequest(requestId, requestData) {
 
   state.stats.claimed++
   state.claimedRequests.set(requestId, claimResult.request)
+
+  const expiresAtMs = claimResult.request?.expiresAt?.toMillis?.() || 0
+  if (expiresAtMs && expiresAtMs <= Date.now()) {
+    await db.doc(`executionRequests/${requestId}`).set(
+      {
+        status: "expired",
+        statusReason: "expired_after_claim",
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+    return
+  }
 
   // Risk checks
   const riskCheck = checkRiskLimits(claimResult.request)

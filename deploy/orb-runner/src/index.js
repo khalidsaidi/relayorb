@@ -134,6 +134,7 @@ const healthState = {
   controlsDocCount: null,
   stateDocCount: null,
   lastFirestoreError: null,
+  lastFirestoreWarning: null,
   lastGatewayFailureAt: null,
   lastGatewayError: null,
   lastGatewaySuccessAt: null,
@@ -1515,6 +1516,12 @@ async function writeHealthStatus() {
       ? {
           message: healthState.lastFirestoreError.message,
           at: new Date(healthState.lastFirestoreError.at).toISOString(),
+        }
+      : null,
+    firestoreWarning: healthState.lastFirestoreWarning
+      ? {
+          message: healthState.lastFirestoreWarning.message,
+          at: new Date(healthState.lastFirestoreWarning.at).toISOString(),
         }
       : null,
     gateway: {
@@ -2942,6 +2949,13 @@ async function start() {
         })
         healthState.lastControlsSnapshotAt = Date.now()
         healthState.controlsDocCount = snap.size
+        if (
+          healthState.lastFirestoreError &&
+          typeof healthState.lastFirestoreError.message === "string" &&
+          healthState.lastFirestoreError.message.includes("snapshot stale")
+        ) {
+          healthState.lastFirestoreError = null
+        }
       },
       (error) => {
         healthState.lastFirestoreError = { message: error.message, at: Date.now() }
@@ -2961,6 +2975,13 @@ async function start() {
         })
         healthState.lastStateSnapshotAt = Date.now()
         healthState.stateDocCount = snap.size
+        if (
+          healthState.lastFirestoreError &&
+          typeof healthState.lastFirestoreError.message === "string" &&
+          healthState.lastFirestoreError.message.includes("snapshot stale")
+        ) {
+          healthState.lastFirestoreError = null
+        }
       },
       (error) => {
         healthState.lastFirestoreError = { message: error.message, at: Date.now() }
@@ -2974,17 +2995,37 @@ async function start() {
   setInterval(() => {
     const now = Date.now()
     const staleAfter = config.firestoreStaleMs
-    if (healthState.lastControlsSnapshotAt && now - healthState.lastControlsSnapshotAt > staleAfter) {
-      healthState.lastFirestoreError = {
-        message: `Controls snapshot stale (${now - healthState.lastControlsSnapshotAt}ms)`,
+    const controlsStale =
+      healthState.lastControlsSnapshotAt &&
+      now - healthState.lastControlsSnapshotAt > staleAfter
+    const stateStale =
+      healthState.lastStateSnapshotAt && now - healthState.lastStateSnapshotAt > staleAfter
+
+    if (controlsStale || stateStale) {
+      healthState.lastFirestoreWarning = {
+        message: controlsStale
+          ? `Controls snapshot stale (${now - healthState.lastControlsSnapshotAt}ms)`
+          : `State snapshot stale (${now - healthState.lastStateSnapshotAt}ms)`,
         at: now,
       }
+    } else {
+      healthState.lastFirestoreWarning = null
     }
-    if (healthState.lastStateSnapshotAt && now - healthState.lastStateSnapshotAt > staleAfter) {
+
+    if (controlsStale && stateStale) {
       healthState.lastFirestoreError = {
-        message: `State snapshot stale (${now - healthState.lastStateSnapshotAt}ms)`,
+        message: `Firestore snapshots stale (${now - Math.min(
+          healthState.lastControlsSnapshotAt,
+          healthState.lastStateSnapshotAt
+        )}ms)`,
         at: now,
       }
+    } else if (
+      healthState.lastFirestoreError &&
+      typeof healthState.lastFirestoreError.message === "string" &&
+      healthState.lastFirestoreError.message.includes("snapshot stale")
+    ) {
+      healthState.lastFirestoreError = null
     }
     const resubscribeAfter = staleAfter * 2
     if (

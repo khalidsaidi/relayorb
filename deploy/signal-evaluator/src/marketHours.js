@@ -23,16 +23,85 @@ const US_HOLIDAYS_2026_2027 = [
   "2027-12-24", // Christmas (observed)
 ]
 
+const ET_TIME_ZONE = "America/New_York"
+const ET_WEEKDAY_MAP = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+}
+const ET_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: ET_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  weekday: "short",
+  hour12: false,
+})
+
+function getEtParts(date) {
+  const parts = ET_FORMATTER.formatToParts(date)
+  const map = {}
+  parts.forEach((part) => {
+    map[part.type] = part.value
+  })
+  const year = Number(map.year)
+  const month = Number(map.month)
+  const day = Number(map.day)
+  const hour = Number(map.hour)
+  const minute = Number(map.minute)
+  const second = Number(map.second)
+  const weekday = ET_WEEKDAY_MAP[map.weekday] ?? 0
+  return { year, month, day, hour, minute, second, weekday }
+}
+
+function getTimeZoneOffsetMs(date, timeZone) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  })
+  const parts = formatter.formatToParts(date)
+  const map = {}
+  parts.forEach((part) => {
+    map[part.type] = part.value
+  })
+  const asUtc = Date.UTC(
+    Number(map.year),
+    Number(map.month) - 1,
+    Number(map.day),
+    Number(map.hour),
+    Number(map.minute),
+    Number(map.second)
+  )
+  return asUtc - date.getTime()
+}
+
+function makeEtDate({ year, month, day, hour, minute, second = 0 }) {
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, second)
+  const offset = getTimeZoneOffsetMs(new Date(utcGuess), ET_TIME_ZONE)
+  return new Date(utcGuess - offset)
+}
+
 /**
  * Convert a Date to ET timezone and format as YYYY-MM-DD
  */
 function toETDateString(date) {
-  // Convert to ET (UTC-5 or UTC-4 depending on DST)
-  const etOffset = -5 * 60 // EST offset in minutes
-  const localDate = new Date(date.getTime() + etOffset * 60 * 1000)
-  const year = localDate.getUTCFullYear()
-  const month = String(localDate.getUTCMonth() + 1).padStart(2, "0")
-  const day = String(localDate.getUTCDate()).padStart(2, "0")
+  const parts = getEtParts(date)
+  const year = String(parts.year).padStart(4, "0")
+  const month = String(parts.month).padStart(2, "0")
+  const day = String(parts.day).padStart(2, "0")
   return `${year}-${month}-${day}`
 }
 
@@ -40,12 +109,11 @@ function toETDateString(date) {
  * Get ET hours and minutes from a Date
  */
 function getETTime(date) {
-  const etOffset = -5 * 60
-  const etDate = new Date(date.getTime() + etOffset * 60 * 1000)
+  const parts = getEtParts(date)
   return {
-    hours: etDate.getUTCHours(),
-    minutes: etDate.getUTCMinutes(),
-    day: etDate.getUTCDay(), // 0=Sunday, 6=Saturday
+    hours: parts.hour,
+    minutes: parts.minute,
+    day: parts.weekday, // 0=Sunday, 6=Saturday
   }
 }
 
@@ -153,14 +221,14 @@ function addMinutes(date, minutes) {
  * Set time on a date in ET timezone
  */
 function setETTime(date, hours, minutes) {
-  const etOffset = -5 * 60
-  const utcDate = new Date(date)
-  // Get the date in ET
-  const etDate = new Date(date.getTime() + etOffset * 60 * 1000)
-  // Set hours and minutes in UTC (which represents ET)
-  etDate.setUTCHours(hours, minutes, 0, 0)
-  // Convert back to actual UTC
-  return new Date(etDate.getTime() - etOffset * 60 * 1000)
+  const parts = getEtParts(date)
+  return makeEtDate({
+    year: parts.year,
+    month: parts.month,
+    day: parts.day,
+    hour: hours,
+    minute: minutes,
+  })
 }
 
 /**

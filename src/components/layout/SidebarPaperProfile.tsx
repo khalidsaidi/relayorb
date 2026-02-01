@@ -358,7 +358,7 @@ export function SidebarBrokerProfile({
     }
     try {
       setRetrying(true)
-      const batch = writeBatch(firestore)
+      const chunkSize = 400
       const now = Date.now()
       const expiresAt = Timestamp.fromMillis(now + 2 * 60 * 1000)
       let lastCreatedId: string | null = null
@@ -380,38 +380,41 @@ export function SidebarBrokerProfile({
         ...(typeof snapshot.takeProfit === "number" ? { takeProfit: snapshot.takeProfit } : {}),
       })
 
-      stuckRequests.forEach((request) => {
-        const id = crypto.randomUUID()
-        const orderSnapshot = sanitizeSnapshot(request.orderSnapshot)
-        const payload: ExecutionRequestDoc = {
-          id,
-          brokerAccountKey,
-          proposalId: `retry:${request.id}:${now}`,
-          requestedByUid: user.uid,
-          approvedByUid: user.uid,
-          ...(brokerAccount?.ibAccountCode
-            ? { ibAccountCodeSnapshot: brokerAccount.ibAccountCode }
-            : {}),
-          approvedAt: serverTimestamp(),
-          mode: "live",
-          status: "approved",
-          orderSnapshot,
-          expiresAt,
-          note: "Retry: gateway MFA pending",
-          meta: {
-            retryOf: request.id,
-            retryReason: "gateway_mfa",
-          },
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        }
-        batch.set(doc(firestore, "executionRequests", id), payload)
-        lastCreatedId = payload.id
-        lastCreatedMode = payload.mode
-        lastCreatedSnapshot = payload.orderSnapshot
-      })
-
-      await batch.commit()
+      for (let i = 0; i < stuckRequests.length; i += chunkSize) {
+        const batch = writeBatch(firestore)
+        const chunk = stuckRequests.slice(i, i + chunkSize)
+        chunk.forEach((request) => {
+          const id = crypto.randomUUID()
+          const orderSnapshot = sanitizeSnapshot(request.orderSnapshot)
+          const payload: ExecutionRequestDoc = {
+            id,
+            brokerAccountKey,
+            proposalId: `retry:${request.id}:${now}`,
+            requestedByUid: user.uid,
+            approvedByUid: user.uid,
+            ...(brokerAccount?.ibAccountCode
+              ? { ibAccountCodeSnapshot: brokerAccount.ibAccountCode }
+              : {}),
+            approvedAt: serverTimestamp(),
+            mode: "live",
+            status: "approved",
+            orderSnapshot,
+            expiresAt,
+            note: "Retry: gateway MFA pending",
+            meta: {
+              retryOf: request.id,
+              retryReason: "gateway_mfa",
+            },
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          }
+          batch.set(doc(firestore, "executionRequests", id), payload)
+          lastCreatedId = payload.id
+          lastCreatedMode = payload.mode
+          lastCreatedSnapshot = payload.orderSnapshot
+        })
+        await batch.commit()
+      }
       if (lastCreatedId && lastCreatedMode && lastCreatedSnapshot) {
         storeLastExecutionRequest({
           id: lastCreatedId,
@@ -441,30 +444,34 @@ export function SidebarBrokerProfile({
     }
     try {
       setCanceling(true)
-      const batch = writeBatch(firestore)
-      stuckRequests.forEach((request) => {
-        const orderRef = doc(firestore, "brokerOrders", request.id)
-        batch.set(
-          orderRef,
-          {
-            cancelRequested: true,
-            cancelRequestedAt: serverTimestamp(),
-            cancelRequestedBy: user.uid || null,
-            lastUpdateAt: serverTimestamp(),
-          },
-          { merge: true }
-        )
-        const requestRef = doc(firestore, "executionRequests", request.id)
-        batch.set(
-          requestRef,
-          {
-            statusReason: "cancel_requested",
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        )
-      })
-      await batch.commit()
+      const chunkSize = 400
+      for (let i = 0; i < stuckRequests.length; i += chunkSize) {
+        const batch = writeBatch(firestore)
+        const chunk = stuckRequests.slice(i, i + chunkSize)
+        chunk.forEach((request) => {
+          const orderRef = doc(firestore, "brokerOrders", request.id)
+          batch.set(
+            orderRef,
+            {
+              cancelRequested: true,
+              cancelRequestedAt: serverTimestamp(),
+              cancelRequestedBy: user.uid || null,
+              lastUpdateAt: serverTimestamp(),
+            },
+            { merge: true }
+          )
+          const requestRef = doc(firestore, "executionRequests", request.id)
+          batch.set(
+            requestRef,
+            {
+              statusReason: "cancel_requested",
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          )
+        })
+        await batch.commit()
+      }
       toast.success(t("ibkr.stuckCancel.success", { count: stuckRequests.length }))
     } catch (err) {
       console.error(err)

@@ -3969,56 +3969,58 @@ async function emitMarketSignals(db, trendingByHorizon, controls) {
 
   await ensureMarketIntelBot(db)
   const { createdAt, backfillMinutes } = getSignalCreatedAt()
-  const batch = db.batch()
+  const batchLimit = 400
+  for (let i = 0; i < picks.length; i += batchLimit) {
+    const batch = db.batch()
+    const chunk = picks.slice(i, i + batchLimit)
+    chunk.forEach(({ assetClass, item }) => {
+      const momentum = resolveTrendMomentum(item, horizon)
+      const side =
+        typeof momentum.change === "number" ? (momentum.change >= 0 ? "buy" : "sell") : "hold"
+      const strength =
+        typeof item.score === "number"
+          ? Number(clamp(item.score / 100, 0, 1).toFixed(2))
+          : undefined
+      const message = `${item.symbol} ${assetClass} trend ${momentum.window} ${formatChangeLabel(
+        momentum.change
+      )}`
 
-  picks.forEach(({ assetClass, item }) => {
-    const momentum = resolveTrendMomentum(item, horizon)
-    const side =
-      typeof momentum.change === "number" ? (momentum.change >= 0 ? "buy" : "sell") : "hold"
-    const strength =
-      typeof item.score === "number"
-        ? Number(clamp(item.score / 100, 0, 1).toFixed(2))
-        : undefined
-    const message = `${item.symbol} ${assetClass} trend ${momentum.window} ${formatChangeLabel(
-      momentum.change
-    )}`
-
-    const referenceCapturedAt =
-      typeof item.price === "number" ? admin.firestore.FieldValue.serverTimestamp() : undefined
-    const data = compactObject({
-      assetClass,
-      horizon,
-      trendWindow: momentum.window,
-      score: item.score,
-      components: item.components,
-      momentum: item.momentum,
-      referencePrice: typeof item.price === "number" ? item.price : undefined,
-      referenceSource: item.source,
-      referenceCapturedAt,
-      source: "market-intel",
-      backfillMinutes: backfillMinutes > 0 ? backfillMinutes : undefined,
-    })
-
-    const ref = db
-      .collection("bots")
-      .doc(MARKET_SIGNAL_BOT_ID)
-      .collection("signals")
-      .doc()
-
-    batch.set(
-      ref,
-      compactObject({
-        symbol: item.symbol,
-        side,
-        strength,
-        message,
-        data,
-        createdAt,
+      const referenceCapturedAt =
+        typeof item.price === "number" ? admin.firestore.FieldValue.serverTimestamp() : undefined
+      const data = compactObject({
+        assetClass,
+        horizon,
+        trendWindow: momentum.window,
+        score: item.score,
+        components: item.components,
+        momentum: item.momentum,
+        referencePrice: typeof item.price === "number" ? item.price : undefined,
+        referenceSource: item.source,
+        referenceCapturedAt,
+        source: "market-intel",
+        backfillMinutes: backfillMinutes > 0 ? backfillMinutes : undefined,
       })
-    )
-  })
 
-  await batch.commit()
+      const ref = db
+        .collection("bots")
+        .doc(MARKET_SIGNAL_BOT_ID)
+        .collection("signals")
+        .doc()
+
+      batch.set(
+        ref,
+        compactObject({
+          symbol: item.symbol,
+          side,
+          strength,
+          message,
+          data,
+          createdAt,
+        })
+      )
+    })
+    await batch.commit()
+  }
 }
 
 async function fetchBotSignals(db, botWeights = new Map()) {
@@ -7069,25 +7071,29 @@ async function dispatchSignalRequests(db, picks, controls) {
     )
   }
 
-  botsSnap.docs.forEach((doc) => {
+  const batchLimit = 400
+  let batch = db.batch()
+  let batchCount = 0
+
+  for (const doc of botsSnap.docs) {
     const botId = doc.id
-    if (botId === MARKET_SIGNAL_BOT_ID) return
+    if (botId === MARKET_SIGNAL_BOT_ID) continue
     const botData = doc.data() || {}
-    
+
     // Skip offline bots
     const status = String(botData?.status || "").toLowerCase()
-    if (status === "offline" || status === "error") return
-    
+    if (status === "offline" || status === "error") continue
+
     const assetClasses = resolveBotAssetClasses(botData)
     const payloadSymbols = uniqueList(
       assetClasses.flatMap((assetClass) => Array.from(sortedBuckets[assetClass] || []))
     )
-    if (payloadSymbols.length === 0) return
-    
+    if (payloadSymbols.length === 0) continue
+
     // Limit symbols per bot to avoid overwhelming
     const maxSymbolsPerBot = 25
     const limitedSymbols = payloadSymbols.slice(0, maxSymbolsPerBot)
-    
+
     const commandRef = db.collection("bots").doc(botId).collection("commands").doc()
     batch.set(commandRef, {
       type: "scan",
@@ -7102,7 +7108,14 @@ async function dispatchSignalRequests(db, picks, controls) {
       },
     })
     botCommandCount++
-  })
+    batchCount++
+
+    if (batchCount >= batchLimit) {
+      await batch.commit()
+      batch = db.batch()
+      batchCount = 0
+    }
+  }
 
   batch.set(
     metaRef,
@@ -7114,7 +7127,6 @@ async function dispatchSignalRequests(db, picks, controls) {
     },
     { merge: true }
   )
-
   await batch.commit()
   console.log(`Dispatched scan commands to ${botCommandCount} bots for ${symbols.length} symbols`)
 }
