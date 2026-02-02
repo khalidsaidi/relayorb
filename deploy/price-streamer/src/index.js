@@ -111,6 +111,7 @@ const config = {
   warmupConcurrency: parseInt(process.env.PRICE_WARMUP_CONCURRENCY || "4", 10),
   warmupCandlesInterval: process.env.PRICE_WARMUP_CANDLES_INTERVAL || "1min",
   warmupCandlesLimit: parseInt(process.env.PRICE_WARMUP_CANDLES_LIMIT || "30", 10),
+  warmupRepeatMs: parseInt(process.env.PRICE_WARMUP_REPEAT_MS || "180000", 10),
 }
 
 const EXPECTED_REGION = "us-west1"
@@ -1890,7 +1891,7 @@ async function hydratePriceHistoryFromRedis() {
     snapshotKeys = await state.redis.zRangeByScore(indexKey, cutoff, now)
   } catch (err) {
     console.error("Redis history scan failed:", err?.message || err)
-    return
+    return null
   }
   if (!snapshotKeys.length) return
   const multi = state.redis.multi()
@@ -1900,7 +1901,7 @@ async function hydratePriceHistoryFromRedis() {
     results = await multi.exec()
   } catch (err) {
     console.error("Redis history read failed:", err?.message || err)
-    return
+    return null
   }
   let snapshotsLoaded = 0
   let pointsLoaded = 0
@@ -1929,6 +1930,7 @@ async function hydratePriceHistoryFromRedis() {
     pointsLoaded,
     symbols: state.priceHistory.size,
   })
+  return { snapshotsLoaded, pointsLoaded, symbols: state.priceHistory.size }
 }
 
 function isRateLimited() {
@@ -2389,12 +2391,22 @@ async function warmupPriceHistory(reason = "startup") {
 
   state.lastWarmupAt = Date.now()
   state.warmupInFlight = false
-  console.log("ps_warmup_complete", {
+  const warmupResult = {
     reason,
     symbolsUpdated,
     points,
     durationMs: Date.now() - startedAt,
-  })
+  }
+  console.log("ps_warmup_complete", warmupResult)
+  if (points === 0) {
+    const redisResult = await hydratePriceHistoryFromRedis()
+    if (redisResult) {
+      console.log("ps_warmup_redis_fallback", {
+        reason,
+        ...redisResult,
+      })
+    }
+  }
 }
 
 // ============================================================================
@@ -3802,6 +3814,13 @@ async function run() {
     warmupPriceHistory("startup").catch((err) =>
       console.error("Price history warmup failed:", err.message)
     )
+    if (config.warmupRepeatMs > 0) {
+      setInterval(() => {
+        warmupPriceHistory("repeat").catch((err) =>
+          console.error("Price history warmup failed:", err.message)
+        )
+      }, Math.max(config.warmupRepeatMs, 60000))
+    }
   }
 
   setInterval(refreshWatchlist, Math.max(config.watchlistRefreshMs, 15000))
