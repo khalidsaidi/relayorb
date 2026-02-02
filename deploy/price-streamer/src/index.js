@@ -75,12 +75,12 @@ const config = {
   rateLimitPerMinute: parseInt(process.env.PRICE_STREAM_RATE_LIMIT_PER_MINUTE || "300", 10),
   rateLimitWarningPct: parseFloat(process.env.PRICE_STREAM_RATE_LIMIT_WARNING_PCT || "0.83"),
   rateLimitCriticalPct: parseFloat(process.env.PRICE_STREAM_RATE_LIMIT_CRITICAL_PCT || "0.93"),
-  stalenessPriceMs: parseInt(process.env.PRICE_STALE_MS || "180000", 10),
+  stalenessPriceMs: parseInt(process.env.PRICE_STALE_MS || "60000", 10),
   stalenessPollMs: parseInt(
-    process.env.PRICE_POLL_STALE_MS || process.env.PRICE_STALE_MS || "180000",
+    process.env.PRICE_POLL_STALE_MS || process.env.PRICE_STALE_MS || "60000",
     10
   ),
-  stalenessHeartbeatMs: parseInt(process.env.PRICE_HEARTBEAT_STALE_MS || "300000", 10),
+  stalenessHeartbeatMs: parseInt(process.env.PRICE_HEARTBEAT_STALE_MS || "120000", 10),
   streamEnabled: process.env.PRICE_STREAM_ENABLED === "true",
   streamUrl: process.env.PRICE_STREAM_URL || "",
   streamUrls: STREAM_URLS,
@@ -91,14 +91,14 @@ const config = {
     .map((stream) => stream.trim())
     .filter(Boolean),
   streamFilterEnabled: process.env.PRICE_STREAM_FILTER_ENABLED !== "false",
-  streamReconnectMs: parseInt(process.env.PRICE_STREAM_RECONNECT_MS || "1500", 10),
-  streamMaxReconnectMs: parseInt(process.env.PRICE_STREAM_MAX_RECONNECT_MS || "30000", 10),
+  streamReconnectMs: parseInt(process.env.PRICE_STREAM_RECONNECT_MS || "1000", 10),
+  streamMaxReconnectMs: parseInt(process.env.PRICE_STREAM_MAX_RECONNECT_MS || "15000", 10),
   streamHeartbeatTimeoutMs: parseInt(
-    process.env.PRICE_STREAM_HEARTBEAT_TIMEOUT_MS || "30000",
+    process.env.PRICE_STREAM_HEARTBEAT_TIMEOUT_MS || "15000",
     10
   ),
   streamFailoverCooldownMs: parseInt(
-    process.env.PRICE_STREAM_FAILOVER_COOLDOWN_MS || "60000",
+    process.env.PRICE_STREAM_FAILOVER_COOLDOWN_MS || "30000",
     10
   ),
   streamRotateEnabled: process.env.PRICE_STREAM_ROTATE_ENABLED !== "false",
@@ -106,6 +106,11 @@ const config = {
   streamRotateStridePct: parseFloat(process.env.PRICE_STREAM_ROTATE_STRIDE_PCT || "1"),
   streamBlockTtlMs: parseInt(process.env.STREAM_BLOCK_TTL_MS || "3600000", 10),
   streamMaxSymbolsByProvider: STREAM_SYMBOL_LIMITS,
+  warmupEnabled: process.env.PRICE_WARMUP_ENABLED !== "false",
+  warmupLimit: parseInt(process.env.PRICE_WARMUP_LIMIT || "600", 10),
+  warmupConcurrency: parseInt(process.env.PRICE_WARMUP_CONCURRENCY || "4", 10),
+  warmupCandlesInterval: process.env.PRICE_WARMUP_CANDLES_INTERVAL || "1min",
+  warmupCandlesLimit: parseInt(process.env.PRICE_WARMUP_CANDLES_LIMIT || "30", 10),
 }
 
 const EXPECTED_REGION = "us-west1"
@@ -810,6 +815,8 @@ const state = {
   lastWatchHash: "",
   lastFlushAt: null,
   lastFlushError: null,
+  lastWarmupAt: null,
+  warmupInFlight: false,
   streamBackoffUntil: 0,
   redis: null,
   redisReady: false,
@@ -2315,6 +2322,81 @@ async function fetchQuotesParallel(symbols, assetClass) {
   return results
 }
 
+async function mapWithConcurrency(items, limit, worker) {
+  if (!Array.isArray(items) || items.length === 0) return []
+  const concurrency = Math.max(1, Number(limit) || 1)
+  const results = new Array(items.length)
+  let index = 0
+
+  const runners = new Array(concurrency).fill(null).map(async () => {
+    while (index < items.length) {
+      const current = index++
+      try {
+        results[current] = await worker(items[current], current)
+      } catch (err) {
+        results[current] = null
+      }
+    }
+  })
+
+  await Promise.all(runners)
+  return results
+}
+
+async function warmupPriceHistory(reason = "startup") {
+  if (!config.warmupEnabled || isReplayMode()) return
+  if (!config.marketDataGatewayUrl) return
+  if (state.warmupInFlight) return
+  const symbols = Array.from(state.watchlist.stock || [])
+  if (symbols.length === 0) return
+
+  const limit = Math.min(config.warmupLimit, symbols.length)
+  if (!Number.isFinite(limit) || limit <= 0) return
+  const targets = symbols.slice(0, limit)
+  const interval = config.warmupCandlesInterval
+  const candleLimit = Math.max(2, config.warmupCandlesLimit)
+  const startedAt = Date.now()
+
+  state.warmupInFlight = true
+  let points = 0
+  let symbolsUpdated = 0
+  console.log("ps_warmup_start", {
+    reason,
+    symbols: targets.length,
+    interval,
+    candleLimit,
+    concurrency: config.warmupConcurrency,
+  })
+
+  await mapWithConcurrency(targets, config.warmupConcurrency, async (symbol) => {
+    const payload = await fetchGatewayJsonSoft("/v1/market/candles", {
+      symbol,
+      assetClass: "stock",
+      interval,
+      limit: String(candleLimit),
+    })
+    const candles = Array.isArray(payload?.candles) ? payload.candles : []
+    if (!candles.length) return
+    symbolsUpdated += 1
+    candles.forEach((candle) => {
+      if (!candle || !Number.isFinite(candle.time)) return
+      const close = parseNumber(candle.close)
+      if (!Number.isFinite(close)) return
+      recordPriceHistory(`stock:${symbol}`, close, candle.time)
+      points += 1
+    })
+  })
+
+  state.lastWarmupAt = Date.now()
+  state.warmupInFlight = false
+  console.log("ps_warmup_complete", {
+    reason,
+    symbolsUpdated,
+    points,
+    durationMs: Date.now() - startedAt,
+  })
+}
+
 // ============================================================================
 // STOCK DISCOVERY (Gainers/Losers/Actives during market hours)
 // ============================================================================
@@ -3714,6 +3796,12 @@ async function run() {
         Math.max(10000, config.streamRotateMs)
       )
     }
+  }
+
+  if (config.warmupEnabled && !isReplayMode()) {
+    warmupPriceHistory("startup").catch((err) =>
+      console.error("Price history warmup failed:", err.message)
+    )
   }
 
   setInterval(refreshWatchlist, Math.max(config.watchlistRefreshMs, 15000))
