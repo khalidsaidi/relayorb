@@ -2900,14 +2900,16 @@ function resolveHorizonChange(candidate, horizon) {
     "24h": change24h,
     "7d": change7d,
   }
+  // Intraday horizons should not fall back to multi-day changes.
+  // This prevents score spikes when only 24h/7d data is present.
   const order =
     horizon === "7d"
-      ? ["7d", "24h", "1h", "15m"]
+      ? ["7d", "24h"]
       : horizon === "24h"
-        ? ["24h", "7d", "1h", "15m"]
+        ? ["24h", "7d"]
         : horizon === "1h"
-          ? ["1h", "15m", "24h", "7d"]
-          : ["15m", "1h", "24h", "7d"]
+          ? ["1h", "15m"]
+          : ["15m", "1h"]
   for (const key of order) {
     if (lookup[key] !== undefined) {
       return { change: lookup[key], window: key, fallback: key !== horizon }
