@@ -430,9 +430,20 @@ export function AppShell() {
               <Button variant="outline" size="sm" onClick={openManageAssets}>
                 {t("dashboard.actions.manageAssets")}
               </Button>
-              <Badge variant="outline" title={endpointBadge.detail}>
-                {endpointBadge.label}
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" title={endpointBadge.detail}>
+                  {endpointBadge.label}
+                </Badge>
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground underline-offset-4 hover:underline"
+                  onClick={() => {
+                    toast(endpointBadge.detail)
+                  }}
+                >
+                  View
+                </button>
+              </div>
               {firebaseEnabled && <PipelineHealthBadge showLabel={false} />}
               {!firebaseEnabled ? (
                 <Badge variant="outline">{t("app.firebaseDisabled")}</Badge>
