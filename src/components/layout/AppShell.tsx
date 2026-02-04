@@ -49,6 +49,7 @@ import { ReplayControlsPanel } from "@/components/ReplayControlsPanel"
 import { useIbkrAccount } from "@/features/ibkr/use-ibkr-account"
 import { formatTimestamp } from "@/lib/format"
 import { useMarketControls } from "@/features/market/use-market-controls"
+import { resolveMarketDataProxyUrl, resolveOrbRunnerUrl } from "@/lib/runtime-urls"
 
 type NavItem = {
   to: string
@@ -138,6 +139,35 @@ export function AppShell() {
       : [{ speed: 1 }]
   const replayBotsEnabled = replayControls?.botsReplayEnabled === true
   const canWriteReplayControls = Boolean(firebaseEnabled && db)
+  const endpointBadge = useMemo(() => {
+    const proxy = (import.meta.env.VITE_MARKET_DATA_PROXY_URL || "").trim()
+    const gateway = (import.meta.env.VITE_MARKET_DATA_GATEWAY_URL || "").trim()
+    const orb = (import.meta.env.VITE_ORB_RUNNER_URL || "").trim()
+
+    const formatEndpoint = (value: string) => {
+      if (!value) return ""
+      try {
+        const parsed = new URL(value)
+        return `${parsed.hostname}${parsed.port ? `:${parsed.port}` : ""}`
+      } catch {
+        return value.replace(/^https?:\/\//, "").replace(/\/.*$/, "")
+      }
+    }
+
+    const proxyResolved = proxy || resolveMarketDataProxyUrl()
+    if (proxyResolved) {
+      return {
+        label: "Endpoint: Proxy",
+        detail: `MDG: ${proxyResolved} · ORB: ${resolveOrbRunnerUrl() || "(unset)"}`,
+      }
+    }
+
+    const gatewayLabel = formatEndpoint(gateway || orb)
+    return {
+      label: gatewayLabel ? `Endpoint: ${gatewayLabel}` : "Endpoint: unset",
+      detail: `MDG: ${gateway || "(unset)"} · ORB: ${orb || "(unset)"}`,
+    }
+  }, [])
   const assetsShownLabel = useMemo(() => {
     const labels = [t("assets.stocks")]
     if (cryptoEnabled) labels.push(t("assets.crypto"))
@@ -400,6 +430,9 @@ export function AppShell() {
               <Button variant="outline" size="sm" onClick={openManageAssets}>
                 {t("dashboard.actions.manageAssets")}
               </Button>
+              <Badge variant="outline" title={endpointBadge.detail}>
+                {endpointBadge.label}
+              </Badge>
               {firebaseEnabled && <PipelineHealthBadge showLabel={false} />}
               {!firebaseEnabled ? (
                 <Badge variant="outline">{t("app.firebaseDisabled")}</Badge>
