@@ -3,11 +3,214 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
 
+  market-data-gateway:
+    build: ../market-data-gateway
+    image: relayorb-market-data-gateway:local
+    restart: unless-stopped
+    environment:
+      - ALLOW_LOCAL_RUN=1
+      - FIREBASE_PROJECT_ID=relayorb
+      - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
+      - NODE_ENV=production
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - REDIS_PREFIX=${REDIS_PREFIX:-relayorb}
+      - RUN_REGION=us-west1
+      - MDG_RATE_LIMIT_ENABLED=${MDG_RATE_LIMIT_ENABLED:-true}
+      - MDG_RATE_LIMIT_WINDOW_MS=${MDG_RATE_LIMIT_WINDOW_MS:-60000}
+      - MDG_RATE_LIMIT_MAX=${MDG_RATE_LIMIT_MAX:-240}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+      - STOCKDATA_API_KEY=${STOCKDATA_API_KEY:-}
+      - TWELVEDATA_API_KEY=${TWELVEDATA_API_KEY:-}
+      - ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY:-}
+      - POLYGON_API_KEY=${POLYGON_API_KEY:-}
+      - TIINGO_API_KEY=${TIINGO_API_KEY:-}
+      - INTRINIO_API_KEY=${INTRINIO_API_KEY:-}
+      - ALPACA_API_KEY=${ALPACA_API_KEY:-}
+      - ALPACA_API_SECRET=${ALPACA_API_SECRET:-}
+      - MDG_PROVIDER_ROTATION=${MDG_PROVIDER_ROTATION:-round_robin}
+      - MDG_PROVIDER_COOLDOWN_MS=${MDG_PROVIDER_COOLDOWN_MS:-60000}
+      - MDG_RATE_LIMIT_COOLDOWN_MS=${MDG_RATE_LIMIT_COOLDOWN_MS:-300000}
+    volumes:
+      - ./secrets/service-account.json:/secrets/service-account.json:ro
+    depends_on:
+      - redis
+    ports:
+      - "8080:8080"
+
+  refresh-service:
+    build: ../refresh-service
+    image: relayorb-refresh-service:local
+    restart: unless-stopped
+    environment:
+      - ALLOW_LOCAL_RUN=1
+      - FIREBASE_PROJECT_ID=relayorb
+      - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
+      - NODE_ENV=production
+      - RUN_REGION=us-west1
+      - PORT=8085
+      - MARKET_DATA_GATEWAY_URL=http://market-data-gateway:8080
+      - MARKET_DATA_GATEWAY_AUTH=false
+      - ORB_RUNNER_URL=http://orb-runner:8084
+      - ORB_RUNNER_AUTH=false
+      - CORS_ORIGINS=${REFRESH_CORS_ORIGINS:-}
+      - ADMIN_ALLOWLIST=${REFRESH_ADMIN_ALLOWLIST:-}
+    volumes:
+      - ./secrets/service-account.json:/secrets/service-account.json:ro
+    depends_on:
+      - market-data-gateway
+      - orb-runner
+    ports:
+      - "8085:8085"
+
+  orb-runner:
+    build: ../orb-runner
+    image: relayorb-orb-runner:local
+    restart: unless-stopped
+    environment:
+      - ALLOW_LOCAL_RUN=1
+      - FIREBASE_PROJECT_ID=relayorb
+      - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
+      - NODE_ENV=production
+      - RUN_REGION=us-west1
+      - PORT=8084
+      - MARKET_DATA_GATEWAY_URL=http://market-data-gateway:8080
+      - MARKET_DATA_GATEWAY_AUTH=false
+      - ORB_RATE_LIMIT_ENABLED=${ORB_RATE_LIMIT_ENABLED:-true}
+      - ORB_RATE_LIMIT_WINDOW_MS=${ORB_RATE_LIMIT_WINDOW_MS:-60000}
+      - ORB_RATE_LIMIT_MAX=${ORB_RATE_LIMIT_MAX:-60}
+    volumes:
+      - ./secrets/service-account.json:/secrets/service-account.json:ro
+    depends_on:
+      - market-data-gateway
+    ports:
+      - "8084:8084"
+
+  price-streamer:
+    build: ../price-streamer
+    image: relayorb-price-streamer:local
+    restart: unless-stopped
+    environment:
+      - ALLOW_LOCAL_RUN=1
+      - FIREBASE_PROJECT_ID=relayorb
+      - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
+      - NODE_ENV=production
+      - RUN_REGION=us-west1
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - REDIS_PREFIX=${REDIS_PREFIX:-relayorb}
+      - MARKET_DATA_GATEWAY_URL=http://market-data-gateway:8080
+      - MARKET_DATA_GATEWAY_AUTH=false
+      - PRICE_STREAM_ENABLED=${PRICE_STREAM_ENABLED:-true}
+      - PRICE_STREAM_URLS=${PRICE_STREAM_URLS:-}
+      - PRICE_STREAM_PROVIDERS=${PRICE_STREAM_PROVIDERS:-}
+      - PRICE_STREAMS=${PRICE_STREAMS:-}
+      - PRICE_STREAM_MAX_SYMBOLS=${PRICE_STREAM_MAX_SYMBOLS:-120}
+      - PRICE_STREAM_MAX_SYMBOLS_FINNHUB=${PRICE_STREAM_MAX_SYMBOLS_FINNHUB:-10}
+      - PRICE_STREAM_MAX_SYMBOLS_TWELVEDATA=${PRICE_STREAM_MAX_SYMBOLS_TWELVEDATA:-120}
+      - PRICE_STREAM_MAX_SYMBOLS_ALPACA=${PRICE_STREAM_MAX_SYMBOLS_ALPACA:-120}
+      - PRICE_STREAM_FILTER_ENABLED=${PRICE_STREAM_FILTER_ENABLED:-true}
+      - PRICE_STREAM_FAILOVER_COOLDOWN_MS=${PRICE_STREAM_FAILOVER_COOLDOWN_MS:-30000}
+      - PRICE_STREAM_RATE_LIMIT_PER_MINUTE=${PRICE_STREAM_RATE_LIMIT_PER_MINUTE:-600}
+      - PRICE_STREAM_CONCURRENCY=${PRICE_STREAM_CONCURRENCY:-8}
+      - STOCK_POLL_MS=${STOCK_POLL_MS:-15000}
+      - PRICE_STREAM_DISCOVERY_PCT=${PRICE_STREAM_DISCOVERY_PCT:-0.2}
+      - PRICE_STREAM_DISCOVERY_MIN=${PRICE_STREAM_DISCOVERY_MIN:-250}
+      - PRICE_STREAM_DISCOVERY_MAX=${PRICE_STREAM_DISCOVERY_MAX:-1000}
+      - PRICE_STALE_MS=${PRICE_STALE_MS:-60000}
+      - PRICE_POLL_STALE_MS=${PRICE_POLL_STALE_MS:-60000}
+      - PRICE_HEARTBEAT_STALE_MS=${PRICE_HEARTBEAT_STALE_MS:-120000}
+      - PRICE_WRITE_MIN_MS=${PRICE_WRITE_MIN_MS:-5000}
+      - PRICE_WRITE_MIN_EXTENDED_MS=${PRICE_WRITE_MIN_EXTENDED_MS:-8000}
+      - PRICE_WRITE_MIN_CLOSED_MS=${PRICE_WRITE_MIN_CLOSED_MS:-15000}
+      - PRICE_WRITE_IDLE_MAX_MS=${PRICE_WRITE_IDLE_MAX_MS:-60000}
+      - PRICE_STREAM_LOG_RATE_LIMIT_MS=${PRICE_STREAM_LOG_RATE_LIMIT_MS:-60000}
+      - PRICE_STREAM_LOG_SAMPLE_RATE=${PRICE_STREAM_LOG_SAMPLE_RATE:-0.1}
+      - ALPACA_API_KEY=${ALPACA_API_KEY:-}
+      - ALPACA_API_SECRET=${ALPACA_API_SECRET:-}
+    volumes:
+      - ./secrets/service-account.json:/secrets/service-account.json:ro
+    depends_on:
+      - redis
+      - market-data-gateway
+
+  market-intel:
+    build: ../market-intel
+    image: relayorb-market-intel:local
+    restart: unless-stopped
+    environment:
+      - ALLOW_LOCAL_RUN=1
+      - FIREBASE_PROJECT_ID=relayorb
+      - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
+      - NODE_ENV=production
+      - RUN_REGION=us-west1
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - REDIS_PREFIX=${REDIS_PREFIX:-relayorb}
+      - MARKET_DATA_GATEWAY_URL=http://market-data-gateway:8080
+      - MARKET_DATA_GATEWAY_AUTH=false
+      - MARKET_INTEL_CONTINUOUS=${MARKET_INTEL_CONTINUOUS:-true}
+      - MARKET_INTEL_LOOP_MS=${MARKET_INTEL_LOOP_MS:-300000}
+      - MARKET_INTEL_SKIP_WHEN_CLOSED=${MARKET_INTEL_SKIP_WHEN_CLOSED:-true}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - MARKETAUX_API_KEY=${MARKETAUX_API_KEY:-}
+    volumes:
+      - ./secrets/service-account.json:/secrets/service-account.json:ro
+    depends_on:
+      - redis
+      - market-data-gateway
+
+  signal-evaluator:
+    build: ../signal-evaluator
+    image: relayorb-signal-evaluator:local
+    restart: unless-stopped
+    environment:
+      - ALLOW_LOCAL_RUN=1
+      - FIREBASE_PROJECT_ID=relayorb
+      - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
+      - NODE_ENV=production
+      - RUN_REGION=us-west1
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - REDIS_PREFIX=${REDIS_PREFIX:-relayorb}
+      - MARKET_DATA_GATEWAY_URL=http://market-data-gateway:8080
+      - MARKET_DATA_GATEWAY_AUTH=false
+      - EVAL_CONTINUOUS=${EVAL_CONTINUOUS:-true}
+      - EVAL_LOOP_MS=${EVAL_LOOP_MS:-30000}
+      - EVAL_MAX_CYCLES=${EVAL_MAX_CYCLES:-0}
+      - SIGNAL_EVALUATOR_SKIP_WHEN_CLOSED=${SIGNAL_EVALUATOR_SKIP_WHEN_CLOSED:-true}
+    volumes:
+      - ./secrets/service-account.json:/secrets/service-account.json:ro
+    depends_on:
+      - redis
+      - market-data-gateway
+
+  pipeline-alerts:
+    build: ../pipeline-alerts
+    image: relayorb-pipeline-alerts:local
+    restart: unless-stopped
+    environment:
+      - ALLOW_LOCAL_RUN=1
+      - FIREBASE_PROJECT_ID=relayorb
+      - GCP_PROJECT_ID=relayorb
+      - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
+      - NODE_ENV=production
+      - RUN_REGION=us-west1
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - PIPELINE_ALERTS_CONTINUOUS=${PIPELINE_ALERTS_CONTINUOUS:-true}
+      - PIPELINE_ALERTS_LOOP_MS=${PIPELINE_ALERTS_LOOP_MS:-300000}
+      - PIPELINE_ALERTS_CHECK_JOBS=${PIPELINE_ALERTS_CHECK_JOBS:-false}
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY:-}
+      - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@relayorb.app}
+    volumes:
+      - ./secrets/service-account.json:/secrets/service-account.json:ro
+    depends_on:
+      - redis
+      - market-data-gateway
+
   relayorb-agent:
     image: gcr.io/relayorb/relayorb-agent:latest
     pull_policy: always
     restart: unless-stopped
     environment:
+      - ALLOW_LOCAL_RUN=1
       - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
       - RELAYORB_CONFIG_PATH=/config/config.json
       - NODE_ENV=production
@@ -30,10 +233,11 @@ services:
       - backtrader
 
   relayorb-updater:
-    image: gcr.io/relayorb/relayorb-agent-updater:latest
-    pull_policy: always
+    build: ../agent-updater
+    image: relayorb-agent-updater:local
     restart: unless-stopped
     environment:
+      - ALLOW_LOCAL_RUN=1
       - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
       - RELAYORB_CONFIG_PATH=/config/config.json
       - RELAYORB_COMPOSE_PATH=/host/docker-compose.yml
@@ -53,8 +257,8 @@ services:
     restart: unless-stopped
     environment:
       - PORT=8080
-      - MARKET_DATA_GATEWAY_URL=${MARKET_DATA_GATEWAY_URL:-}
-      - MARKET_DATA_GATEWAY_AUTH=${MARKET_DATA_GATEWAY_AUTH:-true}
+      - MARKET_DATA_GATEWAY_URL=${MARKET_DATA_GATEWAY_URL:-http://market-data-gateway:8080}
+      - MARKET_DATA_GATEWAY_AUTH=${MARKET_DATA_GATEWAY_AUTH:-false}
       - POLYGON_API_KEY=${POLYGON_API_KEY:-}
       - FIREBASE_PROJECT_ID=relayorb
       - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
@@ -64,11 +268,12 @@ services:
       - ./secrets/service-account.json:/secrets/service-account.json:ro
 
   ibkr-executor-acct1:
-    image: gcr.io/relayorb/relayorb-ibkr-executor:latest
-    pull_policy: always
+    build: ../ibkr-executor
+    image: relayorb-ibkr-executor:local
     restart: unless-stopped
     network_mode: host
     environment:
+      - ALLOW_LOCAL_RUN=1
       - BROKER_ACCOUNT_KEY=acct1
       - FIREBASE_PROJECT_ID=relayorb
       - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
@@ -79,11 +284,12 @@ services:
       - ./secrets/service-account.json:/secrets/service-account.json:ro
 
   ibkr-executor-acct2:
-    image: gcr.io/relayorb/relayorb-ibkr-executor:latest
-    pull_policy: always
+    build: ../ibkr-executor
+    image: relayorb-ibkr-executor:local
     restart: unless-stopped
     network_mode: host
     environment:
+      - ALLOW_LOCAL_RUN=1
       - BROKER_ACCOUNT_KEY=acct2
       - FIREBASE_PROJECT_ID=relayorb
       - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json
@@ -94,11 +300,12 @@ services:
       - ./secrets/service-account.json:/secrets/service-account.json:ro
 
   ibkr-executor-acct3:
-    image: gcr.io/relayorb/relayorb-ibkr-executor:latest
-    pull_policy: always
+    build: ../ibkr-executor
+    image: relayorb-ibkr-executor:local
     restart: unless-stopped
     network_mode: host
     environment:
+      - ALLOW_LOCAL_RUN=1
       - BROKER_ACCOUNT_KEY=acct3
       - FIREBASE_PROJECT_ID=relayorb
       - GOOGLE_APPLICATION_CREDENTIALS=/secrets/service-account.json

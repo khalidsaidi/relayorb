@@ -166,6 +166,9 @@ const DMI_VENDOR_PATHS = [
 ]
 
 function assertRemoteOnly(serviceName) {
+  if (process.env.ALLOW_LOCAL_RUN === "1") {
+    return
+  }
   const isCloudRun = Boolean(
     process.env.K_SERVICE ||
       process.env.CLOUD_RUN_JOB ||

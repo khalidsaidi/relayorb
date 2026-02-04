@@ -37,12 +37,16 @@ const config = {
   marketDataGatewayAudience: process.env.MARKET_DATA_GATEWAY_AUDIENCE || "",
   watchlistRefreshMs: parseInt(process.env.WATCHLIST_REFRESH_MS || "60000", 10),
   cryptoPollMs: parseInt(process.env.CRYPTO_POLL_MS || "30000", 10),
-  stockPollMs: parseInt(process.env.STOCK_POLL_MS || "30000", 10),
+  stockPollMs: parseInt(process.env.STOCK_POLL_MS || "15000", 10),
   stockExtendedPollMs: parseInt(process.env.STOCK_EXTENDED_POLL_MS || "300000", 10),
   stockClosedPollMs: parseInt(process.env.STOCK_CLOSED_POLL_MS || "300000", 10),
   forexPollMs: parseInt(process.env.FOREX_POLL_MS || "30000", 10),
   forexClosedPollMs: parseInt(process.env.FOREX_CLOSED_POLL_MS || "1800000", 10),
   writeMs: parseInt(process.env.PRICE_WRITE_MS || "2000", 10),
+  writeMinMs: parseInt(process.env.PRICE_WRITE_MIN_MS || "5000", 10),
+  writeMinExtendedMs: parseInt(process.env.PRICE_WRITE_MIN_EXTENDED_MS || "8000", 10),
+  writeMinClosedMs: parseInt(process.env.PRICE_WRITE_MIN_CLOSED_MS || "15000", 10),
+  writeIdleMaxMs: parseInt(process.env.PRICE_WRITE_IDLE_MAX_MS || "60000", 10),
   maxSymbols: parseInt(process.env.PRICE_STREAM_MAX_SYMBOLS || "120", 10),
   stockStreamTarget: parseInt(process.env.PRICE_STREAM_STOCK_TARGET || "3000", 10),
   stockPollTarget: parseInt(process.env.PRICE_STREAM_STOCK_POLL_TARGET || "600", 10),
@@ -52,7 +56,7 @@ const config = {
     10
   ),
   historyMinutes: parseInt(process.env.PRICE_HISTORY_MINUTES || "120", 10),
-  quoteConcurrency: parseInt(process.env.PRICE_STREAM_CONCURRENCY || "5", 10),
+  quoteConcurrency: parseInt(process.env.PRICE_STREAM_CONCURRENCY || "8", 10),
   quoteBatchDelayMs: parseInt(process.env.PRICE_STREAM_BATCH_DELAY_MS || "200", 10),
   redisUrl: process.env.REDIS_URL || "",
   redisPrefix: process.env.REDIS_PREFIX || "relayorb",
@@ -71,8 +75,10 @@ const config = {
   replayControlsCacheMs: parseInt(process.env.REPLAY_CONTROLS_CACHE_MS || "1500", 10),
   replayAckIntervalMs: parseInt(process.env.REPLAY_ACK_INTERVAL_MS || "15000", 10),
   replayTickMs: parseInt(process.env.REPLAY_TICK_MS || "1000", 10),
+  logRateLimitMs: parseInt(process.env.PRICE_STREAM_LOG_RATE_LIMIT_MS || "60000", 10),
+  logSampleRate: parseFloat(process.env.PRICE_STREAM_LOG_SAMPLE_RATE || "0.1"),
   // Rate limiting for provider-backed quote polling.
-  rateLimitPerMinute: parseInt(process.env.PRICE_STREAM_RATE_LIMIT_PER_MINUTE || "300", 10),
+  rateLimitPerMinute: parseInt(process.env.PRICE_STREAM_RATE_LIMIT_PER_MINUTE || "600", 10),
   rateLimitWarningPct: parseFloat(process.env.PRICE_STREAM_RATE_LIMIT_WARNING_PCT || "0.83"),
   rateLimitCriticalPct: parseFloat(process.env.PRICE_STREAM_RATE_LIMIT_CRITICAL_PCT || "0.93"),
   stalenessPriceMs: parseInt(process.env.PRICE_STALE_MS || "60000", 10),
@@ -112,6 +118,9 @@ const config = {
   warmupCandlesInterval: process.env.PRICE_WARMUP_CANDLES_INTERVAL || "1min",
   warmupCandlesLimit: parseInt(process.env.PRICE_WARMUP_CANDLES_LIMIT || "30", 10),
   warmupRepeatMs: parseInt(process.env.PRICE_WARMUP_REPEAT_MS || "180000", 10),
+  discoveryPct: parseFloat(process.env.PRICE_STREAM_DISCOVERY_PCT || "0.2"),
+  discoveryMin: parseInt(process.env.PRICE_STREAM_DISCOVERY_MIN || "250", 10),
+  discoveryMax: parseInt(process.env.PRICE_STREAM_DISCOVERY_MAX || "1000", 10),
 }
 
 const EXPECTED_REGION = "us-west1"
@@ -125,6 +134,9 @@ const DMI_VENDOR_PATHS = [
 ]
 
 function assertRemoteOnly(serviceName) {
+  if (process.env.ALLOW_LOCAL_RUN === "1") {
+    return
+  }
   const isCloudRun = Boolean(
     process.env.K_SERVICE ||
       process.env.CLOUD_RUN_JOB ||
@@ -818,6 +830,9 @@ const state = {
   lastFlushError: null,
   lastWarmupAt: null,
   warmupInFlight: false,
+  logState: new Map(),
+  stockPollTarget: null,
+  stockStreamTarget: null,
   streamBackoffUntil: 0,
   redis: null,
   redisReady: false,
@@ -853,6 +868,7 @@ const state = {
     symbols: [],
     updatedAt: 0,
     cursor: 0,
+    discoveryCursor: 0,
   },
   stream: {
     enabled: config.streamEnabled,
@@ -940,6 +956,33 @@ function parseNumber(value) {
   if (value === undefined || value === null) return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function shouldLog(key, rateLimitMs = config.logRateLimitMs) {
+  if (!Number.isFinite(rateLimitMs) || rateLimitMs <= 0) return true
+  if (
+    Number.isFinite(config.logSampleRate) &&
+    config.logSampleRate >= 0 &&
+    config.logSampleRate < 1 &&
+    Math.random() > config.logSampleRate
+  ) {
+    return false
+  }
+  const now = Date.now()
+  const last = state.logState.get(key) || 0
+  if (now - last < rateLimitMs) return false
+  state.logState.set(key, now)
+  return true
+}
+
+function logRateLimited(key, payload, level = "log", rateLimitMs = config.logRateLimitMs) {
+  if (!shouldLog(key, rateLimitMs)) return
+  const logger = console[level] || console.log
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    logger({ event: key, ...payload })
+  } else {
+    logger(payload)
+  }
 }
 
 function resolveTurnoverFilter(controls) {
@@ -1245,11 +1288,30 @@ function shouldUseStreamFor(assetClass) {
 function getSymbolCap(assetClass) {
   if (assetClass === "stock") {
     if (state.stream?.enabled && isStreamHealthyFor("stock")) {
-      return Math.max(1, config.stockStreamTarget || config.maxSymbols)
+      const streamTarget = Number.isFinite(state.stockStreamTarget)
+        ? state.stockStreamTarget
+        : config.stockStreamTarget
+      return Math.max(1, streamTarget || config.maxSymbols)
     }
-    return Math.max(1, config.stockPollTarget || config.maxSymbols)
+    const pollTarget = Number.isFinite(state.stockPollTarget)
+      ? state.stockPollTarget
+      : config.stockPollTarget
+    return Math.max(1, pollTarget || config.maxSymbols)
   }
   return Math.max(1, config.maxSymbols)
+}
+
+function resolveDiscoverySlots(cap) {
+  if (!Number.isFinite(cap) || cap <= 0) return 0
+  const pct = Number.isFinite(config.discoveryPct)
+    ? Math.max(0, Math.min(1, config.discoveryPct))
+    : 0.2
+  const minSlots = Number.isFinite(config.discoveryMin) ? Math.max(0, config.discoveryMin) : 0
+  const maxSlots = Number.isFinite(config.discoveryMax) ? Math.max(0, config.discoveryMax) : cap
+  let slots = Math.floor(cap * pct)
+  slots = Math.max(slots, minSlots)
+  slots = Math.min(slots, maxSlots, cap)
+  return slots
 }
 
 async function refreshStockUniverseCache() {
@@ -1278,19 +1340,24 @@ async function refreshStockUniverseCache() {
     state.stockUniverse.symbols = symbols
     state.stockUniverse.updatedAt = now
     state.stockUniverse.cursor = 0
+    state.stockUniverse.discoveryCursor = 0
     console.log("ps_stock_universe_refreshed", { count: symbols.length })
   } catch (err) {
     console.error("Stock universe refresh failed:", err.message)
   }
 }
 
-function fillFromStockUniverse(targetSet, cap) {
-  if (!targetSet || targetSet.size >= cap) return
+function fillFromStockUniverse(targetSet, cap, options = {}) {
+  if (!targetSet) return
   const symbols = state.stockUniverse.symbols
   if (!Array.isArray(symbols) || symbols.length === 0) return
-  let cursor = state.stockUniverse.cursor || 0
+  const cursorKey = options.cursorKey === null ? null : options.cursorKey || "cursor"
+  let cursor = cursorKey ? state.stockUniverse[cursorKey] || 0 : 0
   let added = 0
-  const maxAdds = Math.max(0, cap - targetSet.size)
+  const maxAdds = Number.isFinite(options.maxAdds)
+    ? Math.max(0, options.maxAdds)
+    : Math.max(0, cap - targetSet.size)
+  if (maxAdds <= 0) return
   for (let i = 0; i < symbols.length && added < maxAdds; i += 1) {
     const index = (cursor + i) % symbols.length
     const symbol = symbols[index]
@@ -1300,7 +1367,9 @@ function fillFromStockUniverse(targetSet, cap) {
       added += 1
     }
   }
-  state.stockUniverse.cursor = (cursor + added) % symbols.length
+  if (cursorKey) {
+    state.stockUniverse[cursorKey] = (cursor + added) % symbols.length
+  }
 }
 
 function handleStreamQuote(quote, streamName) {
@@ -3059,6 +3128,26 @@ async function refreshWatchlist() {
       state.dataProfile = dataProfile
       console.log("ps_data_profile", { profile: dataProfile })
     }
+    const nextStockPollTarget = parseInt(controls?.stockPollTarget, 10)
+    if (Number.isFinite(nextStockPollTarget) && nextStockPollTarget > 0) {
+      if (state.stockPollTarget !== nextStockPollTarget) {
+        state.stockPollTarget = nextStockPollTarget
+        console.log("ps_stock_poll_target", { target: nextStockPollTarget })
+      }
+    } else if (state.stockPollTarget !== null) {
+      state.stockPollTarget = null
+      console.log("ps_stock_poll_target", { target: "default" })
+    }
+    const nextStockStreamTarget = parseInt(controls?.stockStreamTarget, 10)
+    if (Number.isFinite(nextStockStreamTarget) && nextStockStreamTarget > 0) {
+      if (state.stockStreamTarget !== nextStockStreamTarget) {
+        state.stockStreamTarget = nextStockStreamTarget
+        console.log("ps_stock_stream_target", { target: nextStockStreamTarget })
+      }
+    } else if (state.stockStreamTarget !== null) {
+      state.stockStreamTarget = null
+      console.log("ps_stock_stream_target", { target: "default" })
+    }
     const stockQuoteMode = resolveStockQuoteMode(controls)
     if (state.stockQuoteMode !== stockQuoteMode) {
       state.stockQuoteMode = stockQuoteMode
@@ -3274,7 +3363,16 @@ async function refreshWatchlist() {
     const allowStockDiscovery =
       stockMode !== "universe_only" && stockMode !== "movers_filtered_by_universe"
     if (allowStockDiscovery) {
-      fillFromStockUniverse(next.stock, getSymbolCap("stock"))
+      const stockCap = getSymbolCap("stock")
+      const discoverySlots = resolveDiscoverySlots(stockCap)
+      const baseCap = Math.max(0, stockCap - discoverySlots)
+      fillFromStockUniverse(next.stock, baseCap, { cursorKey: null })
+      if (discoverySlots > 0) {
+        fillFromStockUniverse(next.stock, stockCap, {
+          cursorKey: "discoveryCursor",
+          maxAdds: discoverySlots,
+        })
+      }
     }
 
     const nextHash = buildWatchHash(next)
@@ -3323,11 +3421,27 @@ function shouldThrottlePolling(assetClass, marketStatus) {
   return Date.now() - lastPollAt < minIntervalMs
 }
 
+function resolveWriteIntervalMs() {
+  const marketStatus = getMarketStatus("stock").status
+  const base = Number.isFinite(config.writeMinMs) ? Math.max(config.writeMinMs, 1000) : 1000
+  if (marketStatus === "open") return base
+  if (marketStatus === "pre" || marketStatus === "after") {
+    const extended = Number.isFinite(config.writeMinExtendedMs)
+      ? Math.max(config.writeMinExtendedMs, base)
+      : base
+    return extended
+  }
+  const closed = Number.isFinite(config.writeMinClosedMs)
+    ? Math.max(config.writeMinClosedMs, base)
+    : base
+  return closed
+}
+
 
 async function pollCryptoPrices() {
   if (isReplayMode()) return
   if (state.pollInFlight.crypto) {
-    console.log("ps_poll_skip", { assetClass: "crypto", reason: "in_flight" })
+    logRateLimited("ps_poll_skip_crypto_inflight", { assetClass: "crypto", reason: "in_flight" })
     return
   }
   const profileConfig = resolveProfileConfig(state.dataProfile || "normal")
@@ -3344,19 +3458,23 @@ async function pollCryptoPrices() {
   const slice = getPollSlice("crypto", allSymbols, config.cryptoPollMs)
   if (slice.symbols.length === 0) {
     if (slice.total > 0) {
-      console.warn("ps_poll_skip", {
-        assetClass: "crypto",
-        reason: "rate_limit",
-        total: slice.total,
-        rateLimit: getRateLimitStatus().utilizationPct + "%",
-      })
+      logRateLimited(
+        "ps_poll_skip_crypto",
+        {
+          assetClass: "crypto",
+          reason: "rate_limit",
+          total: slice.total,
+          rateLimit: getRateLimitStatus().utilizationPct + "%",
+        },
+        "warn"
+      )
     }
     return
   }
   
   state.pollInFlight.crypto = true
   const marketStatus = getMarketStatus("crypto")
-  console.log("ps_ingest", { 
+  logRateLimited("ps_ingest_crypto", { 
     runId, 
     assetClass: "crypto", 
     count: slice.symbols.length,
@@ -3393,7 +3511,7 @@ async function pollCryptoPrices() {
       })
     })
     
-    console.log("ps_ingest_complete", { 
+    logRateLimited("ps_ingest_complete_crypto", { 
       runId, 
       assetClass: "crypto", 
       requested: slice.symbols.length,
@@ -3419,7 +3537,7 @@ async function pollStockPrices() {
   if (isReplayMode() && state.replay.phase !== "running") return
   if (isReplayMode() && !Number.isFinite(state.replay.asOfMs)) return
   if (state.pollInFlight.stock) {
-    console.log("ps_poll_skip", { assetClass: "stock", reason: "in_flight" })
+    logRateLimited("ps_poll_skip_stock_inflight", { assetClass: "stock", reason: "in_flight" })
     return
   }
   const profileConfig = resolveProfileConfig(state.dataProfile || "normal")
@@ -3445,13 +3563,17 @@ async function pollStockPrices() {
   const slice = getPollSlice("stock", pollUniverse, config.stockPollMs)
   if (slice.symbols.length === 0) {
     if (slice.total > 0) {
-      console.warn("ps_poll_skip", {
-        assetClass: "stock",
-        reason: "rate_limit",
-        total: slice.total,
-        marketStatus: marketStatus.status,
-        rateLimit: getRateLimitStatus().utilizationPct + "%",
-      })
+      logRateLimited(
+        "ps_poll_skip_stock",
+        {
+          assetClass: "stock",
+          reason: "rate_limit",
+          total: slice.total,
+          marketStatus: marketStatus.status,
+          rateLimit: getRateLimitStatus().utilizationPct + "%",
+        },
+        "warn"
+      )
     }
     return
   }
@@ -3459,7 +3581,7 @@ async function pollStockPrices() {
   state.pollInFlight.stock = true
   const useExtendedHours = marketStatus.status === "pre" || marketStatus.status === "after"
   
-  console.log("ps_ingest", { 
+  logRateLimited("ps_ingest_stock", { 
     runId, 
     assetClass: "stock", 
     count: slice.symbols.length,
@@ -3502,7 +3624,7 @@ async function pollStockPrices() {
       })
     })
     
-    console.log("ps_ingest_complete", { 
+    logRateLimited("ps_ingest_complete_stock", { 
       runId, 
       assetClass: "stock", 
       requested: slice.symbols.length,
@@ -3529,7 +3651,7 @@ async function pollStockPrices() {
 async function pollForexPrices() {
   if (isReplayMode()) return
   if (state.pollInFlight.forex) {
-    console.log("ps_poll_skip", { assetClass: "forex", reason: "in_flight" })
+    logRateLimited("ps_poll_skip_forex_inflight", { assetClass: "forex", reason: "in_flight" })
     return
   }
   const profileConfig = resolveProfileConfig(state.dataProfile || "normal")
@@ -3548,19 +3670,23 @@ async function pollForexPrices() {
   const slice = getPollSlice("forex", allSymbols, config.forexPollMs)
   if (slice.symbols.length === 0) {
     if (slice.total > 0) {
-      console.warn("ps_poll_skip", {
-        assetClass: "forex",
-        reason: "rate_limit",
-        total: slice.total,
-        marketStatus: marketStatus.status,
-        rateLimit: getRateLimitStatus().utilizationPct + "%",
-      })
+      logRateLimited(
+        "ps_poll_skip_forex",
+        {
+          assetClass: "forex",
+          reason: "rate_limit",
+          total: slice.total,
+          marketStatus: marketStatus.status,
+          rateLimit: getRateLimitStatus().utilizationPct + "%",
+        },
+        "warn"
+      )
     }
     return
   }
 
   state.pollInFlight.forex = true
-  console.log("ps_ingest", { 
+  logRateLimited("ps_ingest_forex", { 
     runId, 
     assetClass: "forex", 
     count: slice.symbols.length,
@@ -3597,7 +3723,7 @@ async function pollForexPrices() {
       })
     })
     
-    console.log("ps_ingest_complete", { 
+    logRateLimited("ps_ingest_complete_forex", { 
       runId, 
       assetClass: "forex", 
       requested: slice.symbols.length,
@@ -3649,10 +3775,17 @@ async function writeHeartbeat() {
 }
 
 async function flushPrices() {
-  if (!state.dirty) return
-  state.dirty = false
-
   const now = getEffectiveNow()
+  const minWriteMs = resolveWriteIntervalMs()
+  const sinceLast = state.lastFlushAt ? now - state.lastFlushAt : null
+  if (sinceLast !== null && sinceLast < minWriteMs) {
+    return
+  }
+  if (!state.dirty && sinceLast !== null && sinceLast < config.writeIdleMaxMs) {
+    return
+  }
+
+  state.dirty = false
   const startedAt = Date.now()
   const items = Array.from(state.priceCache.values()).map((item) => {
     const key = `${item.assetClass}:${item.symbol}`
@@ -3711,7 +3844,7 @@ async function flushPrices() {
       meta.asOf = new Date(now).toISOString()
     }
     await writeRedisPrices(items, meta, state.replay)
-    console.log("ps_write_redis", {
+    logRateLimited("ps_write_redis", {
       runId,
       count: items.length,
       updatedAt: new Date().toISOString(),
@@ -3777,6 +3910,7 @@ async function flushPrices() {
   } catch (err) {
     console.error("Failed to write market/prices:", err.message)
     state.lastFlushError = err.message
+    state.dirty = true
     await publishPipelineEvent(
       buildPipelineEvent({
         stationId: "redis_hot",

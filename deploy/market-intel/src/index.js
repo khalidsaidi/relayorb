@@ -28,6 +28,7 @@ const config = {
     process.env.MARKET_DATA_GATEWAY_URL || process.env.VITE_MARKET_DATA_GATEWAY_URL || "",
   marketDataGatewayAuth: process.env.MARKET_DATA_GATEWAY_AUTH !== "false",
   marketDataGatewayAudience: process.env.MARKET_DATA_GATEWAY_AUDIENCE || "",
+  skipWhenClosed: process.env.MARKET_INTEL_SKIP_WHEN_CLOSED === "true",
   redisUrl: process.env.REDIS_URL || "",
   redisPrefix: process.env.REDIS_PREFIX || "relayorb",
   redisLatestMaxAgeMs: parseInt(process.env.REDIS_LATEST_MAX_AGE_MS || "120000", 10),
@@ -40,6 +41,8 @@ const config = {
   replayAllowed: process.env.REPLAY_ALLOWED !== "false",
   replayControlsCacheMs: parseInt(process.env.REPLAY_CONTROLS_CACHE_MS || "1500", 10),
   replayAckIntervalMs: parseInt(process.env.REPLAY_ACK_INTERVAL_MS || "15000", 10),
+  marketIntelContinuous: process.env.MARKET_INTEL_CONTINUOUS === "true",
+  marketIntelLoopMs: parseInt(process.env.MARKET_INTEL_LOOP_MS || "300000", 10),
   candidatePublishLimit: parseInt(process.env.CANDIDATE_PUBLISH_LIMIT || "150", 10),
   batchCollection: process.env.BATCH_COLLECTION || "batches",
   runId: process.env.RUN_ID || "",
@@ -103,6 +106,9 @@ const DMI_VENDOR_PATHS = [
 ]
 
 function assertRemoteOnly(serviceName) {
+  if (process.env.ALLOW_LOCAL_RUN === "1") {
+    return
+  }
   const isCloudRun = Boolean(
     process.env.K_SERVICE ||
       process.env.CLOUD_RUN_JOB ||
@@ -2581,6 +2587,7 @@ async function fetchLiveSnapshotMovers(db, options) {
   }
 
   if (allowTrending) {
+    const requireMomentumForActives = Boolean(previous)
     gainers
       .slice(0, config.moverEnrichLimit)
       .forEach((item) =>
@@ -2595,7 +2602,10 @@ async function fetchLiveSnapshotMovers(db, options) {
       actives
         .slice(0, config.moverEnrichLimit)
         .forEach((item) =>
-          addCandidate(item, null, { requireMomentum: true, origins: ["mover15m"] })
+          addCandidate(item, null, {
+            requireMomentum: requireMomentumForActives,
+            origins: ["mover15m"],
+          })
         )
     } else if (candidates.length > 0) {
       candidates
@@ -7369,7 +7379,7 @@ async function aggregatePipelineHealth(db, marketIntelHealth) {
   })
 }
 
-async function run() {
+async function runOnce() {
   const db = initAdmin()
   const replayControls = await loadReplayControls(db)
   applyReplayControls(replayControls)
@@ -7402,6 +7412,24 @@ async function run() {
   const batchCollectionName = resolveBatchCollectionName()
 
   console.log("mi_run_start", { startedAt: startedAt.toISOString(), runId })
+
+  if (!replayMode && config.skipWhenClosed) {
+    const marketStatus = resolveStockMarketStatus()
+    if (!marketStatus.isOpen) {
+      await db.doc("pipeline/status").set(
+        {
+          market_intel: {
+            status: "skipped_closed",
+            marketStatus,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+        },
+        { merge: true }
+      )
+      console.log("mi_skip_closed", { status: marketStatus.status, dateKey: marketStatus.dateKey })
+      return
+    }
+  }
 
   let universe = null
   let controls = null
@@ -8560,7 +8588,30 @@ async function run() {
   }
 }
 
-run().catch((err) => {
+async function runLoop() {
+  let cycle = 0
+  while (true) {
+    const startedAt = Date.now()
+    try {
+      await runOnce()
+    } catch (err) {
+      console.error("Market intel failed", err)
+    }
+    cycle += 1
+    const loopMs = Number.isFinite(config.marketIntelLoopMs)
+      ? config.marketIntelLoopMs
+      : 300000
+    if (!config.marketIntelContinuous || loopMs <= 0) {
+      break
+    }
+    const elapsed = Date.now() - startedAt
+    const sleepMs = Math.max(1000, loopMs - elapsed)
+    await new Promise((resolve) => setTimeout(resolve, sleepMs))
+  }
+}
+
+const runner = config.marketIntelContinuous ? runLoop : runOnce
+runner().catch((err) => {
   console.error("Market intel failed", err)
   process.exit(1)
 })

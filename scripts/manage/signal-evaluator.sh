@@ -30,6 +30,7 @@ Env:
   MARKET_DATA_GATEWAY_AUTH       true/false (default: true)
   MARKET_DATA_GATEWAY_AUDIENCE   Optional audience override for ID token
   GATEWAY_SERVICE_NAME           Cloud Run service to resolve URL from
+  SIGNAL_EVALUATOR_SKIP_WHEN_CLOSED  true/false to skip runs when US market is closed
 USAGE
 }
 
@@ -74,6 +75,9 @@ build_env_vars() {
   envs="${envs}|EVAL_CONTINUOUS=${EVAL_CONTINUOUS:-true}"
   envs="${envs}|EVAL_LOOP_MS=${EVAL_LOOP_MS:-30000}"
   envs="${envs}|EVAL_MAX_CYCLES=${EVAL_MAX_CYCLES:-1}"
+  if [ -n "${SIGNAL_EVALUATOR_SKIP_WHEN_CLOSED:-}" ]; then
+    envs="${envs}|SIGNAL_EVALUATOR_SKIP_WHEN_CLOSED=${SIGNAL_EVALUATOR_SKIP_WHEN_CLOSED}"
+  fi
   echo "$envs"
 }
 

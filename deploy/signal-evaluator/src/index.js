@@ -60,6 +60,7 @@ const config = {
   evalOverlapMs: parseInt(process.env.EVAL_OVERLAP_MS || "2000", 10),
   evalContinuous: process.env.EVAL_CONTINUOUS === "true",
   evalLoopMs: parseInt(process.env.EVAL_LOOP_MS || "30000", 10),
+  skipWhenClosed: process.env.SIGNAL_EVALUATOR_SKIP_WHEN_CLOSED === "true",
   evalMaxCycles: parseInt(process.env.EVAL_MAX_CYCLES || "0", 10),
   aggLookbackDays: parseInt(process.env.EVAL_AGG_LOOKBACK_DAYS || "30", 10),
   aggMaxSignals: parseInt(process.env.EVAL_AGG_MAX_SIGNALS || "600", 10),
@@ -107,6 +108,9 @@ const DMI_VENDOR_PATHS = [
 ]
 
 function assertRemoteOnly(serviceName) {
+  if (process.env.ALLOW_LOCAL_RUN === "1") {
+    return
+  }
   const isCloudRun = Boolean(
     process.env.K_SERVICE ||
       process.env.CLOUD_RUN_JOB ||
@@ -1649,6 +1653,14 @@ async function runOnce() {
   redis = await initRedis()
   if (isReplayMode() && !replayState.asOfMs) {
     throw new Error("Replay mode missing asOf timestamp")
+  }
+  if (!isReplayMode() && config.skipWhenClosed && !isMarketOpen("stock", Date.now())) {
+    console.log("se_skip_closed", { runId: getActiveRunId() || null })
+    await writeHealthStatus(db, "skipped_closed", null)
+    if (redis) {
+      await redis.quit().catch(() => {})
+    }
+    return
   }
   const runId = getActiveRunId() || null
   console.log("se_run_start", { runId })

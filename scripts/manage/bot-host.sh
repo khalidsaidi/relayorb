@@ -22,8 +22,8 @@ Commands:
   config      Show resolved docker-compose config
 
 Env (set before running commands):
-  MARKET_DATA_GATEWAY_URL   Market data gateway base URL (required)
-  MARKET_DATA_GATEWAY_AUTH  true/false (default: true)
+  MARKET_DATA_GATEWAY_URL   Market data gateway base URL (optional; defaults to local mdg container)
+  MARKET_DATA_GATEWAY_AUTH  true/false (default: false for local mdg)
   REDIS_URL                 Redis connection URL (default: redis://redis:6379)
   IBKR_ACCT1_USER           IBKR username for acct1 gateway
   IBKR_ACCT1_PASS           IBKR password for acct1 gateway

@@ -29,6 +29,9 @@ const DMI_VENDOR_PATHS = [
 ]
 
 function assertRemoteOnly(serviceName) {
+  if (process.env.ALLOW_LOCAL_RUN === "1") {
+    return
+  }
   const isCloudRun = Boolean(
     process.env.K_SERVICE ||
       process.env.CLOUD_RUN_JOB ||
@@ -134,6 +137,9 @@ const config = {
   // Redis configuration for pipeline events
   redisUrl: process.env.REDIS_URL || "",
   pipelineEventsStream: process.env.PIPELINE_EVENTS_STREAM || "pipeline_events",
+  continuous: process.env.PIPELINE_ALERTS_CONTINUOUS === "true",
+  loopMs: parseInt(process.env.PIPELINE_ALERTS_LOOP_MS || "300000", 10),
+  checkJobDeployments: process.env.PIPELINE_ALERTS_CHECK_JOBS !== "false",
 
   // Thresholds
   thresholds: {
@@ -538,21 +544,23 @@ async function runVerification() {
       }
     }
 
-    // Check Cloud Run job deployments
-    console.log("Checking Cloud Run job deployments...")
-    const jobDeploymentCheck = await checkJobDeployments()
+    if (config.checkJobDeployments) {
+      // Check Cloud Run job deployments
+      console.log("Checking Cloud Run job deployments...")
+      const jobDeploymentCheck = await checkJobDeployments()
 
-    if (jobDeploymentCheck.error) {
-      addCheck("deployments", "job_deployment_check_failed", "warning",
-        `Failed to verify job deployments: ${jobDeploymentCheck.error}`)
-    } else if (jobDeploymentCheck.missingJobs.length > 0) {
-      for (const missingJob of jobDeploymentCheck.missingJobs) {
-        addCheck("deployments", `${missingJob}_not_deployed`, "failed",
-          `Cloud Run job "${missingJob}" is not deployed in region ${config.gcpRegion}`)
+      if (jobDeploymentCheck.error) {
+        addCheck("deployments", "job_deployment_check_failed", "warning",
+          `Failed to verify job deployments: ${jobDeploymentCheck.error}`)
+      } else if (jobDeploymentCheck.missingJobs.length > 0) {
+        for (const missingJob of jobDeploymentCheck.missingJobs) {
+          addCheck("deployments", `${missingJob}_not_deployed`, "failed",
+            `Cloud Run job "${missingJob}" is not deployed in region ${config.gcpRegion}`)
+        }
+      } else {
+        addCheck("deployments", "all_jobs_deployed", "passed",
+          `All ${config.expectedJobs.length} expected Cloud Run jobs are deployed`)
       }
-    } else {
-      addCheck("deployments", "all_jobs_deployed", "passed",
-        `All ${config.expectedJobs.length} expected Cloud Run jobs are deployed`)
     }
 
     // Check prices
@@ -902,7 +910,7 @@ async function sendAlertEmail(results) {
 // MAIN
 // ============================================================================
 
-async function main() {
+async function runOnce() {
   console.log("Pipeline alerts check starting...")
   
   const results = await runVerification()
@@ -932,9 +940,32 @@ async function main() {
   console.log("Pipeline alerts check complete")
 }
 
-main().catch(async (err) => {
+async function runLoop() {
+  let cycle = 0
+  while (true) {
+    const startedAt = Date.now()
+    try {
+      await runOnce()
+    } catch (err) {
+      console.error("Pipeline alerts failed:", err)
+      if (redisClient && redisClient.isOpen) {
+        await redisClient.quit().catch(e => console.error("Failed to close Redis:", e.message))
+      }
+    }
+    cycle += 1
+    const loopMs = Number.isFinite(config.loopMs) ? config.loopMs : 300000
+    if (!config.continuous || loopMs <= 0) {
+      break
+    }
+    const elapsed = Date.now() - startedAt
+    const sleepMs = Math.max(1000, loopMs - elapsed)
+    await new Promise((resolve) => setTimeout(resolve, sleepMs))
+  }
+}
+
+const runner = config.continuous ? runLoop : runOnce
+runner().catch(async (err) => {
   console.error("Pipeline alerts failed:", err)
-  // Clean up Redis connection on error
   if (redisClient && redisClient.isOpen) {
     await redisClient.quit().catch(e => console.error("Failed to close Redis:", e.message))
   }

@@ -123,6 +123,31 @@ deploy_run_service() {
   if [ -n "${SERVICE_ACCOUNT:-}" ]; then
     args+=(--service-account "${SERVICE_ACCOUNT}")
   fi
+  if [ -n "${SERVICE_MIN_INSTANCES:-}" ]; then
+    args+=(--min-instances "${SERVICE_MIN_INSTANCES}")
+  fi
+  if [ -n "${SERVICE_MAX_INSTANCES:-}" ]; then
+    args+=(--max-instances "${SERVICE_MAX_INSTANCES}")
+  fi
+  if [ -n "${SERVICE_CONCURRENCY:-}" ]; then
+    args+=(--concurrency "${SERVICE_CONCURRENCY}")
+  fi
+  if [ -n "${SERVICE_CPU:-}" ]; then
+    args+=(--cpu "${SERVICE_CPU}")
+  fi
+  if [ -n "${SERVICE_MEMORY:-}" ]; then
+    args+=(--memory "${SERVICE_MEMORY}")
+  fi
+  if [ -n "${SERVICE_TIMEOUT:-}" ]; then
+    args+=(--timeout "${SERVICE_TIMEOUT}")
+  fi
+  if [ -n "${SERVICE_CPU_BOOST:-}" ]; then
+    if [ "${SERVICE_CPU_BOOST}" = "true" ]; then
+      args+=(--cpu-boost)
+    else
+      args+=(--no-cpu-boost)
+    fi
+  fi
   if [ -n "${REMOVE_ENV_VARS:-}" ]; then
     args+=(--remove-env-vars "${REMOVE_ENV_VARS}")
   fi

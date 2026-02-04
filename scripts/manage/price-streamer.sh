@@ -10,6 +10,12 @@ SERVICE_DIR="$ROOT_DIR/deploy/price-streamer"
 REGION=$(resolve_region)
 ALLOW_UNAUTHENTICATED=${ALLOW_UNAUTHENTICATED:-false}
 GATEWAY_SERVICE_NAME=${GATEWAY_SERVICE_NAME:-relayorb-market-data-gateway}
+SERVICE_MIN_INSTANCES=${SERVICE_MIN_INSTANCES:-1}
+SERVICE_MAX_INSTANCES=${SERVICE_MAX_INSTANCES:-1}
+SERVICE_CONCURRENCY=${SERVICE_CONCURRENCY:-1}
+SERVICE_CPU=${SERVICE_CPU:-1}
+SERVICE_MEMORY=${SERVICE_MEMORY:-1Gi}
+SERVICE_TIMEOUT=${SERVICE_TIMEOUT:-300}
 
 usage() {
   cat <<USAGE
@@ -42,9 +48,21 @@ Env:
   PRICE_STREAM_MAX_SYMBOLS_ALPACA     Provider cap override
   PRICE_STREAM_FILTER_ENABLED    true/false to filter stream symbols by watchlist
   PRICE_STREAM_FAILOVER_COOLDOWN_MS  Cooldown between stream provider failovers
+  PRICE_STREAM_RATE_LIMIT_PER_MINUTE  Max quote requests/minute budget
+  PRICE_STREAM_CONCURRENCY       Parallel quote requests per batch
+  STOCK_POLL_MS                  Stock polling interval (ms)
+  PRICE_STREAM_DISCOVERY_PCT     % of watchlist reserved for discovery
+  PRICE_STREAM_DISCOVERY_MIN     Minimum discovery symbols
+  PRICE_STREAM_DISCOVERY_MAX     Maximum discovery symbols
   PRICE_STALE_MS                Price staleness threshold (ms)
   PRICE_POLL_STALE_MS           Poll staleness threshold (ms)
   PRICE_HEARTBEAT_STALE_MS      Heartbeat staleness threshold (ms)
+  PRICE_WRITE_MIN_MS            Minimum write interval during market hours (ms)
+  PRICE_WRITE_MIN_EXTENDED_MS   Minimum write interval during pre/after market (ms)
+  PRICE_WRITE_MIN_CLOSED_MS     Minimum write interval when market is closed (ms)
+  PRICE_WRITE_IDLE_MAX_MS       Max idle interval before forcing a write (ms)
+  PRICE_STREAM_LOG_RATE_LIMIT_MS  Rate-limit noisy logs (ms)
+  PRICE_STREAM_LOG_SAMPLE_RATE    Sample rate for optional logs (0-1)
   ALPACA_API_KEY                 Optional Alpaca API key for WS auth
   ALPACA_API_SECRET              Optional Alpaca API secret for WS auth
   REMOVE_ENV_VARS                Comma-separated env vars to remove at deploy
@@ -125,6 +143,24 @@ build_env_vars() {
   if [ -n "${PRICE_STREAM_FAILOVER_COOLDOWN_MS:-}" ]; then
     envs="${envs}|PRICE_STREAM_FAILOVER_COOLDOWN_MS=${PRICE_STREAM_FAILOVER_COOLDOWN_MS}"
   fi
+  if [ -n "${PRICE_STREAM_RATE_LIMIT_PER_MINUTE:-}" ]; then
+    envs="${envs}|PRICE_STREAM_RATE_LIMIT_PER_MINUTE=${PRICE_STREAM_RATE_LIMIT_PER_MINUTE}"
+  fi
+  if [ -n "${PRICE_STREAM_CONCURRENCY:-}" ]; then
+    envs="${envs}|PRICE_STREAM_CONCURRENCY=${PRICE_STREAM_CONCURRENCY}"
+  fi
+  if [ -n "${STOCK_POLL_MS:-}" ]; then
+    envs="${envs}|STOCK_POLL_MS=${STOCK_POLL_MS}"
+  fi
+  if [ -n "${PRICE_STREAM_DISCOVERY_PCT:-}" ]; then
+    envs="${envs}|PRICE_STREAM_DISCOVERY_PCT=${PRICE_STREAM_DISCOVERY_PCT}"
+  fi
+  if [ -n "${PRICE_STREAM_DISCOVERY_MIN:-}" ]; then
+    envs="${envs}|PRICE_STREAM_DISCOVERY_MIN=${PRICE_STREAM_DISCOVERY_MIN}"
+  fi
+  if [ -n "${PRICE_STREAM_DISCOVERY_MAX:-}" ]; then
+    envs="${envs}|PRICE_STREAM_DISCOVERY_MAX=${PRICE_STREAM_DISCOVERY_MAX}"
+  fi
   if [ -n "${PRICE_STALE_MS:-}" ]; then
     envs="${envs}|PRICE_STALE_MS=${PRICE_STALE_MS}"
   fi
@@ -133,6 +169,24 @@ build_env_vars() {
   fi
   if [ -n "${PRICE_HEARTBEAT_STALE_MS:-}" ]; then
     envs="${envs}|PRICE_HEARTBEAT_STALE_MS=${PRICE_HEARTBEAT_STALE_MS}"
+  fi
+  if [ -n "${PRICE_WRITE_MIN_MS:-}" ]; then
+    envs="${envs}|PRICE_WRITE_MIN_MS=${PRICE_WRITE_MIN_MS}"
+  fi
+  if [ -n "${PRICE_WRITE_MIN_EXTENDED_MS:-}" ]; then
+    envs="${envs}|PRICE_WRITE_MIN_EXTENDED_MS=${PRICE_WRITE_MIN_EXTENDED_MS}"
+  fi
+  if [ -n "${PRICE_WRITE_MIN_CLOSED_MS:-}" ]; then
+    envs="${envs}|PRICE_WRITE_MIN_CLOSED_MS=${PRICE_WRITE_MIN_CLOSED_MS}"
+  fi
+  if [ -n "${PRICE_WRITE_IDLE_MAX_MS:-}" ]; then
+    envs="${envs}|PRICE_WRITE_IDLE_MAX_MS=${PRICE_WRITE_IDLE_MAX_MS}"
+  fi
+  if [ -n "${PRICE_STREAM_LOG_RATE_LIMIT_MS:-}" ]; then
+    envs="${envs}|PRICE_STREAM_LOG_RATE_LIMIT_MS=${PRICE_STREAM_LOG_RATE_LIMIT_MS}"
+  fi
+  if [ -n "${PRICE_STREAM_LOG_SAMPLE_RATE:-}" ]; then
+    envs="${envs}|PRICE_STREAM_LOG_SAMPLE_RATE=${PRICE_STREAM_LOG_SAMPLE_RATE}"
   fi
   if [ -n "${FIREBASE_PROJECT_ID:-}" ]; then
     envs="${envs}|FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID}"

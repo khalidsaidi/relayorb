@@ -106,6 +106,9 @@ const DMI_VENDOR_PATHS = [
 ]
 
 function assertRemoteOnly(serviceName) {
+  if (process.env.ALLOW_LOCAL_RUN === "1") {
+    return
+  }
   const isCloudRun = Boolean(
     process.env.K_SERVICE ||
       process.env.CLOUD_RUN_JOB ||
@@ -787,6 +790,46 @@ const OTHER_LISTED_EXCHANGE_MAP = {
   V: "IEX",
 }
 
+function isAllowedEquityListing(name, isEtf) {
+  if (isEtf) return true
+  if (!name) return false
+  const lower = String(name).toLowerCase()
+  const isAdr =
+    lower.includes("depositary receipt") ||
+    lower.includes("depository receipt") ||
+    lower.includes("american depositary share") ||
+    lower.includes("american depositary shares") ||
+    lower.includes("american depositary receipt") ||
+    lower.includes("american depositary receipts") ||
+    /\badr\b/.test(lower) ||
+    /\bads\b/.test(lower)
+  const include =
+    lower.includes("common stock") ||
+    lower.includes("ordinary shares") ||
+    lower.includes("ordinary share") ||
+    lower.includes("common shares") ||
+    lower.includes("common share") ||
+    lower.includes("capital stock") ||
+    isAdr
+  if (!include) return false
+  const exclude =
+    lower.includes("warrant") ||
+    lower.includes("unit") ||
+    lower.includes("rights") ||
+    lower.includes("right") ||
+    lower.includes("preferred") ||
+    lower.includes("preference") ||
+    lower.includes("note") ||
+    lower.includes("bond") ||
+    lower.includes("debenture") ||
+    lower.includes("subordinated") ||
+    lower.includes("convertible") ||
+    lower.includes("perpetual") ||
+    lower.includes("etn")
+  if (!isAdr && (lower.includes("depositary") || lower.includes("depository"))) return false
+  return !exclude
+}
+
 function parseNasdaqListing(text, isOtherListed = false) {
   if (!text) return []
   const lines = text
@@ -817,6 +860,7 @@ function parseNasdaqListing(text, isOtherListed = false) {
       : "NASDAQ"
     const isEtf = (parts[etfIndex] || "").trim() === "Y"
     const name = parts[nameIndex] || symbol
+    if (!isAllowedEquityListing(name, isEtf)) continue
     items.push({
       symbol,
       name,
@@ -1833,6 +1877,119 @@ async function fetchStockDataQuote(symbol) {
   return buildStockDataQuotePayload(entry, symbol, "stock")
 }
 
+async function fetchPolygonQuote(symbol) {
+  if (!config.polygonKey) return null
+  const url = new URL(`${config.polygonBaseUrl}/v2/last/trade/${symbol}`)
+  url.searchParams.set("apiKey", config.polygonKey)
+  const data = await fetchJson(url.toString())
+  const errorMessage =
+    parseProviderErrorPayload(data) ||
+    (data?.status && data.status !== "OK" && data.status !== "success"
+      ? `Polygon ${data.status}`
+      : null)
+  if (errorMessage) throw new Error(errorMessage)
+  const last = data?.last || data?.results || data
+  const price =
+    parseNumber(last?.price) ??
+    parseNumber(last?.p) ??
+    parseNumber(last?.last_price) ??
+    parseNumber(data?.price)
+  if (typeof price !== "number") return null
+  const bid = parseNumber(last?.bidprice ?? last?.bidPrice ?? last?.bid)
+  const ask = parseNumber(last?.askprice ?? last?.askPrice ?? last?.ask)
+  const volume =
+    parseNumber(last?.size) ??
+    parseNumber(last?.s) ??
+    parseNumber(last?.volume) ??
+    parseNumber(data?.volume)
+  return {
+    symbol,
+    assetClass: "stock",
+    price,
+    bid,
+    ask,
+    volume,
+    change: null,
+    changePercent: null,
+    changePercentage: null,
+    dayHigh: null,
+    dayLow: null,
+    previousClose: null,
+    open: null,
+    source: "polygon",
+  }
+}
+
+async function fetchTiingoQuote(symbol) {
+  if (!config.tiingoKey) return null
+  const url = new URL(`${config.tiingoBaseUrl}/iex/${symbol}`)
+  url.searchParams.set("token", config.tiingoKey)
+  const data = await fetchJson(url.toString())
+  const errorMessage = parseProviderErrorPayload(data)
+  if (errorMessage) throw new Error(errorMessage)
+  const entry = Array.isArray(data) ? data[0] : data
+  if (!entry) return null
+  const price =
+    parseNumber(entry.last) ??
+    parseNumber(entry.tngoLast) ??
+    parseNumber(entry.lastSalePrice) ??
+    parseNumber(entry.price) ??
+    parseNumber(entry.close)
+  if (typeof price !== "number") return null
+  const bid = parseNumber(entry.bidPrice ?? entry.bid)
+  const ask = parseNumber(entry.askPrice ?? entry.ask)
+  const volume = parseNumber(entry.volume ?? entry.lastSize)
+  return {
+    symbol,
+    assetClass: "stock",
+    price,
+    bid,
+    ask,
+    volume,
+    change: parseNumber(entry.change),
+    changePercent: parsePercent(entry.changePercent ?? entry.change_percent),
+    changePercentage: parsePercent(entry.changePercent ?? entry.change_percent),
+    dayHigh: parseNumber(entry.high ?? entry.dayHigh),
+    dayLow: parseNumber(entry.low ?? entry.dayLow),
+    previousClose: parseNumber(entry.prevClose ?? entry.previousClose),
+    open: parseNumber(entry.open),
+    source: "tiingo",
+  }
+}
+
+async function fetchIntrinioQuote(symbol) {
+  if (!config.intrinioKey) return null
+  const url = new URL(`${config.intrinioBaseUrl}/securities/${symbol}/prices/realtime`)
+  url.searchParams.set("api_key", config.intrinioKey)
+  const data = await fetchJson(url.toString())
+  const errorMessage = parseProviderErrorPayload(data)
+  if (errorMessage) throw new Error(errorMessage)
+  const price =
+    parseNumber(data?.last_price) ??
+    parseNumber(data?.last) ??
+    parseNumber(data?.price)
+  if (typeof price !== "number") return null
+  const bid = parseNumber(data?.bid_price ?? data?.bid)
+  const ask = parseNumber(data?.ask_price ?? data?.ask)
+  const volume = parseNumber(data?.volume)
+  return {
+    symbol,
+    assetClass: "stock",
+    price,
+    bid,
+    ask,
+    volume,
+    change: null,
+    changePercent: null,
+    changePercentage: null,
+    dayHigh: null,
+    dayLow: null,
+    previousClose: null,
+    open: null,
+    source: "intrinio",
+  }
+}
+
 function buildTwelveDataQuotePayload(entry, symbol, assetClass) {
   if (!entry) return null
   const price = parseNumber(entry.close ?? entry.price ?? entry.last)
@@ -2022,6 +2179,21 @@ async function resolveQuoteFallback(symbol, assetClass, startedAt) {
       id: "finnhub",
       enabled: Boolean(config.finnhubKey && assetClass === "stock"),
       fetcher: () => fetchFinnhubQuote(symbol),
+    },
+    {
+      id: "polygon",
+      enabled: Boolean(config.polygonKey && assetClass === "stock"),
+      fetcher: () => fetchPolygonQuote(symbol),
+    },
+    {
+      id: "tiingo",
+      enabled: Boolean(config.tiingoKey && assetClass === "stock"),
+      fetcher: () => fetchTiingoQuote(symbol),
+    },
+    {
+      id: "intrinio",
+      enabled: Boolean(config.intrinioKey && assetClass === "stock"),
+      fetcher: () => fetchIntrinioQuote(symbol),
     },
     {
       id: "stockdata",
