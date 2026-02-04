@@ -7,6 +7,7 @@ source "$SCRIPT_DIR/_common.sh"
 
 COMPOSE_FILE="$ROOT_DIR/deploy/bot-host/docker-compose.yml"
 PROJECT_NAME=${COMPOSE_PROJECT_NAME:-relayorb}
+ENV_FILE=${BOT_HOST_ENV_FILE:-$ROOT_DIR/.env}
 
 usage() {
   cat <<USAGE
@@ -39,25 +40,25 @@ compose=$(compose_cmd)
 
 case "$command" in
   up)
-    $compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" up -d
+    $compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$PROJECT_NAME" up -d
     ;;
   down)
-    $compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down
+    $compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down
     ;;
   restart)
-    $compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" restart
+    $compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$PROJECT_NAME" restart
     ;;
   logs)
-    $compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" logs -f --tail "${LOG_LIMIT:-200}"
+    $compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$PROJECT_NAME" logs -f --tail "${LOG_LIMIT:-200}"
     ;;
   pull)
-    $compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" pull
+    $compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$PROJECT_NAME" pull
     ;;
   ps)
-    $compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" ps
+    $compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$PROJECT_NAME" ps
     ;;
   config)
-    $compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" config
+    $compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$PROJECT_NAME" config
     ;;
   -h|--help|help|"")
     usage
