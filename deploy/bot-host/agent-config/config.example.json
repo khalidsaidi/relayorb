@@ -12,20 +12,8 @@
         "mode": "signal",
         "assetClass": "stock",
         "timeframe": "15m",
-        "symbols": [
-          "AAPL",
-          "MSFT",
-          "NVDA",
-          "AMZN",
-          "GOOGL",
-          "META",
-          "TSLA",
-          "JPM",
-          "AMD",
-          "AVGO",
-          "NFLX",
-          "ORCL"
-        ],
+        "symbolsSource": "market-intel",
+        "symbols": [],
         "strategy": "default"
       },
       "capabilities": {
@@ -46,18 +34,8 @@
         "mode": "signal",
         "assetClass": "forex",
         "timeframe": "15m",
-        "symbols": [
-          "EUR/USD",
-          "GBP/USD",
-          "USD/JPY",
-          "USD/CHF",
-          "AUD/USD",
-          "NZD/USD",
-          "USD/CAD",
-          "EUR/JPY",
-          "GBP/JPY",
-          "EUR/GBP"
-        ],
+        "symbolsSource": "market-intel",
+        "symbols": [],
         "strategy": "default"
       },
       "capabilities": {

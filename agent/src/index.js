@@ -1153,8 +1153,10 @@ class BacktraderAdapter {
 
   resolveRunConfig() {
     const desired = this.bot.desiredConfig || {}
-    const symbols = Array.isArray(desired.symbols) ? desired.symbols : []
-    const pairs = Array.isArray(desired.pairs) ? desired.pairs : []
+    const symbolsSource = typeof desired.symbolsSource === "string" ? desired.symbolsSource : ""
+    const useStaticSymbols = symbolsSource === "manual" || symbolsSource === "static"
+    const symbols = useStaticSymbols && Array.isArray(desired.symbols) ? desired.symbols : []
+    const pairs = useStaticSymbols && Array.isArray(desired.pairs) ? desired.pairs : []
     const list = symbols.length > 0 ? symbols : pairs
     return {
       symbols: list.map((item) => String(item).trim()).filter(Boolean),
