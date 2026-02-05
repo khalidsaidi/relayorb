@@ -9,6 +9,7 @@ import PaperPage from "@/pages/PaperPage"
 import LiveChartsPage from "@/pages/LiveChartsPage"
 import IbkrOrderPage from "@/pages/IbkrOrderPage"
 import OrbRobotPage from "@/pages/OrbRobotPage"
+import OpenbbPage from "@/pages/OpenbbPage"
 import { RequireAuth } from "@/features/auth/RequireAuth"
 import { AppShell } from "@/components/layout/AppShell"
 import { PipelineHealthProvider } from "@/features/ops/pipeline-health-context"
@@ -40,6 +41,7 @@ export default function App() {
             <Route path="/ibkr" element={<IbkrOrderPage />} />
             <Route path="/orb" element={<OrbRobotPage />} />
             <Route path="/charts" element={<LiveChartsPage />} />
+            <Route path="/openbb" element={<OpenbbPage />} />
           </Route>
         </Route>
 

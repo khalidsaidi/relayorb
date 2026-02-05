@@ -24,6 +24,7 @@ const en = {
     ibkrOrder: "IBKR Order",
     orbRobot: "ORB Robot",
     liveCharts: "Live Charts",
+    openbb: "OpenBB",
     signals: "Signals",
     bots: "Bots",
     portfolio: "Portfolio",
@@ -1857,6 +1858,15 @@ const en = {
       pairsUpdated: "Pairs updated with recommendations",
       pairAdded: "{{symbol}} added to pairs",
     },
+  },
+  openbb: {
+    title: "OpenBB Terminal",
+    subtitle: "Standalone OpenBB API (not connected to RelayOrb data).",
+    notConfigured: "Set VITE_OPENBB_API_URL to enable the OpenBB API panel.",
+    openDocs: "Open API docs",
+    openApi: "Open API root",
+    docsTitle: "OpenBB API Docs",
+    openInNew: "Open in new tab",
   },
   ops: {
     status: {

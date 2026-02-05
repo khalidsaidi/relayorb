@@ -26,6 +26,7 @@ deploy/bot-host/secrets/
 deploy/bot-host/hummingbot/bots/
 deploy/bot-host/jesse/*
 !deploy/bot-host/jesse/.env.example
+deploy/bot-host/openbb-platform/
 e2e_report_*.md
 tmp-*.json
 

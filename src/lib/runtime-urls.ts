@@ -13,3 +13,9 @@ export function resolveOrbRunnerUrl() {
   if (raw) return normalizeUrl(raw)
   return ""
 }
+
+export function resolveOpenbbApiUrl() {
+  const raw = (import.meta.env.VITE_OPENBB_API_URL || "").trim()
+  if (raw) return normalizeUrl(raw)
+  return ""
+}

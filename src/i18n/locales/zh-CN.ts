@@ -23,6 +23,7 @@ const zhCN = {
     ibkrOrder: "IBKR 下单",
     orbRobot: "ORB 机器人",
     liveCharts: "实时图表",
+    openbb: "OpenBB",
     signals: "信号",
     bots: "机器人",
     portfolio: "投资组合",
@@ -1844,6 +1845,15 @@ const zhCN = {
       pairsUpdated: "已用推荐更新交易对",
       pairAdded: "已将 {{symbol}} 添加到交易对",
     },
+  },
+  openbb: {
+    title: "OpenBB 终端",
+    subtitle: "独立的 OpenBB API（不连接 RelayOrb 数据）。",
+    notConfigured: "请设置 VITE_OPENBB_API_URL 以启用 OpenBB API 面板。",
+    openDocs: "打开 API 文档",
+    openApi: "打开 API 入口",
+    docsTitle: "OpenBB API 文档",
+    openInNew: "在新标签页打开",
   },
   ops: {
     status: {

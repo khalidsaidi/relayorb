@@ -33,6 +33,7 @@ import {
   BadgeDollarSign,
   Target,
   Languages,
+  TerminalSquare,
 } from "lucide-react"
 import { useAuth } from "@/features/auth/auth-context"
 import { auth, db, firebaseEnabled } from "@/lib/firebase"
@@ -67,6 +68,7 @@ function getPageTitle(pathname: string, t: (key: string) => string) {
   if (pathname.startsWith("/ibkr")) return t("nav.ibkrOrder")
   if (pathname.startsWith("/orb")) return t("nav.orbRobot")
   if (pathname.startsWith("/charts")) return t("nav.liveCharts")
+  if (pathname.startsWith("/openbb")) return t("nav.openbb")
   if (pathname.startsWith("/portfolio")) return t("nav.portfolio")
   if (pathname.startsWith("/dashboard")) return t("nav.dashboard")
   return t("nav.dashboard")
@@ -189,6 +191,7 @@ export function AppShell() {
     { to: "/signals", label: t("nav.signals"), icon: <Activity className="h-4 w-4" /> },
     { to: "/bots", label: t("nav.bots"), icon: <Bot className="h-4 w-4" /> },
     { to: "/portfolio", label: t("nav.portfolio"), icon: <BarChart3 className="h-4 w-4" /> },
+    { to: "/openbb", label: t("nav.openbb"), icon: <TerminalSquare className="h-4 w-4" /> },
   ]
   
   // Track user presence for activity-based refresh

@@ -62,6 +62,15 @@ services:
     ports:
       - "8085:8085"
 
+  openbb-api:
+    build: ../openbb-api
+    image: relayorb-openbb-api:local
+    restart: unless-stopped
+    ports:
+      - "6900:6900"
+    volumes:
+      - ./openbb-platform:/root/.openbb_platform
+
   orb-runner:
     build: ../orb-runner
     image: relayorb-orb-runner:local
