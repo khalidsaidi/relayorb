@@ -540,9 +540,19 @@ export default function StockpulsePage() {
     ? [...stats.stocks].sort((a, b) => b.avg_sentiment - a.avg_sentiment).slice(0, 6)
     : []
 
-  const ratingsSorted = ratings.length
-    ? [...ratings].sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 12)
-    : []
+  const stockTickers = useMemo(() => new Set(stocks.map((s) => s.ticker.toUpperCase())), [stocks])
+
+  // `/api/ai/ratings` does not return market metadata. Filter by the currently-loaded stock list,
+  // which already respects the market filter via `/api/stocks?market=...`.
+  const ratingsFiltered = useMemo(() => {
+    if (!stockTickers.size) return ratings
+    return ratings.filter((r) => stockTickers.has(r.ticker.toUpperCase()))
+  }, [ratings, stockTickers])
+
+  const ratingsSorted = useMemo(() => {
+    if (!ratingsFiltered.length) return []
+    return [...ratingsFiltered].sort((a, b) => (b.score || 0) - (a.score || 0))
+  }, [ratingsFiltered])
 
   useEffect(() => {
     if (!ratingsSorted.length || selectedTicker) return
@@ -635,7 +645,9 @@ export default function StockpulsePage() {
             </div>
             <div className="flex items-center justify-between">
               <span>{t("stockpulse.activeStocks")}</span>
-              <span className="font-medium">{activeStocks.length}</span>
+              <span className="font-medium">
+                {activeStocks.length}/{stocks.length}
+              </span>
             </div>
             <div className="space-y-2">
               <div className="text-xs uppercase text-muted-foreground">{t("stockpulse.topSentiment")}</div>
@@ -802,8 +814,8 @@ export default function StockpulsePage() {
                   <MetricCard label="High" value={chartData.stats?.high_price} />
                   <MetricCard label="Low" value={chartData.stats?.low_price} />
                 </div>
-                <div className="h-60 w-full">
-                  <ResponsiveContainer>
+                <div className="h-60 w-full min-h-[240px]">
+                  <ResponsiveContainer width="100%" height={240}>
                     <LineChart data={chartData.data}>
                       <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.3} />
                       <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={16} />

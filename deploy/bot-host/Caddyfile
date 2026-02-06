@@ -1,0 +1,77 @@
+relayorb.34-182-77-163.sslip.io {
+  encode zstd gzip
+
+  @openbb_preflight {
+    path /openbb*
+    method OPTIONS
+  }
+  handle @openbb_preflight {
+    header {
+      Access-Control-Allow-Origin "*"
+      Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+      Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin, X-Requested-With, X-CSRF-Token"
+      Access-Control-Expose-Headers "Content-Length, Content-Type"
+    }
+    respond "" 204
+  }
+
+  @stockpulse_preflight {
+    path /stockpulse*
+    method OPTIONS
+  }
+  handle @stockpulse_preflight {
+    header {
+      Access-Control-Allow-Origin "*"
+      Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+      Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin, X-Requested-With, X-CSRF-Token"
+      Access-Control-Expose-Headers "Content-Length, Content-Type"
+    }
+    respond "" 204
+  }
+
+  @finnews_preflight {
+    path /finnews*
+    method OPTIONS
+  }
+  handle @finnews_preflight {
+    header {
+      Access-Control-Allow-Origin "*"
+      Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+      Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin, X-Requested-With, X-CSRF-Token"
+      Access-Control-Expose-Headers "Content-Length, Content-Type"
+    }
+    respond "" 204
+  }
+
+  handle_path /openbb* {
+    reverse_proxy http://openbb-api:6900 {
+      header_down Access-Control-Allow-Origin "*"
+      header_down Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+      header_down Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin, X-Requested-With, X-CSRF-Token"
+      header_down Access-Control-Expose-Headers "Content-Length, Content-Type"
+    }
+  }
+
+  handle_path /stockpulse* {
+    reverse_proxy http://stockpulse-ai:5000 {
+      header_down Access-Control-Allow-Origin "*"
+      header_down Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+      header_down Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin, X-Requested-With, X-CSRF-Token"
+      header_down Access-Control-Expose-Headers "Content-Length, Content-Type"
+    }
+  }
+
+  handle_path /finnews* {
+    reverse_proxy http://finnewshunter:8010 {
+      header_down Access-Control-Allow-Origin "*"
+      header_down Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+      header_down Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin, X-Requested-With, X-CSRF-Token"
+      header_down Access-Control-Expose-Headers "Content-Length, Content-Type"
+    }
+  }
+
+  handle {
+    respond "RelayOrb backend online" 200
+  }
+}
+

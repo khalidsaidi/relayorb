@@ -1,0 +1,132 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  finnews-postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=finnews
+      - POSTGRES_PASSWORD=finnews_dev_password
+      - POSTGRES_DB=finnews_db
+    volumes:
+      - ./finnews-postgres:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+
+  finnewshunter:
+    image: relayorb-finnewshunter:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - PORT=8010
+      - FINNEWS_MARKET=us
+      - FINNEWS_DISABLE_EMBEDDINGS=true
+      - FINNEWS_DISABLE_MILVUS=true
+      - US_RSS_FEEDS=${FINNEWS_US_RSS_FEEDS:-}
+      - CRAWL_INTERVAL_US=${FINNEWS_CRAWL_INTERVAL_US:-120}
+      - LLM_PROVIDER=${FINNEWS_LLM_PROVIDER:-openai}
+      - LLM_MODEL=${FINNEWS_LLM_MODEL:-gpt-4o-mini}
+      - POSTGRES_USER=finnews
+      - POSTGRES_PASSWORD=finnews_dev_password
+      - POSTGRES_HOST=finnews-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=finnews_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=2
+      - BACKEND_CORS_ORIGINS=["*"]
+    depends_on:
+      - finnews-postgres
+      - redis
+    ports:
+      - "8010:8010"
+
+  finnews-celery-worker:
+    image: relayorb-finnewshunter:local
+    restart: unless-stopped
+    command: celery -A app.core.celery_app worker --loglevel=info
+    env_file: .env
+    environment:
+      - FINNEWS_MARKET=us
+      - FINNEWS_DISABLE_EMBEDDINGS=true
+      - FINNEWS_DISABLE_MILVUS=true
+      - US_RSS_FEEDS=${FINNEWS_US_RSS_FEEDS:-}
+      - CRAWL_INTERVAL_US=${FINNEWS_CRAWL_INTERVAL_US:-120}
+      - LLM_PROVIDER=${FINNEWS_LLM_PROVIDER:-openai}
+      - LLM_MODEL=${FINNEWS_LLM_MODEL:-gpt-4o-mini}
+      - POSTGRES_USER=finnews
+      - POSTGRES_PASSWORD=finnews_dev_password
+      - POSTGRES_HOST=finnews-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=finnews_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=2
+    depends_on:
+      - finnews-postgres
+      - redis
+
+  finnews-celery-beat:
+    image: relayorb-finnewshunter:local
+    restart: unless-stopped
+    command: celery -A app.core.celery_app beat --loglevel=info
+    env_file: .env
+    environment:
+      - FINNEWS_MARKET=us
+      - FINNEWS_DISABLE_EMBEDDINGS=true
+      - FINNEWS_DISABLE_MILVUS=true
+      - US_RSS_FEEDS=${FINNEWS_US_RSS_FEEDS:-}
+      - CRAWL_INTERVAL_US=${FINNEWS_CRAWL_INTERVAL_US:-120}
+      - LLM_PROVIDER=${FINNEWS_LLM_PROVIDER:-openai}
+      - LLM_MODEL=${FINNEWS_LLM_MODEL:-gpt-4o-mini}
+      - POSTGRES_USER=finnews
+      - POSTGRES_PASSWORD=finnews_dev_password
+      - POSTGRES_HOST=finnews-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=finnews_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=2
+    depends_on:
+      - finnews-postgres
+      - redis
+
+  openbb-api:
+    image: relayorb-openbb-api:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - FMP_API_KEY=${FMP_API_KEY:-}
+      - POLYGON_API_KEY=${POLYGON_API_KEY:-}
+      - ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY:-}
+      - TIINGO_API_KEY=${TIINGO_API_KEY:-}
+      - INTRINIO_API_KEY=${INTRINIO_API_KEY:-}
+    volumes:
+      - ./openbb-platform:/root/.openbb_platform
+    ports:
+      - "6900:6900"
+
+  stockpulse-ai:
+    image: relayorb-stockpulse-ai:local
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./stockpulse-data:/data
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - openbb-api
+      - stockpulse-ai
+      - finnewshunter
+

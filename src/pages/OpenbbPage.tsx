@@ -245,8 +245,8 @@ function renderLineChart(data: unknown, xKey = "date", yKeys: string[] = []) {
   const numericKeys = pickChartKeys(rows, yKeys)
   if (!numericKeys.length) return null
   return (
-    <div className="h-64 w-full">
-      <ResponsiveContainer>
+    <div className="h-64 w-full min-h-[240px]">
+      <ResponsiveContainer width="100%" height={240}>
         <LineChart data={rows} margin={{ left: 8, right: 8, top: 8, bottom: 8 }}>
           <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.3} />
           <XAxis dataKey={resolvedXKey} tick={{ fontSize: 10 }} minTickGap={16} />
