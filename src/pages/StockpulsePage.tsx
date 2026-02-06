@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/table"
 import { resolveMarketDataProxyUrl, resolveStockpulseUrl } from "@/lib/runtime-urls"
 import { ExternalLink, RefreshCw, Search, Trash2, Plus } from "lucide-react"
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from "recharts"
 
 type StockpulseStatus = {
   last_check?: string | null
@@ -88,6 +89,44 @@ type StockpulseSearch = {
   type?: string
 }
 
+type StockpulseChart = {
+  ticker: string
+  period: string
+  currency_symbol?: string | null
+  data: Array<{
+    date: string
+    open?: number | null
+    high?: number | null
+    low?: number | null
+    close?: number | null
+    volume?: number | null
+  }>
+  stats?: {
+    current_price?: number | null
+    open_price?: number | null
+    high_price?: number | null
+    low_price?: number | null
+    price_change?: number | null
+    price_change_percent?: number | null
+    total_volume?: number | null
+  }
+}
+
+type StockpulseProvider = {
+  id: number
+  provider_name: string
+  model?: string | null
+  is_active: number
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+type StockpulseProviderTest = {
+  success?: boolean
+  message?: string
+  error?: string
+}
+
 function parseTimestamp(value?: string | null) {
   if (!value) return null
   const normalized = value.includes("T") ? value : value.replace(" ", "T")
@@ -126,6 +165,50 @@ function ratingTone(rating?: string) {
   }
 }
 
+const AI_PROVIDER_OPTIONS = [
+  {
+    id: "openai",
+    name: "OpenAI (ChatGPT)",
+    models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"],
+  },
+  {
+    id: "anthropic",
+    name: "Anthropic (Claude)",
+    models: [
+      "claude-3-5-sonnet-20241022",
+      "claude-3-5-haiku-20241022",
+      "claude-3-opus-20240229",
+      "claude-3-sonnet-20240229",
+      "claude-3-haiku-20240307",
+    ],
+  },
+  {
+    id: "google",
+    name: "Google (Gemini)",
+    models: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-flash-latest", "gemini-pro-latest"],
+  },
+  {
+    id: "grok",
+    name: "xAI (Grok)",
+    models: ["grok-4", "grok-4-vision", "grok-4-latest", "grok-2", "grok-2-vision-1212", "grok-latest"],
+  },
+]
+
+function MetricCard({ label, value }: { label: string; value: unknown }) {
+  const display = (() => {
+    if (value === null || value === undefined) return "-"
+    if (typeof value === "number") return Number.isFinite(value) ? value.toFixed(2) : "-"
+    if (typeof value === "string") return value
+    return JSON.stringify(value)
+  })()
+  return (
+    <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2">
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="text-sm font-semibold text-foreground">{display}</div>
+    </div>
+  )
+}
+
 export default function StockpulsePage() {
   const { t } = useTranslation()
   const baseUrl = useMemo(() => resolveStockpulseUrl(), [])
@@ -153,6 +236,32 @@ export default function StockpulsePage() {
   const [searchResults, setSearchResults] = useState<StockpulseSearch[]>([])
   const [searchLoading, setSearchLoading] = useState(false)
 
+  const [marketFilter, setMarketFilter] = useState("All")
+  const [newsTicker, setNewsTicker] = useState("")
+  const [selectedTicker, setSelectedTicker] = useState<string>("")
+  const [ratingDetail, setRatingDetail] = useState<StockpulseRating | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+
+  const [chartSymbol, setChartSymbol] = useState("AAPL")
+  const [chartPeriod, setChartPeriod] = useState("1mo")
+  const [chartData, setChartData] = useState<StockpulseChart | null>(null)
+  const [chartLoading, setChartLoading] = useState(false)
+
+  const [chatTicker, setChatTicker] = useState("AAPL")
+  const [chatQuestion, setChatQuestion] = useState("")
+  const [chatThinking, setChatThinking] = useState("balanced")
+  const [chatAnswer, setChatAnswer] = useState<string | null>(null)
+  const [chatLoading, setChatLoading] = useState(false)
+
+  const [aiProviders, setAiProviders] = useState<StockpulseProvider[]>([])
+  const [aiProviderForm, setAiProviderForm] = useState({
+    provider: "openai",
+    model: "gpt-4o",
+    apiKey: "",
+  })
+  const [aiProviderTest, setAiProviderTest] = useState<StockpulseProviderTest | null>(null)
+  const [aiProviderLoading, setAiProviderLoading] = useState(false)
+
   const fetchJson = useCallback(
     async (path: string, init?: RequestInit) => {
       if (!queryBase) {
@@ -178,12 +287,17 @@ export default function StockpulsePage() {
     setCoreLoading(true)
     setError(null)
     try {
+      const statsPath = marketFilter !== "All" ? `/api/stats?market=${encodeURIComponent(marketFilter)}` : "/api/stats"
+      const stocksPath = marketFilter !== "All" ? `/api/stocks?market=${encodeURIComponent(marketFilter)}` : "/api/stocks"
+      const newsPath = newsTicker.trim()
+        ? `/api/news?ticker=${encodeURIComponent(newsTicker.trim().toUpperCase())}`
+        : "/api/news"
       const [statusData, statsData, alertsData, newsData, stocksData] = await Promise.all([
         fetchJson("/api/status"),
-        fetchJson("/api/stats"),
+        fetchJson(statsPath),
         fetchJson("/api/alerts"),
-        fetchJson("/api/news"),
-        fetchJson("/api/stocks"),
+        fetchJson(newsPath),
+        fetchJson(stocksPath),
       ])
       setStatus(statusData)
       setStats(statsData)
@@ -196,7 +310,7 @@ export default function StockpulsePage() {
     } finally {
       setCoreLoading(false)
     }
-  }, [fetchJson, queryBase])
+  }, [fetchJson, queryBase, marketFilter, newsTicker])
 
   const refreshRatings = useCallback(async () => {
     if (!queryBase) return
@@ -212,6 +326,163 @@ export default function StockpulsePage() {
       setRatingsLoading(false)
     }
   }, [fetchJson, queryBase])
+
+  const loadRatingDetail = useCallback(
+    async (ticker: string) => {
+      if (!queryBase || !ticker) return
+      setDetailLoading(true)
+      setError(null)
+      try {
+        const data = await fetchJson(`/api/ai/rating/${encodeURIComponent(ticker)}`)
+        setRatingDetail(data)
+        setSelectedTicker(ticker)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unknown error")
+      } finally {
+        setDetailLoading(false)
+      }
+    },
+    [fetchJson, queryBase]
+  )
+
+  const fetchChart = useCallback(
+    async (ticker: string, period: string) => {
+      if (!queryBase || !ticker) return
+      setChartLoading(true)
+      setError(null)
+      try {
+        const data = await fetchJson(`/api/chart/${encodeURIComponent(ticker)}?period=${encodeURIComponent(period)}`)
+        setChartData(data)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unknown error")
+      } finally {
+        setChartLoading(false)
+      }
+    },
+    [fetchJson, queryBase]
+  )
+
+  const refreshProviders = useCallback(async () => {
+    if (!queryBase) return
+    setAiProviderLoading(true)
+    setError(null)
+    try {
+      const data = await fetchJson("/api/settings/ai-providers")
+      setAiProviders(data)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error")
+    } finally {
+      setAiProviderLoading(false)
+    }
+  }, [fetchJson, queryBase])
+
+  const addProvider = useCallback(async () => {
+    if (!queryBase) return
+    if (!aiProviderForm.provider || !aiProviderForm.apiKey) {
+      setError("Provider and API key are required.")
+      return
+    }
+    setAiProviderLoading(true)
+    setError(null)
+    try {
+      await fetchJson("/api/settings/ai-provider", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: aiProviderForm.provider,
+          api_key: aiProviderForm.apiKey,
+          model: aiProviderForm.model || undefined,
+        }),
+      })
+      await refreshProviders()
+      setAiProviderForm((prev) => ({ ...prev, apiKey: "" }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error")
+    } finally {
+      setAiProviderLoading(false)
+    }
+  }, [fetchJson, queryBase, aiProviderForm, refreshProviders])
+
+  const activateProvider = useCallback(
+    async (id: number) => {
+      if (!queryBase) return
+      setAiProviderLoading(true)
+      setError(null)
+      try {
+        await fetchJson(`/api/settings/ai-provider/${id}/activate`, { method: "POST" })
+        await refreshProviders()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unknown error")
+      } finally {
+        setAiProviderLoading(false)
+      }
+    },
+    [fetchJson, queryBase, refreshProviders]
+  )
+
+  const deleteProvider = useCallback(
+    async (id: number) => {
+      if (!queryBase) return
+      setAiProviderLoading(true)
+      setError(null)
+      try {
+        await fetchJson(`/api/settings/ai-provider/${id}`, { method: "DELETE" })
+        await refreshProviders()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unknown error")
+      } finally {
+        setAiProviderLoading(false)
+      }
+    },
+    [fetchJson, queryBase, refreshProviders]
+  )
+
+  const testProvider = useCallback(async () => {
+    if (!queryBase) return
+    setAiProviderLoading(true)
+    setError(null)
+    setAiProviderTest(null)
+    try {
+      const data = await fetchJson("/api/settings/test-ai", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: aiProviderForm.provider,
+          api_key: aiProviderForm.apiKey,
+          model: aiProviderForm.model || undefined,
+        }),
+      })
+      setAiProviderTest(data)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error")
+    } finally {
+      setAiProviderLoading(false)
+    }
+  }, [fetchJson, queryBase, aiProviderForm])
+
+  const askChat = useCallback(async () => {
+    if (!queryBase) return
+    if (!chatTicker || !chatQuestion.trim()) {
+      setError("Ticker and question are required.")
+      return
+    }
+    setChatLoading(true)
+    setError(null)
+    setChatAnswer(null)
+    try {
+      const data = await fetchJson("/api/chat/ask", {
+        method: "POST",
+        body: JSON.stringify({
+          ticker: chatTicker.trim().toUpperCase(),
+          question: chatQuestion.trim(),
+          thinking_level: chatThinking,
+        }),
+      })
+      setChatAnswer(data?.answer || data?.error || "No response.")
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error")
+    } finally {
+      setChatLoading(false)
+    }
+  }, [fetchJson, queryBase, chatTicker, chatQuestion, chatThinking])
 
   const handleSearch = useCallback(async () => {
     if (!searchQuery.trim()) return
@@ -264,9 +535,10 @@ export default function StockpulsePage() {
     if (!queryBase) return
     refreshCore()
     refreshRatings()
+    refreshProviders()
     const id = setInterval(refreshCore, 30000)
     return () => clearInterval(id)
-  }, [queryBase, refreshCore, refreshRatings])
+  }, [queryBase, refreshCore, refreshRatings, refreshProviders])
 
   const activeStocks = stocks.filter((stock) => stock.active !== 0)
   const topSentiment = stats?.stocks
@@ -276,6 +548,15 @@ export default function StockpulsePage() {
   const ratingsSorted = ratings.length
     ? [...ratings].sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 12)
     : []
+
+  useEffect(() => {
+    if (!ratingsSorted.length || selectedTicker) return
+    const first = ratingsSorted[0].ticker
+    setSelectedTicker(first)
+    setChartSymbol(first)
+    loadRatingDetail(first)
+    fetchChart(first, chartPeriod)
+  }, [ratingsSorted, selectedTicker, loadRatingDetail, fetchChart, chartPeriod])
 
   return (
     <div className="space-y-6">
@@ -341,6 +622,18 @@ export default function StockpulsePage() {
             <CardTitle className="text-base">{t("stockpulse.statsTitle")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="text-muted-foreground">Market filter</span>
+              <select
+                className="rounded-md border border-input bg-background px-2 py-1 text-xs"
+                value={marketFilter}
+                onChange={(e) => setMarketFilter(e.target.value)}
+              >
+                <option value="All">All</option>
+                <option value="US">US</option>
+                <option value="India">India</option>
+              </select>
+            </div>
             <div className="flex items-center justify-between">
               <span>{t("stockpulse.totalAlerts")}</span>
               <span className="font-medium">{stats?.total_alerts_24h ?? 0}</span>
@@ -401,7 +694,16 @@ export default function StockpulsePage() {
                 </TableHeader>
                 <TableBody>
                   {ratingsSorted.map((rating) => (
-                    <TableRow key={rating.ticker}>
+                    <TableRow
+                      key={rating.ticker}
+                      className="cursor-pointer"
+                      onClick={() => {
+                        setSelectedTicker(rating.ticker)
+                        loadRatingDetail(rating.ticker)
+                        setChartSymbol(rating.ticker)
+                        fetchChart(rating.ticker, chartPeriod)
+                      }}
+                    >
                       <TableCell className="font-medium">{rating.ticker}</TableCell>
                       <TableCell>
                         <Badge className={ratingTone(rating.rating)}>{rating.rating}</Badge>
@@ -424,6 +726,260 @@ export default function StockpulsePage() {
             ) : (
               <div className="text-sm text-muted-foreground">{t("stockpulse.noRatings")}</div>
             )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-3">
+            <CardTitle className="text-base">Rating detail</CardTitle>
+            <div className="flex items-center gap-2">
+              <Input
+                value={selectedTicker}
+                onChange={(event) => setSelectedTicker(event.target.value.toUpperCase())}
+                placeholder="Ticker"
+                className="h-8 w-28 text-xs"
+              />
+              <Button size="sm" variant="outline" onClick={() => loadRatingDetail(selectedTicker)}>
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Load
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3 text-xs text-muted-foreground">
+            {detailLoading ? <div>Loading…</div> : null}
+            {ratingDetail ? (
+              <>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <div className="rounded-md border border-border/50 bg-muted/30 p-3">
+                    <div className="text-sm font-semibold text-foreground">{ratingDetail.ticker}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{ratingDetail.analysis_summary || ratingDetail.message}</div>
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <MetricCard label="Rating" value={ratingDetail.rating} />
+                    <MetricCard label="Score" value={ratingDetail.score?.toFixed(1)} />
+                    <MetricCard label="Confidence" value={ratingDetail.confidence?.toFixed(1)} />
+                    <MetricCard label="RSI" value={ratingDetail.rsi ?? "-"} />
+                    <MetricCard label="Sentiment" value={ratingDetail.sentiment_score ?? "-"} />
+                    <MetricCard label="Technical" value={ratingDetail.technical_score ?? "-"} />
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="text-xs text-muted-foreground">Select a ticker to view details.</div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-3">
+            <CardTitle className="text-base">Chart</CardTitle>
+            <div className="flex items-center gap-2">
+              <Input
+                value={chartSymbol}
+                onChange={(event) => setChartSymbol(event.target.value.toUpperCase())}
+                placeholder="Ticker"
+                className="h-8 w-28 text-xs"
+              />
+              <select
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                value={chartPeriod}
+                onChange={(event) => setChartPeriod(event.target.value)}
+              >
+                <option value="1mo">1M</option>
+                <option value="3mo">3M</option>
+                <option value="6mo">6M</option>
+                <option value="1y">1Y</option>
+                <option value="2y">2Y</option>
+                <option value="5y">5Y</option>
+              </select>
+              <Button size="sm" variant="outline" onClick={() => fetchChart(chartSymbol, chartPeriod)}>
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Load
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3 text-xs text-muted-foreground">
+            {chartLoading ? <div>Loading…</div> : null}
+            {chartData ? (
+              <>
+                <div className="grid gap-2 md:grid-cols-3">
+                  <MetricCard label="Current" value={chartData.stats?.current_price} />
+                  <MetricCard label="High" value={chartData.stats?.high_price} />
+                  <MetricCard label="Low" value={chartData.stats?.low_price} />
+                </div>
+                <div className="h-60 w-full">
+                  <ResponsiveContainer>
+                    <LineChart data={chartData.data}>
+                      <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.3} />
+                      <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={16} />
+                      <YAxis tick={{ fontSize: 10 }} domain={["auto", "auto"]} />
+                      <Tooltip contentStyle={{ fontSize: "11px" }} />
+                      <Legend wrapperStyle={{ fontSize: "11px" }} />
+                      <Line type="monotone" dataKey="close" stroke="#2563eb" dot={false} strokeWidth={1.6} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </>
+            ) : (
+              <div className="text-xs text-muted-foreground">No chart data yet.</div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="xl:col-span-2">
+          <CardHeader>
+            <CardTitle className="text-base">AI chat</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="space-y-1">
+                <Label>Ticker</Label>
+                <Input value={chatTicker} onChange={(event) => setChatTicker(event.target.value.toUpperCase())} />
+              </div>
+              <div className="space-y-1 md:col-span-2">
+                <Label>Question</Label>
+                <Input value={chatQuestion} onChange={(event) => setChatQuestion(event.target.value)} placeholder="What is the current setup?" />
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Label className="text-xs text-muted-foreground">Thinking level</Label>
+              <select
+                className="rounded-md border border-input bg-background px-2 py-1 text-xs"
+                value={chatThinking}
+                onChange={(event) => setChatThinking(event.target.value)}
+              >
+                <option value="quick">Quick</option>
+                <option value="balanced">Balanced</option>
+                <option value="deep">Deep</option>
+              </select>
+              <Button size="sm" variant="outline" onClick={askChat} disabled={chatLoading}>
+                {chatLoading ? "Thinking…" : "Ask"}
+              </Button>
+            </div>
+            {chatAnswer ? (
+              <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground whitespace-pre-wrap">
+                {chatAnswer}
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">Ask a question to get AI insight.</div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="xl:col-span-2">
+          <CardHeader className="flex flex-row items-center justify-between gap-3">
+            <CardTitle className="text-base">AI providers</CardTitle>
+            <Button size="sm" variant="outline" onClick={refreshProviders} disabled={aiProviderLoading}>
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Refresh
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-4 text-sm">
+            <div className="grid gap-2 md:grid-cols-3">
+              <div className="space-y-1">
+                <Label>Provider</Label>
+                <select
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={aiProviderForm.provider}
+                  onChange={(event) => {
+                    const provider = event.target.value
+                    const found = AI_PROVIDER_OPTIONS.find((p) => p.id === provider)
+                    setAiProviderForm((prev) => ({
+                      ...prev,
+                      provider,
+                      model: found?.models?.[0] || prev.model,
+                    }))
+                  }}
+                >
+                  {AI_PROVIDER_OPTIONS.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label>Model</Label>
+                <select
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={aiProviderForm.model}
+                  onChange={(event) => setAiProviderForm((prev) => ({ ...prev, model: event.target.value }))}
+                >
+                  {AI_PROVIDER_OPTIONS.find((p) => p.id === aiProviderForm.provider)?.models?.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label>API Key</Label>
+                <Input
+                  type="password"
+                  value={aiProviderForm.apiKey}
+                  onChange={(event) => setAiProviderForm((prev) => ({ ...prev, apiKey: event.target.value }))}
+                  placeholder="Paste API key"
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={testProvider} disabled={aiProviderLoading}>
+                Test provider
+              </Button>
+              <Button size="sm" onClick={addProvider} disabled={aiProviderLoading}>
+                Save & activate
+              </Button>
+            </div>
+            {aiProviderTest ? (
+              <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs">
+                {aiProviderTest.success ? "Test successful" : "Test failed"} {aiProviderTest.message || aiProviderTest.error || ""}
+              </div>
+            ) : null}
+            <div className="rounded-md border border-border/60">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Provider</TableHead>
+                    <TableHead>Model</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Updated</TableHead>
+                    <TableHead></TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {aiProviders.length ? (
+                    aiProviders.map((provider) => (
+                      <TableRow key={provider.id}>
+                        <TableCell className="font-medium">{provider.provider_name}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{provider.model || "-"}</TableCell>
+                        <TableCell>
+                          <Badge className={provider.is_active ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"}>
+                            {provider.is_active ? "active" : "inactive"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {formatRelative(provider.updated_at)}
+                        </TableCell>
+                        <TableCell className="text-right space-x-2">
+                          <Button size="sm" variant="outline" onClick={() => activateProvider(provider.id)}>
+                            Activate
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => deleteProvider(provider.id)}>
+                            Delete
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-sm text-muted-foreground">
+                        No providers configured yet.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
           </CardContent>
         </Card>
 
@@ -454,8 +1010,20 @@ export default function StockpulsePage() {
         </Card>
 
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-3">
             <CardTitle className="text-base">{t("stockpulse.newsTitle")}</CardTitle>
+            <div className="flex items-center gap-2">
+              <Input
+                value={newsTicker}
+                onChange={(event) => setNewsTicker(event.target.value)}
+                placeholder="Ticker (optional)"
+                className="h-8 w-36 text-xs"
+              />
+              <Button size="sm" variant="outline" onClick={refreshCore}>
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Refresh
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="space-y-3">
             {news.length ? (
