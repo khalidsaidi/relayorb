@@ -183,10 +183,15 @@ export default function OpenbbPage() {
   const [historyLog, setHistoryLog] = useState<{ symbols: string; range: string; provider: string; ts: number }[]>([])
   const [comparisonSymbols, setComparisonSymbols] = useState("AAPL, MSFT")
   const [comparisonData, setComparisonData] = useState<Record<string, any>[]>([])
-  // keep last fetched fundamentals/technicals for enriched cards
-  // keep last fetched fundamentals/technicals for enriched cards (TODO: display)
-  const [_fundamentals, setFundamentals] = useState<Record<string, any> | null>(null)
-  const [_technicals, setTechnicals] = useState<Record<string, any> | null>(null)
+  const [fundamentals, setFundamentals] = useState<Record<string, any> | null>(null)
+  const [technicals, setTechnicals] = useState<Record<string, any> | null>(null)
+  const [fundLoading, setFundLoading] = useState(false)
+  const [techLoading, setTechLoading] = useState(false)
+  const [fundSymbol, setFundSymbol] = useState("AAPL")
+  const [techSymbol, setTechSymbol] = useState("AAPL")
+  const [macroData, setMacroData] = useState<Record<string, any> | null>(null)
+  const [cryptoData, setCryptoData] = useState<Record<string, any> | null>(null)
+  const [commodityData, setCommodityData] = useState<Record<string, any> | null>(null)
 
   const [specOps, setSpecOps] = useState<ApiOperation[]>([])
   const [specError, setSpecError] = useState<string | null>(null)
@@ -435,11 +440,107 @@ export default function OpenbbPage() {
     }
   }
 
+  const fetchFundamentals = async () => {
+    if (!queryBase) {
+      toast.error(t("openbb.notConfigured"))
+      return
+    }
+    setFundLoading(true)
+    try {
+      const profile = await fetch(buildUrl(queryBase, "/api/v1/equity/profile", { symbol: fundSymbol, provider: quickProvider })).then((r) => r.json().catch(() => null))
+      const income = await fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/income", { symbol: fundSymbol, provider: quickProvider })).then((r) => r.json().catch(() => null))
+      const balance = await fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/balance", { symbol: fundSymbol, provider: quickProvider })).then((r) => r.json().catch(() => null))
+      const cash = await fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/cash_flow", { symbol: fundSymbol, provider: quickProvider })).then((r) => r.json().catch(() => null))
+      setFundamentals({ profile, income, balance, cash })
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Fundamentals failed")
+    } finally {
+      setFundLoading(false)
+    }
+  }
+
+  const fetchTechnicals = async () => {
+    if (!queryBase) {
+      toast.error(t("openbb.notConfigured"))
+      return
+    }
+    setTechLoading(true)
+    try {
+      const rsi = await fetch(buildUrl(queryBase, "/api/v1/technical/relative_strength_index", { symbol: techSymbol, interval: "1d", length: 14, provider: quickProvider })).then((r) => r.json().catch(() => null))
+      const ma = await fetch(buildUrl(queryBase, "/api/v1/technical/moving_average", { symbol: techSymbol, interval: "1d", length: 20, provider: quickProvider })).then((r) => r.json().catch(() => null))
+      const bb = await fetch(buildUrl(queryBase, "/api/v1/technical/bollinger_bands", { symbol: techSymbol, interval: "1d", length: 20, std: 2, provider: quickProvider })).then((r) => r.json().catch(() => null))
+      setTechnicals({ rsi, ma, bb })
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Technical fetch failed")
+    } finally {
+      setTechLoading(false)
+    }
+  }
+
+  const fetchMacro = async () => {
+    if (!queryBase) return
+    try {
+      const res = await fetch(buildUrl(queryBase, "/api/v1/commodity/price/spot", { commodity: "wti", provider: "fred" }))
+      const data = await res.json().catch(() => null)
+      setMacroData(data)
+    } catch {
+      setMacroData(null)
+    }
+  }
+
+  const fetchCrypto = async (symbol = "BTC-USD") => {
+    if (!queryBase) return
+    try {
+      const res = await fetch(buildUrl(queryBase, "/api/v1/crypto/price/historical", { symbol, interval: "1d", provider: quickProvider }))
+      const data = await res.json().catch(() => null)
+      setCryptoData(data)
+    } catch {
+      setCryptoData(null)
+    }
+  }
+
+  const fetchCommodities = async () => {
+    if (!queryBase) return
+    try {
+      const res = await fetch(buildUrl(queryBase, "/api/v1/commodity/price/spot", { commodity: "brent", provider: "fred" }))
+      const data = await res.json().catch(() => null)
+      setCommodityData(data)
+    } catch {
+      setCommodityData(null)
+    }
+  }
+
   const saveCurrentQuick = () => {
     const exists = savedQueries.some((q) => q.symbols === quickSymbols && q.range === quickRange && q.provider === quickProvider)
     if (exists) return
     setSavedQueries((prev) => [{ symbols: quickSymbols, range: quickRange, provider: quickProvider }, ...prev].slice(0, 10))
   }
+
+  // Persistence for watchlist/history/saved queries
+  useEffect(() => {
+    try {
+      const storedWatch = localStorage.getItem("openbb_watchlist")
+      const storedHist = localStorage.getItem("openbb_history")
+      const storedSaved = localStorage.getItem("openbb_saved")
+      if (storedWatch) setWatchlist(JSON.parse(storedWatch))
+      if (storedHist) setHistoryLog(JSON.parse(storedHist))
+      if (storedSaved) setSavedQueries(JSON.parse(storedSaved))
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem("openbb_watchlist", JSON.stringify(watchlist))
+  }, [watchlist])
+
+  useEffect(() => {
+    localStorage.setItem("openbb_history", JSON.stringify(historyLog))
+  }, [historyLog])
+
+  useEffect(() => {
+    localStorage.setItem("openbb_saved", JSON.stringify(savedQueries))
+  }, [savedQueries])
 
   return (
     <div className="space-y-6">
@@ -478,6 +579,11 @@ export default function OpenbbPage() {
       <Tabs defaultValue="quick" className="space-y-6">
         <TabsList className="flex flex-wrap gap-2">
           <TabsTrigger value="quick">Quick lookup</TabsTrigger>
+          <TabsTrigger value="fundamentals">Fundamentals</TabsTrigger>
+          <TabsTrigger value="technicals">Technicals</TabsTrigger>
+          <TabsTrigger value="macro">Macro</TabsTrigger>
+          <TabsTrigger value="crypto">Crypto</TabsTrigger>
+          <TabsTrigger value="commodities">Commodities</TabsTrigger>
           <TabsTrigger value="explorer">Explorer</TabsTrigger>
           <TabsTrigger value="custom">Custom</TabsTrigger>
         </TabsList>
@@ -842,6 +948,178 @@ export default function OpenbbPage() {
                   <ResponseCard title="Explorer result" result={explorerResult} />
                 </div>
               ) : null}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="fundamentals" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Fundamentals</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="space-y-1 md:col-span-2">
+                  <Label>Symbol</Label>
+                  <Input value={fundSymbol} onChange={(e) => setFundSymbol(e.target.value.toUpperCase())} />
+                </div>
+                <div className="space-y-1">
+                  <Label>Provider</Label>
+                  <select
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={quickProvider}
+                    onChange={(e) => setQuickProvider(e.target.value)}
+                  >
+                    {AVAILABLE_QUOTE_PROVIDERS.map((p: string) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <Button size="sm" onClick={fetchFundamentals} disabled={fundLoading}>
+                <RefreshCw className="mr-2 h-4 w-4" /> {fundLoading ? "Loading" : "Fetch fundamentals"}
+              </Button>
+              {fundamentals ? (
+                <div className="grid gap-4 lg:grid-cols-2 text-xs text-muted-foreground">
+                  <Card className="border-border/70">
+                    <CardHeader>
+                      <CardTitle className="text-sm">Profile</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2">
+                      <pre className="max-h-64 overflow-auto rounded bg-background/60 p-2">{JSON.stringify(fundamentals.profile, null, 2)}</pre>
+                    </CardContent>
+                  </Card>
+                  <Card className="border-border/70">
+                    <CardHeader>
+                      <CardTitle className="text-sm">Income (sample)</CardTitle>
+                    </CardHeader>
+                    <CardContent>{renderTable(fundamentals.income?.results || fundamentals.income) || <div>No data</div>}</CardContent>
+                  </Card>
+                  <Card className="border-border/70">
+                    <CardHeader>
+                      <CardTitle className="text-sm">Balance (sample)</CardTitle>
+                    </CardHeader>
+                    <CardContent>{renderTable(fundamentals.balance?.results || fundamentals.balance) || <div>No data</div>}</CardContent>
+                  </Card>
+                  <Card className="border-border/70">
+                    <CardHeader>
+                      <CardTitle className="text-sm">Cash flow (sample)</CardTitle>
+                    </CardHeader>
+                    <CardContent>{renderTable(fundamentals.cash?.results || fundamentals.cash) || <div>No data</div>}</CardContent>
+                  </Card>
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground">No data yet.</div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="technicals" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Technicals</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="space-y-1 md:col-span-2">
+                  <Label>Symbol</Label>
+                  <Input value={techSymbol} onChange={(e) => setTechSymbol(e.target.value.toUpperCase())} />
+                </div>
+                <div className="space-y-1">
+                  <Label>Provider</Label>
+                  <select
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={quickProvider}
+                    onChange={(e) => setQuickProvider(e.target.value)}
+                  >
+                    {AVAILABLE_QUOTE_PROVIDERS.map((p: string) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <Button size="sm" onClick={fetchTechnicals} disabled={techLoading}>
+                <RefreshCw className="mr-2 h-4 w-4" /> {techLoading ? "Loading" : "Fetch technicals"}
+              </Button>
+              {technicals ? (
+                <div className="grid gap-4 lg:grid-cols-2 text-xs text-muted-foreground">
+                  <Card className="border-border/70">
+                    <CardHeader>
+                      <CardTitle className="text-sm">RSI</CardTitle>
+                    </CardHeader>
+                    <CardContent>{renderTable(technicals.rsi?.results || technicals.rsi) || <div>No data</div>}</CardContent>
+                  </Card>
+                  <Card className="border-border/70">
+                    <CardHeader>
+                      <CardTitle className="text-sm">Moving average</CardTitle>
+                    </CardHeader>
+                    <CardContent>{renderTable(technicals.ma?.results || technicals.ma) || <div>No data</div>}</CardContent>
+                  </Card>
+                  <Card className="border-border/70">
+                    <CardHeader>
+                      <CardTitle className="text-sm">Bollinger bands</CardTitle>
+                    </CardHeader>
+                    <CardContent>{renderTable(technicals.bb?.results || technicals.bb) || <div>No data</div>}</CardContent>
+                  </Card>
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground">No data yet.</div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="macro" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Macro / Commodities (sample)</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <Button size="sm" onClick={fetchMacro}>
+                <RefreshCw className="mr-2 h-4 w-4" /> Fetch WTI spot (EIA/FRED)
+              </Button>
+              {macroData ? renderTable(macroData?.results || macroData) || <div className="text-xs text-muted-foreground">No rows</div> : <div className="text-xs text-muted-foreground">No data yet.</div>}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="crypto" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Crypto</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="md:col-span-2 space-y-1">
+                  <Label>Symbol</Label>
+                  <Input
+                    defaultValue="BTC-USD"
+                    onBlur={(e) => fetchCrypto(e.target.value || "BTC-USD")}
+                    placeholder="BTC-USD"
+                  />
+                </div>
+              </div>
+              <Button size="sm" onClick={() => fetchCrypto("BTC-USD")}>Fetch BTC-USD</Button>
+              {cryptoData ? renderLineChart(cryptoData?.results || cryptoData, "date") || renderTable(cryptoData?.results || cryptoData) : <div className="text-xs text-muted-foreground">No data yet.</div>}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="commodities" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Commodities</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <Button size="sm" onClick={fetchCommodities}>
+                <RefreshCw className="mr-2 h-4 w-4" /> Fetch Brent spot
+              </Button>
+              {commodityData ? renderTable(commodityData?.results || commodityData) || <div className="text-xs text-muted-foreground">No rows</div> : <div className="text-xs text-muted-foreground">No data yet.</div>}
             </CardContent>
           </Card>
         </TabsContent>
