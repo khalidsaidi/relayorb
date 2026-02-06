@@ -12,7 +12,10 @@ python - <<'PY' || true
 import os, sys
 sys.path.insert(0, "/app")
 
-from settings_manager import get_active_ai_provider, add_ai_provider
+from settings_manager import init_settings_table, get_active_ai_provider, add_ai_provider
+
+# Ensure the ai_providers table exists even if the DB was created by older scripts.
+init_settings_table()
 
 if get_active_ai_provider() is None:
     api_key = os.getenv("OPENAI_API_KEY") or ""
