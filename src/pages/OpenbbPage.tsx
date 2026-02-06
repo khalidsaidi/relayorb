@@ -7,6 +7,7 @@ import { ExternalLink, RefreshCw } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { resolveOpenbbApiUrl, resolveMarketDataProxyUrl } from "@/lib/runtime-urls"
 import { toast } from "sonner"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 type ResponseState = {
   url: string
@@ -46,12 +47,7 @@ function resolveProviders() {
 }
 
 const AVAILABLE_QUOTE_PROVIDERS = resolveProviders()
-const AVAILABLE_HISTORY_PROVIDERS = resolveProviders()
-// News: keep to sources we can back; extend once verified (e.g., benzinga/fmp) with keys.
-const AVAILABLE_NEWS_PROVIDERS = resolveProviders().filter((p: string) => p !== "intrinio")
-
 const DEFAULT_QUOTE_PROVIDER = AVAILABLE_QUOTE_PROVIDERS[0]
-const DEFAULT_NEWS_PROVIDER = AVAILABLE_NEWS_PROVIDERS[0]
 
 function buildUrl(base: string, path: string, params: Record<string, string | number | undefined>) {
   const url = new URL(path, base)
@@ -141,31 +137,22 @@ export default function OpenbbPage() {
   }, [])
   const queryBase = proxyBase ? `${proxyBase}/v1/openbb` : apiUrl
 
-  const [quoteSymbol, setQuoteSymbol] = useState("AAPL")
-  const [quoteProvider, setQuoteProvider] = useState(DEFAULT_QUOTE_PROVIDER)
-  const [quoteResult, setQuoteResult] = useState<ResponseState>()
-  const [quoteLoading, setQuoteLoading] = useState(false)
-
-  const [histSymbol, setHistSymbol] = useState("AAPL")
-  const [histProvider, setHistProvider] = useState(DEFAULT_QUOTE_PROVIDER)
-  const [histInterval, setHistInterval] = useState("1d")
-  const [histStart, setHistStart] = useState("")
-  const [histEnd, setHistEnd] = useState("")
-  const [histResult, setHistResult] = useState<ResponseState>()
-  const [histLoading, setHistLoading] = useState(false)
-
-  const [newsSymbol, setNewsSymbol] = useState("AAPL")
-  const [newsProvider, setNewsProvider] = useState(DEFAULT_NEWS_PROVIDER)
-  const [newsLimit, setNewsLimit] = useState("5")
-  const [newsResult, setNewsResult] = useState<ResponseState>()
-  const [newsLoading, setNewsLoading] = useState(false)
-
+  // Custom request (kept for advanced users)
   const [customPath, setCustomPath] = useState("/api/v1/equity/price/quote")
   const [customQuery, setCustomQuery] = useState(
     JSON.stringify({ symbol: "AAPL", provider: DEFAULT_QUOTE_PROVIDER }, null, 2)
   )
   const [customResult, setCustomResult] = useState<ResponseState>()
   const [customLoading, setCustomLoading] = useState(false)
+
+  // Quick lookup and favorites
+  const [quickSymbols, setQuickSymbols] = useState("AAPL, MSFT")
+  const [quickProvider, setQuickProvider] = useState(DEFAULT_QUOTE_PROVIDER)
+  const [quickRange, setQuickRange] = useState("1M")
+  const [quickQuotes, setQuickQuotes] = useState<Record<string, any>[]>([])
+  const [quickHistory, setQuickHistory] = useState<Record<string, any>[]>([])
+  const [quickLoading, setQuickLoading] = useState(false)
+  const [savedQueries, setSavedQueries] = useState<{ symbols: string; range: string; provider: string }[]>([])
 
   const [specOps, setSpecOps] = useState<ApiOperation[]>([])
   const [specError, setSpecError] = useState<string | null>(null)
@@ -305,6 +292,75 @@ export default function OpenbbPage() {
     await runRequest(finalPath, queryParams, setExplorerResult, setExplorerLoading)
   }
 
+  const computeStartDate = (range: string) => {
+    const now = new Date()
+    const copy = new Date(now)
+    const lower = range.toUpperCase()
+    if (lower === "1D" || lower === "1DAY") return undefined
+    if (lower === "5D") copy.setDate(now.getDate() - 5)
+    else if (lower === "1M") copy.setMonth(now.getMonth() - 1)
+    else if (lower === "3M") copy.setMonth(now.getMonth() - 3)
+    else if (lower === "6M") copy.setMonth(now.getMonth() - 6)
+    else if (lower === "1Y") copy.setFullYear(now.getFullYear() - 1)
+    else if (lower === "5Y") copy.setFullYear(now.getFullYear() - 5)
+    else return undefined
+    return copy.toISOString().slice(0, 10)
+  }
+
+  const runQuickLookup = async () => {
+    if (!queryBase) {
+      toast.error(t("openbb.notConfigured"))
+      return
+    }
+    const symbols = quickSymbols
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean)
+    if (!symbols.length) {
+      toast.error("Enter at least one symbol")
+      return
+    }
+    setQuickLoading(true)
+    setQuickQuotes([])
+    setQuickHistory([])
+    try {
+      const startDate = computeStartDate(quickRange)
+      const histPromises = symbols.map((sym) =>
+        fetch(buildUrl(queryBase, "/api/v1/equity/price/historical", { symbol: sym, provider: quickProvider, interval: "1d", start_date: startDate })).then(async (r) => ({
+          sym,
+          status: r.status,
+          ok: r.ok,
+          data: await r.json().catch(() => null),
+        }))
+      )
+      const quotePromises = symbols.map((sym) =>
+        fetch(buildUrl(queryBase, "/api/v1/equity/price/quote", { symbol: sym, provider: quickProvider })).then(async (r) => ({
+          sym,
+          status: r.status,
+          ok: r.ok,
+          data: await r.json().catch(() => null),
+        }))
+      )
+      const [quotes, history] = await Promise.all([Promise.all(quotePromises), Promise.all(histPromises)])
+      const okQuotes = quotes.filter((q) => q.ok)
+      const okHist = history.filter((h) => h.ok)
+      setQuickQuotes(okQuotes)
+      setQuickHistory(okHist)
+      quotes.filter((q) => !q.ok).forEach((q) => toast.error(`${q.sym}: ${q.status}`))
+      history.filter((h) => !h.ok).forEach((h) => toast.error(`${h.sym}: ${h.status}`))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Quick lookup failed")
+    } finally {
+      setQuickLoading(false)
+    }
+  }
+
+  const saveCurrentQuick = () => {
+    const exists = savedQueries.some((q) => q.symbols === quickSymbols && q.range === quickRange && q.provider === quickProvider)
+    if (exists) return
+    setSavedQueries((prev) => [{ symbols: quickSymbols, range: quickRange, provider: quickProvider }, ...prev].slice(0, 10))
+  }
+
   return (
     <div className="space-y-6">
       <Card>
@@ -339,371 +395,308 @@ export default function OpenbbPage() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">{t("openbb.quoteTitle")}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="quote-symbol">{t("openbb.symbolLabel")}</Label>
-                <Input
-                  id="quote-symbol"
-                  value={quoteSymbol}
-                  onChange={(e) => setQuoteSymbol(e.target.value.toUpperCase())}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="quote-provider">{t("openbb.providerLabel")}</Label>
-                <select
-                  id="quote-provider"
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={quoteProvider}
-                  onChange={(event) => setQuoteProvider(event.target.value)}
-                >
-                  {AVAILABLE_QUOTE_PROVIDERS.map((p: string) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-            <Button
-              size="sm"
-              onClick={() =>
-                runRequest(
-                  "/api/v1/equity/price/quote",
-                  { symbol: quoteSymbol, provider: quoteProvider },
-                  setQuoteResult,
-                  setQuoteLoading
-                )
-              }
-              disabled={quoteLoading}
-            >
-              <RefreshCw className="mr-2 h-4 w-4" />
-              {quoteLoading ? t("openbb.loading") : t("openbb.fetchQuote")}
-            </Button>
-          </CardContent>
-        </Card>
+      <Tabs defaultValue="quick" className="space-y-6">
+        <TabsList className="flex flex-wrap gap-2">
+          <TabsTrigger value="quick">Quick lookup</TabsTrigger>
+          <TabsTrigger value="explorer">Explorer</TabsTrigger>
+          <TabsTrigger value="custom">Custom</TabsTrigger>
+        </TabsList>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">{t("openbb.historyTitle")}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="hist-symbol">{t("openbb.symbolLabel")}</Label>
-                <Input
-                  id="hist-symbol"
-                  value={histSymbol}
-                  onChange={(e) => setHistSymbol(e.target.value.toUpperCase())}
-                />
+        <TabsContent value="quick" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Command bar</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-4">
+                <div className="space-y-1 md:col-span-2">
+                  <Label>Symbols (comma separated)</Label>
+                  <Input value={quickSymbols} onChange={(e) => setQuickSymbols(e.target.value)} placeholder="AAPL, MSFT, NVDA" />
+                </div>
+                <div className="space-y-1">
+                  <Label>Provider</Label>
+                  <select
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={quickProvider}
+                    onChange={(e) => setQuickProvider(e.target.value)}
+                  >
+                    {AVAILABLE_QUOTE_PROVIDERS.map((p: string) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label>Range</Label>
+                  <select
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={quickRange}
+                    onChange={(e) => setQuickRange(e.target.value)}
+                  >
+                    <option value="1D">1D</option>
+                    <option value="5D">5D</option>
+                    <option value="1M">1M</option>
+                    <option value="3M">3M</option>
+                    <option value="6M">6M</option>
+                    <option value="1Y">1Y</option>
+                    <option value="5Y">5Y</option>
+                  </select>
+                </div>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="hist-provider">{t("openbb.providerLabel")}</Label>
-                <select
-                  id="hist-provider"
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={histProvider}
-                  onChange={(event) => setHistProvider(event.target.value)}
-                >
-                  {AVAILABLE_HISTORY_PROVIDERS.map((p: string) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" onClick={runQuickLookup} disabled={quickLoading}>
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  {quickLoading ? "Fetching…" : "Run lookup"}
+                </Button>
+                <Button size="sm" variant="outline" onClick={saveCurrentQuick}>
+                  Save
+                </Button>
+                {savedQueries.length ? (
+                  <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                    {savedQueries.map((q, idx) => (
+                      <button
+                        key={`${q.symbols}-${idx}`}
+                        className="rounded-full border px-3 py-1 hover:bg-muted"
+                        onClick={() => {
+                          setQuickSymbols(q.symbols)
+                          setQuickRange(q.range)
+                          setQuickProvider(q.provider)
+                        }}
+                      >
+                        {q.symbols} · {q.range} · {q.provider}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="hist-interval">{t("openbb.intervalLabel")}</Label>
-                <select
-                  id="hist-interval"
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={histInterval}
-                  onChange={(event) => setHistInterval(event.target.value)}
-                >
-                  <option value="1m">1m</option>
-                  <option value="5m">5m</option>
-                  <option value="15m">15m</option>
-                  <option value="1h">1h</option>
-                  <option value="1d">1d</option>
-                </select>
+              <div className="grid gap-4 lg:grid-cols-2">
+                {quickQuotes.length ? (
+                  <Card className="border-border/70">
+                    <CardHeader>
+                      <CardTitle className="text-sm">Quotes</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2 text-xs text-muted-foreground">
+                      <div className="space-y-2">
+                        {quickQuotes.map((q) => (
+                          <div key={q.sym} className="rounded-md border border-border/50 bg-muted/40 p-2">
+                            <div className="text-sm font-semibold text-foreground">{q.sym}</div>
+                            <pre className="max-h-48 overflow-auto rounded bg-background/60 p-2">{JSON.stringify(q.data, null, 2)}</pre>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ) : null}
+                {quickHistory.length ? (
+                  <Card className="border-border/70">
+                    <CardHeader>
+                      <CardTitle className="text-sm">Historical</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2 text-xs text-muted-foreground">
+                      {quickHistory.map((h) => (
+                        <div key={h.sym} className="rounded-md border border-border/50 bg-muted/40 p-2">
+                          <div className="text-sm font-semibold text-foreground">{h.sym}</div>
+                          {renderTable(h.data) || (
+                            <pre className="max-h-48 overflow-auto rounded bg-background/60 p-2">{JSON.stringify(h.data, null, 2)}</pre>
+                          )}
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                ) : null}
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="hist-start">{t("openbb.startDateLabel")}</Label>
-                <Input id="hist-start" value={histStart} onChange={(e) => setHistStart(e.target.value)} placeholder="YYYY-MM-DD" />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="hist-end">{t("openbb.endDateLabel")}</Label>
-                <Input id="hist-end" value={histEnd} onChange={(e) => setHistEnd(e.target.value)} placeholder="YYYY-MM-DD" />
-              </div>
-            </div>
-            <Button
-              size="sm"
-              onClick={() =>
-                runRequest(
-                  "/api/v1/equity/price/historical",
-                  {
-                    symbol: histSymbol,
-                    provider: histProvider,
-                    interval: histInterval,
-                    start_date: histStart || undefined,
-                    end_date: histEnd || undefined,
-                  },
-                  setHistResult,
-                  setHistLoading
-                )
-              }
-              disabled={histLoading}
-            >
-              <RefreshCw className="mr-2 h-4 w-4" />
-              {histLoading ? t("openbb.loading") : t("openbb.fetchHistory")}
-            </Button>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">{t("openbb.newsTitle")}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="news-symbol">{t("openbb.symbolLabel")}</Label>
-                <Input
-                  id="news-symbol"
-                  value={newsSymbol}
-                  onChange={(e) => setNewsSymbol(e.target.value.toUpperCase())}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="news-provider">{t("openbb.providerLabel")}</Label>
-                <select
-                  id="news-provider"
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={newsProvider}
-                  onChange={(event) => setNewsProvider(event.target.value)}
-                >
-                  {AVAILABLE_NEWS_PROVIDERS.map((p: string) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="news-limit">{t("openbb.limitLabel")}</Label>
-                <Input id="news-limit" value={newsLimit} onChange={(e) => setNewsLimit(e.target.value)} />
-              </div>
-            </div>
-            <Button
-              size="sm"
-              onClick={() =>
-                runRequest(
-                  "/api/v1/news/company",
-                  { symbol: newsSymbol, provider: newsProvider, limit: newsLimit },
-                  setNewsResult,
-                  setNewsLoading
-                )
-              }
-              disabled={newsLoading}
-            >
-              <RefreshCw className="mr-2 h-4 w-4" />
-              {newsLoading ? t("openbb.loading") : t("openbb.fetchNews")}
-            </Button>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">{t("openbb.customTitle")}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="custom-path">{t("openbb.pathLabel")}</Label>
-              <Input id="custom-path" value={customPath} onChange={(e) => setCustomPath(e.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="custom-query">{t("openbb.queryLabel")}</Label>
-              <textarea
-                id="custom-query"
-                className="min-h-[120px] w-full rounded-md border border-border/60 bg-background px-3 py-2 text-xs"
-                value={customQuery}
-                onChange={(e) => setCustomQuery(e.target.value)}
-              />
-            </div>
-            <Button
-              size="sm"
-              onClick={() => {
-                let parsed: Record<string, string | number> = {}
-                try {
-                  parsed = JSON.parse(customQuery || "{}")
-                } catch {
-                  setCustomResult({
-                    url: "",
-                    status: 0,
-                    ok: false,
-                    data: null,
-                    error: "Invalid JSON in query payload.",
-                  })
-                  return
-                }
-                runRequest(customPath, parsed, setCustomResult, setCustomLoading)
-              }}
-              disabled={customLoading}
-            >
-              <RefreshCw className="mr-2 h-4 w-4" />
-              {customLoading ? t("openbb.loading") : t("openbb.runQuery")}
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <ResponseCard title={t("openbb.quoteResult")} result={quoteResult} />
-        <ResponseCard title={t("openbb.historyResult")} result={histResult} />
-        <ResponseCard title={t("openbb.newsResult")} result={newsResult} />
-        <ResponseCard title={t("openbb.customResult")} result={customResult} />
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">OpenBB Explorer (all endpoints)</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4 text-sm">
-          {specError ? (
-            <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive">
-              {specError}
-            </div>
-          ) : null}
-          <div className="grid gap-3 md:grid-cols-3">
-            <div className="space-y-2">
-              <Label>Tag</Label>
-              <select
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                value={selectedTag}
-                onChange={(e) => {
-                  const tag = e.target.value
-                  setSelectedTag(tag)
-                  const first = specOps.find((op) => op.tag === tag)
-                  setSelectedOpId(first?.id || "")
-                  setParamValues({})
-                  setExplorerResult(undefined)
-                }}
-              >
-                {availableTags.map((tag) => (
-                  <option key={tag} value={tag}>
-                    {tag}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-2 md:col-span-2">
-              <Label>Endpoint</Label>
-              <select
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                value={selectedOpId}
-                onChange={(e) => {
-                  setSelectedOpId(e.target.value)
-                  setParamValues({})
-                  setExplorerResult(undefined)
-                }}
-              >
-                {filteredOps.map((op) => (
+        <TabsContent value="explorer" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Explorer</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4 text-sm">
+              {specError ? (
+                <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive">
+                  {specError}
+                </div>
+              ) : null}
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="space-y-2">
+                  <Label>Tag</Label>
+                  <select
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={selectedTag}
+                    onChange={(e) => {
+                      const tag = e.target.value
+                      setSelectedTag(tag)
+                      const first = specOps.find((op) => op.tag === tag)
+                      setSelectedOpId(first?.id || "")
+                      setParamValues({})
+                      setExplorerResult(undefined)
+                    }}
+                  >
+                    {availableTags.map((tag) => (
+                      <option key={tag} value={tag}>
+                        {tag}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Endpoint</Label>
+                  <select
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={selectedOpId}
+                    onChange={(e) => {
+                      setSelectedOpId(e.target.value)
+                      setParamValues({})
+                      setExplorerResult(undefined)
+                    }}
+                  >
+                {filteredOps.map((op: ApiOperation) => (
                   <option key={op.id} value={op.id}>
                     {op.method} {op.path} · {op.summary || op.tag}
                   </option>
                 ))}
-              </select>
-            </div>
-          </div>
-          {selectedOp ? (
-            <div className="space-y-3">
-              <div className="text-xs text-muted-foreground">
-                {selectedOp.method} {selectedOp.path} · {selectedOp.summary || ""}
-              </div>
-              {selectedOp.params.length ? (
-                <div className="grid gap-3 md:grid-cols-2">
-                  {selectedOp.params.map((p) => {
-                    const enumValues = p.schema?.enum
-                    const type = p.schema?.type || ""
-                    const format = p.schema?.format || ""
-                    const val = paramValues[p.name] || ""
-                    const label = `${p.name}${p.required ? " *" : ""}`
-                    if (enumValues && enumValues.length) {
-                      return (
-                        <div key={p.name} className="space-y-1">
-                          <Label>{label}</Label>
-                          <select
-                            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                            value={val}
-                            onChange={(e) => handleParamChange(p.name, e.target.value)}
-                          >
-                            <option value="">(unset)</option>
-                            {enumValues.map((opt) => (
-                              <option key={opt} value={opt}>
-                                {opt}
-                              </option>
-                            ))}
-                          </select>
-                          {p.description ? <div className="text-[11px] text-muted-foreground">{p.description}</div> : null}
-                        </div>
-                      )
-                    }
-                    if (type === "boolean") {
-                      return (
-                        <div key={p.name} className="space-y-1">
-                          <Label>{label}</Label>
-                          <select
-                            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                            value={val}
-                            onChange={(e) => handleParamChange(p.name, e.target.value)}
-                          >
-                            <option value="">(unset)</option>
-                            <option value="true">true</option>
-                            <option value="false">false</option>
-                          </select>
-                          {p.description ? <div className="text-[11px] text-muted-foreground">{p.description}</div> : null}
-                        </div>
-                      )
-                    }
-                    const inputType =
-                      format === "date"
-                        ? "date"
-                        : format === "date-time"
-                          ? "datetime-local"
-                          : type === "integer" || type === "number"
-                            ? "number"
-                            : "text"
-                    return (
-                      <div key={p.name} className="space-y-1">
-                        <Label>{label}</Label>
-                        <Input
-                          value={val}
-                          type={inputType}
-                          onChange={(e) => handleParamChange(p.name, e.target.value)}
-                          placeholder={p.description || ""}
-                        />
-                        {p.description ? <div className="text-[11px] text-muted-foreground">{p.description}</div> : null}
-                      </div>
-                    )
-                  })}
+                  </select>
                 </div>
-              ) : (
-                <div className="text-xs text-muted-foreground">No parameters</div>
-              )}
-              <Button size="sm" onClick={runExplorer} disabled={explorerLoading}>
+              </div>
+              {selectedOp ? (
+                <div className="space-y-3">
+                  <div className="text-xs text-muted-foreground">
+                    {selectedOp.method} {selectedOp.path} · {selectedOp.summary || ""}
+                  </div>
+                  {selectedOp.params.length ? (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {selectedOp.params.map((p) => {
+                        const enumValues = p.schema?.enum
+                        const type = p.schema?.type || ""
+                        const format = p.schema?.format || ""
+                        const val = paramValues[p.name] || ""
+                        const label = `${p.name}${p.required ? " *" : ""}`
+                        if (enumValues && enumValues.length) {
+                          return (
+                            <div key={p.name} className="space-y-1">
+                              <Label>{label}</Label>
+                              <select
+                                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                value={val}
+                                onChange={(e) => handleParamChange(p.name, e.target.value)}
+                              >
+                                <option value="">(unset)</option>
+                                {enumValues.map((opt) => (
+                                  <option key={opt} value={opt}>
+                                    {opt}
+                                  </option>
+                                ))}
+                              </select>
+                              {p.description ? <div className="text-[11px] text-muted-foreground">{p.description}</div> : null}
+                            </div>
+                          )
+                        }
+                        if (type === "boolean") {
+                          return (
+                            <div key={p.name} className="space-y-1">
+                              <Label>{label}</Label>
+                              <select
+                                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                value={val}
+                                onChange={(e) => handleParamChange(p.name, e.target.value)}
+                              >
+                                <option value="">(unset)</option>
+                                <option value="true">true</option>
+                                <option value="false">false</option>
+                              </select>
+                              {p.description ? <div className="text-[11px] text-muted-foreground">{p.description}</div> : null}
+                            </div>
+                          )
+                        }
+                        const inputType =
+                          format === "date"
+                            ? "date"
+                            : format === "date-time"
+                              ? "datetime-local"
+                              : type === "integer" || type === "number"
+                                ? "number"
+                                : "text"
+                        return (
+                          <div key={p.name} className="space-y-1">
+                            <Label>{label}</Label>
+                            <Input
+                              value={val}
+                              type={inputType}
+                              onChange={(e) => handleParamChange(p.name, e.target.value)}
+                              placeholder={p.description || ""}
+                            />
+                            {p.description ? <div className="text-[11px] text-muted-foreground">{p.description}</div> : null}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">No parameters</div>
+                  )}
+                  <Button size="sm" onClick={runExplorer} disabled={explorerLoading}>
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                    {explorerLoading ? "Loading" : "Run"}
+                  </Button>
+                  <ResponseCard title="Explorer result" result={explorerResult} />
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="custom" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">{t("openbb.customTitle")}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="custom-path">{t("openbb.pathLabel")}</Label>
+                <Input id="custom-path" value={customPath} onChange={(e) => setCustomPath(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="custom-query">{t("openbb.queryLabel")}</Label>
+                <textarea
+                  id="custom-query"
+                  className="min-h-[120px] w-full rounded-md border border-border/60 bg-background px-3 py-2 text-xs"
+                  value={customQuery}
+                  onChange={(e) => setCustomQuery(e.target.value)}
+                />
+              </div>
+              <Button
+                size="sm"
+                onClick={() => {
+                  let parsed: Record<string, string | number> = {}
+                  try {
+                    parsed = JSON.parse(customQuery || "{}")
+                  } catch {
+                    setCustomResult({
+                      url: "",
+                      status: 0,
+                      ok: false,
+                      data: null,
+                      error: "Invalid JSON in query payload.",
+                    })
+                    return
+                  }
+                  runRequest(customPath, parsed, setCustomResult, setCustomLoading)
+                }}
+                disabled={customLoading}
+              >
                 <RefreshCw className="mr-2 h-4 w-4" />
-                {explorerLoading ? "Loading" : "Run"}
+                {customLoading ? t("openbb.loading") : t("openbb.runQuery")}
               </Button>
-              <ResponseCard title="Explorer result" result={explorerResult} />
-            </div>
-          ) : null}
-        </CardContent>
-      </Card>
+            </CardContent>
+          </Card>
+          <div className="grid gap-6 lg:grid-cols-2">
+            <ResponseCard title={t("openbb.customResult")} result={customResult} />
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
