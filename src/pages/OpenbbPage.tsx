@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next"
 import { resolveOpenbbApiUrl, resolveMarketDataProxyUrl } from "@/lib/runtime-urls"
 import { toast } from "sonner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from "recharts"
 
 type ResponseState = {
   url: string
@@ -97,6 +98,31 @@ function renderTable(data: unknown) {
   )
 }
 
+function renderLineChart(data: unknown, xKey = "date", yKeys: string[] = []) {
+  if (!Array.isArray(data) || data.length === 0 || typeof data[0] !== "object") return null
+  const rows = data as Record<string, unknown>[]
+  const numericKeys = yKeys.length
+    ? yKeys
+    : Object.keys(rows[0]).filter((k) => typeof rows[0][k] === "number")
+  if (!numericKeys.length) return null
+  return (
+    <div className="h-64 w-full">
+      <ResponsiveContainer>
+        <LineChart data={rows} margin={{ left: 8, right: 8, top: 8, bottom: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.3} />
+          <XAxis dataKey={xKey} tick={{ fontSize: 10 }} minTickGap={16} />
+          <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
+          <Tooltip contentStyle={{ fontSize: "11px" }} />
+          <Legend wrapperStyle={{ fontSize: "11px" }} />
+          {numericKeys.slice(0, 4).map((k, idx) => (
+            <Line key={k} type="monotone" dataKey={k} stroke={['#2563eb', '#16a34a', '#f97316', '#a855f7'][idx % 4]} dot={false} strokeWidth={1.6} />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
 function ResponseCard({ title, result }: { title: string; result?: ResponseState }) {
   if (!result) return null
   return (
@@ -155,6 +181,8 @@ export default function OpenbbPage() {
   const [savedQueries, setSavedQueries] = useState<{ symbols: string; range: string; provider: string }[]>([])
   const [watchlist, setWatchlist] = useState<string[]>([])
   const [historyLog, setHistoryLog] = useState<{ symbols: string; range: string; provider: string; ts: number }[]>([])
+  const [comparisonSymbols, setComparisonSymbols] = useState("AAPL, MSFT")
+  const [comparisonData, setComparisonData] = useState<Record<string, any>[]>([])
 
   const [specOps, setSpecOps] = useState<ApiOperation[]>([])
   const [specError, setSpecError] = useState<string | null>(null)
@@ -358,6 +386,39 @@ export default function OpenbbPage() {
     }
   }
 
+  const runComparison = async () => {
+    if (!queryBase) {
+      toast.error(t("openbb.notConfigured"))
+      return
+    }
+    const symbols = comparisonSymbols
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean)
+    if (!symbols.length) {
+      toast.error("Enter symbols to compare")
+      return
+    }
+    setComparisonData([])
+    try {
+      const res = await Promise.all(
+        symbols.map((sym) =>
+          fetch(buildUrl(queryBase, "/api/v1/equity/price/quote", { symbol: sym, provider: quickProvider })).then(async (r) => ({
+            sym,
+            ok: r.ok,
+            status: r.status,
+            data: await r.json().catch(() => null),
+          }))
+        )
+      )
+      const ok = res.filter((r) => r.ok)
+      setComparisonData(ok)
+      res.filter((r) => !r.ok).forEach((r) => toast.error(`${r.sym}: ${r.status}`))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Comparison failed")
+    }
+  }
+
   const saveCurrentQuick = () => {
     const exists = savedQueries.some((q) => q.symbols === quickSymbols && q.range === quickRange && q.provider === quickProvider)
     if (exists) return
@@ -463,7 +524,11 @@ export default function OpenbbPage() {
                     if (!sym) return
                     setWatchlist((prev) => {
                       const merged = new Set(prev)
-                      sym.split(",").map((s) => s.trim()).filter(Boolean).forEach((s) => merged.add(s))
+                      sym
+                        .split(",")
+                        .map((s) => s.trim())
+                        .filter(Boolean)
+                        .forEach((s) => merged.add(s))
                       return Array.from(merged).slice(0, 50)
                     })
                     toast.success("Added to watchlist")
@@ -522,6 +587,51 @@ export default function OpenbbPage() {
                         </div>
                       ))}
                     </CardContent>
+                  </Card>
+                ) : null}
+              </div>
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Card className="border-border/70">
+                  <CardHeader>
+                    <CardTitle className="text-sm">Comparison</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3 text-sm">
+                    <div className="grid gap-2 md:grid-cols-3">
+                      <div className="md:col-span-2 space-y-1">
+                        <Label>Compare symbols</Label>
+                        <Input value={comparisonSymbols} onChange={(e) => setComparisonSymbols(e.target.value)} placeholder="AAPL, MSFT, GOOGL" />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Provider</Label>
+                        <select
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          value={quickProvider}
+                          onChange={(e) => setQuickProvider(e.target.value)}
+                        >
+                          {AVAILABLE_QUOTE_PROVIDERS.map((p: string) => (
+                            <option key={p} value={p}>
+                              {p}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <Button size="sm" onClick={runComparison} variant="outline">
+                      <RefreshCw className="mr-2 h-4 w-4" /> Compare
+                    </Button>
+                    {comparisonData.length ? (
+                      <div className="space-y-3 text-xs text-muted-foreground">
+                        {renderTable(comparisonData.map((c) => ({ symbol: c.sym, ...(Array.isArray(c.data) ? c.data[0] || {} : c.data || {}) })))}\n"
+                      </div>
+                    ) : null}
+                  </CardContent>
+                </Card>
+                {quickHistory.length ? (
+                  <Card className="border-border/70">
+                    <CardHeader>
+                      <CardTitle className="text-sm">Quick chart</CardTitle>
+                    </CardHeader>
+                    <CardContent>{renderLineChart(quickHistory[0]?.data, "date")}</CardContent>
                   </Card>
                 ) : null}
               </div>
