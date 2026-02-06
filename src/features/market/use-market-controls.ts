@@ -16,12 +16,12 @@ export function useMarketControls(): MarketControlState {
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {
-      setLoading(false)
-      return
+      if (loading) setLoading(false)
+      return undefined
     }
 
     const ref = doc(db, "market", "controls")
-    return onSnapshot(
+    const unsub = onSnapshot(
       ref,
       (snap) => {
         if (!snap.exists()) {
@@ -37,7 +37,10 @@ export function useMarketControls(): MarketControlState {
         setLoading(false)
       }
     )
-  }, [])
+
+    return () => unsub()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db, firebaseEnabled])
 
   const cryptoEnabled = controls?.cryptoEnabled !== false
   const forexEnabled = controls?.forexEnabled !== false

@@ -27,6 +27,8 @@ deploy/bot-host/hummingbot/bots/
 deploy/bot-host/jesse/*
 !deploy/bot-host/jesse/.env.example
 deploy/bot-host/openbb-platform/
+deploy/bot-host/stockpulse-data/
+deploy/bot-host/finnews-postgres/
 e2e_report_*.md
 tmp-*.json
 

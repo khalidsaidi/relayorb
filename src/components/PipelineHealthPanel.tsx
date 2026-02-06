@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   Activity,
   AlertCircle,
@@ -96,9 +96,20 @@ function ServiceCard({ name, health }: { name: string; health: ServiceHealth }) 
     streamDetails && typeof streamDetails.nextReconnectAt === "string"
       ? (streamDetails.nextReconnectAt as string)
       : null
-  const reconnectAtMs = nextReconnectAt ? new Date(nextReconnectAt).getTime() : null
-  const reconnectInMs =
-    reconnectAtMs && Number.isFinite(reconnectAtMs) ? reconnectAtMs - Date.now() : null
+  const reconnectAtMs = useMemo(() => (nextReconnectAt ? new Date(nextReconnectAt).getTime() : null), [nextReconnectAt])
+  const [reconnectInMs, setReconnectInMs] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (!reconnectAtMs || !Number.isFinite(reconnectAtMs)) {
+      setReconnectInMs(null)
+      return undefined
+    }
+    let frame = requestAnimationFrame(function tick() {
+      setReconnectInMs(reconnectAtMs - Date.now())
+      frame = requestAnimationFrame(tick)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [reconnectAtMs])
   const statusLabels = {
     ok: t("pipeline.status.ok"),
     degraded: t("pipeline.status.degraded"),

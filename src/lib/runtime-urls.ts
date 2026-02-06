@@ -19,3 +19,15 @@ export function resolveOpenbbApiUrl() {
   if (raw) return normalizeUrl(raw)
   return ""
 }
+
+export function resolveStockpulseUrl() {
+  const raw = (import.meta.env.VITE_STOCKPULSE_URL || "").trim()
+  if (raw) return normalizeUrl(raw)
+  return ""
+}
+
+export function resolveFinnewsUrl() {
+  const raw = (import.meta.env.VITE_FINNEWS_URL || "").trim()
+  if (raw) return normalizeUrl(raw)
+  return ""
+}

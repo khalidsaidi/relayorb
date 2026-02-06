@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, useCallback } from "react"
 import { collection, doc, documentId, onSnapshot, query, serverTimestamp, updateDoc, where } from "firebase/firestore"
 import { db, firebaseEnabled } from "@/lib/firebase"
 import { useAuth } from "@/features/auth/auth-context"
@@ -70,7 +70,7 @@ export default function PaperPage() {
     () => positions.filter((pos) => pos.isOpen !== false && pos.position !== 0),
     [positions]
   )
-  const getOrderOrigin = (order: BrokerOrderDoc) => {
+  const getOrderOrigin = useCallback((order: BrokerOrderDoc): "manual" | "robot" => {
     const requestId = order.executionRequestId || order.id
     const requestDoc = requestId ? requestMeta[requestId] : undefined
     const requestSource = (
@@ -85,7 +85,7 @@ export default function PaperPage() {
     if (requestStrategy) return "robot"
     if (requestedByUid.startsWith("system-")) return "robot"
     return "manual"
-  }
+  }, [requestMeta])
   const visibleOrders = useMemo(
     () =>
       orders.filter((order) => {
@@ -109,7 +109,7 @@ export default function PaperPage() {
   const filteredOrders = useMemo(() => {
     if (orderFilter === "all") return visibleOrders
     return visibleOrders.filter((order) => getOrderOrigin(order) === orderFilter)
-  }, [visibleOrders, orderFilter, requestMeta])
+  }, [visibleOrders, orderFilter, getOrderOrigin])
   const selectedOrder = useMemo(
     () => (selectedOrderId ? filteredOrders.find((order) => order.id === selectedOrderId) ?? null : null),
     [selectedOrderId, filteredOrders]
@@ -186,6 +186,7 @@ export default function PaperPage() {
     return () => {
       unsubs.forEach((unsub) => unsub())
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestIds.join("|"), db])
 
   useStreamSymbols("broker-portfolio", {

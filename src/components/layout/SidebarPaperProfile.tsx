@@ -228,7 +228,7 @@ export function SidebarBrokerProfile({
       unsubSummary()
       unsubPositions()
     }
-  }, [brokerAccountKey])
+  }, [brokerAccountKey, STUCK_ORDER_WINDOW_MS])
 
   useEffect(() => {
     if (!db || !brokerAccountKey) {
@@ -262,7 +262,7 @@ export function SidebarBrokerProfile({
     return () => {
       unsubRequests()
     }
-  }, [brokerAccountKey])
+  }, [brokerAccountKey, STUCK_ORDER_WINDOW_MS])
 
   useEffect(() => {
     if (!brokerAccountKey) {

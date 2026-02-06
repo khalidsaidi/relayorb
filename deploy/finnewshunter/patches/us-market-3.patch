@@ -1,0 +1,161 @@
+diff --git a/backend/app/services/embedding_service.py b/backend/app/services/embedding_service.py
+index 5b4f2f6..f29f0d0 100644
+--- a/backend/app/services/embedding_service.py
++++ b/backend/app/services/embedding_service.py
+@@ -1,5 +1,12 @@
+-        self.provider = provider or settings.EMBEDDING_PROVIDER
++        self.provider = provider or settings.EMBEDDING_PROVIDER
+         self.model = model or settings.EMBEDDING_MODEL
+         self.batch_size = batch_size or settings.EMBEDDING_BATCH_SIZE
+         self.enable_cache = enable_cache
+         self.base_url = base_url or settings.EMBEDDING_BASE_URL
++
++        self.disabled = bool(settings.FINNEWS_DISABLE_EMBEDDINGS)
++        if self.disabled:
++            logger.warning("Embeddings disabled by FINNEWS_DISABLE_EMBEDDINGS")
++            self.enable_cache = False
++            self.provider_instance = None
++            return
+@@ -1,4 +1,7 @@
+-        # 检查缓存
++        if self.disabled:
++            return []
++
++        # 检查缓存
+         cached = self._get_from_cache(text)
+         if cached is not None:
+             return cached
+@@ -1,4 +1,7 @@
+-        # 检查缓存
++        if self.disabled:
++            return []
++
++        # 检查缓存
+         cached = self._get_from_cache(text)
+         if cached is not None:
+             return cached
+@@ -1,2 +1,5 @@
+-        if not texts:
++        if not texts:
+             return []
++
++        if self.disabled:
++            return [[] for _ in texts]
+diff --git a/backend/app/storage/vector_storage.py b/backend/app/storage/vector_storage.py
+index 2e93d6c..3cbe65f 100644
+--- a/backend/app/storage/vector_storage.py
++++ b/backend/app/storage/vector_storage.py
+@@ -1,2 +1,30 @@
+ 
+ logger = logging.getLogger(__name__)
++
++
++class NullVectorStorage:
++    """No-op vector storage when Milvus is disabled."""
++
++    def connect(self):
++        return None
++
++    def create_collection(self, drop_existing: bool = False):
++        return None
++
++    def load_collection(self):
++        return None
++
++    def store_embedding(self, news_id: int, embedding: List[float], text: str) -> int:
++        return news_id
++
++    def store_embeddings_batch(self, news_ids: List[int], embeddings: List[List[float]], texts: List[str]) -> List[int]:
++        return news_ids
++
++    def search_similar(self, query_embedding: List[float], top_k: int = 10, filter_expr: Optional[str] = None):
++        return []
++
++    def delete_by_news_id(self, news_id: int):
++        return None
++
++    def status(self) -> Dict[str, Any]:
++        return {"vector_count": 0, "collection": "disabled", "dim": 0}
+@@ -1,4 +1,8 @@
+-    if _vector_storage is None:
+-        _vector_storage = VectorStorage()
++    if _vector_storage is None:
++        if settings.FINNEWS_DISABLE_MILVUS:
++            logger.warning("Milvus disabled by FINNEWS_DISABLE_MILVUS")
++            _vector_storage = NullVectorStorage()
++        else:
++            _vector_storage = VectorStorage()
+     return _vector_storage
+ 
+diff --git a/backend/app/scripts/init_stocks.py b/backend/app/scripts/init_stocks.py
+index e6ff2f1..6dc2a09 100644
+--- a/backend/app/scripts/init_stocks.py
++++ b/backend/app/scripts/init_stocks.py
+@@ -1,5 +1,6 @@
+ logging.basicConfig(
+     level=logging.INFO,
+     format='%(asctime)s - %(levelname)s - %(message)s'
+ )
+ logger = logging.getLogger(__name__)
++market_mode = os.getenv("FINNEWS_MARKET", "cn").lower()
+@@ -1,10 +1,14 @@
+-# 导入依赖
+-try:
+-    import akshare as ak
+-    import pandas as pd
+-    AKSHARE_AVAILABLE = True
+-    logger.info("akshare loaded successfully")
+-except ImportError:
+-    AKSHARE_AVAILABLE = False
+-    logger.error("akshare not installed! Run: pip install akshare")
+-    exit(1)
++# 导入依赖
++if market_mode == "us":
++    AKSHARE_AVAILABLE = False
++    logger.info("US market mode: skipping akshare")
++else:
++    try:
++        import akshare as ak
++        import pandas as pd
++        AKSHARE_AVAILABLE = True
++        logger.info("akshare loaded successfully")
++    except ImportError:
++        AKSHARE_AVAILABLE = False
++        logger.error("akshare not installed! Run: pip install akshare")
++        exit(1)
+@@ -1,1 +1,17 @@
+     ]
++
++
++def get_us_fallback_stocks() -> list:
++    """US fallback list used when FINNEWS_MARKET=us."""
++    return [
++        {"code": "AAPL", "name": "Apple Inc", "full_code": "AAPL", "market": "US", "status": "active"},
++        {"code": "MSFT", "name": "Microsoft Corp", "full_code": "MSFT", "market": "US", "status": "active"},
++        {"code": "AMZN", "name": "Amazon.com Inc", "full_code": "AMZN", "market": "US", "status": "active"},
++        {"code": "NVDA", "name": "NVIDIA Corp", "full_code": "NVDA", "market": "US", "status": "active"},
++        {"code": "GOOGL", "name": "Alphabet Inc", "full_code": "GOOGL", "market": "US", "status": "active"},
++        {"code": "META", "name": "Meta Platforms", "full_code": "META", "market": "US", "status": "active"},
++        {"code": "TSLA", "name": "Tesla Inc", "full_code": "TSLA", "market": "US", "status": "active"},
++        {"code": "JPM", "name": "JPMorgan Chase", "full_code": "JPM", "market": "US", "status": "active"},
++        {"code": "BAC", "name": "Bank of America", "full_code": "BAC", "market": "US", "status": "active"},
++        {"code": "SPY", "name": "SPDR S&P 500 ETF", "full_code": "SPY", "market": "US", "status": "active"},
++    ]
+@@ -1,2 +1,4 @@
+ async def fetch_all_stocks() -> list:
+     """从 akshare 获取全部 A 股信息"""
++    if market_mode == "us":
++        return get_us_fallback_stocks()
+@@ -1,1 +1,1 @@
+-    stocks_data = await fetch_all_stocks()
++    stocks_data = await fetch_all_stocks()
+@@ -1,3 +1,6 @@
+-        logger.warning("⚠️  Failed to fetch from akshare, using fallback stock list...")
+-        # 备用方案：导入常用股票
+-        stocks_data = get_fallback_stocks()
++        logger.warning("⚠️  Failed to fetch from akshare, using fallback stock list...")
++        # 备用方案：导入常用股票
++        stocks_data = get_fallback_stocks()
++
++    if market_mode == "us" and not stocks_data:
++        stocks_data = get_us_fallback_stocks()

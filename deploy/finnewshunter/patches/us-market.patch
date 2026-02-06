@@ -1,0 +1,164 @@
+diff --git a/backend/app/core/config.py b/backend/app/core/config.py
+index 19b8f6b..df16377 100644
+--- a/backend/app/core/config.py
++++ b/backend/app/core/config.py
+@@ -1,2 +1,17 @@
+     NEWS_RETENTION_HOURS: int = Field(default=72000, description="新闻保留时间（小时），临时设置为72000小时（约8年）以包含所有爬取的新闻")
+     FRONTEND_REFETCH_INTERVAL: int = Field(default=180, description="前端自动刷新间隔（秒），默认3分钟")
++
++    # 市场范围配置
++    FINNEWS_MARKET: str = Field(default="cn", description="市场范围（cn/us）")
++    FINNEWS_DISABLE_EMBEDDINGS: bool = Field(default=False, description="禁用 embedding 以降低依赖")
++    FINNEWS_DISABLE_MILVUS: bool = Field(default=False, description="禁用 Milvus 向量存储")
++    US_RSS_FEEDS: str = Field(
++        default=(
++            "https://www.cnbc.com/id/100003114/device/rss/rss.html,"
++            "https://feeds.marketwatch.com/marketwatch/topstories/,"
++            "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC&region=US&lang=en-US,"
++            "https://feeds.finance.yahoo.com/rss/2.0/headline?s=SPY&region=US&lang=en-US"
++        ),
++        description="US market RSS feeds (comma-separated)",
++    )
++    CRAWL_INTERVAL_US: int = Field(default=120, description="US RSS 爬取间隔（秒）")
+diff --git a/backend/app/tools/__init__.py b/backend/app/tools/__init__.py
+index 5f79e53..ea857ba 100644
+--- a/backend/app/tools/__init__.py
++++ b/backend/app/tools/__init__.py
+@@ -1,7 +1,8 @@
+ from .jingji21_crawler import Jingji21CrawlerTool
+ from .nbd_crawler import NbdCrawlerTool
+ from .yicai_crawler import YicaiCrawlerTool
+ from .netease163_crawler import Netease163CrawlerTool
+ from .eastmoney_crawler import EastmoneyCrawlerTool
++from .us_rss_crawler import UsRssCrawlerTool
+ from .text_cleaner import TextCleanerTool, create_text_cleaner
+ from .bochaai_search import BochaAISearchTool, bochaai_search, SearchResult
+@@ -1,10 +1,11 @@
+     "YicaiCrawlerTool",
+     "Netease163CrawlerTool",
+     "EastmoneyCrawlerTool",
++    "UsRssCrawlerTool",
+     "TextCleanerTool",
+     "create_text_cleaner",
+     "BochaAISearchTool",
+     "bochaai_search",
+     "SearchResult",
+ ]
+ 
+diff --git a/backend/app/tools/us_rss_crawler.py b/backend/app/tools/us_rss_crawler.py
+new file mode 100644
+index 0000000..5e69155
+--- /dev/null
++++ b/backend/app/tools/us_rss_crawler.py
+@@ -0,0 +1,70 @@
++"""
++US RSS crawler tool
++"""
++import logging
++from datetime import datetime
++from typing import List
++from urllib.parse import urlparse
++
++import feedparser
++from dateutil import parser as date_parser
++
++from .crawler_base import BaseCrawler, NewsItem
++from ..core.config import settings
++
++logger = logging.getLogger(__name__)
++
++
++class UsRssCrawlerTool(BaseCrawler):
++    """Fetch US market headlines from configured RSS feeds."""
++
++    def __init__(self):
++        super().__init__(name="us_rss", description="US RSS financial news crawler")
++
++    def crawl(self, start_page: int = 1, end_page: int = 1) -> List[NewsItem]:
++        feeds = [f.strip() for f in settings.US_RSS_FEEDS.split(",") if f.strip()]
++        if not feeds:
++            logger.warning("No US_RSS_FEEDS configured")
++            return []
++
++        items: List[NewsItem] = []
++        for feed_url in feeds:
++            try:
++                parsed = feedparser.parse(feed_url)
++                feed_title = parsed.feed.get("title") if hasattr(parsed, "feed") else None
++                source = feed_title or urlparse(feed_url).netloc
++                for entry in parsed.entries[:50]:
++                    title = (entry.get("title") or "").strip()
++                    link = entry.get("link") or entry.get("id") or ""
++                    if not title or not link:
++                        continue
++                    summary = entry.get("summary") or entry.get("description") or ""
++                    published = entry.get("published") or entry.get("updated")
++                    publish_time = None
++                    if published:
++                        try:
++                            publish_time = date_parser.parse(published)
++                        except Exception:
++                            publish_time = None
++                    items.append(
++                        NewsItem(
++                            title=title,
++                            content=summary,
++                            url=link,
++                            source=source,
++                            publish_time=publish_time,
++                        )
++                    )
++            except Exception as e:
++                logger.warning(f"Failed to parse RSS feed {feed_url}: {e}")
++
++        logger.info(f"US RSS crawler fetched {len(items)} items")
++        return items
++
++
++if __name__ == "__main__":
++    crawler = UsRssCrawlerTool()
++    news = crawler.crawl()
++    print(f"Fetched {len(news)} RSS items")
++
++
+diff --git a/backend/app/tasks/crawl_tasks.py b/backend/app/tasks/crawl_tasks.py
+index 8a6d96f..86f7b95 100644
+--- a/backend/app/tasks/crawl_tasks.py
++++ b/backend/app/tasks/crawl_tasks.py
+@@ -1,7 +1,8 @@
+     NbdCrawlerTool,
+     YicaiCrawlerTool,
+     Netease163CrawlerTool,
+     EastmoneyCrawlerTool,
++    UsRssCrawlerTool,
+     bochaai_search,
+     NewsItem,
+ )
+@@ -1,12 +1,13 @@
+     crawlers = {
+         "sina": SinaCrawlerTool,
+         "tencent": TencentCrawlerTool,
+         "jwview": JwviewCrawlerTool,
+         "eeo": EeoCrawlerTool,
+         "caijing": CaijingCrawlerTool,
+         "jingji21": Jingji21CrawlerTool,
+         "nbd": NbdCrawlerTool,
+         "yicai": YicaiCrawlerTool,
+         "163": Netease163CrawlerTool,
+         "eastmoney": EastmoneyCrawlerTool,
++        "us_rss": UsRssCrawlerTool,
+     }
+@@ -1,12 +1,13 @@
+                 interval_map = {
+                     "sina": settings.CRAWL_INTERVAL_SINA,
+                     "tencent": settings.CRAWL_INTERVAL_TENCENT,
+                     "jwview": settings.CRAWL_INTERVAL_JWVIEW,
+                     "eeo": settings.CRAWL_INTERVAL_EEO,
+                     "caijing": settings.CRAWL_INTERVAL_CAIJING,
+                     "jingji21": settings.CRAWL_INTERVAL_JINGJI21,
+                     "nbd": 60,  # 每日经济新闻
+                     "yicai": 60,  # 第一财经
+                     "163": 60,  # 网易财经
+                     "eastmoney": 60,  # 东方财富
++                    "us_rss": settings.CRAWL_INTERVAL_US,
+                 }

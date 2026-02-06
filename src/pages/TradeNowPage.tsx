@@ -676,7 +676,7 @@ export default function TradeNowPage() {
     if (!firebaseEnabled || !db) return t("tradeNow.firebaseNotConfigured")
     if (!user) return t("tradeNow.mustBeSignedIn")
     return ""
-  }, [replayActive, replayActionDisabledReason, firebaseEnabled, db, user, t])
+  }, [replayActive, replayActionDisabledReason, user, t])
 
   const assetFilters = useMemo(() => {
     const items = [

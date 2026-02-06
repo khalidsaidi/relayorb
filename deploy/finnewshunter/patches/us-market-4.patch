@@ -1,0 +1,10 @@
+diff --git a/backend/requirements.txt b/backend/requirements.txt
+index 0cd0823..2f53a7a 100644
+--- a/backend/requirements.txt
++++ b/backend/requirements.txt
+@@ -1,4 +1,5 @@
+ aiohttp>=3.9.0
+ markdownify>=0.11.0  # HTML 转 Markdown
+ readabilipy>=0.2.0  # 智能内容提取（Mozilla Readability）
++feedparser>=6.0.11
+ playwright>=1.40.0  # JS 渲染（可选，需运行 playwright install）

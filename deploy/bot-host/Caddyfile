@@ -1,0 +1,25 @@
+relayorb.34-182-77-163.sslip.io {
+	encode zstd gzip
+
+	handle_path /orb-runner* {
+		reverse_proxy http://orb-runner:8084
+	}
+
+	handle_path /openbb* {
+		reverse_proxy http://openbb-api:6900
+	}
+
+	handle_path /stockpulse* {
+		reverse_proxy http://stockpulse-ai:5000
+	}
+
+	handle_path /finnews* {
+		reverse_proxy http://finnewshunter:8010
+	}
+
+	# Default: MDG
+	handle {
+		reverse_proxy http://market-data-gateway:8080
+	}
+}
+

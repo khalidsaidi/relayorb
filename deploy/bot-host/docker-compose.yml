@@ -18,6 +18,9 @@ services:
       - MDG_RATE_LIMIT_ENABLED=${MDG_RATE_LIMIT_ENABLED:-true}
       - MDG_RATE_LIMIT_WINDOW_MS=${MDG_RATE_LIMIT_WINDOW_MS:-60000}
       - MDG_RATE_LIMIT_MAX=${MDG_RATE_LIMIT_MAX:-240}
+      - OPENBB_API_URL=http://openbb-api:6900
+      - STOCKPULSE_API_URL=http://stockpulse-ai:5000
+      - FINNEWS_API_URL=http://finnewshunter:8010
       - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
       - STOCKDATA_API_KEY=${STOCKDATA_API_KEY:-}
       - TWELVEDATA_API_KEY=${TWELVEDATA_API_KEY:-}
@@ -62,14 +65,152 @@ services:
     ports:
       - "8085:8085"
 
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - market-data-gateway
+      - orb-runner
+      - openbb-api
+      - stockpulse-ai
+      - finnewshunter
+
   openbb-api:
     build: ../openbb-api
     image: relayorb-openbb-api:local
     restart: unless-stopped
     ports:
       - "6900:6900"
+    environment:
+      - FMP_API_KEY=${FMP_API_KEY:-}
+      - POLYGON_API_KEY=${POLYGON_API_KEY:-}
+      - ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY:-}
+      - TIINGO_API_KEY=${TIINGO_API_KEY:-}
+      - INTRINIO_API_KEY=${INTRINIO_API_KEY:-}
     volumes:
       - ./openbb-platform:/root/.openbb_platform
+
+  stockpulse-ai:
+    build: ../stockpulse-ai
+    image: relayorb-stockpulse-ai:local
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./stockpulse-data:/data
+
+  finnews-postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=finnews
+      - POSTGRES_PASSWORD=finnews_dev_password
+      - POSTGRES_DB=finnews_db
+    volumes:
+      - ./finnews-postgres:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+
+  finnewshunter:
+    build: ../finnewshunter
+    image: relayorb-finnewshunter:local
+    restart: unless-stopped
+    environment:
+      - PORT=8010
+      - FINNEWS_MARKET=us
+      - FINNEWS_DISABLE_EMBEDDINGS=true
+      - FINNEWS_DISABLE_MILVUS=true
+      - US_RSS_FEEDS=${FINNEWS_US_RSS_FEEDS:-}
+      - CRAWL_INTERVAL_US=${FINNEWS_CRAWL_INTERVAL_US:-120}
+      - LLM_PROVIDER=${FINNEWS_LLM_PROVIDER:-openai}
+      - LLM_MODEL=${FINNEWS_LLM_MODEL:-gpt-4o-mini}
+      - POSTGRES_USER=finnews
+      - POSTGRES_PASSWORD=finnews_dev_password
+      - POSTGRES_HOST=finnews-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=finnews_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=2
+      - BACKEND_CORS_ORIGINS=["*"]
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - ZHIPU_API_KEY=${ZHIPU_API_KEY:-}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-}
+    depends_on:
+      - finnews-postgres
+      - redis
+    ports:
+      - "8010:8010"
+
+  finnews-celery-worker:
+    build: ../finnewshunter
+    image: relayorb-finnewshunter:local
+    restart: unless-stopped
+    command: celery -A app.core.celery_app worker --loglevel=info
+    environment:
+      - FINNEWS_MARKET=us
+      - FINNEWS_DISABLE_EMBEDDINGS=true
+      - FINNEWS_DISABLE_MILVUS=true
+      - US_RSS_FEEDS=${FINNEWS_US_RSS_FEEDS:-}
+      - CRAWL_INTERVAL_US=${FINNEWS_CRAWL_INTERVAL_US:-120}
+      - LLM_PROVIDER=${FINNEWS_LLM_PROVIDER:-openai}
+      - LLM_MODEL=${FINNEWS_LLM_MODEL:-gpt-4o-mini}
+      - POSTGRES_USER=finnews
+      - POSTGRES_PASSWORD=finnews_dev_password
+      - POSTGRES_HOST=finnews-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=finnews_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=2
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - ZHIPU_API_KEY=${ZHIPU_API_KEY:-}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-}
+    depends_on:
+      - finnews-postgres
+      - redis
+
+  finnews-celery-beat:
+    build: ../finnewshunter
+    image: relayorb-finnewshunter:local
+    restart: unless-stopped
+    command: celery -A app.core.celery_app beat --loglevel=info
+    environment:
+      - FINNEWS_MARKET=us
+      - FINNEWS_DISABLE_EMBEDDINGS=true
+      - FINNEWS_DISABLE_MILVUS=true
+      - US_RSS_FEEDS=${FINNEWS_US_RSS_FEEDS:-}
+      - CRAWL_INTERVAL_US=${FINNEWS_CRAWL_INTERVAL_US:-120}
+      - LLM_PROVIDER=${FINNEWS_LLM_PROVIDER:-openai}
+      - LLM_MODEL=${FINNEWS_LLM_MODEL:-gpt-4o-mini}
+      - POSTGRES_USER=finnews
+      - POSTGRES_PASSWORD=finnews_dev_password
+      - POSTGRES_HOST=finnews-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=finnews_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=2
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - ZHIPU_API_KEY=${ZHIPU_API_KEY:-}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-}
+    depends_on:
+      - finnews-postgres
+      - redis
 
   orb-runner:
     build: ../orb-runner

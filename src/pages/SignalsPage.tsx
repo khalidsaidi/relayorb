@@ -50,10 +50,11 @@ export default function SignalsPage() {
 
   useEffect(() => {
     if (assetFilter === "crypto" && !cryptoEnabled) {
-      setAssetFilter(forexEnabled ? "forex" : "stock")
+      queueMicrotask(() => setAssetFilter(forexEnabled ? "forex" : "stock"))
+      return
     }
     if (assetFilter === "forex" && !forexEnabled) {
-      setAssetFilter(cryptoEnabled ? "crypto" : "stock")
+      queueMicrotask(() => setAssetFilter(cryptoEnabled ? "crypto" : "stock"))
     }
   }, [assetFilter, cryptoEnabled, forexEnabled])
 

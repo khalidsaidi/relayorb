@@ -423,14 +423,14 @@ export default function DashboardPage() {
     if (!firebaseEnabled || !db) return t("tradeNow.firebaseNotConfigured")
     if (!user) return t("tradeNow.mustBeSignedIn")
     return ""
-  }, [replayActive, firebaseEnabled, db, user, t])
+  }, [replayActive, user, t])
   const refreshMoversDisabledReason = useMemo(() => {
     if (replayActive) return t("replay.actionsDisabled")
     if (!firebaseEnabled || !db) return t("tradeNow.firebaseNotConfigured")
     if (!user) return t("tradeNow.mustBeSignedIn")
     if (!marketIntelJob) return t("tradeNow.refreshNotConfigured")
     return ""
-  }, [replayActive, firebaseEnabled, db, user, marketIntelJob, t])
+  }, [replayActive, user, marketIntelJob, t])
 
   useEffect(() => {
     if (!firebaseEnabled || !db) {

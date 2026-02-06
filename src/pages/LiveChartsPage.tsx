@@ -109,18 +109,22 @@ export default function LiveChartsPage() {
   useEffect(() => {
     if (assetClass === "crypto" && !cryptoEnabled) {
       const nextSymbol = defaultSymbols.stock
-      setAssetClass("stock")
-      setSymbolInput(nextSymbol)
-      setActiveSymbol(nextSymbol)
-      setShowMatches(false)
+      queueMicrotask(() => {
+        setAssetClass("stock")
+        setSymbolInput(nextSymbol)
+        setActiveSymbol(nextSymbol)
+        setShowMatches(false)
+      })
       return
     }
     if (assetClass === "forex" && !forexEnabled) {
       const nextSymbol = defaultSymbols.stock
-      setAssetClass("stock")
-      setSymbolInput(nextSymbol)
-      setActiveSymbol(nextSymbol)
-      setShowMatches(false)
+      queueMicrotask(() => {
+        setAssetClass("stock")
+        setSymbolInput(nextSymbol)
+        setActiveSymbol(nextSymbol)
+        setShowMatches(false)
+      })
     }
   }, [assetClass, cryptoEnabled, forexEnabled, defaultSymbols])
 

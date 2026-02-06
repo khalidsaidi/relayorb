@@ -6,6 +6,7 @@ const { Storage } = require("@google-cloud/storage")
 const { createClient } = require("redis")
 const zlib = require("zlib")
 const { fromZonedTime } = require("date-fns-tz")
+const { XMLParser } = require("fast-xml-parser")
 const { attachRequestId, createRequestLogger } = require("../../shared/request-id")
 
 const config = {
@@ -38,6 +39,9 @@ const config = {
   twelvedataBaseUrl: process.env.TWELVEDATA_BASE_URL || "https://api.twelvedata.com",
   alphavantageBaseUrl: process.env.ALPHAVANTAGE_BASE_URL || "https://www.alphavantage.co",
   marketauxBaseUrl: process.env.MARKETAUX_BASE_URL || "https://api.marketaux.com/v1/news/all",
+  openbbBaseUrl: process.env.OPENBB_API_URL || "http://openbb-api:6900",
+  stockpulseBaseUrl: process.env.STOCKPULSE_API_URL || "http://stockpulse-ai:5000",
+  finnewsBaseUrl: process.env.FINNEWS_API_URL || "http://finnewshunter:8010",
   nasdaqListedUrl:
     process.env.NASDAQ_LISTED_URL ||
     "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
@@ -690,6 +694,248 @@ async function fetchText(url, options = {}) {
     if (err.name === 'AbortError') {
       throw new Error(`Request timed out after 15s: ${sanitizeUrl(url)}`)
     }
+    throw err
+  }
+}
+
+const edgarCache = {
+  fetchedAt: 0,
+  updatedAt: null,
+  items: [],
+}
+
+function decodeHtmlSummary(value) {
+  if (!value) return ""
+  return String(value)
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+}
+
+function stripHtml(value) {
+  return value.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim()
+}
+
+function parseEdgarFeed(xml) {
+  const parser = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: "",
+    removeNSPrefix: true,
+  })
+  const feed = parser.parse(xml)
+  const entriesRaw = feed?.feed?.entry || []
+  const entries = Array.isArray(entriesRaw) ? entriesRaw : [entriesRaw]
+
+  return entries.map((entry) => {
+    const title = entry?.title || ""
+    const [formTypeRaw, rest] = String(title).split(" - ")
+    const companyRaw = rest || title
+    const company = companyRaw.split(" (")[0]?.trim()
+    const cikMatch = companyRaw.match(/\((\d+)\)/)
+    const cik = cikMatch ? cikMatch[1] : null
+
+    const category = entry?.category
+    const formType = category?.term || formTypeRaw?.trim() || null
+
+    const linkData = entry?.link
+    let link = ""
+    if (Array.isArray(linkData)) {
+      link = linkData.find((item) => item.rel === "alternate")?.href || linkData[0]?.href || ""
+    } else if (linkData?.href) {
+      link = linkData.href
+    }
+
+    const updated = entry?.updated || null
+    const summaryRaw = decodeHtmlSummary(entry?.summary?.["#text"] || entry?.summary || "")
+    const summaryText = stripHtml(summaryRaw)
+    const filedMatch = summaryText.match(/Filed:\s*([0-9-]+)/i)
+    const accNoMatch = summaryText.match(/AccNo:\s*([0-9-]+)/i)
+    const sizeMatch = summaryText.match(/Size:\s*([^\\s]+)/i)
+
+    return {
+      title,
+      company,
+      cik,
+      formType,
+      updated,
+      filedDate: filedMatch ? filedMatch[1] : null,
+      accession: accNoMatch ? accNoMatch[1] : null,
+      size: sizeMatch ? sizeMatch[1] : null,
+      link,
+      summary: summaryText,
+    }
+  })
+}
+
+async function handleEdgarLatest(req, res, params) {
+  const limit = Math.max(1, Math.min(50, parseInt(params.get("limit") || "15", 10)))
+  const now = Date.now()
+  if (now - edgarCache.fetchedAt < 15000 && edgarCache.items.length > 0) {
+    respondJson(res, 200, {
+      source: "sec",
+      cached: true,
+      updatedAt: edgarCache.updatedAt,
+      items: edgarCache.items.slice(0, limit),
+    })
+    return
+  }
+
+  const url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&output=atom"
+  const xml = await fetchText(url, {
+    headers: {
+      "User-Agent": "RelayOrb/1.0 (support@relayorb.com)",
+      Accept: "application/atom+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+    timeoutMs: 15000,
+  })
+
+  const items = parseEdgarFeed(xml)
+  edgarCache.fetchedAt = now
+  edgarCache.items = items
+  edgarCache.updatedAt = new Date().toISOString()
+
+  respondJson(res, 200, {
+    source: "sec",
+    cached: false,
+    updatedAt: edgarCache.updatedAt,
+    items: items.slice(0, limit),
+  })
+}
+
+async function handleOpenbbProxy(req, res, path, params) {
+  if (!config.openbbBaseUrl) {
+    respondJson(res, 503, { error: "OpenBB API not configured." })
+    return
+  }
+  const targetPath = path.replace("/v1/openbb", "") || "/"
+  const url = new URL(targetPath, config.openbbBaseUrl)
+  params.forEach((value, key) => {
+    url.searchParams.set(key, value)
+  })
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 15000)
+  try {
+    const upstream = await fetch(url.toString(), {
+      headers: {
+        "User-Agent": "RelayOrb/1.0 (support@relayorb.com)",
+        Accept: "application/json",
+      },
+      signal: controller.signal,
+    })
+    clearTimeout(timeoutId)
+    const text = await upstream.text()
+    let data
+    try {
+      data = JSON.parse(text)
+    } catch {
+      data = text
+    }
+    respondJson(res, upstream.status, data)
+  } catch (err) {
+    clearTimeout(timeoutId)
+    throw err
+  }
+}
+
+async function handleStockpulseProxy(req, res, path, params) {
+  if (!config.stockpulseBaseUrl) {
+    respondJson(res, 503, { error: "StockPulse API not configured." })
+    return
+  }
+
+  const targetPath = path.replace("/v1/stockpulse", "") || "/"
+  const url = new URL(targetPath, config.stockpulseBaseUrl)
+  params.forEach((value, key) => {
+    url.searchParams.set(key, value)
+  })
+
+  let bodyText = null
+  if (req.method && !["GET", "HEAD"].includes(req.method)) {
+    try {
+      const body = await readJsonBody(req)
+      if (body !== null) bodyText = JSON.stringify(body)
+    } catch (err) {
+      respondJson(res, 400, { error: err.message || "Invalid JSON body" })
+      return
+    }
+  }
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 15000)
+  try {
+    const upstream = await fetch(url.toString(), {
+      method: req.method || "GET",
+      headers: {
+        "User-Agent": "RelayOrb/1.0 (support@relayorb.com)",
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: bodyText,
+      signal: controller.signal,
+    })
+    clearTimeout(timeoutId)
+    const text = await upstream.text()
+    let data
+    try {
+      data = JSON.parse(text)
+    } catch {
+      data = text
+    }
+    respondJson(res, upstream.status, data)
+  } catch (err) {
+    clearTimeout(timeoutId)
+    throw err
+  }
+}
+
+async function handleFinnewsProxy(req, res, path, params) {
+  if (!config.finnewsBaseUrl) {
+    respondJson(res, 503, { error: "FinnewsHunter API not configured." })
+    return
+  }
+
+  const targetPath = path.replace("/v1/finnews", "") || "/"
+  const url = new URL(targetPath, config.finnewsBaseUrl)
+  params.forEach((value, key) => {
+    url.searchParams.set(key, value)
+  })
+
+  let bodyText = null
+  if (req.method && !["GET", "HEAD"].includes(req.method)) {
+    try {
+      const body = await readJsonBody(req)
+      if (body !== null) bodyText = JSON.stringify(body)
+    } catch (err) {
+      respondJson(res, 400, { error: err.message || "Invalid JSON body" })
+      return
+    }
+  }
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 20000)
+  try {
+    const upstream = await fetch(url.toString(), {
+      method: req.method || "GET",
+      headers: {
+        "User-Agent": "RelayOrb/1.0 (support@relayorb.com)",
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: bodyText,
+      signal: controller.signal,
+    })
+    clearTimeout(timeoutId)
+    const text = await upstream.text()
+    let data
+    try {
+      data = JSON.parse(text)
+    } catch {
+      data = text
+    }
+    respondJson(res, upstream.status, data)
+  } catch (err) {
+    clearTimeout(timeoutId)
     throw err
   }
 }
@@ -4700,7 +4946,13 @@ async function requestHandler(req, res) {
       return
     }
 
-    if (req.method !== "GET") {
+    const isProxyPath =
+      path.startsWith("/v1/openbb/") ||
+      path.startsWith("/v1/stockpulse/") ||
+      path.startsWith("/v1/finnews/") ||
+      path.startsWith("/api/v1/")
+
+    if (req.method !== "GET" && !isProxyPath) {
       respondJson(res, 405, { error: "Method not allowed" })
       return
     }
@@ -4753,6 +5005,31 @@ async function requestHandler(req, res) {
       pingUrl.searchParams.set("language", "en")
       await fetchJson(pingUrl.toString())
       respondJson(res, 200, { ok: true, source: "marketaux" })
+      return
+    }
+
+    if (path === "/v1/edgar/latest") {
+      await handleEdgarLatest(req, res, params)
+      return
+    }
+
+    if (path.startsWith("/v1/openbb/")) {
+      await handleOpenbbProxy(req, res, path, params)
+      return
+    }
+
+    if (path.startsWith("/api/v1/")) {
+      await handleOpenbbProxy(req, res, path, params)
+      return
+    }
+
+    if (path.startsWith("/v1/stockpulse/")) {
+      await handleStockpulseProxy(req, res, path, params)
+      return
+    }
+
+    if (path.startsWith("/v1/finnews/")) {
+      await handleFinnewsProxy(req, res, path, params)
       return
     }
 

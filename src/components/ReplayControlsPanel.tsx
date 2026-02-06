@@ -476,10 +476,7 @@ export function ReplayControlsPanel() {
     })
   }, [selectedRunSymbolSource, selectedRun?.autoDiscoverConfig, t])
   const gatewayBase = MARKET_DATA_BASE
-  const marketIntelJob = useMemo(
-    () => (import.meta.env.VITE_MARKET_INTEL_JOB || "relayorb-market-intel").trim(),
-    []
-  )
+  const marketIntelJob = (import.meta.env.VITE_MARKET_INTEL_JOB || "relayorb-market-intel").trim()
 
   const requiredServices = useMemo(() => {
     const parsed = parseList(requiredInputValue)
@@ -489,8 +486,7 @@ export function ReplayControlsPanel() {
     () => requiredServices.filter((service) => service !== "ui"),
     [requiredServices]
   )
-
-  const ackStatus = useMemo(() => {
+const ackStatus = useMemo(() => {
     return requiredServicesFiltered.map((serviceName) => {
       const consumer = consumerMap.get(serviceName)
       const versionMatch =
@@ -504,12 +500,13 @@ export function ReplayControlsPanel() {
   }, [consumerMap, requiredServicesFiltered, controls?.version, controls?.sessionId, controls?.desiredMode])
 
   const canWrite = Boolean(firebaseEnabled && db)
-  const marketIntelDisabledReason = useMemo(() => {
-    if (!firebaseEnabled || !db) return t("tradeNow.firebaseNotConfigured")
-    if (!user) return t("tradeNow.mustBeSignedIn")
-    if (!marketIntelJob) return t("replay.controls.refreshNotConfigured")
-    return ""
-  }, [firebaseEnabled, db, user, marketIntelJob, t])
+  const marketIntelDisabledReason = !firebaseEnabled || !db
+    ? t("tradeNow.firebaseNotConfigured")
+    : !user
+      ? t("tradeNow.mustBeSignedIn")
+      : !marketIntelJob
+        ? t("replay.controls.refreshNotConfigured")
+        : ""
   const desiredMode = controls?.desiredMode || "live"
   const phase = controls?.phase || "ready"
   const isReplay = desiredMode === "replay"

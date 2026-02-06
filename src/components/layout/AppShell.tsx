@@ -34,6 +34,8 @@ import {
   Target,
   Languages,
   TerminalSquare,
+  Radar,
+  Newspaper,
 } from "lucide-react"
 import { useAuth } from "@/features/auth/auth-context"
 import { auth, db, firebaseEnabled } from "@/lib/firebase"
@@ -44,6 +46,7 @@ import { SidebarBrokerProfile } from "./SidebarPaperProfile"
 import { usePresence } from "@/features/presence/use-presence"
 import { PipelineHealthBadge } from "@/components/PipelineHealthBadge"
 import { AuthDebugBadge } from "@/components/AuthDebugBadge"
+import { EdgarTicker } from "@/components/EdgarTicker"
 import { languageOptions, setStoredLanguage, type SupportedLanguage } from "@/i18n"
 import { useReplayControls } from "@/features/replay/use-replay-controls"
 import { ReplayControlsPanel } from "@/components/ReplayControlsPanel"
@@ -69,6 +72,8 @@ function getPageTitle(pathname: string, t: (key: string) => string) {
   if (pathname.startsWith("/orb")) return t("nav.orbRobot")
   if (pathname.startsWith("/charts")) return t("nav.liveCharts")
   if (pathname.startsWith("/openbb")) return t("nav.openbb")
+  if (pathname.startsWith("/finnews")) return t("nav.finnews")
+  if (pathname.startsWith("/stockpulse")) return t("nav.stockpulse")
   if (pathname.startsWith("/portfolio")) return t("nav.portfolio")
   if (pathname.startsWith("/dashboard")) return t("nav.dashboard")
   return t("nav.dashboard")
@@ -192,6 +197,8 @@ export function AppShell() {
     { to: "/bots", label: t("nav.bots"), icon: <Bot className="h-4 w-4" /> },
     { to: "/portfolio", label: t("nav.portfolio"), icon: <BarChart3 className="h-4 w-4" /> },
     { to: "/openbb", label: t("nav.openbb"), icon: <TerminalSquare className="h-4 w-4" /> },
+    { to: "/finnews", label: t("nav.finnews"), icon: <Newspaper className="h-4 w-4" /> },
+    { to: "/stockpulse", label: t("nav.stockpulse"), icon: <Radar className="h-4 w-4" /> },
   ]
   
   // Track user presence for activity-based refresh
@@ -543,6 +550,8 @@ export function AppShell() {
               </DropdownMenu>
             </div>
           </header>
+
+          <EdgarTicker />
 
           {dataProfile === "survival" && (
             <div className="border-b border-amber-200/70 bg-amber-50/80 px-4 py-3 text-sm text-amber-950 md:px-6">

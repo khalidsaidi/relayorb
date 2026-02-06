@@ -1,0 +1,185 @@
+diff --git a/backend/app/core/celery_app.py b/backend/app/core/celery_app.py
+index 0e6d9af..f59a5d4 100644
+--- a/backend/app/core/celery_app.py
++++ b/backend/app/core/celery_app.py
+@@ -1,5 +1,79 @@
+     include=["app.tasks.crawl_tasks"]  # 导入任务模块
+ )
+ 
+-# Celery 配置
+-celery_app.conf.update(
++# 根据市场配置调度
++market = (settings.FINNEWS_MARKET or "cn").lower()
++if market == "us":
++    beat_schedule = {
++        "crawl-us-rss-every-2min": {
++            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
++            "schedule": crontab(minute="*/2"),
++            "args": ("us_rss",),
++        }
++    }
++else:
++    beat_schedule = {
++        # 每1分钟爬取新浪财经
++        "crawl-sina-every-1min": {
++            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
++            "schedule": crontab(minute="*/1"),
++            "args": ("sina",),
++        },
++        # 每1分钟爬取腾讯财经
++        "crawl-tencent-every-1min": {
++            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
++            "schedule": crontab(minute="*/1"),
++            "args": ("tencent",),
++        },
++        # 每1分钟爬取中新经纬
++        "crawl-jwview-every-1min": {
++            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
++            "schedule": crontab(minute="*/1"),
++            "args": ("jwview",),
++        },
++        # 每1分钟爬取经济观察网
++        "crawl-eeo-every-1min": {
++            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
++            "schedule": crontab(minute="*/1"),
++            "args": ("eeo",),
++        },
++        # 每1分钟爬取财经网
++        "crawl-caijing-every-1min": {
++            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
++            "schedule": crontab(minute="*/1"),
++            "args": ("caijing",),
++        },
++        # 每1分钟爬取21经济网
++        "crawl-jingji21-every-1min": {
++            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
++            "schedule": crontab(minute="*/1"),
++            "args": ("jingji21",),
++        },
++        # 每1分钟爬取每日经济新闻
++        "crawl-nbd-every-1min": {
++            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
++            "schedule": crontab(minute="*/1"),
++            "args": ("nbd",),
++        },
++        # 每1分钟爬取第一财经
++        "crawl-yicai-every-1min": {
++            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
++            "schedule": crontab(minute="*/1"),
++            "args": ("yicai",),
++        },
++        # 每1分钟爬取网易财经
++        "crawl-163-every-1min": {
++            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
++            "schedule": crontab(minute="*/1"),
++            "args": ("163",),
++        },
++        # 每1分钟爬取东方财富
++        "crawl-eastmoney-every-1min": {
++            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
++            "schedule": crontab(minute="*/1"),
++            "args": ("eastmoney",),
++        },
++    }
++
++# Celery 配置
++celery_app.conf.update(
+@@ -1,64 +1,3 @@
+-    beat_schedule={
+-        # 每1分钟爬取新浪财经
+-        "crawl-sina-every-1min": {
+-            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
+-            "schedule": crontab(minute="*/1"),
+-            "args": ("sina",),
+-        },
+-        # 每1分钟爬取腾讯财经
+-        "crawl-tencent-every-1min": {
+-            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
+-            "schedule": crontab(minute="*/1"),
+-            "args": ("tencent",),
+-        },
+-        # 每1分钟爬取中新经纬
+-        "crawl-jwview-every-1min": {
+-            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
+-            "schedule": crontab(minute="*/1"),
+-            "args": ("jwview",),
+-        },
+-        # 每1分钟爬取经济观察网
+-        "crawl-eeo-every-1min": {
+-            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
+-            "schedule": crontab(minute="*/1"),
+-            "args": ("eeo",),
+-        },
+-        # 每1分钟爬取财经网
+-        "crawl-caijing-every-1min": {
+-            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
+-            "schedule": crontab(minute="*/1"),
+-            "args": ("caijing",),
+-        },
+-        # 每1分钟爬取21经济网
+-        "crawl-jingji21-every-1min": {
+-            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
+-            "schedule": crontab(minute="*/1"),
+-            "args": ("jingji21",),
+-        },
+-        # 每1分钟爬取每日经济新闻
+-        "crawl-nbd-every-1min": {
+-            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
+-            "schedule": crontab(minute="*/1"),
+-            "args": ("nbd",),
+-        },
+-        # 每1分钟爬取第一财经
+-        "crawl-yicai-every-1min": {
+-            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
+-            "schedule": crontab(minute="*/1"),
+-            "args": ("yicai",),
+-        },
+-        # 每1分钟爬取网易财经
+-        "crawl-163-every-1min": {
+-            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
+-            "schedule": crontab(minute="*/1"),
+-            "args": ("163",),
+-        },
+-        # 每1分钟爬取东方财富
+-        "crawl-eastmoney-every-1min": {
+-            "task": "app.tasks.crawl_tasks.realtime_crawl_task",
+-            "schedule": crontab(minute="*/1"),
+-            "args": ("eastmoney",),
+-        },
+-    },
++    beat_schedule=beat_schedule,
+ )
+ 
+diff --git a/backend/app/api/v1/news.py b/backend/app/api/v1/news.py
+index 94d3b8d..c9f9ee9 100644
+--- a/backend/app/api/v1/news.py
++++ b/backend/app/api/v1/news.py
+@@ -1,4 +1,4 @@
+ from sqlalchemy.ext.asyncio import AsyncSession
+ from sqlalchemy import select, desc
+ 
+-from ...tools import SinaCrawlerTool
++from ...tools import SinaCrawlerTool, UsRssCrawlerTool
+@@ -1,3 +1,3 @@
+ class CrawlRequest(BaseModel):
+     """爬取请求模型"""
+-    source: str = Field(default="sina", description="新闻源（sina, jrj, cnstock）")
++    source: str = Field(default="sina", description="新闻源（sina, us_rss 等）")
+@@ -1,5 +1,7 @@
+-        if source == "sina":
+-            crawler = SinaCrawlerTool()
+-        else:
+-            logger.error(f"Unsupported source: {source}")
+-            return
++        if source == "sina":
++            crawler = SinaCrawlerTool()
++        elif source == "us_rss":
++            crawler = UsRssCrawlerTool()
++        else:
++            logger.error(f"Unsupported source: {source}")
++            return
+@@ -1,3 +1,3 @@
+ @router.post("/refresh", response_model=CrawlResponse)
+ async def refresh_news(
+-    source: str = Query("sina", description="新闻源"),
++    source: str = Query("sina", description="新闻源"),

@@ -12,6 +12,7 @@
   "dependencies": {
     "@google-cloud/storage": "^7.16.0",
     "date-fns-tz": "^3.2.0",
+    "fast-xml-parser": "^4.5.1",
     "firebase-admin": "^13.6.0",
     "redis": "^4.7.1"
   }
