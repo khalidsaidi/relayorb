@@ -94,12 +94,7 @@ type StockOverview = {
 export default function FinnewsPage() {
   const { t } = useTranslation()
   const baseUrl = useMemo(() => resolveFinnewsUrl(), [])
-  const proxyBase = useMemo(() => {
-    const proxy = resolveMarketDataProxyUrl()
-    if (proxy) return proxy
-    const gateway = (import.meta.env.VITE_MARKET_DATA_GATEWAY_URL || "").trim()
-    return gateway.replace(/\/+$/, "")
-  }, [])
+  const proxyBase = useMemo(() => resolveMarketDataProxyUrl(), [])
   const queryBase = proxyBase ? `${proxyBase}/v1/finnews` : baseUrl
 
   const [health, setHealth] = useState<FinnewsHealth | null>(null)

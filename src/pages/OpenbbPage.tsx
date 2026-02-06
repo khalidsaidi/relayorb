@@ -434,12 +434,7 @@ function TechnicalOverviewCard({ technicals }: { technicals: Record<string, unkn
 export default function OpenbbPage() {
   const { t } = useTranslation()
   const apiUrl = useMemo(() => resolveOpenbbApiUrl(), [])
-  const proxyBase = useMemo(() => {
-    const proxy = resolveMarketDataProxyUrl()
-    if (proxy) return proxy
-    const gateway = (import.meta.env.VITE_MARKET_DATA_GATEWAY_URL || "").trim()
-    return gateway.replace(/\/+$/, "")
-  }, [])
+  const proxyBase = useMemo(() => resolveMarketDataProxyUrl(), [])
   const queryBase = proxyBase ? `${proxyBase}/v1/openbb` : apiUrl
 
   // Custom request (kept for advanced users)

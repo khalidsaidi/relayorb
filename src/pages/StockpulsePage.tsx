@@ -212,12 +212,7 @@ function MetricCard({ label, value }: { label: string; value: unknown }) {
 export default function StockpulsePage() {
   const { t } = useTranslation()
   const baseUrl = useMemo(() => resolveStockpulseUrl(), [])
-  const proxyBase = useMemo(() => {
-    const proxy = resolveMarketDataProxyUrl()
-    if (proxy) return proxy
-    const gateway = (import.meta.env.VITE_MARKET_DATA_GATEWAY_URL || "").trim()
-    return gateway.replace(/\/+$/, "")
-  }, [])
+  const proxyBase = useMemo(() => resolveMarketDataProxyUrl(), [])
   const queryBase = proxyBase ? `${proxyBase}/v1/stockpulse` : baseUrl
 
   const [status, setStatus] = useState<StockpulseStatus | null>(null)
