@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+import { useMemo, type ReactNode } from "react"
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom"
 import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
@@ -11,7 +11,7 @@ import { signOut } from "firebase/auth"
 type NavItem = {
   to: string
   label: string
-  icon: JSX.Element
+  icon: ReactNode
 }
 
 function getPageTitle(pathname: string, t: (key: string) => string) {
@@ -42,7 +42,7 @@ export function AppShell() {
 
   return (
     <div className="min-h-screen bg-muted/40">
-      <div className="grid min-h-screen grid-cols-[240px_1fr]">
+      <div className="grid min-h-screen grid-cols-[220px_1fr] lg:grid-cols-[240px_1fr]">
         <aside className="border-r border-border/60 bg-background/80 p-4">
           <div className="text-sm font-semibold text-foreground">RelayOrb</div>
           <nav className="mt-4 space-y-2">
@@ -64,9 +64,9 @@ export function AppShell() {
           </nav>
         </aside>
         <main className="min-h-screen">
-          <header className="flex items-center justify-between border-b border-border/60 bg-background/60 px-6 py-4">
-            <div className="text-lg font-semibold text-foreground">{pageTitle}</div>
-            <div className="flex items-center gap-3">
+          <header className="flex items-center justify-between gap-4 border-b border-border/60 bg-background/60 px-6 py-4">
+            <div className="min-w-0 text-lg font-semibold text-foreground truncate">{pageTitle}</div>
+            <div className="flex items-center gap-3 shrink-0">
               <Avatar className="h-8 w-8">
                 <AvatarFallback>{user?.email?.slice(0, 2)?.toUpperCase() || "U"}</AvatarFallback>
               </Avatar>

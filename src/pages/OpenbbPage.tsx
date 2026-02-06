@@ -18,6 +18,13 @@ type ResponseState = {
   error?: string
 }
 
+type HistoryResult = {
+  sym: string
+  data: any
+  ok?: boolean
+  status?: number
+}
+
 type ApiParam = {
   name: string
   in: "query" | "path" | string
@@ -82,11 +89,36 @@ function lastResult(data: any): Record<string, unknown> {
   return {}
 }
 
-function toResultArray(data: any): Record<string, unknown>[] {
+function normalizeRows(data: unknown): Record<string, unknown>[] {
   if (!data) return []
-  if (Array.isArray(data?.results)) return data.results
-  if (Array.isArray(data)) return data
+  if (Array.isArray(data)) return data as Record<string, unknown>[]
+  if (Array.isArray((data as any)?.results)) return (data as any).results as Record<string, unknown>[]
   return []
+}
+
+function renderKeyValueTable(data: Record<string, unknown>) {
+  const entries = Object.entries(data || {}).slice(0, 20)
+  if (!entries.length) return null
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border/60">
+      <table className="w-full text-left text-xs">
+        <thead className="bg-muted/60 text-[11px] uppercase tracking-wide text-muted-foreground">
+          <tr>
+            <th className="px-3 py-2 font-medium">Field</th>
+            <th className="px-3 py-2 font-medium">Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map(([key, value]) => (
+            <tr key={key} className="border-t border-border/60">
+              <td className="px-3 py-2 text-foreground">{key}</td>
+              <td className="px-3 py-2 text-foreground">{renderValue(value)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
 function pickSummaryMetrics(data: any) {
@@ -149,8 +181,8 @@ function downloadCsv(name: string, rows: Record<string, unknown>[]) {
 
 
 function renderTable(data: unknown) {
-  if (!Array.isArray(data) || data.length === 0 || typeof data[0] !== "object") return null
-  const rows = data.slice(0, 20) as Record<string, unknown>[]
+  const rows = normalizeRows(data)
+  if (!rows.length || typeof rows[0] !== "object") return null
   const columns = Object.keys(rows[0]).slice(0, 8)
   return (
     <div className="overflow-x-auto rounded-lg border border-border/60">
@@ -165,7 +197,7 @@ function renderTable(data: unknown) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, idx) => (
+          {rows.slice(0, 20).map((row, idx) => (
             <tr key={`${idx}`} className="border-t border-border/60">
               {columns.map((col) => (
                 <td key={col} className="px-3 py-2 text-foreground">
@@ -191,19 +223,33 @@ function renderMetricGrid(data: Record<string, unknown> | null | undefined, keys
   )
 }
 
+function pickChartKeys(rows: Record<string, unknown>[], yKeys: string[]) {
+  const sample = rows.slice(0, 20)
+  const numericSet = new Set<string>()
+  sample.forEach((row) => {
+    Object.entries(row).forEach(([key, value]) => {
+      if (typeof value === "number") numericSet.add(key)
+    })
+  })
+  if (yKeys.length) return yKeys.filter((k) => numericSet.has(k))
+  const preferred = ["close", "adj_close", "last_price", "price", "value", "open"]
+  const found = preferred.filter((k) => numericSet.has(k))
+  if (found.length) return found.slice(0, 2)
+  return Array.from(numericSet).filter((k) => k !== "volume").slice(0, 4)
+}
+
 function renderLineChart(data: unknown, xKey = "date", yKeys: string[] = []) {
-  if (!Array.isArray(data) || data.length === 0 || typeof data[0] !== "object") return null
-  const rows = data as Record<string, unknown>[]
-  const numericKeys = yKeys.length
-    ? yKeys
-    : Object.keys(rows[0]).filter((k) => typeof rows[0][k] === "number")
+  const rows = normalizeRows(data)
+  if (!rows.length || typeof rows[0] !== "object") return null
+  const resolvedXKey = xKey in rows[0] ? xKey : ("datetime" in rows[0] ? "datetime" : xKey)
+  const numericKeys = pickChartKeys(rows, yKeys)
   if (!numericKeys.length) return null
   return (
     <div className="h-64 w-full">
       <ResponsiveContainer>
         <LineChart data={rows} margin={{ left: 8, right: 8, top: 8, bottom: 8 }}>
           <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.3} />
-          <XAxis dataKey={xKey} tick={{ fontSize: 10 }} minTickGap={16} />
+          <XAxis dataKey={resolvedXKey} tick={{ fontSize: 10 }} minTickGap={16} />
           <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
           <Tooltip contentStyle={{ fontSize: "11px" }} />
           <Legend wrapperStyle={{ fontSize: "11px" }} />
@@ -214,6 +260,40 @@ function renderLineChart(data: unknown, xKey = "date", yKeys: string[] = []) {
       </ResponsiveContainer>
     </div>
   )
+}
+
+function buildComparisonSeries(history: { sym: string; data: any }[]) {
+  const map = new Map<string, Record<string, unknown>>()
+  history.forEach((item) => {
+    const rows = normalizeRows(item.data)
+    rows.forEach((row) => {
+      const date = (row as any).date || (row as any).datetime || (row as any).timestamp
+      if (!date) return
+      const key = String(date)
+      const entry = map.get(key) || { date: key }
+      const value =
+        (row as any).close ??
+        (row as any).adj_close ??
+        (row as any).last_price ??
+        (row as any).price ??
+        (row as any).value
+      if (typeof value === "number") entry[item.sym] = value
+      map.set(key, entry)
+    })
+  })
+  return Array.from(map.values()).sort((a, b) => {
+    const da = new Date(String(a.date)).getTime()
+    const db = new Date(String(b.date)).getTime()
+    return da - db
+  })
+}
+
+function renderComparisonChart(history: { sym: string; data: any }[]) {
+  if (!history.length) return null
+  const series = buildComparisonSeries(history)
+  if (!series.length) return null
+  const symbols = history.map((h) => h.sym)
+  return renderLineChart(series, "date", symbols)
 }
 
 function ValuationTable({ rows }: { rows: Record<string, unknown>[] }) {
@@ -249,9 +329,10 @@ function ValuationTable({ rows }: { rows: Record<string, unknown>[] }) {
 
 function ResponseCard({ title, result }: { title: string; result?: ResponseState }) {
   if (!result) return null
-  const chartRows = toResultArray(result.data)
-  const hasDate = chartRows.length && "date" in chartRows[0]
+  const chartRows = normalizeRows(result.data)
+  const hasDate = chartRows.length && ("date" in chartRows[0] || "datetime" in chartRows[0])
   const summary = pickSummaryMetrics(result.data)
+  const keyValue = !chartRows.length && result.data && typeof result.data === "object" ? renderKeyValueTable(result.data as Record<string, unknown>) : null
   return (
     <Card className="border-border/70">
       <CardHeader>
@@ -278,7 +359,7 @@ function ResponseCard({ title, result }: { title: string; result?: ResponseState
           </div>
         ) : null}
         {hasDate ? renderLineChart(chartRows, "date") : null}
-        {renderTable(result.data)}
+        {renderTable(result.data) || keyValue}
         <details className="rounded-lg border border-border/60 bg-muted/20 p-2 text-[11px]">
           <summary className="cursor-pointer text-muted-foreground">Raw JSON</summary>
           <pre className="max-h-72 overflow-auto p-2 text-[11px] text-muted-foreground">
@@ -390,7 +471,7 @@ export default function OpenbbPage() {
   const [comparisonValuation, setComparisonValuation] = useState<Record<string, any>[]>([])
   const [comparisonTech, setComparisonTech] = useState<Record<string, any>[]>([])
   const [comparisonFund, setComparisonFund] = useState<Record<string, any>>({})
-  const [comparisonHistory, setComparisonHistory] = useState<Record<string, any>[]>([])
+  const [comparisonHistory, setComparisonHistory] = useState<HistoryResult[]>([])
   const [comparisonLoading, setComparisonLoading] = useState(false)
   const [fundamentals, setFundamentals] = useState<Record<string, any> | null>(null)
   const [technicals, setTechnicals] = useState<Record<string, any> | null>(null)
@@ -411,8 +492,11 @@ export default function OpenbbPage() {
     bb: true,
   })
   const [macroData, setMacroData] = useState<Record<string, any> | null>(null)
+  const [macroLoading, setMacroLoading] = useState(false)
   const [cryptoData, setCryptoData] = useState<Record<string, any> | null>(null)
+  const [cryptoLoading, setCryptoLoading] = useState(false)
   const [commodityData, setCommodityData] = useState<Record<string, any> | null>(null)
+  const [commodityLoading, setCommodityLoading] = useState(false)
   const [macroSelection, setMacroSelection] = useState({
     interest_rate: true,
     unemployment: true,
@@ -864,6 +948,7 @@ export default function OpenbbPage() {
 
   const fetchMacro = async () => {
     if (!queryBase) return
+    setMacroLoading(true)
     try {
       const indicatorMap: Record<string, string> = {
         interest_rate: "interest_rate",
@@ -886,30 +971,41 @@ export default function OpenbbPage() {
         next[key] = data
       })
       setMacroData(next)
-    } catch {
+    } catch (err) {
       setMacroData(null)
+      toast.error(err instanceof Error ? err.message : "Macro fetch failed")
+    } finally {
+      setMacroLoading(false)
     }
   }
 
   const fetchCrypto = async (symbol = cryptoSymbol) => {
     if (!queryBase) return
+    setCryptoLoading(true)
     try {
       const res = await fetch(buildUrl(queryBase, "/api/v1/crypto/price/historical", { symbol, interval: cryptoInterval, provider: quickProvider }))
       const data = await res.json().catch(() => null)
       setCryptoData(data)
-    } catch {
+    } catch (err) {
       setCryptoData(null)
+      toast.error(err instanceof Error ? err.message : "Crypto fetch failed")
+    } finally {
+      setCryptoLoading(false)
     }
   }
 
   const fetchCommodities = async () => {
     if (!queryBase) return
+    setCommodityLoading(true)
     try {
       const res = await fetch(buildUrl(queryBase, "/api/v1/commodity/price/spot", { commodity: commoditySelection, provider: "fred" }))
       const data = await res.json().catch(() => null)
       setCommodityData(data)
-    } catch {
+    } catch (err) {
       setCommodityData(null)
+      toast.error(err instanceof Error ? err.message : "Commodity fetch failed")
+    } finally {
+      setCommodityLoading(false)
     }
   }
 
@@ -959,7 +1055,7 @@ export default function OpenbbPage() {
         </CardHeader>
         <CardContent className="space-y-4 text-sm text-muted-foreground">
           <div>{t("openbb.consoleSubtitle")}</div>
-          <div className="rounded-lg border bg-muted/40 p-3 text-xs">
+          <div className="rounded-lg border bg-muted/40 p-3 text-xs break-all">
             {apiUrl ? apiUrl : t("openbb.notConfigured")}
           </div>
           {apiUrl ? (
@@ -989,6 +1085,7 @@ export default function OpenbbPage() {
         <TabsList className="flex flex-wrap gap-2">
           <TabsTrigger value="quick">Quick lookup</TabsTrigger>
           <TabsTrigger value="compare">Compare</TabsTrigger>
+          <TabsTrigger value="watchlist">Watchlist</TabsTrigger>
           <TabsTrigger value="fundamentals">Fundamentals</TabsTrigger>
           <TabsTrigger value="technicals">Technicals</TabsTrigger>
           <TabsTrigger value="macro">Macro</TabsTrigger>
@@ -1184,14 +1281,14 @@ export default function OpenbbPage() {
                       <CardTitle className="text-sm">Historical</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-2 text-xs text-muted-foreground">
-                      {quickHistory.map((h) => (
-                        <div key={h.sym} className="rounded-md border border-border/50 bg-muted/40 p-2">
-                          <div className="text-sm font-semibold text-foreground">{h.sym}</div>
-                          {renderLineChart(h.data, "date") || renderTable(h.data)}
-                        </div>
-                      ))}
-                    </CardContent>
-                  </Card>
+                  {quickHistory.map((h) => (
+                    <div key={h.sym} className="rounded-md border border-border/50 bg-muted/40 p-2">
+                      <div className="text-sm font-semibold text-foreground">{h.sym}</div>
+                      {renderLineChart(h.data, "date", ["close", "adj_close", "last_price", "price"]) || renderTable(h.data)}
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
                 ) : null}
                 {quickNews.length ? (
                   <Card className="border-border/70">
@@ -1221,97 +1318,99 @@ export default function OpenbbPage() {
                     <CardHeader>
                       <CardTitle className="text-sm">Quick chart</CardTitle>
                     </CardHeader>
-                    <CardContent>{renderLineChart(quickHistory[0]?.data, "date")}</CardContent>
+                    <CardContent>{renderLineChart(quickHistory[0]?.data, "date", ["close", "adj_close", "last_price", "price"])}</CardContent>
                   </Card>
                 ) : null}
                 {fundamentals ? <FundOverviewCard profile={fundamentals.profile} /> : null}
                 {technicals ? <TechnicalOverviewCard technicals={technicals} /> : null}
               </div>
-              {historyLog.length || watchlist.length ? (
-                <div className="grid gap-4 lg:grid-cols-2 text-xs text-muted-foreground">
-                  {watchlist.length ? (
-                    <Card className="border-border/70">
-                      <CardHeader>
-                        <CardTitle className="text-sm">Watchlist</CardTitle>
-                      </CardHeader>
-                      <CardContent className="space-y-2">
-                        <div className="flex gap-2">
-                          <Button size="sm" variant="outline" onClick={() => downloadJson("openbb-watchlist", watchlist as any)}>
-                            Export JSON
-                          </Button>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {watchlist.map((s) => (
-                            <span key={s} className="inline-flex items-center gap-2 rounded-full border px-2 py-1">
-                              {s}
-                              <button
-                                className="text-[10px] text-muted-foreground hover:text-foreground"
-                                onClick={() => setWatchlist((prev) => prev.filter((x) => x !== s))}
-                              >
-                                ×
-                              </button>
-                              <button
-                                className="text-[10px] text-muted-foreground hover:text-foreground"
-                                onClick={() => {
-                                  setQuickSymbols(s)
-                                  setTimeout(() => runQuickLookup(), 50)
-                                }}
-                              >
-                                Run
-                              </button>
-                            </span>
-                          ))}
-                        </div>
-                        <div className="mt-2 space-y-2 text-[11px] text-muted-foreground">
-                          {watchlist.map((s) => {
-                            const selected = new Set(watchlistAlerts[s] || [])
-                            const toggle = (key: string) => {
-                              const next = new Set(selected)
-                              if (next.has(key)) next.delete(key)
-                              else next.add(key)
-                              setWatchlistAlerts((prev) => ({ ...prev, [s]: Array.from(next) }))
-                            }
-                            return (
-                              <div key={`${s}-alerts`} className="flex flex-wrap items-center gap-2">
-                                <span className="text-foreground">{s}</span>
-                                {["news", "filings", "sentiment", "price"].map((key) => (
-                                  <label key={key} className="flex items-center gap-1 rounded border border-border/50 px-2 py-1">
-                                    <input
-                                      type="checkbox"
-                                      checked={selected.has(key)}
-                                      onChange={() => toggle(key)}
-                                    />
-                                    <span className="capitalize">{key}</span>
-                                  </label>
-                                ))}
-                              </div>
-                            )
-                          })}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ) : null}
-                  {historyLog.length ? (
-                    <Card className="border-border/70">
-                      <CardHeader>
-                        <CardTitle className="text-sm">History</CardTitle>
-                      </CardHeader>
-                      <CardContent className="space-y-2">
-                        <div className="space-y-2">
-                          {historyLog.slice(0, 10).map((h) => (
-                            <div key={`${h.ts}-${h.symbols}`} className="rounded-md border border-border/40 bg-muted/30 p-2">
-                              <div className="text-foreground">{h.symbols}</div>
-                              <div className="text-[11px] text-muted-foreground">{h.range} · {h.provider}</div>
-                            </div>
-                          ))}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ) : null}
-                </div>
-              ) : null}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="watchlist" className="space-y-4">
+          <div className="grid gap-4 lg:grid-cols-2 text-xs text-muted-foreground">
+            <Card className="border-border/70">
+              <CardHeader>
+                <CardTitle className="text-sm">Watchlist</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" onClick={() => downloadJson("openbb-watchlist", watchlist as any)}>
+                    Export JSON
+                  </Button>
+                </div>
+                {!watchlist.length ? <div className="text-xs text-muted-foreground">No symbols saved yet.</div> : null}
+                <div className="flex flex-wrap gap-2">
+                  {watchlist.map((s) => (
+                    <span key={s} className="inline-flex items-center gap-2 rounded-full border px-2 py-1">
+                      {s}
+                      <button
+                        className="text-[10px] text-muted-foreground hover:text-foreground"
+                        onClick={() => setWatchlist((prev) => prev.filter((x) => x !== s))}
+                      >
+                        ×
+                      </button>
+                      <button
+                        className="text-[10px] text-muted-foreground hover:text-foreground"
+                        onClick={() => {
+                          setQuickSymbols(s)
+                          setTimeout(() => runQuickLookup(), 50)
+                        }}
+                      >
+                        Run
+                      </button>
+                    </span>
+                  ))}
+                </div>
+                {watchlist.length ? (
+                  <div className="mt-2 space-y-2 text-[11px] text-muted-foreground">
+                    {watchlist.map((s) => {
+                      const selected = new Set(watchlistAlerts[s] || [])
+                      const toggle = (key: string) => {
+                        const next = new Set(selected)
+                        if (next.has(key)) next.delete(key)
+                        else next.add(key)
+                        setWatchlistAlerts((prev) => ({ ...prev, [s]: Array.from(next) }))
+                      }
+                      return (
+                        <div key={`${s}-alerts`} className="flex flex-wrap items-center gap-2">
+                          <span className="text-foreground">{s}</span>
+                          {["news", "filings", "sentiment", "price"].map((key) => (
+                            <label key={key} className="flex items-center gap-1 rounded border border-border/50 px-2 py-1">
+                              <input
+                                type="checkbox"
+                                checked={selected.has(key)}
+                                onChange={() => toggle(key)}
+                              />
+                              <span className="capitalize">{key}</span>
+                            </label>
+                          ))}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
+
+            <Card className="border-border/70">
+              <CardHeader>
+                <CardTitle className="text-sm">History</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {!historyLog.length ? <div className="text-xs text-muted-foreground">No recent queries yet.</div> : null}
+                <div className="space-y-2">
+                  {historyLog.slice(0, 10).map((h) => (
+                    <div key={`${h.ts}-${h.symbols}`} className="rounded-md border border-border/40 bg-muted/30 p-2">
+                      <div className="text-foreground">{h.symbols}</div>
+                      <div className="text-[11px] text-muted-foreground">{h.range} · {h.provider}</div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
         </TabsContent>
 
         <TabsContent value="explorer" className="space-y-4">
@@ -1495,6 +1594,16 @@ export default function OpenbbPage() {
               ) : null}
               {comparisonData.length ? (
                 <div className="space-y-3 text-xs text-muted-foreground">
+                  {comparisonHistory.length ? (
+                    <Card className="border-border/70">
+                      <CardHeader>
+                        <CardTitle className="text-sm">Price comparison</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        {renderComparisonChart(comparisonHistory) || <div>No chart data</div>}
+                      </CardContent>
+                    </Card>
+                  ) : null}
                   {renderTable(
                     comparisonData.map((c) => {
                       const row = firstResult(c.data)
@@ -1647,6 +1756,19 @@ export default function OpenbbPage() {
                       </CardContent>
                     </Card>
                   ) : null}
+                  {fundamentals.profile ? (
+                    <ValuationTable
+                      rows={[
+                        {
+                          symbol: fundSymbol,
+                          market_cap: (firstResult(fundamentals.profile) as any).market_cap,
+                          pe_ratio: (firstResult(fundamentals.profile) as any).pe_ratio || (firstResult(fundamentals.profile) as any).pe,
+                          pb_ratio: (firstResult(fundamentals.profile) as any).pb_ratio,
+                          dividend_yield: (firstResult(fundamentals.profile) as any).dividend_yield,
+                        },
+                      ]}
+                    />
+                  ) : null}
                   {fundamentals.income ? (
                     <StatementTable title="Income statement" rows={fundamentals.income?.results || fundamentals.income} />
                   ) : null}
@@ -1711,6 +1833,11 @@ export default function OpenbbPage() {
               </Button>
               {technicals ? (
                 <div className="grid gap-4 lg:grid-cols-2 text-xs text-muted-foreground">
+                  <div className="grid gap-2 md:grid-cols-3 lg:col-span-2">
+                    <MetricCard label="RSI" value={(firstResult(technicals.rsi) as any)?.value || (firstResult(technicals.rsi) as any)?.rsi} />
+                    <MetricCard label="MA" value={(firstResult(technicals.ma) as any)?.ma || (firstResult(technicals.ma) as any)?.value} />
+                    <MetricCard label="BB Upper" value={(firstResult(technicals.bb) as any)?.upper} />
+                  </div>
                   {technicals.rsi ? (
                     <Card className="border-border/70">
                       <CardHeader>
@@ -1765,8 +1892,8 @@ export default function OpenbbPage() {
                   </label>
                 ))}
               </div>
-              <Button size="sm" onClick={fetchMacro}>
-                <RefreshCw className="mr-2 h-4 w-4" /> Fetch macro
+              <Button size="sm" onClick={fetchMacro} disabled={macroLoading}>
+                <RefreshCw className="mr-2 h-4 w-4" /> {macroLoading ? "Loading" : "Fetch macro"}
               </Button>
               <Button size="sm" variant="outline" onClick={() => downloadJson("macro", macroData)}>
                 Export JSON
@@ -1817,7 +1944,9 @@ export default function OpenbbPage() {
                   </select>
                 </div>
               </div>
-              <Button size="sm" onClick={() => fetchCrypto(cryptoSymbol)}>Fetch</Button>
+              <Button size="sm" onClick={() => fetchCrypto(cryptoSymbol)} disabled={cryptoLoading}>
+                {cryptoLoading ? "Loading" : "Fetch"}
+              </Button>
               <Button size="sm" variant="outline" onClick={() => downloadJson(`crypto-${cryptoSymbol}`, cryptoData)}>
                 Export JSON
               </Button>
@@ -1856,8 +1985,8 @@ export default function OpenbbPage() {
                   </select>
                 </div>
               </div>
-              <Button size="sm" onClick={fetchCommodities}>
-                <RefreshCw className="mr-2 h-4 w-4" /> Fetch
+              <Button size="sm" onClick={fetchCommodities} disabled={commodityLoading}>
+                <RefreshCw className="mr-2 h-4 w-4" /> {commodityLoading ? "Loading" : "Fetch"}
               </Button>
               <Button size="sm" variant="outline" onClick={() => downloadJson(`commodities-${commoditySelection}`, commodityData)}>
                 Export JSON
