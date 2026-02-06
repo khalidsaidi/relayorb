@@ -58,7 +58,12 @@ const AVAILABLE_QUOTE_PROVIDERS = resolveProviders()
 const DEFAULT_QUOTE_PROVIDER = AVAILABLE_QUOTE_PROVIDERS[0]
 
 function buildUrl(base: string, path: string, params: Record<string, string | number | undefined>) {
-  const url = new URL(path, base)
+  // `new URL("/x", "https://host/base")` will drop `/base` and resolve to `https://host/x`.
+  // Our OpenBB API is mounted under a base path (e.g. `/openbb`), so we must treat `path`
+  // as relative when it begins with `/`.
+  const normalizedBase = base.endsWith("/") ? base : `${base}/`
+  const normalizedPath = path.startsWith("/") ? path.slice(1) : path
+  const url = new URL(normalizedPath, normalizedBase)
   Object.entries(params).forEach(([key, value]) => {
     if (value === undefined || value === "") return
     url.searchParams.set(key, String(value))
