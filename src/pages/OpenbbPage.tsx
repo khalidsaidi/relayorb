@@ -538,7 +538,13 @@ export default function OpenbbPage() {
       }
       const status = res.status
       const asString = typeof data === "string" ? data : ""
-      const noData = res.ok && ((Array.isArray(data) && data.length === 0) || data === null)
+      const emptyResults =
+        res.ok &&
+        data &&
+        typeof data === "object" &&
+        Array.isArray((data as any).results) &&
+        (data as any).results.length === 0
+      const noData = res.ok && ((Array.isArray(data) && data.length === 0) || data === null || emptyResults)
       const errorMsg = (() => {
         if (noData) return "Provider returned no data. Try another provider."
         if (!res.ok) {
