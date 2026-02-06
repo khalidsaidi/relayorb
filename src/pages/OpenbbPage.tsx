@@ -153,6 +153,8 @@ export default function OpenbbPage() {
   const [quickHistory, setQuickHistory] = useState<Record<string, any>[]>([])
   const [quickLoading, setQuickLoading] = useState(false)
   const [savedQueries, setSavedQueries] = useState<{ symbols: string; range: string; provider: string }[]>([])
+  const [watchlist, setWatchlist] = useState<string[]>([])
+  const [historyLog, setHistoryLog] = useState<{ symbols: string; range: string; provider: string; ts: number }[]>([])
 
   const [specOps, setSpecOps] = useState<ApiOperation[]>([])
   const [specError, setSpecError] = useState<string | null>(null)
@@ -346,6 +348,7 @@ export default function OpenbbPage() {
       const okHist = history.filter((h) => h.ok)
       setQuickQuotes(okQuotes)
       setQuickHistory(okHist)
+      setHistoryLog((prev) => [{ symbols: quickSymbols, range: quickRange, provider: quickProvider, ts: Date.now() }, ...prev].slice(0, 20))
       quotes.filter((q) => !q.ok).forEach((q) => toast.error(`${q.sym}: ${q.status}`))
       history.filter((h) => !h.ok).forEach((h) => toast.error(`${h.sym}: ${h.status}`))
     } catch (err) {
@@ -452,6 +455,22 @@ export default function OpenbbPage() {
                 <Button size="sm" variant="outline" onClick={saveCurrentQuick}>
                   Save
                 </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    const sym = quickSymbols.trim().toUpperCase()
+                    if (!sym) return
+                    setWatchlist((prev) => {
+                      const merged = new Set(prev)
+                      sym.split(",").map((s) => s.trim()).filter(Boolean).forEach((s) => merged.add(s))
+                      return Array.from(merged).slice(0, 50)
+                    })
+                    toast.success("Added to watchlist")
+                  }}
+                >
+                  Add to watchlist
+                </Button>
                 {savedQueries.length ? (
                   <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
                     {savedQueries.map((q, idx) => (
@@ -506,6 +525,43 @@ export default function OpenbbPage() {
                   </Card>
                 ) : null}
               </div>
+              {historyLog.length || watchlist.length ? (
+                <div className="grid gap-4 lg:grid-cols-2 text-xs text-muted-foreground">
+                  {watchlist.length ? (
+                    <Card className="border-border/70">
+                      <CardHeader>
+                        <CardTitle className="text-sm">Watchlist</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-2">
+                        <div className="flex flex-wrap gap-2">
+                          {watchlist.map((s) => (
+                            <span key={s} className="rounded-full border px-2 py-1">
+                              {s}
+                            </span>
+                          ))}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ) : null}
+                  {historyLog.length ? (
+                    <Card className="border-border/70">
+                      <CardHeader>
+                        <CardTitle className="text-sm">History</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-2">
+                        <div className="space-y-2">
+                          {historyLog.slice(0, 10).map((h) => (
+                            <div key={`${h.ts}-${h.symbols}`} className="rounded-md border border-border/40 bg-muted/30 p-2">
+                              <div className="text-foreground">{h.symbols}</div>
+                              <div className="text-[11px] text-muted-foreground">{h.range} · {h.provider}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ) : null}
+                </div>
+              ) : null}
             </CardContent>
           </Card>
         </TabsContent>
