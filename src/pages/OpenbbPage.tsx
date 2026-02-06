@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { ExternalLink, RefreshCw } from "lucide-react"
+import { ExternalLink, RefreshCw, Info } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { resolveOpenbbApiUrl, resolveMarketDataProxyUrl } from "@/lib/runtime-urls"
 import { toast } from "sonner"
@@ -66,6 +66,88 @@ function renderValue(value: unknown) {
   return JSON.stringify(value)
 }
 
+function firstResult(data: any): Record<string, unknown> {
+  if (!data) return {}
+  if (Array.isArray(data?.results) && data.results.length) return data.results[0]
+  if (Array.isArray(data) && data.length) return data[0]
+  if (typeof data === "object") return data
+  return {}
+}
+
+function lastResult(data: any): Record<string, unknown> {
+  if (!data) return {}
+  if (Array.isArray(data?.results) && data.results.length) return data.results[data.results.length - 1]
+  if (Array.isArray(data) && data.length) return data[data.length - 1]
+  if (typeof data === "object") return data
+  return {}
+}
+
+function toResultArray(data: any): Record<string, unknown>[] {
+  if (!data) return []
+  if (Array.isArray(data?.results)) return data.results
+  if (Array.isArray(data)) return data
+  return []
+}
+
+function pickSummaryMetrics(data: any) {
+  const row = firstResult(data)
+  if (!row || !Object.keys(row).length) return []
+  const preferred = [
+    "symbol",
+    "name",
+    "last_price",
+    "price",
+    "close",
+    "change_percent",
+    "market_cap",
+    "volume",
+    "value",
+    "date",
+  ]
+  return preferred.filter((k) => k in row).slice(0, 6).map((k) => ({ key: k, value: (row as any)[k] }))
+}
+
+function downloadJson(name: string, data: unknown) {
+  try {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${name}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    console.error("download failed", err)
+  }
+}
+
+function downloadCsv(name: string, rows: Record<string, unknown>[]) {
+  if (!rows?.length) return
+  const cols = Object.keys(rows[0])
+  const csv = [cols.join(",")]
+    .concat(
+      rows.map((row) =>
+        cols
+          .map((c) => {
+            const v = row[c]
+            if (v === null || v === undefined) return ""
+            const s = String(v).replace(/"/g, '""')
+            return `"${s}"`
+          })
+          .join(",")
+      )
+    )
+    .join("\n")
+  const blob = new Blob([csv], { type: "text/csv" })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = `${name}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+
 function renderTable(data: unknown) {
   if (!Array.isArray(data) || data.length === 0 || typeof data[0] !== "object") return null
   const rows = data.slice(0, 20) as Record<string, unknown>[]
@@ -98,6 +180,17 @@ function renderTable(data: unknown) {
   )
 }
 
+function renderMetricGrid(data: Record<string, unknown> | null | undefined, keys: string[]) {
+  if (!data) return null
+  return (
+    <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3">
+      {keys.map((k) => (
+        <MetricCard key={k} label={k.replace(/_/g, " ")} value={(data as any)[k]} />
+      ))}
+    </div>
+  )
+}
+
 function renderLineChart(data: unknown, xKey = "date", yKeys: string[] = []) {
   if (!Array.isArray(data) || data.length === 0 || typeof data[0] !== "object") return null
   const rows = data as Record<string, unknown>[]
@@ -123,8 +216,42 @@ function renderLineChart(data: unknown, xKey = "date", yKeys: string[] = []) {
   )
 }
 
+function ValuationTable({ rows }: { rows: Record<string, unknown>[] }) {
+  if (!rows?.length) return null
+  const cols = ["symbol", "market_cap", "pe_ratio", "pb_ratio", "dividend_yield"]
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border/60">
+      <table className="w-full text-left text-xs">
+        <thead className="bg-muted/60 text-[11px] uppercase tracking-wide text-muted-foreground">
+          <tr>
+            {cols.map((c) => (
+              <th key={c} className="px-3 py-2 font-medium">
+                {c.replace(/_/g, " ")}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 10).map((row, idx) => (
+            <tr key={idx} className="border-t border-border/60">
+              {cols.map((c) => (
+                <td key={c} className="px-3 py-2 text-foreground">
+                  {renderValue(row[c])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function ResponseCard({ title, result }: { title: string; result?: ResponseState }) {
   if (!result) return null
+  const chartRows = toResultArray(result.data)
+  const hasDate = chartRows.length && "date" in chartRows[0]
+  const summary = pickSummaryMetrics(result.data)
   return (
     <Card className="border-border/70">
       <CardHeader>
@@ -138,15 +265,86 @@ function ResponseCard({ title, result }: { title: string; result?: ResponseState
           <span>Status: {result.status}</span>
           <span>{result.ok ? "OK" : "Error"}</span>
         </div>
+        {summary.length ? (
+          <div className="grid gap-2 md:grid-cols-3">
+            {summary.map((m) => (
+              <MetricCard key={m.key} label={m.key.replace(/_/g, " ")} value={m.value} />
+            ))}
+          </div>
+        ) : null}
         {result.error ? (
           <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-red-700">
             {result.error}
           </div>
         ) : null}
+        {hasDate ? renderLineChart(chartRows, "date") : null}
         {renderTable(result.data)}
-        <pre className="max-h-72 overflow-auto rounded-lg border border-border/60 bg-muted/30 p-3 text-[11px] text-muted-foreground">
-          {JSON.stringify(result.data, null, 2)}
-        </pre>
+        <details className="rounded-lg border border-border/60 bg-muted/20 p-2 text-[11px]">
+          <summary className="cursor-pointer text-muted-foreground">Raw JSON</summary>
+          <pre className="max-h-72 overflow-auto p-2 text-[11px] text-muted-foreground">
+            {JSON.stringify(result.data, null, 2)}
+          </pre>
+        </details>
+      </CardContent>
+    </Card>
+  )
+}
+
+function QuoteCard({ quote }: { quote: Record<string, unknown> }) {
+  if (!quote || !Object.keys(quote).length) return null
+  return (
+    <div className="rounded-md border border-border/50 bg-muted/30 p-3 space-y-1 text-xs text-muted-foreground">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold text-foreground">{renderValue(quote.symbol || quote.ticker || quote.name)}</span>
+        <span className="text-sm font-semibold text-foreground">{renderValue(quote.last_price || quote.price || quote.close)}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+        <span>Bid / Ask</span>
+        <span className="text-foreground font-medium">
+          {renderValue(quote.bid)} / {renderValue(quote.ask)}
+        </span>
+        <span>High / Low</span>
+        <span className="text-foreground font-medium">
+          {renderValue(quote.high)} / {renderValue(quote.low)}
+        </span>
+        <span>Volume</span>
+        <span className="text-foreground font-medium">{renderValue(quote.volume || quote.total_volume)}</span>
+        <span>Prev close</span>
+        <span className="text-foreground font-medium">{renderValue(quote.prev_close || quote.previous_close)}</span>
+      </div>
+    </div>
+  )
+}
+
+function FundOverviewCard({ profile }: { profile: Record<string, unknown> }) {
+  if (!profile || !Object.keys(profile).length) return null
+  const p = firstResult(profile)
+  return (
+    <Card className="border-border/70">
+      <CardHeader>
+        <CardTitle className="text-sm">Fundamentals snapshot</CardTitle>
+      </CardHeader>
+      <CardContent className="grid gap-3 md:grid-cols-3 text-xs text-muted-foreground">
+        {renderMetricGrid(p, ["name", "stock_exchange", "sector", "industry", "market_cap", "full_time_employees"])}
+      </CardContent>
+    </Card>
+  )
+}
+
+function TechnicalOverviewCard({ technicals }: { technicals: Record<string, unknown> }) {
+  if (!technicals || !Object.keys(technicals).length) return null
+  const rsiRow = firstResult((technicals as any).rsi)
+  const maRow = firstResult((technicals as any).ma)
+  const bbRow = firstResult((technicals as any).bb)
+  return (
+    <Card className="border-border/70">
+      <CardHeader>
+        <CardTitle className="text-sm">Technical signals</CardTitle>
+      </CardHeader>
+      <CardContent className="grid gap-3 md:grid-cols-3 text-xs text-muted-foreground">
+        {rsiRow && Object.keys(rsiRow).length ? <MetricCard label="RSI" value={rsiRow.value || rsiRow.rsi} /> : null}
+        {maRow && Object.keys(maRow).length ? <MetricCard label="Moving avg" value={maRow.ma || maRow.value} /> : null}
+        {bbRow && Object.keys(bbRow).length ? <MetricCard label="Upper band" value={bbRow.upper} /> : null}
       </CardContent>
     </Card>
   )
@@ -177,21 +375,53 @@ export default function OpenbbPage() {
   const [quickRange, setQuickRange] = useState("1M")
   const [quickQuotes, setQuickQuotes] = useState<Record<string, any>[]>([])
   const [quickHistory, setQuickHistory] = useState<Record<string, any>[]>([])
+  const [quickNews, setQuickNews] = useState<Record<string, any>[]>([])
+  const [quickFund, setQuickFund] = useState<Record<string, any> | null>(null)
+  const [quickTech, setQuickTech] = useState<Record<string, any> | null>(null)
+  const [quickFundMap, setQuickFundMap] = useState<Record<string, any>>({})
+  const [quickTechMap, setQuickTechMap] = useState<Record<string, any>>({})
   const [quickLoading, setQuickLoading] = useState(false)
   const [savedQueries, setSavedQueries] = useState<{ symbols: string; range: string; provider: string }[]>([])
   const [watchlist, setWatchlist] = useState<string[]>([])
+  const [watchlistAlerts, setWatchlistAlerts] = useState<Record<string, string[]>>({})
   const [historyLog, setHistoryLog] = useState<{ symbols: string; range: string; provider: string; ts: number }[]>([])
   const [comparisonSymbols, setComparisonSymbols] = useState("AAPL, MSFT")
   const [comparisonData, setComparisonData] = useState<Record<string, any>[]>([])
+  const [comparisonValuation, setComparisonValuation] = useState<Record<string, any>[]>([])
+  const [comparisonTech, setComparisonTech] = useState<Record<string, any>[]>([])
+  const [comparisonFund, setComparisonFund] = useState<Record<string, any>>({})
+  const [comparisonHistory, setComparisonHistory] = useState<Record<string, any>[]>([])
+  const [comparisonLoading, setComparisonLoading] = useState(false)
   const [fundamentals, setFundamentals] = useState<Record<string, any> | null>(null)
   const [technicals, setTechnicals] = useState<Record<string, any> | null>(null)
   const [fundLoading, setFundLoading] = useState(false)
   const [techLoading, setTechLoading] = useState(false)
   const [fundSymbol, setFundSymbol] = useState("AAPL")
   const [techSymbol, setTechSymbol] = useState("AAPL")
+  const [fundSelections, setFundSelections] = useState({
+    profile: true,
+    income: true,
+    balance: true,
+    cash: true,
+    valuation: true,
+  })
+  const [techSelections, setTechSelections] = useState({
+    rsi: true,
+    ma: true,
+    bb: true,
+  })
   const [macroData, setMacroData] = useState<Record<string, any> | null>(null)
   const [cryptoData, setCryptoData] = useState<Record<string, any> | null>(null)
   const [commodityData, setCommodityData] = useState<Record<string, any> | null>(null)
+  const [macroSelection, setMacroSelection] = useState({
+    interest_rate: true,
+    unemployment: true,
+    gdp: false,
+    inflation: false,
+  })
+  const [cryptoSymbol, setCryptoSymbol] = useState("BTC-USD")
+  const [cryptoInterval, setCryptoInterval] = useState("1d")
+  const [commoditySelection, setCommoditySelection] = useState("brent")
 
   const [specOps, setSpecOps] = useState<ApiOperation[]>([])
   const [specError, setSpecError] = useState<string | null>(null)
@@ -380,11 +610,73 @@ export default function OpenbbPage() {
           data: await r.json().catch(() => null),
         }))
       )
-      const [quotes, history] = await Promise.all([Promise.all(quotePromises), Promise.all(histPromises)])
+      const newsPromises = symbols.map((sym) =>
+        fetch(buildUrl(queryBase, "/api/v1/news", { symbol: sym, provider: quickProvider })).then(async (r) => ({
+          sym,
+          status: r.status,
+          ok: r.ok,
+          data: await r.json().catch(() => null),
+        }))
+      )
+      const fundPromises = symbols.map(async (sym) => {
+        const [profile, income, balance, cash] = await Promise.all([
+          fetch(buildUrl(queryBase, "/api/v1/equity/profile", { symbol: sym, provider: quickProvider })).then((r) =>
+            r.json().catch(() => null)
+          ),
+          fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/income", { symbol: sym, provider: quickProvider })).then((r) =>
+            r.json().catch(() => null)
+          ),
+          fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/balance", { symbol: sym, provider: quickProvider })).then((r) =>
+            r.json().catch(() => null)
+          ),
+          fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/cash_flow", { symbol: sym, provider: quickProvider })).then((r) =>
+            r.json().catch(() => null)
+          ),
+        ])
+        return { profile, income, balance, cash }
+      })
+      const techPromises = symbols.map(async (sym) => {
+        const [rsi, ma, bb] = await Promise.all([
+          fetch(buildUrl(queryBase, "/api/v1/technical/relative_strength_index", { symbol: sym, interval: "1d", length: 14, provider: quickProvider })).then((r) =>
+            r.json().catch(() => null)
+          ),
+          fetch(buildUrl(queryBase, "/api/v1/technical/moving_average", { symbol: sym, interval: "1d", length: 20, provider: quickProvider })).then((r) =>
+            r.json().catch(() => null)
+          ),
+          fetch(buildUrl(queryBase, "/api/v1/technical/bollinger_bands", { symbol: sym, interval: "1d", length: 20, std: 2, provider: quickProvider })).then(
+            (r) => r.json().catch(() => null)
+          ),
+        ])
+        return { rsi, ma, bb }
+      })
+
+      const [quotes, history, news, fundArr, techArr] = await Promise.all([
+        Promise.all(quotePromises),
+        Promise.all(histPromises),
+        Promise.all(newsPromises),
+        Promise.all(fundPromises),
+        Promise.all(techPromises),
+      ])
       const okQuotes = quotes.filter((q) => q.ok)
       const okHist = history.filter((h) => h.ok)
+      const okNews = news.filter((n) => n.ok)
       setQuickQuotes(okQuotes)
       setQuickHistory(okHist)
+      setQuickNews(okNews)
+      setQuickFund(fundArr[0]?.profile || null)
+      setQuickTech(techArr[0]?.rsi || null)
+      const fundMap: Record<string, any> = {}
+      fundArr.forEach((f, idx) => {
+        const sym = symbols[idx]
+        if (sym) fundMap[sym] = f
+      })
+      const techMap: Record<string, any> = {}
+      techArr.forEach((t, idx) => {
+        const sym = symbols[idx]
+        if (sym) techMap[sym] = t
+      })
+      setQuickFundMap(fundMap)
+      setQuickTechMap(techMap)
       setHistoryLog((prev) => [{ symbols: quickSymbols, range: quickRange, provider: quickProvider, ts: Date.now() }, ...prev].slice(0, 20))
       // Fetch fundamentals/technicals for the first symbol to enrich cards
       const primary = symbols[0]
@@ -420,6 +712,7 @@ export default function OpenbbPage() {
       toast.error("Enter symbols to compare")
       return
     }
+    setComparisonLoading(true)
     setComparisonData([])
     try {
       const res = await Promise.all(
@@ -434,9 +727,71 @@ export default function OpenbbPage() {
       )
       const ok = res.filter((r) => r.ok)
       setComparisonData(ok)
+      // fetch valuation for comparison
+      const valuationRes = await Promise.all(
+        symbols.map((sym) =>
+          fetch(buildUrl(queryBase, "/api/v1/equity/profile", { symbol: sym, provider: quickProvider })).then(async (r) => ({
+            sym,
+            ok: r.ok,
+            status: r.status,
+            data: await r.json().catch(() => null),
+          }))
+        )
+      )
+      setComparisonValuation(valuationRes.filter((r) => r.ok))
+      const techRes = await Promise.all(
+        symbols.map(async (sym) => {
+          const [rsi, ma, bb] = await Promise.all([
+            fetch(
+              buildUrl(queryBase, "/api/v1/technical/relative_strength_index", {
+                symbol: sym,
+                interval: "1d",
+                length: 14,
+                provider: quickProvider,
+              })
+            ).then((r) => r.json().catch(() => null)),
+            fetch(buildUrl(queryBase, "/api/v1/technical/moving_average", { symbol: sym, interval: "1d", length: 20, provider: quickProvider })).then(
+              (r) => r.json().catch(() => null)
+            ),
+            fetch(
+              buildUrl(queryBase, "/api/v1/technical/bollinger_bands", { symbol: sym, interval: "1d", length: 20, std: 2, provider: quickProvider })
+            ).then((r) => r.json().catch(() => null)),
+          ])
+          return { sym, rsi, ma, bb }
+        })
+      )
+      setComparisonTech(techRes)
+      const histRes = await Promise.all(
+        symbols.map((sym) =>
+          fetch(buildUrl(queryBase, "/api/v1/equity/price/historical", { symbol: sym, provider: quickProvider, interval: "1d", start_date: computeStartDate(quickRange) })).then(async (r) => ({
+            sym,
+            ok: r.ok,
+            status: r.status,
+            data: await r.json().catch(() => null),
+          }))
+        )
+      )
+      setComparisonHistory(histRes.filter((r) => r.ok))
+      const fundRes = await Promise.all(
+        symbols.map(async (sym) => {
+          const [income, balance, cash] = await Promise.all([
+            fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/income", { symbol: sym, provider: quickProvider })).then((r) => r.json().catch(() => null)),
+            fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/balance", { symbol: sym, provider: quickProvider })).then((r) => r.json().catch(() => null)),
+            fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/cash_flow", { symbol: sym, provider: quickProvider })).then((r) => r.json().catch(() => null)),
+          ])
+          return { sym, income, balance, cash }
+        })
+      )
+      const fundMap: Record<string, any> = {}
+      fundRes.forEach((f) => {
+        fundMap[f.sym] = f
+      })
+      setComparisonFund(fundMap)
       res.filter((r) => !r.ok).forEach((r) => toast.error(`${r.sym}: ${r.status}`))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Comparison failed")
+    } finally {
+      setComparisonLoading(false)
     }
   }
 
@@ -447,10 +802,27 @@ export default function OpenbbPage() {
     }
     setFundLoading(true)
     try {
-      const profile = await fetch(buildUrl(queryBase, "/api/v1/equity/profile", { symbol: fundSymbol, provider: quickProvider })).then((r) => r.json().catch(() => null))
-      const income = await fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/income", { symbol: fundSymbol, provider: quickProvider })).then((r) => r.json().catch(() => null))
-      const balance = await fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/balance", { symbol: fundSymbol, provider: quickProvider })).then((r) => r.json().catch(() => null))
-      const cash = await fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/cash_flow", { symbol: fundSymbol, provider: quickProvider })).then((r) => r.json().catch(() => null))
+      const profilePromise = fundSelections.profile
+        ? fetch(buildUrl(queryBase, "/api/v1/equity/profile", { symbol: fundSymbol, provider: quickProvider })).then((r) =>
+            r.json().catch(() => null)
+          )
+        : Promise.resolve(null)
+      const incomePromise = fundSelections.income
+        ? fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/income", { symbol: fundSymbol, provider: quickProvider })).then((r) =>
+            r.json().catch(() => null)
+          )
+        : Promise.resolve(null)
+      const balancePromise = fundSelections.balance
+        ? fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/balance", { symbol: fundSymbol, provider: quickProvider })).then((r) =>
+            r.json().catch(() => null)
+          )
+        : Promise.resolve(null)
+      const cashPromise = fundSelections.cash
+        ? fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/cash_flow", { symbol: fundSymbol, provider: quickProvider })).then((r) =>
+            r.json().catch(() => null)
+          )
+        : Promise.resolve(null)
+      const [profile, income, balance, cash] = await Promise.all([profilePromise, incomePromise, balancePromise, cashPromise])
       setFundamentals({ profile, income, balance, cash })
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Fundamentals failed")
@@ -466,9 +838,22 @@ export default function OpenbbPage() {
     }
     setTechLoading(true)
     try {
-      const rsi = await fetch(buildUrl(queryBase, "/api/v1/technical/relative_strength_index", { symbol: techSymbol, interval: "1d", length: 14, provider: quickProvider })).then((r) => r.json().catch(() => null))
-      const ma = await fetch(buildUrl(queryBase, "/api/v1/technical/moving_average", { symbol: techSymbol, interval: "1d", length: 20, provider: quickProvider })).then((r) => r.json().catch(() => null))
-      const bb = await fetch(buildUrl(queryBase, "/api/v1/technical/bollinger_bands", { symbol: techSymbol, interval: "1d", length: 20, std: 2, provider: quickProvider })).then((r) => r.json().catch(() => null))
+      const rsiPromise = techSelections.rsi
+        ? fetch(
+            buildUrl(queryBase, "/api/v1/technical/relative_strength_index", { symbol: techSymbol, interval: "1d", length: 14, provider: quickProvider })
+          ).then((r) => r.json().catch(() => null))
+        : Promise.resolve(null)
+      const maPromise = techSelections.ma
+        ? fetch(buildUrl(queryBase, "/api/v1/technical/moving_average", { symbol: techSymbol, interval: "1d", length: 20, provider: quickProvider })).then(
+            (r) => r.json().catch(() => null)
+          )
+        : Promise.resolve(null)
+      const bbPromise = techSelections.bb
+        ? fetch(
+            buildUrl(queryBase, "/api/v1/technical/bollinger_bands", { symbol: techSymbol, interval: "1d", length: 20, std: 2, provider: quickProvider })
+          ).then((r) => r.json().catch(() => null))
+        : Promise.resolve(null)
+      const [rsi, ma, bb] = await Promise.all([rsiPromise, maPromise, bbPromise])
       setTechnicals({ rsi, ma, bb })
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Technical fetch failed")
@@ -480,18 +865,36 @@ export default function OpenbbPage() {
   const fetchMacro = async () => {
     if (!queryBase) return
     try {
-      const res = await fetch(buildUrl(queryBase, "/api/v1/commodity/price/spot", { commodity: "wti", provider: "fred" }))
-      const data = await res.json().catch(() => null)
-      setMacroData(data)
+      const indicatorMap: Record<string, string> = {
+        interest_rate: "interest_rate",
+        unemployment: "unemployment",
+        gdp: "gdp",
+        inflation: "inflation",
+      }
+      const selected = Object.entries(macroSelection).filter(([, enabled]) => enabled)
+      const results = await Promise.all(
+        selected.map(async ([key]) => {
+          const indicator = indicatorMap[key]
+          const data = await fetch(buildUrl(queryBase, "/api/v1/economy/macro", { indicator, provider: "fred" })).then((r) =>
+            r.json().catch(() => null)
+          )
+          return [key, data] as const
+        })
+      )
+      const next: Record<string, any> = {}
+      results.forEach(([key, data]) => {
+        next[key] = data
+      })
+      setMacroData(next)
     } catch {
       setMacroData(null)
     }
   }
 
-  const fetchCrypto = async (symbol = "BTC-USD") => {
+  const fetchCrypto = async (symbol = cryptoSymbol) => {
     if (!queryBase) return
     try {
-      const res = await fetch(buildUrl(queryBase, "/api/v1/crypto/price/historical", { symbol, interval: "1d", provider: quickProvider }))
+      const res = await fetch(buildUrl(queryBase, "/api/v1/crypto/price/historical", { symbol, interval: cryptoInterval, provider: quickProvider }))
       const data = await res.json().catch(() => null)
       setCryptoData(data)
     } catch {
@@ -502,7 +905,7 @@ export default function OpenbbPage() {
   const fetchCommodities = async () => {
     if (!queryBase) return
     try {
-      const res = await fetch(buildUrl(queryBase, "/api/v1/commodity/price/spot", { commodity: "brent", provider: "fred" }))
+      const res = await fetch(buildUrl(queryBase, "/api/v1/commodity/price/spot", { commodity: commoditySelection, provider: "fred" }))
       const data = await res.json().catch(() => null)
       setCommodityData(data)
     } catch {
@@ -522,9 +925,11 @@ export default function OpenbbPage() {
       const storedWatch = localStorage.getItem("openbb_watchlist")
       const storedHist = localStorage.getItem("openbb_history")
       const storedSaved = localStorage.getItem("openbb_saved")
+      const storedAlerts = localStorage.getItem("openbb_watchlist_alerts")
       if (storedWatch) setWatchlist(JSON.parse(storedWatch))
       if (storedHist) setHistoryLog(JSON.parse(storedHist))
       if (storedSaved) setSavedQueries(JSON.parse(storedSaved))
+      if (storedAlerts) setWatchlistAlerts(JSON.parse(storedAlerts))
     } catch {
       /* ignore */
     }
@@ -533,6 +938,10 @@ export default function OpenbbPage() {
   useEffect(() => {
     localStorage.setItem("openbb_watchlist", JSON.stringify(watchlist))
   }, [watchlist])
+
+  useEffect(() => {
+    localStorage.setItem("openbb_watchlist_alerts", JSON.stringify(watchlistAlerts))
+  }, [watchlistAlerts])
 
   useEffect(() => {
     localStorage.setItem("openbb_history", JSON.stringify(historyLog))
@@ -579,6 +988,7 @@ export default function OpenbbPage() {
       <Tabs defaultValue="quick" className="space-y-6">
         <TabsList className="flex flex-wrap gap-2">
           <TabsTrigger value="quick">Quick lookup</TabsTrigger>
+          <TabsTrigger value="compare">Compare</TabsTrigger>
           <TabsTrigger value="fundamentals">Fundamentals</TabsTrigger>
           <TabsTrigger value="technicals">Technicals</TabsTrigger>
           <TabsTrigger value="macro">Macro</TabsTrigger>
@@ -635,6 +1045,9 @@ export default function OpenbbPage() {
                   <RefreshCw className="mr-2 h-4 w-4" />
                   {quickLoading ? "Fetching…" : "Run lookup"}
                 </Button>
+                <Button size="sm" variant="outline" onClick={() => downloadJson("quick-quotes", { quotes: quickQuotes, history: quickHistory, news: quickNews })}>
+                  Export JSON
+                </Button>
                 <Button size="sm" variant="outline" onClick={saveCurrentQuick}>
                   Save
                 </Button>
@@ -653,6 +1066,13 @@ export default function OpenbbPage() {
                         .forEach((s) => merged.add(s))
                       return Array.from(merged).slice(0, 50)
                     })
+                    sym
+                      .split(",")
+                      .map((s) => s.trim())
+                      .filter(Boolean)
+                      .forEach((s) =>
+                        setWatchlistAlerts((prev) => (prev[s] ? prev : { ...prev, [s]: ["news"] }))
+                      )
                     toast.success("Added to watchlist")
                   }}
                 >
@@ -676,6 +1096,10 @@ export default function OpenbbPage() {
                   </div>
                 ) : null}
               </div>
+              {quickLoading ? <div className="text-xs text-muted-foreground">Loading data…</div> : null}
+              {!quickLoading && !quickQuotes.length && !quickHistory.length ? (
+                <div className="text-xs text-muted-foreground">No results yet.</div>
+              ) : null}
               <div className="grid gap-4 lg:grid-cols-2">
                 {quickQuotes.length ? (
                   <Card className="border-border/70">
@@ -685,33 +1109,75 @@ export default function OpenbbPage() {
                     <CardContent className="space-y-2 text-xs text-muted-foreground">
                       <div className="grid gap-3 md:grid-cols-2">
                         {quickQuotes.map((q) => {
-                          const payload = Array.isArray(q.data?.results) ? q.data.results[0] : q.data?.results?.[0] || q.data || {}
-                          return (
-                            <div key={q.sym} className="rounded-md border border-border/50 bg-muted/40 p-3 space-y-2">
-                              <div className="text-sm font-semibold text-foreground">{q.sym}</div>
-                              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
-                                <span>Last</span>
-                                <span className="text-foreground font-medium">{renderValue(payload.last_price)}</span>
-                                <span>Bid / Ask</span>
-                                <span className="text-foreground font-medium">
-                                  {renderValue(payload.bid)} / {renderValue(payload.ask)}
-                                </span>
-                                <span>Change</span>
-                                <span className="text-foreground font-medium">{renderValue(payload.change_percent || payload.change)}</span>
-                                <span>Volume</span>
-                                <span className="text-foreground font-medium">{renderValue(payload.volume)}</span>
-                                <span>High / Low</span>
-                                <span className="text-foreground font-medium">
-                                  {renderValue(payload.high)} / {renderValue(payload.low)}
-                                </span>
-                              </div>
-                            </div>
-                          )
+                          const payload = firstResult(q.data)
+                          return <QuoteCard key={q.sym} quote={{ ...payload, symbol: q.sym }} />
                         })}
                       </div>
                     </CardContent>
                   </Card>
                 ) : null}
+                {Object.keys(quickFundMap).length ? (
+                  <Card className="border-border/70">
+                    <CardHeader>
+                      <CardTitle className="text-sm">Fundamentals (per symbol)</CardTitle>
+                    </CardHeader>
+                    <CardContent className="grid gap-3 md:grid-cols-2 text-xs text-muted-foreground">
+                      {Object.entries(quickFundMap).map(([sym, data]) => {
+                        const row = firstResult((data as any).profile)
+                        return (
+                          <div key={sym} className="rounded-md border border-border/50 bg-muted/30 p-3 space-y-2">
+                            <div className="text-sm font-semibold text-foreground">{sym}</div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <MetricCard label="Market cap" value={(row as any).market_cap} />
+                              <MetricCard label="Sector" value={(row as any).sector} />
+                              <MetricCard label="P/E" value={(row as any).pe_ratio || (row as any).pe} />
+                              <MetricCard label="Dividend" value={(row as any).dividend_yield} />
+                            </div>
+                            <details className="rounded border border-border/40 bg-muted/20 p-2">
+                              <summary className="cursor-pointer text-[11px] text-muted-foreground">Statements</summary>
+                              {(data as any).income ? <StatementTable title="Income" rows={(data as any).income?.results || (data as any).income} /> : null}
+                              {(data as any).balance ? <StatementTable title="Balance" rows={(data as any).balance?.results || (data as any).balance} /> : null}
+                              {(data as any).cash ? <StatementTable title="Cash flow" rows={(data as any).cash?.results || (data as any).cash} /> : null}
+                            </details>
+                          </div>
+                        )
+                      })}
+                    </CardContent>
+                  </Card>
+                ) : null}
+                {Object.keys(quickTechMap).length ? (
+                  <Card className="border-border/70">
+                    <CardHeader>
+                      <CardTitle className="text-sm">Technicals (RSI/MA/BB)</CardTitle>
+                    </CardHeader>
+                    <CardContent className="grid gap-3 md:grid-cols-2 text-xs text-muted-foreground">
+                      {Object.entries(quickTechMap).map(([sym, data]) => {
+                        const rsiRow = firstResult((data as any).rsi)
+                        const maRow = firstResult((data as any).ma)
+                        const bbRow = firstResult((data as any).bb)
+                        return (
+                          <div key={sym} className="rounded-md border border-border/50 bg-muted/30 p-3 space-y-2">
+                            <div className="text-sm font-semibold text-foreground">{sym}</div>
+                            <div className="grid gap-2 md:grid-cols-2">
+                              <MetricCard label="RSI" value={(rsiRow as any).value || (rsiRow as any).rsi} />
+                              <MetricCard label="MA" value={(maRow as any).ma || (maRow as any).value} />
+                              <MetricCard label="BB Upper" value={(bbRow as any).upper} />
+                              <MetricCard label="BB Lower" value={(bbRow as any).lower} />
+                            </div>
+                            <details className="rounded border border-border/40 bg-muted/20 p-2">
+                              <summary className="cursor-pointer text-[11px] text-muted-foreground">Technical tables</summary>
+                              {(data as any).rsi ? renderTable((data as any).rsi?.results || (data as any).rsi) : null}
+                              {(data as any).ma ? renderTable((data as any).ma?.results || (data as any).ma) : null}
+                              {(data as any).bb ? renderTable((data as any).bb?.results || (data as any).bb) : null}
+                            </details>
+                          </div>
+                        )
+                      })}
+                    </CardContent>
+                  </Card>
+                ) : null}
+                {quickFund ? <FundOverviewCard profile={quickFund} /> : null}
+                {quickTech ? <TechnicalOverviewCard technicals={quickTech} /> : null}
                 {quickHistory.length ? (
                   <Card className="border-border/70">
                     <CardHeader>
@@ -727,43 +1193,29 @@ export default function OpenbbPage() {
                     </CardContent>
                   </Card>
                 ) : null}
+                {quickNews.length ? (
+                  <Card className="border-border/70">
+                    <CardHeader>
+                      <CardTitle className="text-sm">News</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2 text-xs text-muted-foreground max-h-64 overflow-auto">
+                      {quickNews
+                        .flatMap((n) => (Array.isArray(n.data?.results) ? n.data.results.map((item: any) => ({ sym: n.sym, ...item })) : []))
+                        .slice(0, 10)
+                        .map((item, idx) => (
+                          <div key={idx} className="rounded-md border border-border/40 bg-muted/20 p-2">
+                            <div className="text-foreground font-semibold text-sm">{item.title || item.headline}</div>
+                            <div className="text-[11px] text-muted-foreground flex flex-wrap gap-2">
+                              <span>{item.publisher || item.source}</span>
+                              {item.datetime || item.date ? <span>{item.datetime || item.date}</span> : null}
+                            </div>
+                          </div>
+                        ))}
+                    </CardContent>
+                  </Card>
+                ) : null}
               </div>
               <div className="grid gap-4 lg:grid-cols-2">
-                <Card className="border-border/70">
-                  <CardHeader>
-                    <CardTitle className="text-sm">Comparison</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3 text-sm">
-                    <div className="grid gap-2 md:grid-cols-3">
-                      <div className="md:col-span-2 space-y-1">
-                        <Label>Compare symbols</Label>
-                        <Input value={comparisonSymbols} onChange={(e) => setComparisonSymbols(e.target.value)} placeholder="AAPL, MSFT, GOOGL" />
-                      </div>
-                      <div className="space-y-1">
-                        <Label>Provider</Label>
-                        <select
-                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                          value={quickProvider}
-                          onChange={(e) => setQuickProvider(e.target.value)}
-                        >
-                          {AVAILABLE_QUOTE_PROVIDERS.map((p: string) => (
-                            <option key={p} value={p}>
-                              {p}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-                    <Button size="sm" onClick={runComparison} variant="outline">
-                      <RefreshCw className="mr-2 h-4 w-4" /> Compare
-                    </Button>
-                    {comparisonData.length ? (
-                      <div className="space-y-3 text-xs text-muted-foreground">
-                        {renderTable(comparisonData.map((c) => ({ symbol: c.sym, ...(Array.isArray(c.data) ? c.data[0] || {} : c.data || {}) })))}\n"
-                      </div>
-                    ) : null}
-                  </CardContent>
-                </Card>
                 {quickHistory.length ? (
                   <Card className="border-border/70">
                     <CardHeader>
@@ -772,6 +1224,8 @@ export default function OpenbbPage() {
                     <CardContent>{renderLineChart(quickHistory[0]?.data, "date")}</CardContent>
                   </Card>
                 ) : null}
+                {fundamentals ? <FundOverviewCard profile={fundamentals.profile} /> : null}
+                {technicals ? <TechnicalOverviewCard technicals={technicals} /> : null}
               </div>
               {historyLog.length || watchlist.length ? (
                 <div className="grid gap-4 lg:grid-cols-2 text-xs text-muted-foreground">
@@ -781,12 +1235,58 @@ export default function OpenbbPage() {
                         <CardTitle className="text-sm">Watchlist</CardTitle>
                       </CardHeader>
                       <CardContent className="space-y-2">
+                        <div className="flex gap-2">
+                          <Button size="sm" variant="outline" onClick={() => downloadJson("openbb-watchlist", watchlist as any)}>
+                            Export JSON
+                          </Button>
+                        </div>
                         <div className="flex flex-wrap gap-2">
                           {watchlist.map((s) => (
-                            <span key={s} className="rounded-full border px-2 py-1">
+                            <span key={s} className="inline-flex items-center gap-2 rounded-full border px-2 py-1">
                               {s}
+                              <button
+                                className="text-[10px] text-muted-foreground hover:text-foreground"
+                                onClick={() => setWatchlist((prev) => prev.filter((x) => x !== s))}
+                              >
+                                ×
+                              </button>
+                              <button
+                                className="text-[10px] text-muted-foreground hover:text-foreground"
+                                onClick={() => {
+                                  setQuickSymbols(s)
+                                  setTimeout(() => runQuickLookup(), 50)
+                                }}
+                              >
+                                Run
+                              </button>
                             </span>
                           ))}
+                        </div>
+                        <div className="mt-2 space-y-2 text-[11px] text-muted-foreground">
+                          {watchlist.map((s) => {
+                            const selected = new Set(watchlistAlerts[s] || [])
+                            const toggle = (key: string) => {
+                              const next = new Set(selected)
+                              if (next.has(key)) next.delete(key)
+                              else next.add(key)
+                              setWatchlistAlerts((prev) => ({ ...prev, [s]: Array.from(next) }))
+                            }
+                            return (
+                              <div key={`${s}-alerts`} className="flex flex-wrap items-center gap-2">
+                                <span className="text-foreground">{s}</span>
+                                {["news", "filings", "sentiment", "price"].map((key) => (
+                                  <label key={key} className="flex items-center gap-1 rounded border border-border/50 px-2 py-1">
+                                    <input
+                                      type="checkbox"
+                                      checked={selected.has(key)}
+                                      onChange={() => toggle(key)}
+                                    />
+                                    <span className="capitalize">{key}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            )
+                          })}
                         </div>
                       </CardContent>
                     </Card>
@@ -945,7 +1445,145 @@ export default function OpenbbPage() {
                     <RefreshCw className="mr-2 h-4 w-4" />
                     {explorerLoading ? "Loading" : "Run"}
                   </Button>
+                  <Button size="sm" variant="outline" onClick={() => downloadJson("openbb-explorer", explorerResult?.data)}>
+                    Export JSON
+                  </Button>
                   <ResponseCard title="Explorer result" result={explorerResult} />
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="compare" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Comparison</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div className="grid gap-2 md:grid-cols-3">
+                <div className="md:col-span-2 space-y-1">
+                  <Label>Compare symbols</Label>
+                  <Input value={comparisonSymbols} onChange={(e) => setComparisonSymbols(e.target.value)} placeholder="AAPL, MSFT, GOOGL" />
+                </div>
+                <div className="space-y-1">
+                  <Label>Provider</Label>
+                  <select
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={quickProvider}
+                    onChange={(e) => setQuickProvider(e.target.value)}
+                  >
+                    {AVAILABLE_QUOTE_PROVIDERS.map((p: string) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <Button size="sm" onClick={runComparison} variant="outline">
+                  <RefreshCw className="mr-2 h-4 w-4" /> Compare
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => downloadJson("comparison", { quotes: comparisonData, valuation: comparisonValuation, tech: comparisonTech })}>
+                  Export JSON
+                </Button>
+              </div>
+              {comparisonLoading ? <div className="text-xs text-muted-foreground">Loading comparison…</div> : null}
+              {!comparisonLoading && !comparisonData.length ? (
+                <div className="text-xs text-muted-foreground">No comparison data yet.</div>
+              ) : null}
+              {comparisonData.length ? (
+                <div className="space-y-3 text-xs text-muted-foreground">
+                  {renderTable(
+                    comparisonData.map((c) => {
+                      const row = firstResult(c.data)
+                      return {
+                        symbol: c.sym,
+                        last: row.last_price || row.price || row.close,
+                        change: row.change_percent || row.change,
+                        high: row.high,
+                        low: row.low,
+                        volume: row.volume,
+                        market_cap: row.market_cap,
+                        pe: row.pe_ratio || row.pe,
+                      }
+                    })
+                  )}
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {comparisonData.map((c) => {
+                      const row = firstResult(c.data)
+                      const val = comparisonValuation.find((v) => v.sym === c.sym)
+                      const valRow = firstResult(val?.data)
+                      const tech = comparisonTech.find((t) => t.sym === c.sym)
+                      const techRow = firstResult(tech?.rsi)
+                      return (
+                        <div key={c.sym} className="rounded-md border border-border/50 bg-muted/30 p-3 space-y-2">
+                          <div className="text-sm font-semibold text-foreground">{c.sym}</div>
+                          <QuoteCard quote={{ ...row, symbol: c.sym }} />
+                          <div className="grid gap-2 md:grid-cols-2">
+                            <MetricCard label="Market cap" value={(valRow as any).market_cap} />
+                            <MetricCard label="P/E" value={(valRow as any).pe_ratio || (valRow as any).pe} />
+                            <MetricCard label="P/B" value={(valRow as any).pb_ratio} />
+                            <MetricCard label="Dividend" value={(valRow as any).dividend_yield} />
+                            <MetricCard label="RSI" value={(techRow as any).value || (techRow as any).rsi} />
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {comparisonValuation.length ? (
+                    <ValuationTable
+                      rows={comparisonValuation.map((c) => {
+                        const row = firstResult(c.data)
+                        return {
+                          symbol: c.sym,
+                          market_cap: row.market_cap,
+                          pe_ratio: row.pe_ratio || row.pe,
+                          pb_ratio: row.pb_ratio,
+                          dividend_yield: row.dividend_yield,
+                        }
+                      })}
+                    />
+                  ) : null}
+                  {comparisonHistory.length ? (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {comparisonHistory.map((h) => (
+                        <Card key={h.sym} className="border-border/70">
+                          <CardHeader>
+                            <CardTitle className="text-sm">{h.sym} history</CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            {renderLineChart(h.data?.results || h.data, "date")}
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  ) : null}
+                  {Object.keys(comparisonFund).length ? (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {Object.entries(comparisonFund).map(([sym, f]) => (
+                        <div key={sym} className="space-y-2">
+                          <div className="text-sm font-semibold text-foreground">{sym} fundamentals</div>
+                          {f.income ? <StatementTable title="Income" rows={f.income?.results || f.income} /> : null}
+                          {f.balance ? <StatementTable title="Balance" rows={f.balance?.results || f.balance} /> : null}
+                          {f.cash ? <StatementTable title="Cash flow" rows={f.cash?.results || f.cash} /> : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {comparisonTech.length ? (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {comparisonTech.map((t) => (
+                        <div key={t.sym} className="space-y-2">
+                          <div className="text-sm font-semibold text-foreground">{t.sym} technicals</div>
+                          {renderLineChart(t.rsi?.results || t.rsi, "date", ["value"]) || renderTable(t.rsi?.results || t.rsi) || <div>No RSI data</div>}
+                          {renderTable(t.ma?.results || t.ma) || <div>No MA data</div>}
+                          {renderTable(t.bb?.results || t.bb) || <div>No BB data</div>}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </CardContent>
@@ -978,37 +1616,46 @@ export default function OpenbbPage() {
                   </select>
                 </div>
               </div>
+              <div className="grid gap-2 md:grid-cols-3 text-xs text-muted-foreground">
+                {Object.entries(fundSelections).map(([key, value]) => (
+                  <label key={key} className="flex items-center gap-2 rounded border border-border/50 px-2 py-1" title={`Include ${key}`}>
+                    <input
+                      type="checkbox"
+                      className="h-3 w-3"
+                      checked={value}
+                      onChange={(e) => setFundSelections((prev) => ({ ...prev, [key]: e.target.checked }))}
+                    />
+                    <span className="capitalize">{key}</span>
+                  </label>
+                ))}
+              </div>
               <Button size="sm" onClick={fetchFundamentals} disabled={fundLoading}>
                 <RefreshCw className="mr-2 h-4 w-4" /> {fundLoading ? "Loading" : "Fetch fundamentals"}
               </Button>
+              <Button size="sm" variant="outline" onClick={() => downloadJson(`fundamentals-${fundSymbol}`, fundamentals)}>
+                Export JSON
+              </Button>
               {fundamentals ? (
-                <div className="grid gap-4 lg:grid-cols-2 text-xs text-muted-foreground">
-                  <Card className="border-border/70">
-                    <CardHeader>
-                      <CardTitle className="text-sm">Profile</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-2">
-                      <pre className="max-h-64 overflow-auto rounded bg-background/60 p-2">{JSON.stringify(fundamentals.profile, null, 2)}</pre>
-                    </CardContent>
-                  </Card>
-                  <Card className="border-border/70">
-                    <CardHeader>
-                      <CardTitle className="text-sm">Income (sample)</CardTitle>
-                    </CardHeader>
-                    <CardContent>{renderTable(fundamentals.income?.results || fundamentals.income) || <div>No data</div>}</CardContent>
-                  </Card>
-                  <Card className="border-border/70">
-                    <CardHeader>
-                      <CardTitle className="text-sm">Balance (sample)</CardTitle>
-                    </CardHeader>
-                    <CardContent>{renderTable(fundamentals.balance?.results || fundamentals.balance) || <div>No data</div>}</CardContent>
-                  </Card>
-                  <Card className="border-border/70">
-                    <CardHeader>
-                      <CardTitle className="text-sm">Cash flow (sample)</CardTitle>
-                    </CardHeader>
-                    <CardContent>{renderTable(fundamentals.cash?.results || fundamentals.cash) || <div>No data</div>}</CardContent>
-                  </Card>
+                <div className="space-y-4 text-xs text-muted-foreground">
+                  {fundamentals.profile ? (
+                    <Card className="border-border/70">
+                      <CardHeader>
+                        <CardTitle className="text-sm">Profile</CardTitle>
+                      </CardHeader>
+                      <CardContent className="grid gap-3 md:grid-cols-3">
+                        {renderMetricGrid(firstResult(fundamentals.profile), ["name", "stock_exchange", "sector", "industry", "market_cap", "full_time_employees"])}
+                      </CardContent>
+                    </Card>
+                  ) : null}
+                  {fundamentals.income ? (
+                    <StatementTable title="Income statement" rows={fundamentals.income?.results || fundamentals.income} />
+                  ) : null}
+                  {fundamentals.balance ? (
+                    <StatementTable title="Balance sheet" rows={fundamentals.balance?.results || fundamentals.balance} />
+                  ) : null}
+                  {fundamentals.cash ? (
+                    <StatementTable title="Cash flow" rows={fundamentals.cash?.results || fundamentals.cash} />
+                  ) : null}
                 </div>
               ) : (
                 <div className="text-xs text-muted-foreground">No data yet.</div>
@@ -1043,29 +1690,54 @@ export default function OpenbbPage() {
                   </select>
                 </div>
               </div>
+              <div className="grid gap-2 md:grid-cols-3 text-xs text-muted-foreground">
+                {Object.entries(techSelections).map(([key, value]) => (
+                  <label key={key} className="flex items-center gap-2 rounded border border-border/50 px-2 py-1" title={`Include ${key}`}>
+                    <input
+                      type="checkbox"
+                      className="h-3 w-3"
+                      checked={value}
+                      onChange={(e) => setTechSelections((prev) => ({ ...prev, [key]: e.target.checked }))}
+                    />
+                    <span className="uppercase">{key}</span>
+                  </label>
+                ))}
+              </div>
               <Button size="sm" onClick={fetchTechnicals} disabled={techLoading}>
                 <RefreshCw className="mr-2 h-4 w-4" /> {techLoading ? "Loading" : "Fetch technicals"}
               </Button>
+              <Button size="sm" variant="outline" onClick={() => downloadJson(`technicals-${techSymbol}`, technicals)}>
+                Export JSON
+              </Button>
               {technicals ? (
                 <div className="grid gap-4 lg:grid-cols-2 text-xs text-muted-foreground">
-                  <Card className="border-border/70">
-                    <CardHeader>
-                      <CardTitle className="text-sm">RSI</CardTitle>
-                    </CardHeader>
-                    <CardContent>{renderTable(technicals.rsi?.results || technicals.rsi) || <div>No data</div>}</CardContent>
-                  </Card>
-                  <Card className="border-border/70">
-                    <CardHeader>
-                      <CardTitle className="text-sm">Moving average</CardTitle>
-                    </CardHeader>
-                    <CardContent>{renderTable(technicals.ma?.results || technicals.ma) || <div>No data</div>}</CardContent>
-                  </Card>
-                  <Card className="border-border/70">
-                    <CardHeader>
-                      <CardTitle className="text-sm">Bollinger bands</CardTitle>
-                    </CardHeader>
-                    <CardContent>{renderTable(technicals.bb?.results || technicals.bb) || <div>No data</div>}</CardContent>
-                  </Card>
+                  {technicals.rsi ? (
+                    <Card className="border-border/70">
+                      <CardHeader>
+                        <CardTitle className="text-sm">RSI (14)</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-2">
+                        {renderLineChart(technicals.rsi.results || technicals.rsi, "date", ["value"])}
+                        {renderTable(technicals.rsi.results || technicals.rsi)}
+                      </CardContent>
+                    </Card>
+                  ) : null}
+                  {technicals.ma ? (
+                    <Card className="border-border/70">
+                      <CardHeader>
+                        <CardTitle className="text-sm">Moving average</CardTitle>
+                      </CardHeader>
+                      <CardContent>{renderTable(technicals.ma.results || technicals.ma) || <div>No data</div>}</CardContent>
+                    </Card>
+                  ) : null}
+                  {technicals.bb ? (
+                    <Card className="border-border/70">
+                      <CardHeader>
+                        <CardTitle className="text-sm">Bollinger bands</CardTitle>
+                      </CardHeader>
+                      <CardContent>{renderTable(technicals.bb.results || technicals.bb) || <div>No data</div>}</CardContent>
+                    </Card>
+                  ) : null}
                 </div>
               ) : (
                 <div className="text-xs text-muted-foreground">No data yet.</div>
@@ -1077,13 +1749,45 @@ export default function OpenbbPage() {
         <TabsContent value="macro" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Macro / Commodities (sample)</CardTitle>
+              <CardTitle className="text-sm">Macro</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
+              <div className="grid gap-2 md:grid-cols-2 text-xs text-muted-foreground">
+                {Object.entries(macroSelection).map(([key, value]) => (
+                  <label key={key} className="flex items-center gap-2 rounded border border-border/50 px-2 py-1" title={`Macro indicator: ${key}`}>
+                    <input
+                      type="checkbox"
+                      className="h-3 w-3"
+                      checked={value}
+                      onChange={(e) => setMacroSelection((prev) => ({ ...prev, [key]: e.target.checked }))}
+                    />
+                    <span className="capitalize">{key}</span>
+                  </label>
+                ))}
+              </div>
               <Button size="sm" onClick={fetchMacro}>
-                <RefreshCw className="mr-2 h-4 w-4" /> Fetch WTI spot (EIA/FRED)
+                <RefreshCw className="mr-2 h-4 w-4" /> Fetch macro
               </Button>
-              {macroData ? renderTable(macroData?.results || macroData) || <div className="text-xs text-muted-foreground">No rows</div> : <div className="text-xs text-muted-foreground">No data yet.</div>}
+              <Button size="sm" variant="outline" onClick={() => downloadJson("macro", macroData)}>
+                Export JSON
+              </Button>
+              {macroData ? (
+                <div className="grid gap-3 md:grid-cols-2">
+                  {Object.entries(macroData).map(([key, data]) => (
+                    <Card key={key} className="border-border/70">
+                      <CardHeader>
+                        <CardTitle className="text-sm">{key.replace(/_/g, " ").toUpperCase()}</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-2 text-xs text-muted-foreground">
+                        {renderMetricGrid(lastResult(data), ["value", "date"])}
+                        {renderLineChart((data as any)?.results || data, "date", ["value"]) || renderTable((data as any)?.results || data)}
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground">No data yet.</div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -1097,15 +1801,36 @@ export default function OpenbbPage() {
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="md:col-span-2 space-y-1">
                   <Label>Symbol</Label>
-                  <Input
-                    defaultValue="BTC-USD"
-                    onBlur={(e) => fetchCrypto(e.target.value || "BTC-USD")}
-                    placeholder="BTC-USD"
-                  />
+                  <Input value={cryptoSymbol} onChange={(e) => setCryptoSymbol(e.target.value.toUpperCase())} placeholder="BTC-USD" />
+                </div>
+                <div className="space-y-1">
+                  <Label>Interval</Label>
+                  <select
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={cryptoInterval}
+                    onChange={(e) => setCryptoInterval(e.target.value)}
+                  >
+                    <option value="1h">1h</option>
+                    <option value="4h">4h</option>
+                    <option value="1d">1d</option>
+                    <option value="1w">1w</option>
+                  </select>
                 </div>
               </div>
-              <Button size="sm" onClick={() => fetchCrypto("BTC-USD")}>Fetch BTC-USD</Button>
-              {cryptoData ? renderLineChart(cryptoData?.results || cryptoData, "date") || renderTable(cryptoData?.results || cryptoData) : <div className="text-xs text-muted-foreground">No data yet.</div>}
+              <Button size="sm" onClick={() => fetchCrypto(cryptoSymbol)}>Fetch</Button>
+              <Button size="sm" variant="outline" onClick={() => downloadJson(`crypto-${cryptoSymbol}`, cryptoData)}>
+                Export JSON
+              </Button>
+              {cryptoData ? (
+                <div className="space-y-3">
+                  <div className="grid gap-2 md:grid-cols-3 text-xs text-muted-foreground">
+                    {renderMetricGrid(lastResult(cryptoData), ["close", "open", "volume"])}
+                  </div>
+                  {renderLineChart(cryptoData?.results || cryptoData, "date") || renderTable(cryptoData?.results || cryptoData) || <div className="text-xs text-muted-foreground">No data</div>}
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground">No data yet.</div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -1116,10 +1841,37 @@ export default function OpenbbPage() {
               <CardTitle className="text-sm">Commodities</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="space-y-1">
+                  <Label>Commodity</Label>
+                  <select
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={commoditySelection}
+                    onChange={(e) => setCommoditySelection(e.target.value)}
+                  >
+                    <option value="brent">Brent</option>
+                    <option value="wti">WTI</option>
+                    <option value="natgas">Nat Gas</option>
+                    <option value="gold">Gold</option>
+                  </select>
+                </div>
+              </div>
               <Button size="sm" onClick={fetchCommodities}>
-                <RefreshCw className="mr-2 h-4 w-4" /> Fetch Brent spot
+                <RefreshCw className="mr-2 h-4 w-4" /> Fetch
               </Button>
-              {commodityData ? renderTable(commodityData?.results || commodityData) || <div className="text-xs text-muted-foreground">No rows</div> : <div className="text-xs text-muted-foreground">No data yet.</div>}
+              <Button size="sm" variant="outline" onClick={() => downloadJson(`commodities-${commoditySelection}`, commodityData)}>
+                Export JSON
+              </Button>
+              {commodityData ? (
+                <div className="space-y-3">
+                  <div className="grid gap-2 md:grid-cols-3 text-xs text-muted-foreground">
+                    {renderMetricGrid(lastResult(commodityData), ["value", "date"])}
+                  </div>
+                  {renderLineChart(commodityData?.results || commodityData, "date") || renderTable(commodityData?.results || commodityData) || <div className="text-xs text-muted-foreground">No rows</div>}
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground">No data yet.</div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -1166,6 +1918,9 @@ export default function OpenbbPage() {
                 <RefreshCw className="mr-2 h-4 w-4" />
                 {customLoading ? t("openbb.loading") : t("openbb.runQuery")}
               </Button>
+              <Button size="sm" variant="outline" onClick={() => downloadJson("openbb-custom", customResult?.data)}>
+                Export JSON
+              </Button>
             </CardContent>
           </Card>
           <div className="grid gap-6 lg:grid-cols-2">
@@ -1174,5 +1929,64 @@ export default function OpenbbPage() {
         </TabsContent>
       </Tabs>
     </div>
+  )
+}
+function MetricCard({ label, value, hint }: { label: string; value: unknown; hint?: string }) {
+  return (
+    <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2">
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground flex items-center gap-1">
+        <span>{label}</span>
+        {hint ? (
+          <span title={hint} className="text-muted-foreground/80">
+            <Info className="h-3 w-3" />
+          </span>
+        ) : null}
+      </div>
+      <div className="text-sm font-semibold text-foreground">{renderValue(value)}</div>
+    </div>
+  )
+}
+
+function StatementTable({ title, rows }: { title: string; rows: Record<string, unknown>[] }) {
+  if (!rows?.length) return null
+  const cols = Object.keys(rows[0]).slice(0, 6)
+  return (
+    <Card className="border-border/70">
+      <CardHeader>
+        <CardTitle className="text-sm flex items-center justify-between">
+          <span>{title}</span>
+          <button
+            className="rounded border border-border/60 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+            onClick={() => downloadCsv(title.replace(/\s+/g, "-").toLowerCase(), rows)}
+          >
+            Export CSV
+          </button>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="overflow-x-auto text-xs text-muted-foreground">
+        <table className="min-w-full border-collapse">
+          <thead>
+            <tr>
+              {cols.map((c) => (
+                <th key={c} className="px-2 py-1 text-left font-medium text-[11px] uppercase text-muted-foreground">
+                  {c}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, 10).map((row, idx) => (
+              <tr key={idx} className="border-t border-border/50">
+                {cols.map((c) => (
+                  <td key={c} className="px-2 py-1 text-foreground">
+                    {renderValue(row[c])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </CardContent>
+    </Card>
   )
 }

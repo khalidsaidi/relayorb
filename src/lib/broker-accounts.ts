@@ -1,4 +1,5 @@
-import type { BrokerAccountKey, MarketHotTrade } from "@/lib/types"
+type BrokerAccountKey = "acct1" | "acct2" | "acct3"
+type AssetClass = "stock" | "crypto" | "forex" | string
 
 export const BROKER_UID_MAP: Record<BrokerAccountKey, string> = {
   acct1: "enEopK5vNkMWZrXJAllC9bX4cgu1",
@@ -17,7 +18,7 @@ export function getBrokerAccountKeyForUid(uid?: string | null): BrokerAccountKey
   return BROKER_UID_LOOKUP[uid] ?? null
 }
 
-export function buildAssetKey(assetClass: MarketHotTrade["assetClass"], symbol: string) {
+export function buildAssetKey(assetClass: AssetClass, symbol: string) {
   return `${assetClass}:${symbol.toUpperCase()}`
 }
 
@@ -27,7 +28,7 @@ export function normalizeSymbolForId(symbol: string) {
 
 export function buildTradeProposalId(
   brokerAccountKey: BrokerAccountKey,
-  assetClass: MarketHotTrade["assetClass"],
+  assetClass: AssetClass,
   symbol: string
 ) {
   const safeSymbol = normalizeSymbolForId(symbol)

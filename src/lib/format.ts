@@ -90,4 +90,3 @@ export function formatSessionTimeLabel(value?: string | null) {
 }
 
 // Re-export market-related formatting functions for convenience
-export { formatCountdown, getMarketHoursText } from "./marketHours"
