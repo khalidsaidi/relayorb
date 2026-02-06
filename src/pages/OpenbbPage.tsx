@@ -183,6 +183,10 @@ export default function OpenbbPage() {
   const [historyLog, setHistoryLog] = useState<{ symbols: string; range: string; provider: string; ts: number }[]>([])
   const [comparisonSymbols, setComparisonSymbols] = useState("AAPL, MSFT")
   const [comparisonData, setComparisonData] = useState<Record<string, any>[]>([])
+  // keep last fetched fundamentals/technicals for enriched cards
+  // keep last fetched fundamentals/technicals for enriched cards (TODO: display)
+  const [_fundamentals, setFundamentals] = useState<Record<string, any> | null>(null)
+  const [_technicals, setTechnicals] = useState<Record<string, any> | null>(null)
 
   const [specOps, setSpecOps] = useState<ApiOperation[]>([])
   const [specError, setSpecError] = useState<string | null>(null)
@@ -377,6 +381,18 @@ export default function OpenbbPage() {
       setQuickQuotes(okQuotes)
       setQuickHistory(okHist)
       setHistoryLog((prev) => [{ symbols: quickSymbols, range: quickRange, provider: quickProvider, ts: Date.now() }, ...prev].slice(0, 20))
+      // Fetch fundamentals/technicals for the first symbol to enrich cards
+      const primary = symbols[0]
+      if (primary) {
+        fetch(buildUrl(queryBase, "/api/v1/equity/profile", { symbol: primary, provider: quickProvider }))
+          .then((r) => r.json().catch(() => null))
+          .then((data) => setFundamentals(data))
+          .catch(() => setFundamentals(null))
+        fetch(buildUrl(queryBase, "/api/v1/technical/relative_strength_index", { symbol: primary, interval: "1d", length: 14, provider: quickProvider }))
+          .then((r) => r.json().catch(() => null))
+          .then((data) => setTechnicals(data))
+          .catch(() => setTechnicals(null))
+      }
       quotes.filter((q) => !q.ok).forEach((q) => toast.error(`${q.sym}: ${q.status}`))
       history.filter((h) => !h.ok).forEach((h) => toast.error(`${h.sym}: ${h.status}`))
     } catch (err) {
@@ -561,13 +577,31 @@ export default function OpenbbPage() {
                       <CardTitle className="text-sm">Quotes</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-2 text-xs text-muted-foreground">
-                      <div className="space-y-2">
-                        {quickQuotes.map((q) => (
-                          <div key={q.sym} className="rounded-md border border-border/50 bg-muted/40 p-2">
-                            <div className="text-sm font-semibold text-foreground">{q.sym}</div>
-                            <pre className="max-h-48 overflow-auto rounded bg-background/60 p-2">{JSON.stringify(q.data, null, 2)}</pre>
-                          </div>
-                        ))}
+                      <div className="grid gap-3 md:grid-cols-2">
+                        {quickQuotes.map((q) => {
+                          const payload = Array.isArray(q.data?.results) ? q.data.results[0] : q.data?.results?.[0] || q.data || {}
+                          return (
+                            <div key={q.sym} className="rounded-md border border-border/50 bg-muted/40 p-3 space-y-2">
+                              <div className="text-sm font-semibold text-foreground">{q.sym}</div>
+                              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+                                <span>Last</span>
+                                <span className="text-foreground font-medium">{renderValue(payload.last_price)}</span>
+                                <span>Bid / Ask</span>
+                                <span className="text-foreground font-medium">
+                                  {renderValue(payload.bid)} / {renderValue(payload.ask)}
+                                </span>
+                                <span>Change</span>
+                                <span className="text-foreground font-medium">{renderValue(payload.change_percent || payload.change)}</span>
+                                <span>Volume</span>
+                                <span className="text-foreground font-medium">{renderValue(payload.volume)}</span>
+                                <span>High / Low</span>
+                                <span className="text-foreground font-medium">
+                                  {renderValue(payload.high)} / {renderValue(payload.low)}
+                                </span>
+                              </div>
+                            </div>
+                          )
+                        })}
                       </div>
                     </CardContent>
                   </Card>
@@ -581,9 +615,7 @@ export default function OpenbbPage() {
                       {quickHistory.map((h) => (
                         <div key={h.sym} className="rounded-md border border-border/50 bg-muted/40 p-2">
                           <div className="text-sm font-semibold text-foreground">{h.sym}</div>
-                          {renderTable(h.data) || (
-                            <pre className="max-h-48 overflow-auto rounded bg-background/60 p-2">{JSON.stringify(h.data, null, 2)}</pre>
-                          )}
+                          {renderLineChart(h.data, "date") || renderTable(h.data)}
                         </div>
                       ))}
                     </CardContent>
