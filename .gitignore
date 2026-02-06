@@ -16,6 +16,7 @@ dist-ssr
 .secrets/
 .ai/
 .firebase/
+.cursor/
 relayorb-firebase-service-account.json
 relayorb-firebase-adminsdk-fbsvc-7210dc6126.json
 agent/config.json
