@@ -41,6 +41,9 @@ export function ChartFrame({
       const rect = entries[0]?.contentRect
       if (!rect) return
       const next = { width: Math.floor(rect.width), height: Math.floor(rect.height) }
+      // Guard against rare cases where an embedded browser reports NaN sizes during layout.
+      // Recharts treats those as invalid and will warn loudly.
+      if (!Number.isFinite(next.width) || !Number.isFinite(next.height)) return
       // Some layouts (hidden tabs, collapsed panels) can briefly report extremely small sizes.
       // Recharts will warn when the drawable area becomes <= 0 after margins; avoid rendering
       // until we have a meaningful box.

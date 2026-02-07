@@ -154,6 +154,154 @@ function toCandles(data: unknown): Candle[] {
   return out
 }
 
+function sortCandlesAsc(candles: Candle[]) {
+  return [...candles].sort((a, b) => {
+    const ta = new Date(String(a.time)).getTime()
+    const tb = new Date(String(b.time)).getTime()
+    return ta - tb
+  })
+}
+
+function filterCandlesSince(candles: Candle[], startDateIso?: string) {
+  if (!startDateIso) return candles
+  const start = new Date(startDateIso).getTime()
+  if (!Number.isFinite(start)) return candles
+  return candles.filter((c) => {
+    const t = new Date(String(c.time)).getTime()
+    return Number.isFinite(t) ? t >= start : true
+  })
+}
+
+function minIsoDate(a?: string, b?: string) {
+  if (!a) return b
+  if (!b) return a
+  // Both are YYYY-MM-DD, so lexicographic order matches chronological order.
+  return a < b ? a : b
+}
+
+function computeDisplayStartDate(range: string) {
+  const now = new Date()
+  const copy = new Date(now)
+  const lower = range.toUpperCase()
+  if (lower === "1D" || lower === "1DAY") copy.setDate(now.getDate() - 1)
+  else if (lower === "5D") copy.setDate(now.getDate() - 5)
+  else if (lower === "1M") copy.setMonth(now.getMonth() - 1)
+  else if (lower === "3M") copy.setMonth(now.getMonth() - 3)
+  else if (lower === "6M") copy.setMonth(now.getMonth() - 6)
+  else if (lower === "1Y") copy.setFullYear(now.getFullYear() - 1)
+  else if (lower === "5Y") copy.setFullYear(now.getFullYear() - 5)
+  else return undefined
+  return copy.toISOString().slice(0, 10)
+}
+
+function computeSmaSeries(values: number[], length: number): Array<number | null> {
+  if (!values.length || length <= 1) return values.map((v) => (Number.isFinite(v) ? v : null))
+  const out: Array<number | null> = new Array(values.length).fill(null)
+  let sum = 0
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    sum += v
+    if (i >= length) sum -= values[i - length]
+    if (i >= length - 1) out[i] = sum / length
+  }
+  return out
+}
+
+function computeRsiSeries(values: number[], length: number): Array<number | null> {
+  const out: Array<number | null> = new Array(values.length).fill(null)
+  if (values.length <= length) return out
+
+  let gainSum = 0
+  let lossSum = 0
+  for (let i = 1; i <= length; i++) {
+    const diff = values[i] - values[i - 1]
+    if (diff >= 0) gainSum += diff
+    else lossSum += -diff
+  }
+  let avgGain = gainSum / length
+  let avgLoss = lossSum / length
+  const rs0 = avgLoss === 0 ? Infinity : avgGain / avgLoss
+  out[length] = 100 - 100 / (1 + rs0)
+
+  for (let i = length + 1; i < values.length; i++) {
+    const diff = values[i] - values[i - 1]
+    const gain = diff > 0 ? diff : 0
+    const loss = diff < 0 ? -diff : 0
+    avgGain = (avgGain * (length - 1) + gain) / length
+    avgLoss = (avgLoss * (length - 1) + loss) / length
+    const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss
+    out[i] = 100 - 100 / (1 + rs)
+  }
+  return out
+}
+
+function computeBollingerSeries(values: number[], length: number, stdMult: number) {
+  const middle: Array<number | null> = new Array(values.length).fill(null)
+  const upper: Array<number | null> = new Array(values.length).fill(null)
+  const lower: Array<number | null> = new Array(values.length).fill(null)
+  if (!values.length || length <= 1) return { middle, upper, lower }
+
+  let sum = 0
+  let sumsq = 0
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    sum += v
+    sumsq += v * v
+    if (i >= length) {
+      const old = values[i - length]
+      sum -= old
+      sumsq -= old * old
+    }
+    if (i < length - 1) continue
+    const mean = sum / length
+    const variance = sumsq / length - mean * mean
+    const stdev = Math.sqrt(Math.max(variance, 0))
+    middle[i] = mean
+    upper[i] = mean + stdev * stdMult
+    lower[i] = mean - stdev * stdMult
+  }
+  return { middle, upper, lower }
+}
+
+function computeTechnicalsFromCandles(candlesIn: Candle[], opts?: { rsiLen?: number; maLen?: number; bbLen?: number; bbStd?: number }) {
+  const rsiLen = opts?.rsiLen ?? 14
+  const maLen = opts?.maLen ?? 20
+  const bbLen = opts?.bbLen ?? 20
+  const bbStd = opts?.bbStd ?? 2
+
+  const candles = sortCandlesAsc(candlesIn).filter((c) => Number.isFinite(c.close))
+  const closes = candles.map((c) => c.close)
+  const rsi = computeRsiSeries(closes, rsiLen)
+  const ma = computeSmaSeries(closes, maLen)
+  const bb = computeBollingerSeries(closes, bbLen, bbStd)
+
+  const rsiResults = candles
+    .map((c, idx) => (rsi[idx] === null ? null : { date: String(c.time), value: Number((rsi[idx] as number).toFixed(2)) }))
+    .filter(Boolean) as Record<string, unknown>[]
+  const maResults = candles
+    .map((c, idx) => (ma[idx] === null ? null : { date: String(c.time), ma: Number((ma[idx] as number).toFixed(2)) }))
+    .filter(Boolean) as Record<string, unknown>[]
+  const bbResults = candles
+    .map((c, idx) =>
+      bb.middle[idx] === null || bb.upper[idx] === null || bb.lower[idx] === null
+        ? null
+        : {
+            date: String(c.time),
+            middle: Number((bb.middle[idx] as number).toFixed(2)),
+            upper: Number((bb.upper[idx] as number).toFixed(2)),
+            lower: Number((bb.lower[idx] as number).toFixed(2)),
+          }
+    )
+    .filter(Boolean) as Record<string, unknown>[]
+
+  return {
+    computed: true,
+    rsi: { results: rsiResults },
+    ma: { results: maResults },
+    bb: { results: bbResults },
+  }
+}
+
 function renderKeyValueTable(data: Record<string, unknown>) {
   const entries = Object.entries(data || {}).slice(0, 20)
   if (!entries.length) return null
@@ -507,9 +655,9 @@ function FundOverviewCard({ profile }: { profile: Record<string, unknown> }) {
 
 function TechnicalOverviewCard({ technicals }: { technicals: Record<string, unknown> }) {
   if (!technicals || !Object.keys(technicals).length) return null
-  const rsiRow = firstResult((technicals as any).rsi)
-  const maRow = firstResult((technicals as any).ma)
-  const bbRow = firstResult((technicals as any).bb)
+  const rsiRow = lastResult((technicals as any).rsi)
+  const maRow = lastResult((technicals as any).ma)
+  const bbRow = lastResult((technicals as any).bb)
   return (
     <Card className="border-border/70">
       <CardHeader>
@@ -576,35 +724,12 @@ export default function OpenbbPage() {
         path: "/api/v1/equity/fundamental/cash",
       },
       {
-        id: "rsi_14",
-        label: "RSI (14)",
-        description: "Technicals: Relative Strength Index.",
-        method: "GET",
-        path: "/api/v1/technical/relative_strength_index",
-        params: { interval: "1d", length: "14" },
-      },
-      {
-        id: "ma_20",
-        label: "Moving average (20)",
-        description: "Technicals: Moving average (length=20).",
-        method: "GET",
-        path: "/api/v1/technical/moving_average",
-        params: { interval: "1d", length: "20" },
-      },
-      {
-        id: "bb_20",
-        label: "Bollinger (20)",
-        description: "Technicals: Bollinger bands (length=20).",
-        method: "GET",
-        path: "/api/v1/technical/bollinger_bands",
-        params: { interval: "1d", length: "20" },
-      },
-      {
         id: "news",
         label: "Company news",
         description: "Latest headlines for a symbol.",
         method: "GET",
-        path: "/api/v1/news",
+        path: "/api/v1/news/company",
+        params: { provider: DEFAULT_QUOTE_PROVIDER, symbol: "AAPL", limit: "10" },
       },
     ],
     []
@@ -951,21 +1076,6 @@ export default function OpenbbPage() {
     await runRequest(finalPath, queryParams, setExplorerResult, setExplorerLoading)
   }
 
-  const computeStartDate = (range: string) => {
-    const now = new Date()
-    const copy = new Date(now)
-    const lower = range.toUpperCase()
-    if (lower === "1D" || lower === "1DAY") return undefined
-    if (lower === "5D") copy.setDate(now.getDate() - 5)
-    else if (lower === "1M") copy.setMonth(now.getMonth() - 1)
-    else if (lower === "3M") copy.setMonth(now.getMonth() - 3)
-    else if (lower === "6M") copy.setMonth(now.getMonth() - 6)
-    else if (lower === "1Y") copy.setFullYear(now.getFullYear() - 1)
-    else if (lower === "5Y") copy.setFullYear(now.getFullYear() - 5)
-    else return undefined
-    return copy.toISOString().slice(0, 10)
-  }
-
   const runQuickLookup = async () => {
     if (!queryBase) {
       toast.error(t("openbb.notConfigured"))
@@ -983,21 +1093,23 @@ export default function OpenbbPage() {
     setQuickQuotes([])
     setQuickHistory([])
     try {
-      const startDate = computeStartDate(quickRange)
+      const displayStartDate = computeDisplayStartDate(quickRange)
+      const minLookbackStartDate = computeDisplayStartDate("6M")
+      const fetchStartDate = minIsoDate(displayStartDate, minLookbackStartDate)
 
       const histPromises = symbols.map((sym) =>
         safeOpenbb(sym, "/api/v1/equity/price/historical", {
           symbol: sym,
           provider: quickProvider,
           interval: "1d",
-          start_date: startDate,
+          start_date: fetchStartDate,
         })
       )
       const quotePromises = symbols.map((sym) =>
         safeOpenbb(sym, "/api/v1/equity/price/quote", { symbol: sym, provider: quickProvider })
       )
       const newsPromises = symbols.map((sym) =>
-        safeOpenbb(sym, "/api/v1/news", { symbol: sym, provider: quickProvider })
+        safeOpenbb(sym, "/api/v1/news/company", { symbol: sym, provider: quickProvider, limit: 10, sort: "created", order: "desc" })
       )
       const fundPromises = symbols.map(async (sym) => {
         const [profile, income, balance, cash, metrics] = await Promise.all([
@@ -1009,21 +1121,12 @@ export default function OpenbbPage() {
         ])
         return { profile, income, balance, cash, metrics }
       })
-      const techPromises = symbols.map(async (sym) => {
-        const [rsi, ma, bb] = await Promise.all([
-          safeOpenbb(sym, "/api/v1/technical/relative_strength_index", { symbol: sym, interval: "1d", length: 14, provider: quickProvider }).then((r) => r.data),
-          safeOpenbb(sym, "/api/v1/technical/moving_average", { symbol: sym, interval: "1d", length: 20, provider: quickProvider }).then((r) => r.data),
-          safeOpenbb(sym, "/api/v1/technical/bollinger_bands", { symbol: sym, interval: "1d", length: 20, std: 2, provider: quickProvider }).then((r) => r.data),
-        ])
-        return { rsi, ma, bb }
-      })
 
-      const [quotes, history, news, fundArr, techArr] = await Promise.all([
+      const [quotes, history, news, fundArr] = await Promise.all([
         Promise.all(quotePromises),
         Promise.all(histPromises),
         Promise.all(newsPromises),
         Promise.all(fundPromises),
-        Promise.all(techPromises),
       ])
       const okQuotes = quotes.filter((q) => q.ok)
       const okHist = history.filter((h) => h.ok)
@@ -1032,19 +1135,19 @@ export default function OpenbbPage() {
       setQuickHistory(okHist)
       setQuickNews(okNews)
       setQuickFund(fundArr[0]?.profile || null)
-      setQuickTech(techArr[0]?.rsi || null)
       const fundMap: Record<string, any> = {}
       fundArr.forEach((f, idx) => {
         const sym = symbols[idx]
         if (sym) fundMap[sym] = f
       })
       const techMap: Record<string, any> = {}
-      techArr.forEach((t, idx) => {
-        const sym = symbols[idx]
-        if (sym) techMap[sym] = t
+      okHist.forEach((h) => {
+        const candles = toCandles(h.data)
+        techMap[h.sym] = computeTechnicalsFromCandles(candles)
       })
       setQuickFundMap(fundMap)
       setQuickTechMap(techMap)
+      setQuickTech(techMap[symbols[0]] || null)
       setHistoryLog((prev) => [{ symbols: quickSymbols, range: quickRange, provider: quickProvider, ts: Date.now() }, ...prev].slice(0, 20))
       quotes.filter((q: any) => !q.ok).forEach((q: any) => toast.error(q.error || `${q.sym}: ${q.status}`))
       history.filter((h: any) => !h.ok).forEach((h: any) => toast.error(h.error || `${h.sym}: ${h.status}`))
@@ -1073,6 +1176,10 @@ export default function OpenbbPage() {
     setComparisonLoading(true)
     setComparisonData([])
     try {
+      const displayStartDate = computeDisplayStartDate(quickRange)
+      const minLookbackStartDate = computeDisplayStartDate("6M")
+      const fetchStartDate = minIsoDate(displayStartDate, minLookbackStartDate)
+
       const res = await Promise.all(
         symbols.map((sym) =>
           safeOpenbb(sym, "/api/v1/equity/price/quote", { symbol: sym, provider: quickProvider })
@@ -1089,44 +1196,24 @@ export default function OpenbbPage() {
         )
       )
       setComparisonValuation(valuationRes.filter((r) => r.ok))
-      const techRes = await Promise.all(
-        symbols.map(async (sym) => {
-          const [rsi, ma, bb] = await Promise.all([
-            safeOpenbb(sym, "/api/v1/technical/relative_strength_index", {
-              symbol: sym,
-              interval: "1d",
-              length: 14,
-              provider: quickProvider,
-            }).then((r) => r.data),
-            safeOpenbb(sym, "/api/v1/technical/moving_average", {
-              symbol: sym,
-              interval: "1d",
-              length: 20,
-              provider: quickProvider,
-            }).then((r) => r.data),
-            safeOpenbb(sym, "/api/v1/technical/bollinger_bands", {
-              symbol: sym,
-              interval: "1d",
-              length: 20,
-              std: 2,
-              provider: quickProvider,
-            }).then((r) => r.data),
-          ])
-          return { sym, rsi, ma, bb }
-        })
-      )
-      setComparisonTech(techRes)
       const histRes = await Promise.all(
         symbols.map((sym) =>
           safeOpenbb(sym, "/api/v1/equity/price/historical", {
             symbol: sym,
             provider: quickProvider,
             interval: "1d",
-            start_date: computeStartDate(quickRange),
+            start_date: fetchStartDate,
           })
         )
       )
-      setComparisonHistory(histRes.filter((r) => r.ok))
+      const okHist = histRes.filter((r) => r.ok)
+      setComparisonHistory(okHist)
+      setComparisonTech(
+        okHist.map((h) => ({
+          sym: h.sym,
+          ...computeTechnicalsFromCandles(toCandles(h.data)),
+        }))
+      )
       const fundRes = await Promise.all(
         symbols.map(async (sym) => {
           const [income, balance, cash] = await Promise.all([
@@ -1202,45 +1289,33 @@ export default function OpenbbPage() {
     }
     setTechLoading(true)
     try {
-      const [rsiRes, maRes, bbRes] = await Promise.all([
-        techSelections.rsi
-          ? safeOpenbb(techSymbol, "/api/v1/technical/relative_strength_index", {
-              symbol: techSymbol,
-              interval: "1d",
-              length: 14,
-              provider: quickProvider,
-            })
-          : Promise.resolve(null),
-        techSelections.ma
-          ? safeOpenbb(techSymbol, "/api/v1/technical/moving_average", {
-              symbol: techSymbol,
-              interval: "1d",
-              length: 20,
-              provider: quickProvider,
-            })
-          : Promise.resolve(null),
-        techSelections.bb
-          ? safeOpenbb(techSymbol, "/api/v1/technical/bollinger_bands", {
-              symbol: techSymbol,
-              interval: "1d",
-              length: 20,
-              std: 2,
-              provider: quickProvider,
-            })
-          : Promise.resolve(null),
-      ])
+      const minLookbackStartDate = computeDisplayStartDate("6M")
+      const histRes = await safeOpenbb(techSymbol, "/api/v1/equity/price/historical", {
+        symbol: techSymbol,
+        provider: quickProvider,
+        interval: "1d",
+        start_date: minLookbackStartDate,
+      })
+      if (!histRes.ok) {
+        toast.error(histRes.error || `${histRes.sym}: ${histRes.status}`)
+        setTechnicals(null)
+        return
+      }
 
-      ;[rsiRes, maRes, bbRes]
-        .filter(Boolean)
-        .forEach((r: any) => {
-          if (!r.ok) toast.error(r.error || `${r.sym}: ${r.status}`)
-          if (r.warning) toast.error(r.warning)
-        })
+      const computed = computeTechnicalsFromCandles(toCandles(histRes.data))
+      const rsiOut = techSelections.rsi ? computed.rsi : null
+      const maOut = techSelections.ma ? computed.ma : null
+      const bbOut = techSelections.bb ? computed.bb : null
+
+      if (techSelections.rsi && !(rsiOut as any)?.results?.length) toast.error(`[OpenBB] RSI needs more candles`)
+      if (techSelections.ma && !(maOut as any)?.results?.length) toast.error(`[OpenBB] MA needs more candles`)
+      if (techSelections.bb && !(bbOut as any)?.results?.length) toast.error(`[OpenBB] BB needs more candles`)
 
       setTechnicals({
-        rsi: (rsiRes as any)?.data ?? null,
-        ma: (maRes as any)?.data ?? null,
-        bb: (bbRes as any)?.data ?? null,
+        computed: true,
+        rsi: rsiOut,
+        ma: maOut,
+        bb: bbOut,
       })
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Technical fetch failed")
@@ -1571,9 +1646,9 @@ export default function OpenbbPage() {
                     </CardHeader>
                     <CardContent className="grid gap-3 md:grid-cols-2 text-xs text-muted-foreground">
                       {Object.entries(quickTechMap).map(([sym, data]) => {
-                        const rsiRow = firstResult((data as any).rsi)
-                        const maRow = firstResult((data as any).ma)
-                        const bbRow = firstResult((data as any).bb)
+                        const rsiRow = lastResult((data as any).rsi)
+                        const maRow = lastResult((data as any).ma)
+                        const bbRow = lastResult((data as any).bb)
                         return (
                           <div key={sym} className="rounded-md border border-border/50 bg-muted/30 p-3 space-y-2">
                             <div className="text-sm font-semibold text-foreground">{sym}</div>
@@ -1607,7 +1682,10 @@ export default function OpenbbPage() {
                     <div key={h.sym} className="rounded-md border border-border/50 bg-muted/40 p-2">
                       <div className="text-sm font-semibold text-foreground">{h.sym}</div>
                       {(() => {
-                        const candles = toCandles(h.data)
+                        const allCandles = toCandles(h.data)
+                        const displayStartDate = computeDisplayStartDate(quickRange)
+                        const filtered = filterCandlesSince(allCandles, displayStartDate)
+                        const candles = filtered.length ? filtered : allCandles
                         if (candles.length) {
                           return <CandlesChart candles={candles} height={260} />
                         }
@@ -1647,11 +1725,14 @@ export default function OpenbbPage() {
                 {quickHistory.length ? (
                   <Card className="border-border/70">
                     <CardHeader>
-                      <CardTitle className="text-sm">Quick chart</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      {(() => {
-                        const candles = toCandles(quickHistory[0]?.data)
+                    <CardTitle className="text-sm">Quick chart</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {(() => {
+                        const allCandles = toCandles(quickHistory[0]?.data)
+                        const displayStartDate = computeDisplayStartDate(quickRange)
+                        const filtered = filterCandlesSince(allCandles, displayStartDate)
+                        const candles = filtered.length ? filtered : allCandles
                         if (candles.length) return <CandlesChart candles={candles} height={280} />
                         return renderLineChart(quickHistory[0]?.data, "date", ["close", "adj_close", "last_price", "price"])
                       })()}
@@ -2060,7 +2141,7 @@ export default function OpenbbPage() {
                       const val = comparisonValuation.find((v) => v.sym === c.sym)
                       const valRow = firstResult(val?.data)
                       const tech = comparisonTech.find((t) => t.sym === c.sym)
-                      const techRow = firstResult(tech?.rsi)
+                      const techRow = lastResult(tech?.rsi)
                       return (
                         <div key={c.sym} className="rounded-md border border-border/50 bg-muted/30 p-3 space-y-2">
                           <div className="text-sm font-semibold text-foreground">{c.sym}</div>
@@ -2268,9 +2349,9 @@ export default function OpenbbPage() {
 	                  <div className="lg:col-span-2 space-y-3">
 	                    <TechnicalOverviewCard technicals={technicals} />
 	                    <div className="grid gap-2 md:grid-cols-3">
-	                    <MetricCard label="RSI" value={(firstResult(technicals.rsi) as any)?.value || (firstResult(technicals.rsi) as any)?.rsi} />
-	                    <MetricCard label="MA" value={(firstResult(technicals.ma) as any)?.ma || (firstResult(technicals.ma) as any)?.value} />
-	                    <MetricCard label="BB Upper" value={(firstResult(technicals.bb) as any)?.upper} />
+	                    <MetricCard label="RSI" value={(lastResult(technicals.rsi) as any)?.value || (lastResult(technicals.rsi) as any)?.rsi} />
+	                    <MetricCard label="MA" value={(lastResult(technicals.ma) as any)?.ma || (lastResult(technicals.ma) as any)?.value} />
+	                    <MetricCard label="BB Upper" value={(lastResult(technicals.bb) as any)?.upper} />
 	                    </div>
 	                  </div>
 	                  {technicals.rsi ? (
