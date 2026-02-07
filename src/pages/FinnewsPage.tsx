@@ -116,6 +116,41 @@ function extractCiks(text: string) {
   return Array.from(new Set(matches))
 }
 
+function extractTickers(text: string) {
+  const hay = String(text || "")
+  const out = new Set<string>()
+
+  // Common patterns in trader-facing text.
+  // - $AAPL
+  // - (AAPL) or (BRK.B)
+  // - NASDAQ:TSLA / NYSE:BRK.B
+  const patterns: RegExp[] = [
+    /\$([A-Z]{1,6}(?:\.[A-Z]{1,2})?)/g,
+    /\(([A-Z]{1,6}(?:\.[A-Z]{1,2})?)\)/g,
+    /\b(?:NASDAQ|NYSE|AMEX)\s*[:]\s*([A-Z]{1,6}(?:\.[A-Z]{1,2})?)\b/g,
+  ]
+  for (const re of patterns) {
+    let m: RegExpExecArray | null
+    // eslint-disable-next-line no-cond-assign
+    while ((m = re.exec(hay))) {
+      const sym = (m[1] || "").trim().toUpperCase()
+      if (!sym) continue
+      out.add(sym)
+    }
+  }
+
+  return Array.from(out)
+}
+
+function deriveSymbols(item: NewsItem) {
+  if (Array.isArray(item.stock_codes) && item.stock_codes.length) {
+    return item.stock_codes.map((s) => String(s).trim()).filter(Boolean)
+  }
+  // Best-effort extraction for cases where the backend didn't enrich tickers yet.
+  const derived = extractTickers([item.title, item.content].filter(Boolean).join(" "))
+  return derived
+}
+
 function isSecUrl(url?: string | null) {
   if (!url) return false
   return url.includes("sec.gov") || url.includes("www.sec.gov")
@@ -515,14 +550,24 @@ export default function FinnewsPage() {
 	                          >
 	                            {item.title}
 	                          </button>
-	                        </TableCell>
+                        </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {isSecUrl(item.url) ? <Badge variant="outline">SEC</Badge> : <Badge variant="outline">News</Badge>}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
-                          {Array.isArray(item.stock_codes) && item.stock_codes.length
-                            ? item.stock_codes.slice(0, 6).join(", ")
-                            : "-"}
+                          {(() => {
+                            const symbols = deriveSymbols(item)
+                            if (!symbols.length) return "-"
+                            return (
+                              <div className="flex flex-wrap gap-1">
+                                {symbols.slice(0, 6).map((code) => (
+                                  <Badge key={code} variant="secondary">
+                                    {code}
+                                  </Badge>
+                                ))}
+                              </div>
+                            )
+                          })()}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">{item.source}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">
@@ -605,9 +650,19 @@ export default function FinnewsPage() {
                           {isSecUrl(item.url) ? <Badge variant="outline">SEC</Badge> : <Badge variant="outline">News</Badge>}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
-                          {Array.isArray(item.stock_codes) && item.stock_codes.length
-                            ? item.stock_codes.slice(0, 6).join(", ")
-                            : "-"}
+                          {(() => {
+                            const symbols = deriveSymbols(item)
+                            if (!symbols.length) return "-"
+                            return (
+                              <div className="flex flex-wrap gap-1">
+                                {symbols.slice(0, 6).map((code) => (
+                                  <Badge key={code} variant="secondary">
+                                    {code}
+                                  </Badge>
+                                ))}
+                              </div>
+                            )
+                          })()}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">{item.source}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">{formatRelative(item.publish_time || item.created_at)}</TableCell>
@@ -629,15 +684,19 @@ export default function FinnewsPage() {
                               CIK {cik}
                             </Badge>
                           ))}
-                          {Array.isArray(newsDetail.stock_codes) && newsDetail.stock_codes.length ? (
-                            <div className="flex flex-wrap items-center gap-2">
-                              {newsDetail.stock_codes.slice(0, 12).map((code) => (
-                                <Badge key={code} variant="secondary">
-                                  {code}
-                                </Badge>
-                              ))}
-                            </div>
-                          ) : null}
+                          {(() => {
+                            const symbols = deriveSymbols(newsDetail)
+                            if (!symbols.length) return null
+                            return (
+                              <div className="flex flex-wrap items-center gap-2">
+                                {symbols.slice(0, 12).map((code) => (
+                                  <Badge key={code} variant="secondary">
+                                    {code}
+                                  </Badge>
+                                ))}
+                              </div>
+                            )
+                          })()}
                         </div>
                       ) : null}
                       <Separator />
@@ -666,16 +725,20 @@ export default function FinnewsPage() {
                           <div className="text-xs text-muted-foreground">No source URL.</div>
                         )}
 
-                        {Array.isArray(newsDetail.stock_codes) && newsDetail.stock_codes.length ? (
+                        {(() => {
+                          const symbols = deriveSymbols(newsDetail)
+                          if (!symbols.length) return null
+                          return (
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => copyText("tickers", newsDetail.stock_codes!.join(", "))}
+                            onClick={() => copyText("tickers", symbols.join(", "))}
                           >
                             <Copy className="mr-2 h-4 w-4" />
                             Copy tickers
                           </Button>
-                        ) : null}
+                          )
+                        })()}
 
                         {(() => {
                           const ciks = extractCiks(newsDetail.title + " " + (newsDetail.url || ""))

@@ -67,6 +67,7 @@ Evidence:
 ## 2) FinnewsHunter (Trader-Grade)
 
 - [~] Latest feed: show published time, source, type, headline, link
+- [~] Ticker enrichment (UI fallback): derive tickers from title patterns when backend stock_codes are missing
 - [ ] Ticker enrichment for SEC items (CIK -> ticker mapping via SEC `company_tickers.json` cache)
 - [ ] Search reliability: common US tickers (e.g. TSLA) should return results when present
 - [ ] Sentiment tag (simple first pass): positive/neutral/negative + confidence
@@ -101,4 +102,3 @@ This is a rough tracker-driven estimate, not a claim of "production ready".
 - FinnewsHunter trader usability: ~20%
 - StockPulse trader usability: ~15%
 - Cross-module workflow: ~0%
-
