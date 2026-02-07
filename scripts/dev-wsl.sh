@@ -21,8 +21,9 @@ export VITE_HMR_CLIENT_PORT="$PORT"
 
 if [[ -n "$WSL_IP" ]]; then
   echo "Dev server URLs:"
-  echo "  Windows: http://127.0.0.1:${PORT}/"
-  echo "  WSL IP : http://${WSL_IP}:${PORT}/"
+  echo "  WSL     : http://127.0.0.1:${PORT}/"
+  echo "  Windows : http://${WSL_IP}:${PORT}/"
+  echo "           (WSL localhost-forwarding to Windows 127.0.0.1 may be disabled; WSL IP is the reliable option.)"
 else
   echo "Dev server URL: http://127.0.0.1:${PORT}/"
 fi
