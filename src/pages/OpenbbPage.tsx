@@ -112,6 +112,20 @@ function renderValue(value: unknown) {
   return JSON.stringify(value)
 }
 
+function formatRelativeTime(value?: string | null) {
+  if (!value) return "-"
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  const diffMs = Date.now() - parsed.getTime()
+  const minutes = Math.floor(diffMs / 60000)
+  if (minutes < 1) return "just now"
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+
 function firstResult(data: any): Record<string, unknown> {
   if (!data) return {}
   if (Array.isArray(data?.results) && data.results.length) return data.results[0]
@@ -900,6 +914,10 @@ export default function OpenbbPage() {
   const [savedQueries, setSavedQueries] = useState<{ symbols: string; range: string; provider: string }[]>([])
   const [watchlist, setWatchlist] = useState<string[]>([])
   const [watchlistAlerts, setWatchlistAlerts] = useState<Record<string, string[]>>({})
+  const [watchlistSnapshot, setWatchlistSnapshot] = useState<Record<string, any>>({})
+  const [watchlistSnapshotErrors, setWatchlistSnapshotErrors] = useState<Record<string, string>>({})
+  const [watchlistSnapshotLoading, setWatchlistSnapshotLoading] = useState(false)
+  const [watchlistSnapshotUpdatedAt, setWatchlistSnapshotUpdatedAt] = useState<string | null>(null)
   const [historyLog, setHistoryLog] = useState<{ symbols: string; range: string; provider: string; ts: number }[]>([])
   const [comparisonSymbols, setComparisonSymbols] = useState("AAPL, MSFT")
   const [comparisonChartMode, setComparisonChartMode] = useState<"price" | "pct">("pct")
@@ -944,6 +962,7 @@ export default function OpenbbPage() {
   const [commoditySelection, setCommoditySelection] = useState("brent")
 
   const [showRawJson, setShowRawJson] = useState(false)
+  const [activeTab, setActiveTab] = useState<string>("quick")
 
   useEffect(() => {
     try {
@@ -965,6 +984,7 @@ export default function OpenbbPage() {
   // Deep-link support:
   // - `/openbb?symbols=AAPL,MSFT` pre-fills symbol inputs across tabs.
   // - `/openbb?symbols=AAPL&provider=intrinio` also pre-selects the provider (if enabled).
+  // - `/openbb?tab=technicals&symbols=AAPL` opens a specific tab.
   useEffect(() => {
     const rawSymbols =
       (searchParams.get("symbols") || searchParams.get("symbol") || searchParams.get("ticker") || "").trim()
@@ -997,6 +1017,27 @@ export default function OpenbbPage() {
         }
         return prev
       })
+    }
+
+    const tabRaw = (searchParams.get("tab") || "").trim().toLowerCase()
+    if (tabRaw) {
+      const map: Record<string, string> = {
+        quick: "quick",
+        compare: "compare",
+        watchlist: "watchlist",
+        fundamentals: "fundamentals",
+        fundamental: "fundamentals",
+        technicals: "technicals",
+        technical: "technicals",
+        macro: "macro",
+        crypto: "crypto",
+        commodities: "commodities",
+        commodity: "commodities",
+        explorer: "explorer",
+        custom: "custom",
+      }
+      const next = map[tabRaw]
+      if (next) setActiveTab(next)
     }
   }, [searchParams])
 
@@ -1539,6 +1580,51 @@ export default function OpenbbPage() {
     setSavedQueries((prev) => [{ symbols: quickSymbols, range: quickRange, provider: quickProvider }, ...prev].slice(0, 10))
   }
 
+  const refreshWatchlistSnapshot = async () => {
+    if (!queryBase) return
+    if (!watchlist.length) {
+      toast.message("Watchlist is empty.")
+      return
+    }
+
+    setWatchlistSnapshotLoading(true)
+    setWatchlistSnapshotErrors({})
+    try {
+      const symbols = watchlist.slice(0, 50)
+      const nextQuotes: Record<string, any> = {}
+      const nextErrors: Record<string, string> = {}
+
+      let cursor = 0
+      const worker = async () => {
+        for (;;) {
+          const idx = cursor
+          cursor += 1
+          const sym = symbols[idx]
+          if (!sym) return
+          const res = await safeOpenbb(sym, "/api/v1/equity/price/quote", { symbol: sym, provider: quickProvider }, 20000)
+          if (res.ok) nextQuotes[sym] = firstResult(res.data)
+          else nextErrors[sym] = res.error || `HTTP ${res.status}`
+        }
+      }
+
+      const workers = Array.from({ length: Math.min(6, symbols.length) }, () => worker())
+      await Promise.all(workers)
+
+      setWatchlistSnapshot(nextQuotes)
+      setWatchlistSnapshotErrors(nextErrors)
+      setWatchlistSnapshotUpdatedAt(new Date().toISOString())
+      if (Object.keys(nextErrors).length) {
+        toast.message(`[OpenBB] Snapshot: ${Object.keys(nextErrors).length} fetch(es) failed.`)
+      } else {
+        toast.success("[OpenBB] Watchlist snapshot refreshed")
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Watchlist snapshot failed")
+    } finally {
+      setWatchlistSnapshotLoading(false)
+    }
+  }
+
   // Persistence for watchlist/history/saved queries
   useEffect(() => {
     try {
@@ -1617,7 +1703,7 @@ export default function OpenbbPage() {
         </CardContent>
       </Card>
 
-      <Tabs defaultValue="quick" className="space-y-6">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
         <TabsList className="flex flex-wrap gap-2">
           <TabsTrigger value="quick">Quick lookup</TabsTrigger>
           <TabsTrigger value="compare">Compare</TabsTrigger>
@@ -1939,6 +2025,15 @@ export default function OpenbbPage() {
                   <Button size="sm" variant="outline" onClick={() => downloadJson("openbb-watchlist", watchlist as any)}>
                     Export JSON
                   </Button>
+                  <Button size="sm" variant="outline" onClick={refreshWatchlistSnapshot} disabled={watchlistSnapshotLoading}>
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                    {watchlistSnapshotLoading ? "Refreshing…" : "Refresh snapshot"}
+                  </Button>
+                  {watchlistSnapshotUpdatedAt ? (
+                    <span className="inline-flex items-center rounded-md border border-border/50 bg-background px-2 py-1 text-[11px] text-muted-foreground">
+                      Updated {new Date(watchlistSnapshotUpdatedAt).toLocaleTimeString()}
+                    </span>
+                  ) : null}
                 </div>
                 {!watchlist.length ? <div className="text-xs text-muted-foreground">No symbols saved yet.</div> : null}
                 <div className="flex flex-wrap gap-2">
@@ -1954,6 +2049,7 @@ export default function OpenbbPage() {
                       <button
                         className="text-[10px] text-muted-foreground hover:text-foreground"
                         onClick={() => {
+                          setActiveTab("quick")
                           setQuickSymbols(s)
                           setTimeout(() => runQuickLookup(), 50)
                         }}
@@ -2016,6 +2112,102 @@ export default function OpenbbPage() {
               </CardContent>
             </Card>
           </div>
+
+          <Card className="border-border/70">
+            <CardHeader className="flex flex-row items-center justify-between gap-3">
+              <CardTitle className="text-sm">Snapshot</CardTitle>
+              <div className="text-[11px] text-muted-foreground">
+                {watchlistSnapshotUpdatedAt ? `Updated ${formatRelativeTime(watchlistSnapshotUpdatedAt)}` : "Not loaded yet"}
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-2 text-xs text-muted-foreground">
+              {!watchlist.length ? (
+                <div>No symbols saved yet.</div>
+              ) : Object.keys(watchlistSnapshot).length === 0 && Object.keys(watchlistSnapshotErrors).length === 0 ? (
+                <div className="rounded-md border border-border/50 bg-muted/20 p-3">
+                  Click <span className="font-semibold text-foreground">Refresh snapshot</span> to pull the latest quotes for your watchlist.
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-md border border-border/60 bg-background">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-muted/60 text-[11px] uppercase tracking-wide text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2 font-medium">Symbol</th>
+                        <th className="px-3 py-2 font-medium">Last</th>
+                        <th className="px-3 py-2 font-medium">Change</th>
+                        <th className="px-3 py-2 font-medium">Volume</th>
+                        <th className="px-3 py-2 font-medium">Status</th>
+                        <th className="px-3 py-2 font-medium">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {watchlist.map((sym) => {
+                        const q = watchlistSnapshot[sym]
+                        const last = q?.last_price ?? q?.price ?? q?.close
+                        const change = q?.change_percent ?? q?.change
+                        const volume = q?.volume
+                        const err = watchlistSnapshotErrors[sym]
+                        return (
+                          <tr key={sym} className="border-t border-border/60">
+                            <td className="px-3 py-2 text-foreground font-medium">{sym}</td>
+                            <td className="px-3 py-2 text-foreground">{renderValue(last)}</td>
+                            <td className="px-3 py-2 text-foreground">{renderValue(change)}</td>
+                            <td className="px-3 py-2 text-foreground">{renderValue(volume)}</td>
+                            <td className="px-3 py-2">
+                              {err ? (
+                                <span className="text-destructive" title={err}>
+                                  error
+                                </span>
+                              ) : q ? (
+                                <span className="text-muted-foreground">ok</span>
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2">
+                              <div className="flex flex-wrap gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setActiveTab("quick")
+                                    setQuickSymbols(sym)
+                                    setTimeout(() => runQuickLookup(), 50)
+                                  }}
+                                >
+                                  Quick
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setFundSymbol(sym)
+                                    setActiveTab("fundamentals")
+                                  }}
+                                >
+                                  Fundamentals
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setTechSymbol(sym)
+                                    setActiveTab("technicals")
+                                  }}
+                                >
+                                  Technicals
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="explorer" className="space-y-4">

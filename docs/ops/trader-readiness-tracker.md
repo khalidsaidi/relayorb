@@ -58,12 +58,12 @@ Evidence:
 - [x] Export CSV for statements + candles + technicals
 
 ### 1.4 Compare
-- [~] Side-by-side metric table for N symbols (price, change, volume, basic valuation)
+- [x] Side-by-side metric table for N symbols (price, change, volume, basic valuation)
 - [x] Side-by-side charts (normalized performance % + raw price)
 
 ### 1.5 Watchlist (OpenBB-local)
-- [~] Add/remove symbols (persist in localStorage)
-- [ ] Watchlist view shows snapshot + deep links into tabs
+- [x] Add/remove symbols (persist in localStorage)
+- [x] Watchlist view shows snapshot + deep links into tabs
 
 ## 2) FinnewsHunter (Trader-Grade)
 
@@ -86,7 +86,7 @@ Evidence:
 
 ## 4) Cross-Module Workflow ("Trader Dashboard")
 
-- [~] One place to enter symbols and see:
+- [x] One place to enter symbols and see:
   - OpenBB: price + technical snapshot
   - FinnewsHunter: latest filings/news for the same symbols
   - StockPulse: rating + sentiment for the same symbols
