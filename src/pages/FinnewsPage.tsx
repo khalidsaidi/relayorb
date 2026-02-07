@@ -112,9 +112,40 @@ function normalizeNewsItem(raw: any): NewsItem {
 }
 
 function extractCiks(text: string) {
-  // CIKs are typically 10 digits (zero-padded).
-  const matches = String(text || "").match(/\b\d{10}\b/g) || []
-  return Array.from(new Set(matches))
+  // CIKs are up to 10 digits (often shown without left-padding).
+  const hay = String(text || "")
+  const matches = hay.match(/\b\d{6,10}\b/g) || []
+  const normalized = matches
+    .map((m) => m.replace(/\D/g, ""))
+    .filter(Boolean)
+    .map((m) => m.padStart(10, "0"))
+  return Array.from(new Set(normalized))
+}
+
+function extractCiksFromUrl(url?: string | null) {
+  const out = new Set<string>()
+  const raw = String(url || "").trim()
+  if (!raw) return []
+  try {
+    const u = new URL(raw)
+    const q = u.searchParams.get("CIK") || u.searchParams.get("cik") || ""
+    if (q) extractCiks(q).forEach((c) => out.add(c))
+    // Common SEC paths: /Archives/edgar/data/{cik}/...
+    const m = u.pathname.match(/\/data\/(\d{1,10})\b/i)
+    if (m?.[1]) extractCiks(m[1]).forEach((c) => out.add(c))
+  } catch {
+    // Not a valid URL; fall back to regex.
+    extractCiks(raw).forEach((c) => out.add(c))
+  }
+  return Array.from(out)
+}
+
+function extractCiksFromItem(item: NewsItem) {
+  const out = new Set<string>()
+  extractCiksFromUrl(item.url).forEach((c) => out.add(c))
+  extractCiksFromUrl(item.source_url).forEach((c) => out.add(c))
+  extractCiks([item.title, item.content].filter(Boolean).join(" ")).forEach((c) => out.add(c))
+  return Array.from(out)
 }
 
 function extractTickers(text: string) {
@@ -143,18 +174,36 @@ function extractTickers(text: string) {
   return Array.from(out)
 }
 
-function deriveSymbols(item: NewsItem) {
+function deriveSymbols(item: NewsItem, cikToTicker?: Record<string, string> | null) {
   if (Array.isArray(item.stock_codes) && item.stock_codes.length) {
     return item.stock_codes.map((s) => String(s).trim()).filter(Boolean)
   }
   // Best-effort extraction for cases where the backend didn't enrich tickers yet.
-  const derived = extractTickers([item.title, item.content].filter(Boolean).join(" "))
-  return derived
+  const derived = new Set(extractTickers([item.title, item.content].filter(Boolean).join(" ")))
+  if (cikToTicker) {
+    const ciks = extractCiksFromItem(item)
+    ciks.forEach((cik) => {
+      const ticker = cikToTicker[cik]
+      if (ticker) derived.add(String(ticker).trim().toUpperCase())
+    })
+  }
+  return Array.from(derived)
 }
 
 function isSecUrl(url?: string | null) {
   if (!url) return false
   return url.includes("sec.gov") || url.includes("www.sec.gov")
+}
+
+function sentimentMeta(score?: number | null) {
+  if (typeof score !== "number" || !Number.isFinite(score)) return null
+  const s = Math.max(-1, Math.min(1, score))
+  const abs = Math.abs(s)
+  const confidence = Math.round(abs * 100)
+  const label = s >= 0.2 ? "positive" : s <= -0.2 ? "negative" : "neutral"
+  const tone =
+    label === "positive" ? "bg-emerald-100 text-emerald-700" : label === "negative" ? "bg-rose-100 text-rose-700" : "bg-muted text-muted-foreground"
+  return { score: s, confidence, label, tone }
 }
 
 async function copyText(label: string, value: string) {
@@ -173,6 +222,8 @@ export default function FinnewsPage() {
   const baseUrl = useMemo(() => resolveFinnewsUrl(), [])
   const proxyBase = useMemo(() => resolveMarketDataProxyUrl(), [])
   const queryBase = proxyBase ? `${proxyBase}/v1/finnews` : baseUrl
+  const [secCikMap, setSecCikMap] = useState<Record<string, string> | null>(null)
+  const [secCikMapInfo, setSecCikMapInfo] = useState<{ generatedAt?: string; count: number } | null>(null)
 
   const checkHealth = useCallback(async () => {
     if (!queryBase) {
@@ -220,6 +271,52 @@ export default function FinnewsPage() {
   const [stockQuery, setStockQuery] = useState("")
   const [stockResults, setStockResults] = useState<{ code: string; name: string; full_code: string; market?: string | null }[]>([])
   const [stockOverview, setStockOverview] = useState<StockOverview | null>(null)
+
+  // Load SEC CIK -> ticker map (static asset) for SEC filing enrichment.
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const cachedRaw = localStorage.getItem("sec_cik_map_v1")
+        if (cachedRaw) {
+          const parsed = JSON.parse(cachedRaw)
+          const map = (parsed?.cikToTicker || {}) as Record<string, string>
+          const generatedAt = typeof parsed?.generatedAt === "string" ? parsed.generatedAt : undefined
+          if (!cancelled && map && Object.keys(map).length) {
+            setSecCikMap(map)
+            setSecCikMapInfo({ generatedAt, count: Object.keys(map).length })
+            return
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      try {
+        const res = await fetch("/sec-cik-map.v1.json", { headers: { Accept: "application/json" } })
+        if (!res.ok) throw new Error(`Failed to load SEC CIK map (${res.status})`)
+        const json = await res.json()
+        const map = (json?.cikToTicker || {}) as Record<string, string>
+        const generatedAt = typeof json?.generatedAt === "string" ? json.generatedAt : undefined
+        if (cancelled) return
+        if (map && Object.keys(map).length) {
+          setSecCikMap(map)
+          setSecCikMapInfo({ generatedAt, count: Object.keys(map).length })
+          try {
+            localStorage.setItem("sec_cik_map_v1", JSON.stringify({ generatedAt, cikToTicker: map }))
+          } catch {
+            // ignore
+          }
+        }
+      } catch (err) {
+        console.warn("SEC CIK map load failed", err)
+      }
+    }
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Deep-link support:
   // - `/finnews?q=AAPL` pre-fills search and switches to Search tab.
@@ -555,13 +652,14 @@ export default function FinnewsPage() {
                       <TableHead>{t("finnews.headline")}</TableHead>
                       <TableHead className="w-[90px]">Type</TableHead>
                       <TableHead className="w-[160px]">Tickers</TableHead>
+                      <TableHead className="w-[120px]">Sentiment</TableHead>
                       <TableHead>{t("finnews.source")}</TableHead>
                       <TableHead>{t("finnews.published")}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {latest.map((item) => (
-                      <TableRow key={item.id}>
+                      <TableRow key={`${item.id}-${item.url || item.source_url || ""}`}>
 	                        <TableCell className="max-w-[520px]">
 	                          <button
 	                            className="text-left text-sm font-medium text-foreground hover:underline"
@@ -578,7 +676,7 @@ export default function FinnewsPage() {
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {(() => {
-                            const symbols = deriveSymbols(item)
+                            const symbols = deriveSymbols(item, secCikMap)
                             if (!symbols.length) return "-"
                             return (
                               <div className="flex flex-wrap gap-1">
@@ -588,6 +686,20 @@ export default function FinnewsPage() {
                                   </Badge>
                                 ))}
                               </div>
+                            )
+                          })()}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {(() => {
+                            const meta = sentimentMeta(item.sentiment_score)
+                            if (!meta) return "-"
+                            return (
+                              <span
+                                className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] ${meta.tone}`}
+                                title={`score ${meta.score.toFixed(2)} · confidence ${meta.confidence}%`}
+                              >
+                                {meta.label} {meta.confidence}%
+                              </span>
                             )
                           })()}
                         </TableCell>
@@ -652,6 +764,7 @@ export default function FinnewsPage() {
                       <TableHead>Headline</TableHead>
                       <TableHead className="w-[90px]">Type</TableHead>
                       <TableHead className="w-[160px]">Tickers</TableHead>
+                      <TableHead className="w-[120px]">Sentiment</TableHead>
                       <TableHead>Source</TableHead>
                       <TableHead>Published</TableHead>
                     </TableRow>
@@ -659,7 +772,7 @@ export default function FinnewsPage() {
                   <TableBody>
                     {searchResults.map((item) => (
                       <TableRow
-                        key={item.id}
+                        key={`${item.id}-${item.url || item.source_url || ""}`}
                         className="cursor-pointer"
                         onClick={() => {
                           showDetail(item)
@@ -673,7 +786,7 @@ export default function FinnewsPage() {
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {(() => {
-                            const symbols = deriveSymbols(item)
+                            const symbols = deriveSymbols(item, secCikMap)
                             if (!symbols.length) return "-"
                             return (
                               <div className="flex flex-wrap gap-1">
@@ -686,6 +799,20 @@ export default function FinnewsPage() {
                             )
                           })()}
                         </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {(() => {
+                            const meta = sentimentMeta(item.sentiment_score)
+                            if (!meta) return "-"
+                            return (
+                              <span
+                                className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] ${meta.tone}`}
+                                title={`score ${meta.score.toFixed(2)} · confidence ${meta.confidence}%`}
+                              >
+                                {meta.label} {meta.confidence}%
+                              </span>
+                            )
+                          })()}
+                        </TableCell>
                         <TableCell className="text-xs text-muted-foreground">{item.source}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">{formatRelative(item.publish_time || item.created_at)}</TableCell>
                       </TableRow>
@@ -693,6 +820,33 @@ export default function FinnewsPage() {
                   </TableBody>
                 </Table>
               </div>
+              {!searchLoading && (searchQuery.trim() || searchSource) && searchResults.length === 0 ? (
+                <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+                  <div className="font-semibold text-foreground">No results yet</div>
+                  <div className="mt-1">
+                    Search only covers items that were crawled and saved. If you just started the service, run a crawl and try again.
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" onClick={runRealtimeCrawl} disabled={crawlLoading}>
+                      <PlayCircle className="mr-2 h-4 w-4" />
+                      Run US crawl now
+                    </Button>
+                    {tasks?.[0]?.created_at ? (
+                      <span className="rounded-md border border-border/50 bg-background px-2 py-1 text-[11px] text-muted-foreground">
+                        Last task: {formatRelative(tasks[0].created_at)}
+                      </span>
+                    ) : null}
+                    {secCikMapInfo ? (
+                      <span className="rounded-md border border-border/50 bg-background px-2 py-1 text-[11px] text-muted-foreground">
+                        CIK map: {secCikMapInfo.count.toLocaleString()} tickers
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-2 text-[11px]">
+                    Tips: try `TSLA`, `$TSLA`, or `NASDAQ:TSLA`. Increase the limit if you expect older matches.
+                  </div>
+                </div>
+              ) : null}
               {newsDetail ? (
                 <div className="rounded-md border bg-muted/30 p-3 text-xs space-y-2">
                   <div className="font-semibold">{newsDetail.title}</div>
@@ -701,13 +855,13 @@ export default function FinnewsPage() {
                       {newsDetail.url ? (
                         <div className="flex flex-wrap items-center gap-2">
                           {isSecUrl(newsDetail.url) ? <Badge variant="outline">SEC</Badge> : <Badge variant="outline">News</Badge>}
-                          {extractCiks(newsDetail.title + " " + (newsDetail.url || "")).map((cik) => (
+                          {extractCiksFromItem(newsDetail).map((cik) => (
                             <Badge key={cik} variant="secondary">
                               CIK {cik}
                             </Badge>
                           ))}
                           {(() => {
-                            const symbols = deriveSymbols(newsDetail)
+                            const symbols = deriveSymbols(newsDetail, secCikMap)
                             if (!symbols.length) return null
                             return (
                               <div className="flex flex-wrap items-center gap-2">
@@ -717,6 +871,18 @@ export default function FinnewsPage() {
                                   </Badge>
                                 ))}
                               </div>
+                            )
+                          })()}
+                          {(() => {
+                            const meta = sentimentMeta(newsDetail.sentiment_score)
+                            if (!meta) return null
+                            return (
+                              <span
+                                className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] ${meta.tone}`}
+                                title={`score ${meta.score.toFixed(2)} · confidence ${meta.confidence}%`}
+                              >
+                                {meta.label} {meta.confidence}%
+                              </span>
                             )
                           })()}
                         </div>
@@ -748,7 +914,7 @@ export default function FinnewsPage() {
                         )}
 
                         {(() => {
-                          const symbols = deriveSymbols(newsDetail)
+                          const symbols = deriveSymbols(newsDetail, secCikMap)
                           if (!symbols.length) return null
                           return (
                           <Button
@@ -763,7 +929,7 @@ export default function FinnewsPage() {
                         })()}
 
                         {(() => {
-                          const ciks = extractCiks(newsDetail.title + " " + (newsDetail.url || ""))
+                          const ciks = extractCiksFromItem(newsDetail)
                           if (!ciks.length) return null
                           return (
                             <Button

@@ -578,7 +578,15 @@ export default function StockpulsePage() {
         const data = await fetchJson(
           `/api/ai/rating-history/${encodeURIComponent(ticker)}?limit=${encodeURIComponent(String(limit))}`
         )
-        setRatingHistory(Array.isArray(data) ? (data as StockpulseRatingHistoryPoint[]) : [])
+        // Backend shape can be either:
+        // - history array (legacy)
+        // - { ticker, history: [...] } (current patched stockpulse-ai)
+        const resolved = Array.isArray(data)
+          ? (data as StockpulseRatingHistoryPoint[])
+          : data && typeof data === "object" && Array.isArray((data as any).history)
+            ? ((data as any).history as StockpulseRatingHistoryPoint[])
+            : []
+        setRatingHistory(resolved)
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unknown error")
         setRatingHistory([])
@@ -1627,6 +1635,32 @@ export default function StockpulsePage() {
                   >
                     {bulkLoading ? "Adding…" : "Bulk add"}
                   </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={bulkLoading}
+                    onClick={() => {
+                      try {
+                        const raw = localStorage.getItem("openbb_watchlist")
+                        const list = raw ? (JSON.parse(raw) as unknown) : []
+                        const symbols = Array.isArray(list)
+                          ? list.map((s) => String(s).trim().toUpperCase()).filter(Boolean)
+                          : []
+                        if (!symbols.length) {
+                          toast.error("OpenBB watchlist is empty.")
+                          return
+                        }
+                        setBulkMarket("US")
+                        setBulkTickers(symbols.join("\n"))
+                        toast.success(`Loaded ${symbols.length} tickers from OpenBB watchlist.`)
+                      } catch (err) {
+                        console.warn("import watchlist failed", err)
+                        toast.error("Failed to import OpenBB watchlist.")
+                      }
+                    }}
+                  >
+                    Import OpenBB
+                  </Button>
                 </div>
               </div>
               <textarea
@@ -1636,7 +1670,7 @@ export default function StockpulsePage() {
                 placeholder={"AAPL MSFT NVDA\nTSLA AMZN\n(whitespace, commas, and new lines all work)"}
               />
               <div className="mt-2 text-[11px] text-muted-foreground">
-                Uses StockPulse search to fill names when possible, then adds tickers to the monitored list.
+                Paste tickers (any separators). This is how you scale beyond the default 20 monitored names.
               </div>
             </div>
 
@@ -1696,41 +1730,6 @@ export default function StockpulsePage() {
                 </Table>
               </div>
             ) : null}
-
-            <div className="rounded-md border border-border/60 bg-muted/20 p-3 space-y-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="font-semibold text-foreground">Bulk add tickers</div>
-                <div className="flex items-center gap-2">
-                  <Label className="text-xs text-muted-foreground">Market</Label>
-                  <select
-                    className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-                    value={bulkMarket}
-                    onChange={(e) => setBulkMarket(e.target.value)}
-                  >
-                    <option value="US">US</option>
-                    <option value="India">India</option>
-                  </select>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={!queryBase || bulkLoading || !bulkTickers.trim()}
-                    onClick={handleBulkAdd}
-                  >
-                    <Plus className="mr-2 h-4 w-4" />
-                    {bulkLoading ? "Adding..." : "Bulk add"}
-                  </Button>
-                </div>
-              </div>
-              <textarea
-                className="min-h-[96px] w-full rounded-md border border-input bg-background p-3 font-mono text-[12px]"
-                value={bulkTickers}
-                onChange={(e) => setBulkTickers(e.target.value)}
-                placeholder="Paste tickers separated by commas/spaces/newlines, e.g.\nAAPL MSFT NVDA\nTSLA, AMZN"
-              />
-              <div className="text-xs text-muted-foreground">
-                Tip: This helps you bring your whole US watchlist into StockPulse so ratings and news coverage are complete.
-              </div>
-            </div>
 
             <div className="rounded-md border">
               <Table>

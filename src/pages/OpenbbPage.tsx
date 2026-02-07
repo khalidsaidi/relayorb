@@ -135,6 +135,20 @@ function normalizeRows(data: unknown): Record<string, unknown>[] {
   return []
 }
 
+function normalizeWatchlistAlertKeys(keys: string[]) {
+  const out = new Set<string>()
+  ;(keys || []).forEach((k) => {
+    const key = String(k || "").trim().toLowerCase()
+    if (!key) return
+    // Back-compat with earlier labels.
+    if (key === "sentiment") out.add("rating")
+    else if (key === "price") out.add("rsi")
+    else if (key === "filing") out.add("filings")
+    else out.add(key)
+  })
+  return out
+}
+
 function toCandles(data: unknown): Candle[] {
   const rows = normalizeRows(data)
   if (!rows.length) return []
@@ -143,11 +157,20 @@ function toCandles(data: unknown): Candle[] {
     const dateRaw = (row as any).date || (row as any).datetime || (row as any).timestamp
     const date = typeof dateRaw === "string" ? dateRaw : dateRaw ? String(dateRaw) : ""
     if (!date) return
-    const open = Number((row as any).open)
-    const high = Number((row as any).high)
-    const low = Number((row as any).low)
     const close = Number((row as any).close ?? (row as any).adj_close ?? (row as any).last_price ?? (row as any).price)
-    if (!Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) return
+    if (!Number.isFinite(close)) return
+
+    // Some providers return close-only rows. We still want technicals (and a best-effort candle chart),
+    // so fill missing OHLC fields from close.
+    const openRaw = Number((row as any).open)
+    const highRaw = Number((row as any).high)
+    const lowRaw = Number((row as any).low)
+    const open = Number.isFinite(openRaw) ? openRaw : close
+    let high = Number.isFinite(highRaw) ? highRaw : close
+    let low = Number.isFinite(lowRaw) ? lowRaw : close
+    // Ensure a sane candle even if inputs are weird.
+    high = Math.max(high, open, close)
+    low = Math.min(low, open, close)
     const volumeRaw = (row as any).volume ?? (row as any).total_volume
     const volume = volumeRaw === null || volumeRaw === undefined ? null : Number(volumeRaw)
     out.push({ time: date, open, high, low, close, volume })
@@ -297,10 +320,57 @@ function computeTechnicalsFromCandles(candlesIn: Candle[], opts?: { rsiLen?: num
 
   return {
     computed: true,
+    meta: {
+      candleCount: candles.length,
+      rsiLen,
+      maLen,
+      bbLen,
+      bbStd,
+    },
     rsi: { results: rsiResults },
     ma: { results: maResults },
     bb: { results: bbResults },
   }
+}
+
+function mergeTechnicalsRows(technicals: any) {
+  const map = new Map<string, Record<string, unknown>>()
+  const put = (date: string, patch: Record<string, unknown>) => {
+    if (!date) return
+    const prev = map.get(date) || { date }
+    map.set(date, { ...prev, ...patch })
+  }
+
+  const rsiRows = normalizeRows(technicals?.rsi?.results || technicals?.rsi)
+  rsiRows.forEach((r) => {
+    const date = String((r as any).date || (r as any).datetime || (r as any).timestamp || "")
+    const value = (r as any).value ?? (r as any).rsi
+    if (typeof value === "number") put(date, { rsi: value })
+  })
+  const maRows = normalizeRows(technicals?.ma?.results || technicals?.ma)
+  maRows.forEach((r) => {
+    const date = String((r as any).date || (r as any).datetime || (r as any).timestamp || "")
+    const value = (r as any).ma ?? (r as any).value
+    if (typeof value === "number") put(date, { ma: value })
+  })
+  const bbRows = normalizeRows(technicals?.bb?.results || technicals?.bb)
+  bbRows.forEach((r) => {
+    const date = String((r as any).date || (r as any).datetime || (r as any).timestamp || "")
+    const upper = (r as any).upper
+    const lower = (r as any).lower
+    const middle = (r as any).middle
+    const patch: Record<string, unknown> = {}
+    if (typeof upper === "number") patch.bb_upper = upper
+    if (typeof middle === "number") patch.bb_middle = middle
+    if (typeof lower === "number") patch.bb_lower = lower
+    if (Object.keys(patch).length) put(date, patch)
+  })
+
+  return Array.from(map.values()).sort((a, b) => {
+    const da = new Date(String(a.date)).getTime()
+    const db = new Date(String(b.date)).getTime()
+    return da - db
+  })
 }
 
 function renderKeyValueTable(data: Record<string, unknown>) {
@@ -569,7 +639,7 @@ function ValuationTable({ rows }: { rows: Record<string, unknown>[] }) {
   )
 }
 
-function ResponseCard({ title, result }: { title: string; result?: ResponseState }) {
+function ResponseCard({ title, result, showRawJson }: { title: string; result?: ResponseState; showRawJson?: boolean }) {
   if (!result) return null
   const chartRows = normalizeRows(result.data)
   const hasDate = chartRows.length && ("date" in chartRows[0] || "datetime" in chartRows[0])
@@ -602,12 +672,14 @@ function ResponseCard({ title, result }: { title: string; result?: ResponseState
         ) : null}
         {hasDate ? renderLineChart(chartRows, "date") : null}
         {renderTable(result.data) || keyValue}
-        <details className="rounded-lg border border-border/60 bg-muted/20 p-2 text-[11px]">
-          <summary className="cursor-pointer text-muted-foreground">Raw JSON</summary>
-          <pre className="max-h-72 overflow-auto p-2 text-[11px] text-muted-foreground">
-            {JSON.stringify(result.data, null, 2)}
-          </pre>
-        </details>
+        {showRawJson ? (
+          <details className="rounded-lg border border-border/60 bg-muted/20 p-2 text-[11px]">
+            <summary className="cursor-pointer text-muted-foreground">Raw JSON</summary>
+            <pre className="max-h-72 overflow-auto p-2 text-[11px] text-muted-foreground">
+              {JSON.stringify(result.data, null, 2)}
+            </pre>
+          </details>
+        ) : null}
       </CardContent>
     </Card>
   )
@@ -659,6 +731,7 @@ function TechnicalOverviewCard({ technicals }: { technicals: Record<string, unkn
   const rsiRow = lastResult((technicals as any).rsi)
   const maRow = lastResult((technicals as any).ma)
   const bbRow = lastResult((technicals as any).bb)
+  const hasAny = (rsiRow && Object.keys(rsiRow).length) || (maRow && Object.keys(maRow).length) || (bbRow && Object.keys(bbRow).length)
   return (
     <Card className="border-border/70">
       <CardHeader>
@@ -668,6 +741,11 @@ function TechnicalOverviewCard({ technicals }: { technicals: Record<string, unkn
         {rsiRow && Object.keys(rsiRow).length ? <MetricCard label="RSI" value={rsiRow.value || rsiRow.rsi} /> : null}
         {maRow && Object.keys(maRow).length ? <MetricCard label="Moving avg" value={maRow.ma || maRow.value} /> : null}
         {bbRow && Object.keys(bbRow).length ? <MetricCard label="Upper band" value={bbRow.upper} /> : null}
+        {!hasAny ? (
+          <div className="md:col-span-3 rounded-md border border-border/60 bg-muted/20 p-3 text-[11px] text-muted-foreground">
+            Not enough history to compute technicals yet. Try a wider range (e.g. 6M) or another provider.
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   )
@@ -865,6 +943,25 @@ export default function OpenbbPage() {
   const [cryptoInterval, setCryptoInterval] = useState("1d")
   const [commoditySelection, setCommoditySelection] = useState("brent")
 
+  const [showRawJson, setShowRawJson] = useState(false)
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("openbb_show_raw_json")
+      if (raw === "1") setShowRawJson(true)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("openbb_show_raw_json", showRawJson ? "1" : "0")
+    } catch {
+      // ignore
+    }
+  }, [showRawJson])
+
   // Deep-link support:
   // - `/openbb?symbols=AAPL,MSFT` pre-fills symbol inputs across tabs.
   // - `/openbb?symbols=AAPL&provider=intrinio` also pre-selects the provider (if enabled).
@@ -901,7 +998,6 @@ export default function OpenbbPage() {
         return prev
       })
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
 
   const [specOps, setSpecOps] = useState<ApiOperation[]>([])
@@ -1512,6 +1608,10 @@ export default function OpenbbPage() {
                 <Info className="mr-2 h-4 w-4" />
                 Health
               </Button>
+              <label className="ml-auto flex items-center gap-2 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                <input type="checkbox" checked={showRawJson} onChange={(e) => setShowRawJson(e.target.checked)} />
+                Show raw JSON (debug)
+              </label>
             </div>
           ) : null}
         </CardContent>
@@ -1686,19 +1786,44 @@ export default function OpenbbPage() {
                       <CardTitle className="text-sm">Technicals (RSI/MA/BB)</CardTitle>
                     </CardHeader>
                     <CardContent className="grid gap-3 md:grid-cols-2 text-xs text-muted-foreground">
-                      {Object.entries(quickTechMap).map(([sym, data]) => {
+                  {Object.entries(quickTechMap).map(([sym, data]) => {
                         const rsiRow = lastResult((data as any).rsi)
                         const maRow = lastResult((data as any).ma)
                         const bbRow = lastResult((data as any).bb)
+                        const candleCount = Number((data as any)?.meta?.candleCount || 0)
+                        const needsMore =
+                          candleCount > 0 &&
+                          (!((data as any).rsi?.results || []).length || !((data as any).ma?.results || []).length || !((data as any).bb?.results || []).length)
                         return (
                           <div key={sym} className="rounded-md border border-border/50 bg-muted/30 p-3 space-y-2">
-                            <div className="text-sm font-semibold text-foreground">{sym}</div>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-sm font-semibold text-foreground">{sym}</div>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  const rows = mergeTechnicalsRows(data)
+                                  if (!rows.length) {
+                                    toast.error("No technical rows to export.")
+                                    return
+                                  }
+                                  downloadCsv(`${sym}-technicals`, rows)
+                                }}
+                              >
+                                Export CSV
+                              </Button>
+                            </div>
                             <div className="grid gap-2 md:grid-cols-2">
                               <MetricCard label="RSI" value={(rsiRow as any).value || (rsiRow as any).rsi} />
                               <MetricCard label="MA" value={(maRow as any).ma || (maRow as any).value} />
                               <MetricCard label="BB Upper" value={(bbRow as any).upper} />
                               <MetricCard label="BB Lower" value={(bbRow as any).lower} />
                             </div>
+                            {needsMore ? (
+                              <div className="rounded border border-border/40 bg-muted/20 p-2 text-[11px] text-muted-foreground">
+                                Technicals are computed from history. We have {candleCount} daily candles; if any indicator is blank, try a wider range or another provider.
+                              </div>
+                            ) : null}
                             <details className="rounded border border-border/40 bg-muted/20 p-2">
                               <summary className="cursor-pointer text-[11px] text-muted-foreground">Technical tables</summary>
                               {(data as any).rsi ? renderTable((data as any).rsi?.results || (data as any).rsi) : null}
@@ -1721,7 +1846,23 @@ export default function OpenbbPage() {
                     <CardContent className="space-y-2 text-xs text-muted-foreground">
                   {quickHistory.map((h) => (
                     <div key={h.sym} className="rounded-md border border-border/50 bg-muted/40 p-2">
-                      <div className="text-sm font-semibold text-foreground">{h.sym}</div>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-sm font-semibold text-foreground">{h.sym}</div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            const rows = normalizeRows(h.data)
+                            if (!rows.length) {
+                              toast.error("No candles to export.")
+                              return
+                            }
+                            downloadCsv(`${h.sym}-candles`, rows)
+                          }}
+                        >
+                          Export CSV
+                        </Button>
+                      </div>
                       {(() => {
                         const allCandles = toCandles(h.data)
                         const displayStartDate = computeDisplayStartDate(quickRange)
@@ -1825,7 +1966,7 @@ export default function OpenbbPage() {
                 {watchlist.length ? (
                   <div className="mt-2 space-y-2 text-[11px] text-muted-foreground">
                     {watchlist.map((s) => {
-                      const selected = new Set(watchlistAlerts[s] || [])
+                      const selected = normalizeWatchlistAlertKeys(watchlistAlerts[s] || [])
                       const toggle = (key: string) => {
                         const next = new Set(selected)
                         if (next.has(key)) next.delete(key)
@@ -1835,14 +1976,19 @@ export default function OpenbbPage() {
                       return (
                         <div key={`${s}-alerts`} className="flex flex-wrap items-center gap-2">
                           <span className="text-foreground">{s}</span>
-                          {["news", "filings", "sentiment", "price"].map((key) => (
-                            <label key={key} className="flex items-center gap-1 rounded border border-border/50 px-2 py-1">
+                          {[
+                            { key: "news", label: "news" },
+                            { key: "filings", label: "filings" },
+                            { key: "rating", label: "rating" },
+                            { key: "rsi", label: "rsi" },
+                          ].map((item) => (
+                            <label key={item.key} className="flex items-center gap-1 rounded border border-border/50 px-2 py-1">
                               <input
                                 type="checkbox"
-                                checked={selected.has(key)}
-                                onChange={() => toggle(key)}
+                                checked={selected.has(item.key)}
+                                onChange={() => toggle(item.key)}
                               />
-                              <span className="capitalize">{key}</span>
+                              <span className="capitalize">{item.label}</span>
                             </label>
                           ))}
                         </div>
@@ -2096,7 +2242,7 @@ export default function OpenbbPage() {
                       Export JSON
                     </Button>
                   </div>
-                  <ResponseCard title="Explorer result" result={explorerResult} />
+                  <ResponseCard title="Explorer result" result={explorerResult} showRawJson={showRawJson} />
                 </div>
               ) : null}
             </CardContent>
@@ -2385,6 +2531,21 @@ export default function OpenbbPage() {
               <Button size="sm" variant="outline" onClick={() => downloadJson(`technicals-${techSymbol}`, technicals)}>
                 Export JSON
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!technicals}
+                onClick={() => {
+                  const rows = mergeTechnicalsRows(technicals)
+                  if (!rows.length) {
+                    toast.error("No technical rows to export.")
+                    return
+                  }
+                  downloadCsv(`technicals-${techSymbol}`, rows)
+                }}
+              >
+                Export CSV
+              </Button>
 	              {technicals ? (
 	                <div className="grid gap-4 lg:grid-cols-2 text-xs text-muted-foreground">
 	                  <div className="lg:col-span-2 space-y-3">
@@ -2610,7 +2771,7 @@ export default function OpenbbPage() {
             </CardContent>
           </Card>
           <div className="grid gap-6 lg:grid-cols-2">
-            <ResponseCard title={t("openbb.customResult")} result={customResult} />
+            <ResponseCard title={t("openbb.customResult")} result={customResult} showRawJson={showRawJson} />
           </div>
         </TabsContent>
       </Tabs>

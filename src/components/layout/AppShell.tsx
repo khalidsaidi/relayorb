@@ -12,6 +12,7 @@ import { signOut } from "firebase/auth"
 import { resolveFinnewsUrl, resolveOpenbbApiUrl, resolveStockpulseUrl } from "@/lib/runtime-urls"
 import { fetchJsonOrThrow } from "@/lib/http"
 import { toast } from "sonner"
+import { AlertsBell } from "@/features/alerts/AlertsBell"
 
 type NavItem = {
   to: string
@@ -114,6 +115,7 @@ export function AppShell() {
           <header className="flex items-center justify-between gap-4 border-b border-border/60 bg-background/60 px-6 py-4">
             <div className="min-w-0 text-lg font-semibold text-foreground truncate">{pageTitle}</div>
             <div className="flex items-center gap-3 shrink-0">
+              <AlertsBell />
               <Popover>
                 <PopoverTrigger asChild>
                   <button type="button" className="flex items-center gap-2 rounded-full border border-border/60 bg-background/70 px-3 py-1 text-xs text-muted-foreground hover:text-foreground">

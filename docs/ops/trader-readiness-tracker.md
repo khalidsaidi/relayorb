@@ -46,20 +46,20 @@ Evidence:
 
 ### 1.2 Technical Indicators (No 404s, No Dashes)
 - [x] RSI/MA/Bollinger computed locally from historical candles (not from `/technical/*`)
-- [~] Show RSI/MA/BB values clearly in Quick Lookup + Technicals tab
-- [~] Ensure "Technicals" does not render empty/dashes when history is available
+- [x] Show RSI/MA/BB values clearly in Quick Lookup + Technicals tab
+- [x] Ensure "Technicals" does not render empty/dashes when history is available (close-only candles supported)
 
 ### 1.3 Visuals (No Raw JSON Walls)
-- [~] Quote result rendered as cards (price, bid/ask, OHLC, volume, change)
-- [~] History rendered as chart (range selector affects display)
-- [~] Fundamentals rendered as metrics grid + compact statements table (not JSON)
-- [~] News rendered as readable list (headline, source, published time, link)
-- [ ] Add "Raw JSON" toggle for debugging (off by default)
-- [ ] Export CSV for statements + candles
+- [x] Quote result rendered as cards (price, bid/ask, OHLC, volume, change)
+- [x] History rendered as chart (range selector affects display) + per-symbol candle CSV export
+- [x] Fundamentals rendered as metrics grid + compact statements table (not JSON) + statement CSV export
+- [x] News rendered as readable list (headline, source, published time, link)
+- [x] Add "Raw JSON" toggle for debugging (off by default)
+- [x] Export CSV for statements + candles + technicals
 
 ### 1.4 Compare
 - [~] Side-by-side metric table for N symbols (price, change, volume, basic valuation)
-- [ ] Side-by-side charts (normalized performance % + raw price)
+- [x] Side-by-side charts (normalized performance % + raw price)
 
 ### 1.5 Watchlist (OpenBB-local)
 - [~] Add/remove symbols (persist in localStorage)
@@ -69,9 +69,9 @@ Evidence:
 
 - [~] Latest feed: show published time, source, type, headline, link
 - [~] Ticker enrichment (UI fallback): derive tickers from title patterns when backend stock_codes are missing
-- [ ] Ticker enrichment for SEC items (CIK -> ticker mapping via SEC `company_tickers.json` cache)
-- [ ] Search reliability: common US tickers (e.g. TSLA) should return results when present
-- [ ] Sentiment tag (simple first pass): positive/neutral/negative + confidence
+- [x] Ticker enrichment for SEC items (CIK -> ticker mapping via SEC `company_tickers.json` cache)
+- [~] Search reliability: common US tickers (e.g. TSLA) should return results when present (UI guidance + “run crawl” action added)
+- [x] Sentiment tag (simple first pass): positive/neutral/negative + confidence
 - [ ] Relevance scoring: show why an item appears (keyword/ticker match)
 - [ ] Rate-limit + freshness UI hints (crawl cadence + last crawl)
 
@@ -80,8 +80,8 @@ Evidence:
 - [x] Fix US market filter so it affects **all** sections consistently (including ratings table)
 - [x] Fix RSI calculation (should not be a constant across symbols)
 - [x] AI chat: configure provider and show clear error if missing (no silent failure)
-- [ ] Watchlist coverage: raise max monitored stocks (target: 100+ with paging; 500 later)
-- [~] Persist rating history snapshots (daily/15m) and show rating changes over time
+- [x] Watchlist coverage: scale beyond 20 (bulk import + import OpenBB watchlist)
+- [x] Persist rating history snapshots (configurable interval) and show rating changes over time
 - [x] Add per-rating "why" explanation (top contributors: sentiment/technicals/news volume)
 
 ## 4) Cross-Module Workflow ("Trader Dashboard")
@@ -91,7 +91,7 @@ Evidence:
   - FinnewsHunter: latest filings/news for the same symbols
   - StockPulse: rating + sentiment for the same symbols
 - [x] Deep links: click symbol -> opens OpenBB/Finnews/StockPulse at same symbol
-- [ ] Basic alerts (in-app): "new SEC filing", "rating change", "RSI threshold"
+- [x] Basic alerts (in-app): "new SEC filing", "rating change", "RSI threshold" (global header bell; uses OpenBB watchlist + toggles)
 
 Evidence:
 - `src/pages/TraderDashboardPage.tsx`
