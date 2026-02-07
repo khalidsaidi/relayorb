@@ -25,11 +25,13 @@ export VITE_HMR_CLIENT_PORT="$PORT"
 if [[ -n "$WSL_IP" ]]; then
   echo "Dev server URLs:"
   echo "  WSL     : http://localhost:${PORT}/"
+  echo "  Windows : http://127.0.0.1:${PORT}/"
+  echo "            (Recommended: IPv4 avoids some Windows browsers sticking to IPv6 ::1 for localhost.)"
   echo "  Windows : http://localhost:${PORT}/"
-  echo "            (If this fails: Windows may have excluded this port; use the WSL IP below or pick another port.)"
+  echo "            (If this fails: Windows may have excluded this port or your browser may be using IPv6; use 127.0.0.1 above or pick another port.)"
   echo "  Windows : http://${WSL_IP}:${PORT}/"
 else
-  echo "Dev server URL: http://localhost:${PORT}/"
+  echo "Dev server URL: http://127.0.0.1:${PORT}/"
 fi
 echo "HMR websocket: ws://${VITE_HMR_HOST}:${VITE_HMR_CLIENT_PORT}/"
 
