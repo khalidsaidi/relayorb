@@ -1,8 +1,8 @@
 diff --git a/ai_analytics.py b/ai_analytics.py
-index fb4dd09..286547d 100644
+index fb4dd09..73142c8 100644
 --- a/ai_analytics.py
 +++ b/ai_analytics.py
-@@ -7,14 +7,32 @@ Analyzes technical indicators, news sentiment, and social media to provide stock
+@@ -7,14 +7,34 @@ Analyzes technical indicators, news sentiment, and social media to provide stock
  import sqlite3
  import requests
  import logging
@@ -27,15 +27,127 @@ index fb4dd09..286547d 100644
 +    "yes",
 +    "y",
 +)
++RATING_HISTORY_INTERVAL_SEC = int(os.getenv("STOCKPULSE_RATING_HISTORY_INTERVAL_SEC", "300"))
 +
 +_cache_lock = threading.Lock()
 +_price_cache = {}   # (ticker, period) -> {ts, data}
 +_ratings_cache = {"ts": 0.0, "data": None}  # {ts, data(list)}
++_rating_history_state = {"ts": 0.0}
 +
  
  class StockAnalytics:
      def __init__(self, db_path=DB_PATH):
-@@ -27,6 +45,13 @@ class StockAnalytics:
+@@ -23,10 +43,123 @@ class StockAnalytics:
+         self.session.headers.update({
+             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+         })
++        self._init_rating_history_table()
++
++    def _init_rating_history_table(self) -> None:
++        """Ensure a lightweight rating history table exists for trend/backtest UIs."""
++        try:
++            conn = sqlite3.connect(self.db_path)
++            cursor = conn.cursor()
++            cursor.execute(
++                """
++                CREATE TABLE IF NOT EXISTS rating_history (
++                    id INTEGER PRIMARY KEY AUTOINCREMENT,
++                    ts TEXT NOT NULL,
++                    ticker TEXT NOT NULL,
++                    rating TEXT,
++                    score REAL,
++                    confidence REAL,
++                    current_price REAL,
++                    currency TEXT,
++                    rsi REAL,
++                    sentiment_score REAL,
++                    technical_score REAL
++                )
++                """
++            )
++            cursor.execute(
++                "CREATE INDEX IF NOT EXISTS idx_rating_history_ticker_ts ON rating_history(ticker, ts)"
++            )
++            conn.commit()
++            conn.close()
++        except Exception as e:
++            logger.error(f"rating_history init failed: {e}")
++
++    def _maybe_persist_rating_history(self, ratings: List[Dict]) -> None:
++        """Persist a snapshot no more often than RATING_HISTORY_INTERVAL_SEC."""
++        if not ratings:
++            return
++        now = time.time()
++        with _cache_lock:
++            last_ts = float(_rating_history_state.get("ts", 0.0) or 0.0)
++            if (now - last_ts) < RATING_HISTORY_INTERVAL_SEC:
++                return
++            _rating_history_state["ts"] = now
++
++        try:
++            ts = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
++            rows = []
++            for r in ratings:
++                rows.append(
++                    (
++                        ts,
++                        (r.get("ticker") or "").upper(),
++                        r.get("rating"),
++                        r.get("score"),
++                        r.get("confidence"),
++                        r.get("current_price"),
++                        r.get("currency"),
++                        r.get("rsi"),
++                        r.get("sentiment_score"),
++                        r.get("technical_score"),
++                    )
++                )
++
++            conn = sqlite3.connect(self.db_path)
++            cursor = conn.cursor()
++            cursor.executemany(
++                """
++                INSERT INTO rating_history (
++                    ts, ticker, rating, score, confidence, current_price, currency, rsi, sentiment_score, technical_score
++                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++                """,
++                rows,
++            )
++            conn.commit()
++            conn.close()
++        except Exception as e:
++            logger.error(f"persist rating history failed: {e}")
++
++    def get_rating_history(self, ticker: str, limit: int = 200) -> List[Dict]:
++        """Return recent rating snapshots for one ticker (ascending by time)."""
++        t = (ticker or "").upper().strip()
++        if not t:
++            return []
++        limit = max(1, min(int(limit or 200), 2000))
++        try:
++            conn = sqlite3.connect(self.db_path)
++            conn.row_factory = sqlite3.Row
++            cursor = conn.cursor()
++            cursor.execute(
++                """
++                SELECT ts, ticker, rating, score, confidence, current_price, currency, rsi, sentiment_score, technical_score
++                FROM rating_history
++                WHERE ticker = ?
++                ORDER BY ts DESC
++                LIMIT ?
++                """,
++                (t, limit),
++            )
++            rows = [dict(r) for r in cursor.fetchall()]
++            conn.close()
++            rows.reverse()
++            return rows
++        except sqlite3.OperationalError:
++            return []
++        except Exception as e:
++            logger.error(f"get_rating_history failed: {e}")
++            return []
+ 
      def get_stock_price_data(self, ticker: str, period='1mo') -> Dict:
          """Fetch stock price data from Yahoo Finance"""
          try:
@@ -49,7 +161,7 @@ index fb4dd09..286547d 100644
              url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}"
              params = {
                  'range': period,
-@@ -53,6 +78,9 @@ class StockAnalytics:
+@@ -53,6 +186,9 @@ class StockAnalytics:
                      'timestamps': timestamps
                  }
  
@@ -59,7 +171,7 @@ index fb4dd09..286547d 100644
                  return prices
  
          except Exception as e:
-@@ -220,7 +248,7 @@ class StockAnalytics:
+@@ -220,7 +356,7 @@ class StockAnalytics:
              'sources': sources
          }
  
@@ -68,7 +180,7 @@ index fb4dd09..286547d 100644
          """
          AI-powered stock rating combining technical analysis and sentiment
          Returns comprehensive rating and analysis
-@@ -361,7 +389,7 @@ class StockAnalytics:
+@@ -361,7 +497,7 @@ class StockAnalytics:
          currency = 'INR' if is_indian else 'USD'
  
          # Generate AI summary
@@ -77,7 +189,7 @@ index fb4dd09..286547d 100644
  
          return {
              'ticker': ticker,
-@@ -386,38 +414,39 @@ class StockAnalytics:
+@@ -386,38 +522,39 @@ class StockAnalytics:
          }
  
      def _generate_summary(self, rating: str, score: float, technical_signals: List[str],
@@ -142,7 +254,7 @@ index fb4dd09..286547d 100644
  
          # Fallback to basic summary if AI is not available
          summaries = {
-@@ -453,7 +482,14 @@ Be direct and actionable. Avoid disclaimers."""
+@@ -453,7 +590,14 @@ Be direct and actionable. Avoid disclaimers."""
          return prompt
  
      def get_all_ratings(self) -> List[Dict]:
@@ -158,7 +270,7 @@ index fb4dd09..286547d 100644
          conn = sqlite3.connect(self.db_path)
          conn.row_factory = sqlite3.Row
          cursor = conn.cursor()
-@@ -466,20 +502,38 @@ Be direct and actionable. Avoid disclaimers."""
+@@ -466,20 +610,40 @@ Be direct and actionable. Avoid disclaimers."""
  
          conn.close()
  
@@ -205,9 +317,36 @@ index fb4dd09..286547d 100644
 +
 +        ratings.sort(key=lambda r: (r.get("ticker") or ""))
 +
++        self._maybe_persist_rating_history(ratings)
++
 +        with _cache_lock:
 +            _ratings_cache["ts"] = time.time()
 +            _ratings_cache["data"] = ratings
  
          return ratings
  
+diff --git a/dashboard.py b/dashboard.py
+index 9b7d981..b4dc291 100755
+--- a/dashboard.py
++++ b/dashboard.py
+@@ -252,6 +252,20 @@ def get_ai_rating(ticker):
+     return jsonify(rating)
+ 
+ 
++@app.route('/api/ai/rating-history/<ticker>')
++def get_ai_rating_history(ticker):
++    """Get persisted rating history snapshots for a ticker."""
++    limit_raw = request.args.get('limit', '200')
++    try:
++        limit = int(limit_raw)
++    except Exception:
++        limit = 200
++    from ai_analytics import StockAnalytics
++    analytics = StockAnalytics()
++    history = analytics.get_rating_history(ticker, limit=limit)
++    return jsonify({'ticker': ticker.upper(), 'history': history})
++
++
+ @app.route('/api/chart/<ticker>')
+ def get_chart_data(ticker):
+     """Get historical price data for chart"""

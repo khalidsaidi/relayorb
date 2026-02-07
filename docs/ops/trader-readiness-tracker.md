@@ -80,7 +80,7 @@ Evidence:
 - [ ] Fix RSI calculation (should not be a constant across symbols)
 - [ ] AI chat: configure provider and show clear error if missing (no silent failure)
 - [ ] Watchlist coverage: raise max monitored stocks (target: 100+ with paging; 500 later)
-- [ ] Persist rating history snapshots (daily/15m) and show rating changes over time
+- [~] Persist rating history snapshots (daily/15m) and show rating changes over time
 - [ ] Add per-rating "why" explanation (top contributors: sentiment/technicals/news volume)
 
 ## 4) Cross-Module Workflow ("Trader Dashboard")
