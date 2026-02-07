@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ExternalLink, RefreshCw, Info } from "lucide-react"
 import { useTranslation } from "react-i18next"
+import { useSearchParams } from "react-router-dom"
 import { resolveOpenbbApiUrl, resolveMarketDataProxyUrl } from "@/lib/runtime-urls"
 import { fetchJsonOrThrow, fetchJsonWithMeta, HttpRequestError } from "@/lib/http"
 import { toast } from "sonner"
@@ -674,6 +675,7 @@ function TechnicalOverviewCard({ technicals }: { technicals: Record<string, unkn
 
 export default function OpenbbPage() {
   const { t } = useTranslation()
+  const [searchParams] = useSearchParams()
   const apiUrl = useMemo(() => resolveOpenbbApiUrl(), [])
   const proxyBase = useMemo(() => resolveMarketDataProxyUrl(), [])
   const queryBase = proxyBase ? `${proxyBase}/v1/openbb` : apiUrl
@@ -862,6 +864,45 @@ export default function OpenbbPage() {
   const [cryptoSymbol, setCryptoSymbol] = useState("BTC-USD")
   const [cryptoInterval, setCryptoInterval] = useState("1d")
   const [commoditySelection, setCommoditySelection] = useState("brent")
+
+  // Deep-link support:
+  // - `/openbb?symbols=AAPL,MSFT` pre-fills symbol inputs across tabs.
+  // - `/openbb?symbols=AAPL&provider=intrinio` also pre-selects the provider (if enabled).
+  useEffect(() => {
+    const rawSymbols =
+      (searchParams.get("symbols") || searchParams.get("symbol") || searchParams.get("ticker") || "").trim()
+    if (rawSymbols) {
+      const parsed = rawSymbols
+        .split(/[,\n\r\t ]+/g)
+        .map((s) => s.trim().toUpperCase())
+        .filter(Boolean)
+        .slice(0, 50)
+      if (parsed.length) {
+        const joined = parsed.join(", ")
+        setQuickSymbols(joined)
+        setComparisonSymbols(joined)
+        setFundSymbol(parsed[0])
+        setTechSymbol(parsed[0])
+      }
+    }
+
+    const provider = (searchParams.get("provider") || "").trim().toLowerCase()
+    if (provider && AVAILABLE_QUOTE_PROVIDERS.includes(provider)) {
+      setQuickProvider(provider)
+      setCustomQuery((prev) => {
+        try {
+          const obj = JSON.parse(prev)
+          if (obj && typeof obj === "object") {
+            return JSON.stringify({ ...obj, provider }, null, 2)
+          }
+        } catch {
+          // ignore
+        }
+        return prev
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
 
   const [specOps, setSpecOps] = useState<ApiOperation[]>([])
   const [specTagDescriptions, setSpecTagDescriptions] = useState<Record<string, string>>({})

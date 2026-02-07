@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
+import { useSearchParams } from "react-router-dom"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -82,6 +83,16 @@ type StockpulseRating = {
   sentiment_score?: number | null
   technical_score?: number | null
   analysis_summary?: string | null
+  moving_averages?: Record<string, { value?: number | null; signal?: string | null }>
+  sentiment?: {
+    total_articles?: number | null
+    avg_sentiment?: number | null
+    positive_count?: number | null
+    neutral_count?: number | null
+    negative_count?: number | null
+    sentiment_trend?: string | null
+    sources?: Record<string, { count?: number | null; avg_sentiment?: number | null }>
+  }
   message?: string | null
 }
 
@@ -128,6 +139,19 @@ type StockpulseProviderTest = {
   success?: boolean
   message?: string
   error?: string
+}
+
+type StockpulseRatingHistoryPoint = {
+  ts: string
+  ticker: string
+  rating?: string | null
+  score?: number | null
+  confidence?: number | null
+  current_price?: number | null
+  currency?: string | null
+  rsi?: number | null
+  sentiment_score?: number | null
+  technical_score?: number | null
 }
 
 type ExplorerRoute = {
@@ -237,6 +261,7 @@ function MetricCard({ label, value }: { label: string; value: unknown }) {
 
 export default function StockpulsePage() {
   const { t } = useTranslation()
+  const [searchParams] = useSearchParams()
   const baseUrl = useMemo(() => resolveStockpulseUrl(), [])
   const proxyBase = useMemo(() => resolveMarketDataProxyUrl(), [])
   const queryBase = proxyBase ? `${proxyBase}/v1/stockpulse` : baseUrl
@@ -417,6 +442,7 @@ export default function StockpulsePage() {
   const [marketFilter, setMarketFilter] = useState("All")
   const [newsTicker, setNewsTicker] = useState("")
   const [selectedTicker, setSelectedTicker] = useState<string>("")
+  const [deepLinkTicker, setDeepLinkTicker] = useState<string | null>(null)
   const [ratingDetail, setRatingDetail] = useState<StockpulseRating | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
@@ -439,6 +465,16 @@ export default function StockpulsePage() {
   })
   const [aiProviderTest, setAiProviderTest] = useState<StockpulseProviderTest | null>(null)
   const [aiProviderLoading, setAiProviderLoading] = useState(false)
+
+  // Deep-link support:
+  // - `/stockpulse?ticker=AAPL` selects the ticker and auto-loads its detail + chart + rating history.
+  useEffect(() => {
+    const raw = (searchParams.get("ticker") || searchParams.get("symbol") || "").trim()
+    if (!raw) return
+    const ticker = raw.toUpperCase()
+    setSelectedTicker(ticker)
+    setDeepLinkTicker(ticker)
+  }, [searchParams])
 
   const fetchJson = useCallback(
     async (path: string, init?: RequestInit) => {
@@ -498,7 +534,11 @@ export default function StockpulsePage() {
     setRatingsLoading(true)
     setError(null)
     try {
-      const data = await fetchJson("/api/ai/ratings")
+      const ratingsPath =
+        marketFilter !== "All"
+          ? `/api/ai/ratings?market=${encodeURIComponent(marketFilter)}`
+          : "/api/ai/ratings"
+      const data = await fetchJson(ratingsPath)
       setRatings(data)
       setRatingsUpdated(new Date().toISOString())
     } catch (err) {
@@ -506,7 +546,7 @@ export default function StockpulsePage() {
     } finally {
       setRatingsLoading(false)
     }
-  }, [fetchJson, queryBase])
+  }, [fetchJson, queryBase, marketFilter])
 
   const loadRatingDetail = useCallback(
     async (ticker: string) => {
@@ -521,6 +561,29 @@ export default function StockpulsePage() {
         setError(err instanceof Error ? err.message : "Unknown error")
       } finally {
         setDetailLoading(false)
+      }
+    },
+    [fetchJson, queryBase]
+  )
+
+  const [ratingHistory, setRatingHistory] = useState<StockpulseRatingHistoryPoint[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+
+  const loadRatingHistory = useCallback(
+    async (ticker: string, limit = 240) => {
+      if (!queryBase || !ticker) return
+      setHistoryLoading(true)
+      setError(null)
+      try {
+        const data = await fetchJson(
+          `/api/ai/rating-history/${encodeURIComponent(ticker)}?limit=${encodeURIComponent(String(limit))}`
+        )
+        setRatingHistory(Array.isArray(data) ? (data as StockpulseRatingHistoryPoint[]) : [])
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unknown error")
+        setRatingHistory([])
+      } finally {
+        setHistoryLoading(false)
       }
     },
     [fetchJson, queryBase]
@@ -542,6 +605,18 @@ export default function StockpulsePage() {
     },
     [fetchJson, queryBase]
   )
+
+  // Run the deep-link auto-load once (avoid firing on every keystroke in the ticker input).
+  useEffect(() => {
+    if (!deepLinkTicker) return
+    setDeepLinkTicker(null)
+
+    setChartSymbol(deepLinkTicker)
+    setChatTicker(deepLinkTicker)
+    void loadRatingDetail(deepLinkTicker)
+    void loadRatingHistory(deepLinkTicker)
+    void fetchChart(deepLinkTicker, chartPeriod)
+  }, [chartPeriod, deepLinkTicker, fetchChart, loadRatingDetail, loadRatingHistory])
 
   const refreshProviders = useCallback(async () => {
     if (!queryBase) return
@@ -1091,6 +1166,7 @@ export default function StockpulsePage() {
                       onClick={() => {
                         setSelectedTicker(rating.ticker)
                         loadRatingDetail(rating.ticker)
+                        loadRatingHistory(rating.ticker)
                         setChartSymbol(rating.ticker)
                         fetchChart(rating.ticker, chartPeriod)
                       }}
@@ -1134,6 +1210,10 @@ export default function StockpulsePage() {
                 <RefreshCw className="mr-2 h-4 w-4" />
                 Load
               </Button>
+              <Button size="sm" variant="outline" onClick={() => loadRatingHistory(selectedTicker)} disabled={historyLoading}>
+                <RefreshCw className="mr-2 h-4 w-4" />
+                History
+              </Button>
             </div>
           </CardHeader>
           <CardContent className="space-y-3 text-xs text-muted-foreground">
@@ -1153,6 +1233,92 @@ export default function StockpulsePage() {
                     <MetricCard label="Sentiment" value={ratingDetail.sentiment_score ?? "-"} />
                     <MetricCard label="Technical" value={ratingDetail.technical_score ?? "-"} />
                   </div>
+                </div>
+
+                <div className="grid gap-2 md:grid-cols-2">
+                  <div className="rounded-md border border-border/60 bg-muted/20 p-3">
+                    <div className="text-xs font-semibold text-foreground">Why (quick)</div>
+                    <div className="mt-2 grid gap-2 md:grid-cols-2">
+                      <MetricCard label="Articles" value={ratingDetail.sentiment?.total_articles ?? "-"} />
+                      <MetricCard label="Avg sentiment" value={ratingDetail.sentiment?.avg_sentiment ?? "-"} />
+                      <MetricCard label="RSI signal" value={typeof ratingDetail.rsi === "number" ? (ratingDetail.rsi >= 70 ? "overbought" : ratingDetail.rsi <= 30 ? "oversold" : "neutral") : "-"} />
+                      <MetricCard
+                        label="MA20"
+                        value={
+                          ratingDetail.moving_averages?.ma_20
+                            ? `${ratingDetail.moving_averages.ma_20.signal || "-"} @ ${ratingDetail.moving_averages.ma_20.value ?? "-"}`
+                            : "-"
+                        }
+                      />
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-border/60 bg-muted/20 p-3">
+                    <div className="text-xs font-semibold text-foreground">Sentiment mix</div>
+                    <div className="mt-2 grid gap-2 md:grid-cols-3">
+                      <MetricCard label="Positive" value={ratingDetail.sentiment?.positive_count ?? "-"} />
+                      <MetricCard label="Neutral" value={ratingDetail.sentiment?.neutral_count ?? "-"} />
+                      <MetricCard label="Negative" value={ratingDetail.sentiment?.negative_count ?? "-"} />
+                    </div>
+                    {ratingDetail.sentiment?.sources ? (
+                      <div className="mt-2 text-[11px] text-muted-foreground">
+                        Sources:{" "}
+                        {Object.entries(ratingDetail.sentiment.sources)
+                          .slice(0, 6)
+                          .map(([name, s]) => `${name}(${s.count ?? 0})`)
+                          .join(", ")}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border/60 bg-muted/20 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs font-semibold text-foreground">Rating history</div>
+                    <div className="text-[11px] text-muted-foreground">{historyLoading ? "Loading…" : `${ratingHistory.length} points`}</div>
+                  </div>
+                  {ratingHistory.length ? (
+                    <div className="mt-3">
+                      <ChartFrame height={220} className="min-h-[220px]">
+                        {({ width, height }) => (
+                          <LineChart width={width} height={height} data={ratingHistory}>
+                            <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.3} />
+                            <XAxis dataKey="ts" tick={{ fontSize: 10 }} minTickGap={22} />
+                            <YAxis tick={{ fontSize: 10 }} domain={[0, 100]} />
+                            <Tooltip contentStyle={{ fontSize: "11px" }} />
+                            <Legend wrapperStyle={{ fontSize: "11px" }} />
+                            <Line type="monotone" dataKey="score" stroke="#2563eb" dot={false} strokeWidth={1.6} />
+                            <Line type="monotone" dataKey="rsi" stroke="#f97316" dot={false} strokeWidth={1.6} />
+                          </LineChart>
+                        )}
+                      </ChartFrame>
+                      <div className="mt-2 overflow-x-auto rounded-md border border-border/60 bg-background">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Time (UTC)</TableHead>
+                              <TableHead>Rating</TableHead>
+                              <TableHead>Score</TableHead>
+                              <TableHead>RSI</TableHead>
+                              <TableHead>Price</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {ratingHistory.slice(-10).reverse().map((p) => (
+                              <TableRow key={`${p.ts}-${p.ticker}`}>
+                                <TableCell className="text-xs text-muted-foreground">{p.ts}</TableCell>
+                                <TableCell className="text-xs">{p.rating || "-"}</TableCell>
+                                <TableCell className="text-xs">{typeof p.score === "number" ? p.score.toFixed(1) : "-"}</TableCell>
+                                <TableCell className="text-xs">{p.rsi ?? "-"}</TableCell>
+                                <TableCell className="text-xs">{typeof p.current_price === "number" ? p.current_price.toFixed(2) : "-"}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-xs text-muted-foreground">No history yet. It will fill as the service runs.</div>
+                  )}
                 </div>
               </>
             ) : (

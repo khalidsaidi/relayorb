@@ -3,6 +3,7 @@ const en = {
     relayOrb: "RelayOrb",
   },
   nav: {
+    trader: "Trader",
     openbb: "OpenBB",
     finnews: "FinnewsHunter",
     stockpulse: "StockPulse",
@@ -26,6 +27,10 @@ const en = {
     loading: "Loading…",
     search: "Search",
     close: "Close",
+  },
+  trader: {
+    title: "Trader Dashboard",
+    subtitle: "One place to cross-check quote, sentiment, and filings before you act.",
   },
   openbb: {
     consoleTitle: "OpenBB Console",

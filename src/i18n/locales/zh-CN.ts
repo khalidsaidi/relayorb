@@ -3,6 +3,7 @@ const zhCN = {
     relayOrb: "RelayOrb",
   },
   nav: {
+    trader: "交易面板",
     openbb: "OpenBB",
     finnews: "FinnewsHunter",
     stockpulse: "StockPulse",
@@ -25,6 +26,10 @@ const zhCN = {
     loading: "加载中…",
     search: "搜索",
     close: "关闭",
+  },
+  trader: {
+    title: "交易面板",
+    subtitle: "在执行之前，一处交叉核对行情、情绪与公告。",
   },
   openbb: {
     consoleTitle: "OpenBB 控制台",

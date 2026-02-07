@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
+import { useSearchParams } from "react-router-dom"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -168,6 +169,7 @@ async function copyText(label: string, value: string) {
 
 export default function FinnewsPage() {
   const { t } = useTranslation()
+  const [searchParams] = useSearchParams()
   const baseUrl = useMemo(() => resolveFinnewsUrl(), [])
   const proxyBase = useMemo(() => resolveMarketDataProxyUrl(), [])
   const queryBase = proxyBase ? `${proxyBase}/v1/finnews` : baseUrl
@@ -196,12 +198,14 @@ export default function FinnewsPage() {
   const [loading, setLoading] = useState(false)
   const [lastUpdated, setLastUpdated] = useState<string | null>(null)
   const [crawlLoading, setCrawlLoading] = useState(false)
+  const [activeTab, setActiveTab] = useState<string>("overview")
 
   const [searchQuery, setSearchQuery] = useState("")
   const [searchSource, setSearchSource] = useState<string | undefined>(undefined)
   const [searchLimit, setSearchLimit] = useState(defaultLimit)
   const [searchResults, setSearchResults] = useState<NewsItem[]>([])
   const [searchLoading, setSearchLoading] = useState(false)
+  const [autoSearch, setAutoSearch] = useState(false)
 
   const [newsDetail, setNewsDetail] = useState<NewsItem | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
@@ -216,6 +220,16 @@ export default function FinnewsPage() {
   const [stockQuery, setStockQuery] = useState("")
   const [stockResults, setStockResults] = useState<{ code: string; name: string; full_code: string; market?: string | null }[]>([])
   const [stockOverview, setStockOverview] = useState<StockOverview | null>(null)
+
+  // Deep-link support:
+  // - `/finnews?q=AAPL` pre-fills search and switches to Search tab.
+  useEffect(() => {
+    const q = (searchParams.get("q") || searchParams.get("query") || searchParams.get("ticker") || "").trim()
+    if (!q) return
+    setSearchQuery(q)
+    setActiveTab("search")
+    setAutoSearch(true)
+  }, [searchParams])
 
   const fetchJson = useCallback(
     async (path: string, init?: RequestInit) => {
@@ -303,6 +317,14 @@ export default function FinnewsPage() {
       setSearchLoading(false)
     }
   }, [fetchJson, searchQuery, searchSource, searchLimit])
+
+  // If the page was opened with a `?q=` deep-link, auto-run the first search once we have enough context.
+  useEffect(() => {
+    if (!autoSearch) return
+    if (!searchQuery && !searchSource) return
+    setAutoSearch(false)
+    void searchNews()
+  }, [autoSearch, searchNews, searchQuery, searchSource])
 
   const showDetail = useCallback(
     async (item: NewsItem) => {
@@ -440,7 +462,7 @@ export default function FinnewsPage() {
         </CardContent>
       </Card>
 
-      <Tabs defaultValue="overview" className="space-y-4">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="flex flex-wrap gap-2">
           <TabsTrigger value="overview" className="flex items-center gap-2">
             <Info className="h-4 w-4" /> {t("finnews.statusTitle")}

@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom"
 import SignInPage from "@/pages/SignInPage"
+import TraderDashboardPage from "@/pages/TraderDashboardPage"
 import OpenbbPage from "@/pages/OpenbbPage"
 import FinnewsPage from "@/pages/FinnewsPage"
 import StockpulsePage from "@/pages/StockpulsePage"
@@ -19,7 +20,8 @@ export default function App() {
               <AppShell />
             }
           >
-            <Route path="/" element={<Navigate to="/openbb" replace />} />
+            <Route path="/" element={<Navigate to="/trader" replace />} />
+            <Route path="/trader" element={<TraderDashboardPage />} />
             <Route path="/openbb" element={<OpenbbPage />} />
             <Route path="/finnews" element={<FinnewsPage />} />
             <Route path="/stockpulse" element={<StockpulsePage />} />

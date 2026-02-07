@@ -82,16 +82,23 @@ Evidence:
 - [x] AI chat: configure provider and show clear error if missing (no silent failure)
 - [ ] Watchlist coverage: raise max monitored stocks (target: 100+ with paging; 500 later)
 - [~] Persist rating history snapshots (daily/15m) and show rating changes over time
-- [ ] Add per-rating "why" explanation (top contributors: sentiment/technicals/news volume)
+- [x] Add per-rating "why" explanation (top contributors: sentiment/technicals/news volume)
 
 ## 4) Cross-Module Workflow ("Trader Dashboard")
 
-- [ ] One place to enter symbols and see:
+- [~] One place to enter symbols and see:
   - OpenBB: price + technical snapshot
   - FinnewsHunter: latest filings/news for the same symbols
   - StockPulse: rating + sentiment for the same symbols
-- [ ] Deep links: click symbol -> opens OpenBB/Finnews/StockPulse at same symbol
+- [x] Deep links: click symbol -> opens OpenBB/Finnews/StockPulse at same symbol
 - [ ] Basic alerts (in-app): "new SEC filing", "rating change", "RSI threshold"
+
+Evidence:
+- `src/pages/TraderDashboardPage.tsx`
+- deep-link prefill:
+  - `src/pages/OpenbbPage.tsx`
+  - `src/pages/FinnewsPage.tsx`
+  - `src/pages/StockpulsePage.tsx`
 
 ## 5) Current Completion Estimate
 
@@ -101,5 +108,5 @@ This is a rough tracker-driven estimate, not a claim of "production ready".
 - OpenBB connectivity + technical endpoint correctness: ~70%
 - OpenBB trader visuals: ~30%
 - FinnewsHunter trader usability: ~20%
-- StockPulse trader usability: ~35%
-- Cross-module workflow: ~0%
+- StockPulse trader usability: ~55%
+- Cross-module workflow: ~45%

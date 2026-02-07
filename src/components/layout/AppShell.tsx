@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { TerminalSquare, Newspaper, Radar, LogOut, ExternalLink, HeartPulse } from "lucide-react"
+import { LayoutDashboard, TerminalSquare, Newspaper, Radar, LogOut, ExternalLink, HeartPulse } from "lucide-react"
 import { useAuth } from "@/features/auth/auth-context"
 import { auth, firebaseEnabled } from "@/lib/firebase"
 import { signOut } from "firebase/auth"
@@ -20,10 +20,11 @@ type NavItem = {
 }
 
 function getPageTitle(pathname: string, t: (key: string) => string) {
+  if (pathname.startsWith("/trader")) return t("nav.trader")
   if (pathname.startsWith("/openbb")) return t("nav.openbb")
   if (pathname.startsWith("/finnews")) return t("nav.finnews")
   if (pathname.startsWith("/stockpulse")) return t("nav.stockpulse")
-  return t("nav.openbb")
+  return t("nav.trader")
 }
 
 export function AppShell() {
@@ -74,6 +75,7 @@ export function AppShell() {
   }
 
   const navItems: NavItem[] = [
+    { to: "/trader", label: t("nav.trader"), icon: <LayoutDashboard className="h-4 w-4" /> },
     { to: "/openbb", label: t("nav.openbb"), icon: <TerminalSquare className="h-4 w-4" /> },
     { to: "/finnews", label: t("nav.finnews"), icon: <Newspaper className="h-4 w-4" /> },
     { to: "/stockpulse", label: t("nav.stockpulse"), icon: <Radar className="h-4 w-4" /> },
