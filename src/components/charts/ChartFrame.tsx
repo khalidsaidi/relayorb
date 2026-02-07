@@ -44,10 +44,13 @@ export function ChartFrame({
       // Guard against rare cases where an embedded browser reports NaN sizes during layout.
       // Recharts treats those as invalid and will warn loudly.
       if (!Number.isFinite(next.width) || !Number.isFinite(next.height)) return
-      // Some layouts (hidden tabs, collapsed panels) can briefly report extremely small sizes.
-      // Recharts will warn when the drawable area becomes <= 0 after margins; avoid rendering
-      // until we have a meaningful box.
-      if (next.width < MIN_CHART_SIDE_PX || next.height < MIN_CHART_SIDE_PX) return
+      // Some layouts (hidden tabs, collapsed panels) can report extremely small sizes.
+      // Instead of keeping the last "good" size (which can cause chart libs to warn),
+      // explicitly unmount children until the container is visible again.
+      if (next.width < MIN_CHART_SIDE_PX || next.height < MIN_CHART_SIDE_PX) {
+        setSize((prev) => (prev ? null : prev))
+        return
+      }
       setSize((prev) => {
         if (prev && prev.width === next.width && prev.height === next.height) return prev
         return next

@@ -130,9 +130,9 @@ function extractTickers(text: string) {
     /\b(?:NASDAQ|NYSE|AMEX)\s*[:]\s*([A-Z]{1,6}(?:\.[A-Z]{1,2})?)\b/g,
   ]
   for (const re of patterns) {
-    let m: RegExpExecArray | null
-    // eslint-disable-next-line no-cond-assign
-    while ((m = re.exec(hay))) {
+    for (;;) {
+      const m = re.exec(hay)
+      if (!m) break
       const sym = (m[1] || "").trim().toUpperCase()
       if (!sym) continue
       out.add(sym)

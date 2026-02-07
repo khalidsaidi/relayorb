@@ -25,6 +25,7 @@ Out of scope (for this tracker):
 
 - [x] Run dev server in tmux (survives IDE restarts) via `scripts/ui-dev.sh`
 - [x] Default dev port avoids Windows excluded port ranges: `5170` (Vite default `5173` often breaks on Windows+WSL)
+- [x] Optional port override supported: `bash scripts/ui-dev.sh restart 5300`
 - [x] Stable HMR websocket in Windows browser (force IPv4 HMR host `127.0.0.1`)
 - [x] Windows reachability verified (PowerShell `Invoke-WebRequest http://localhost:5170/` returns 200)
 - [x] Firebase sign-in guardrails: show actionable message when opened from a non-authorized origin
@@ -76,9 +77,9 @@ Evidence:
 
 ## 3) StockPulse (Trader-Grade)
 
-- [ ] Fix US market filter so it affects **all** sections consistently (including ratings table)
-- [ ] Fix RSI calculation (should not be a constant across symbols)
-- [ ] AI chat: configure provider and show clear error if missing (no silent failure)
+- [x] Fix US market filter so it affects **all** sections consistently (including ratings table)
+- [x] Fix RSI calculation (should not be a constant across symbols)
+- [x] AI chat: configure provider and show clear error if missing (no silent failure)
 - [ ] Watchlist coverage: raise max monitored stocks (target: 100+ with paging; 500 later)
 - [~] Persist rating history snapshots (daily/15m) and show rating changes over time
 - [ ] Add per-rating "why" explanation (top contributors: sentiment/technicals/news volume)
@@ -100,5 +101,5 @@ This is a rough tracker-driven estimate, not a claim of "production ready".
 - OpenBB connectivity + technical endpoint correctness: ~70%
 - OpenBB trader visuals: ~30%
 - FinnewsHunter trader usability: ~20%
-- StockPulse trader usability: ~15%
+- StockPulse trader usability: ~35%
 - Cross-module workflow: ~0%

@@ -4,9 +4,9 @@ set -euo pipefail
 # Manage the RelayOrb frontend dev server in a tmux session so it survives terminal/IDE restarts.
 #
 # Usage:
-#   bash scripts/ui-dev.sh start
+#   bash scripts/ui-dev.sh start [port]
 #   bash scripts/ui-dev.sh stop
-#   bash scripts/ui-dev.sh restart
+#   bash scripts/ui-dev.sh restart [port]
 #   bash scripts/ui-dev.sh status
 #   bash scripts/ui-dev.sh logs
 #
@@ -18,6 +18,7 @@ SESSION="relayorb_dev"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cmd="${1:-status}"
+port="${2:-}"
 
 has_session() {
   tmux has-session -t "$SESSION" 2>/dev/null
@@ -29,8 +30,13 @@ case "$cmd" in
       echo "Dev server already running (tmux session: $SESSION)."
       exit 0
     fi
-    tmux new -d -s "$SESSION" "cd '$ROOT_DIR' && npm run dev"
-    echo "Dev server started (tmux session: $SESSION)."
+    if [[ -n "$port" ]]; then
+      tmux new -d -s "$SESSION" "cd '$ROOT_DIR' && VITE_DEV_PORT='$port' npm run dev"
+      echo "Dev server started (tmux session: $SESSION, port: $port)."
+    else
+      tmux new -d -s "$SESSION" "cd '$ROOT_DIR' && npm run dev"
+      echo "Dev server started (tmux session: $SESSION)."
+    fi
     ;;
 
   stop)
@@ -44,15 +50,16 @@ case "$cmd" in
 
   restart)
     "$0" stop
-    "$0" start
+    "$0" start "${port:-}"
     ;;
 
   status)
     if has_session; then
       echo "Dev server running (tmux session: $SESSION)."
-      # Best-effort port detection (prints any LISTEN on 5170/5173).
-      (lsof -nP -iTCP:5170 -sTCP:LISTEN 2>/dev/null || true) | sed -n '1,3p'
-      (lsof -nP -iTCP:5173 -sTCP:LISTEN 2>/dev/null || true) | sed -n '1,3p'
+      # Best-effort port detection (prints common ports).
+      for p in 5170 5173 5300; do
+        (lsof -nP -iTCP:${p} -sTCP:LISTEN 2>/dev/null || true) | sed -n '1,3p'
+      done
       echo
       tmux capture-pane -pt "$SESSION" | tail -n 20
     else
@@ -72,8 +79,7 @@ case "$cmd" in
 
   *)
     echo "Unknown command: $cmd"
-    echo "Usage: bash scripts/ui-dev.sh {start|stop|restart|status|logs}"
+    echo "Usage: bash scripts/ui-dev.sh {start|stop|restart|status|logs} [port]"
     exit 2
     ;;
 esac
-

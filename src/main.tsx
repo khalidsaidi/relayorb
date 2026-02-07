@@ -12,7 +12,12 @@ import { AppErrorBoundary } from "@/components/AppErrorBoundary"
 // `auth/unauthorized-domain`. In dev, normalize to `localhost` automatically.
 if (import.meta.env.DEV) {
   const { protocol, hostname, port, pathname, search, hash } = window.location
-  if (hostname === "127.0.0.1") {
+  const isWindows = navigator.userAgent.includes("Windows")
+  const isIpv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)
+
+  // On Windows, developers often open the Vite dev server using the WSL IP (172.x/10.x) which breaks Firebase popup
+  // auth unless that IP is added as an authorized domain. Keep dev deterministic by forcing `localhost`.
+  if (isWindows && isIpv4 && hostname !== "localhost") {
     window.location.replace(`${protocol}//localhost:${port}${pathname}${search}${hash}`)
   }
 }

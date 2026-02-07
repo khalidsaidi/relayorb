@@ -879,7 +879,7 @@ export default function StockpulsePage() {
     setExplorerPathParams(nextPath)
     setExplorerBody(selectedRoute.bodyExample ? JSON.stringify(selectedRoute.bodyExample, null, 2) : "")
     setExplorerResult(null)
-  }, [selectedRoute?.id])
+  }, [selectedRoute])
 
   const runExplorer = useCallback(async () => {
     if (!queryBase || !selectedRoute) return
