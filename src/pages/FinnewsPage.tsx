@@ -37,6 +37,14 @@ function formatRelative(value?: string | null) {
   return `${days}d ago`
 }
 
+function parseTimeMs(value?: string | null) {
+  if (!value) return null
+  const normalized = value.includes("T") ? value : value.replace(" ", "T")
+  const parsed = new Date(normalized)
+  const ms = parsed.getTime()
+  return Number.isFinite(ms) ? ms : null
+}
+
 type FinnewsHealth = {
   status?: string
   app?: string
@@ -195,6 +203,11 @@ function isSecUrl(url?: string | null) {
   return url.includes("sec.gov") || url.includes("www.sec.gov")
 }
 
+function isRateLimitMessage(msg?: string | null) {
+  const hay = String(msg || "")
+  return /(?:\b429\b|too many requests|rate limit|bandwidth limit)/i.test(hay)
+}
+
 function sentimentMeta(score?: number | null) {
   if (typeof score !== "number" || !Number.isFinite(score)) return null
   const s = Math.max(-1, Math.min(1, score))
@@ -204,6 +217,94 @@ function sentimentMeta(score?: number | null) {
   const tone =
     label === "positive" ? "bg-emerald-100 text-emerald-700" : label === "negative" ? "bg-rose-100 text-rose-700" : "bg-muted text-muted-foreground"
   return { score: s, confidence, label, tone }
+}
+
+type ParsedSearch = {
+  hasQuery: boolean
+  tickers: string[]
+  keywords: string[]
+}
+
+function parseSearchQuery(raw: string): ParsedSearch {
+  const q = String(raw || "").trim()
+  if (!q) return { hasQuery: false, tickers: [], keywords: [] }
+
+  const tickerSet = new Set<string>()
+  extractTickers(q).forEach((t) => tickerSet.add(t))
+  for (const token of q.split(/[\s,]+/g)) {
+    const cleaned = token.replace(/[^A-Za-z.]/g, "").trim()
+    if (!cleaned) continue
+    if (/^[A-Za-z]{1,6}(?:\.[A-Za-z]{1,2})?$/.test(cleaned)) {
+      tickerSet.add(cleaned.toUpperCase())
+    }
+  }
+
+  const keywords = q
+    .toLowerCase()
+    .split(/[\s,]+/g)
+    .map((s) => s.replace(/[^a-z0-9.]/g, "").trim())
+    .filter(Boolean)
+    .filter((s) => s.length >= 2)
+    .filter((s) => !tickerSet.has(s.toUpperCase()))
+
+  return {
+    hasQuery: true,
+    tickers: Array.from(tickerSet),
+    keywords,
+  }
+}
+
+type MatchReason = { kind: "ticker" | "keyword" | "cik"; label: string }
+
+function computeRelevance(args: {
+  item: NewsItem
+  symbols: string[]
+  query: ParsedSearch
+  cikToTicker?: Record<string, string> | null
+}) {
+  const { item, symbols, query, cikToTicker } = args
+  const reasons: MatchReason[] = []
+  let score = 0
+
+  const symbolSet = new Set(symbols.map((s) => String(s).trim().toUpperCase()).filter(Boolean))
+  if (query.tickers.length) {
+    const matched = query.tickers.filter((t) => symbolSet.has(t.toUpperCase()))
+    if (matched.length) {
+      score += 80 + matched.length * 10
+      for (const t of matched.slice(0, 2)) {
+        reasons.push({ kind: "ticker", label: t.toUpperCase() })
+      }
+    }
+  }
+
+  if (query.keywords.length) {
+    const hay = [item.title, item.content].filter(Boolean).join(" ").toLowerCase()
+    const matched = query.keywords.filter((k) => hay.includes(k))
+    if (matched.length) {
+      score += Math.min(40, matched.length * 8)
+      for (const k of matched.slice(0, 2)) {
+        reasons.push({ kind: "keyword", label: k })
+      }
+    }
+  }
+
+  if (cikToTicker) {
+    const ciks = extractCiksFromItem(item)
+    const mappedTickers = ciks
+      .map((cik) => cikToTicker[cik])
+      .filter(Boolean)
+      .map((t) => String(t).trim().toUpperCase())
+    const mappedMatch = mappedTickers.find((t) => symbolSet.has(t))
+    if (mappedMatch && isSecUrl(item.url)) {
+      score += 20
+      reasons.push({ kind: "cik", label: mappedMatch })
+    }
+  }
+
+  // If nothing matched explicitly, keep stable ordering but still mark SEC items as mildly relevant.
+  if (score === 0 && isSecUrl(item.url)) score = 1
+
+  return { score, reasons }
 }
 
 async function copyText(label: string, value: string) {
@@ -258,6 +359,8 @@ export default function FinnewsPage() {
   const [searchLoading, setSearchLoading] = useState(false)
   const [autoSearch, setAutoSearch] = useState(false)
 
+  const parsedSearch = useMemo(() => parseSearchQuery(searchQuery), [searchQuery])
+
   const [newsDetail, setNewsDetail] = useState<NewsItem | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
 
@@ -271,6 +374,65 @@ export default function FinnewsPage() {
   const [stockQuery, setStockQuery] = useState("")
   const [stockResults, setStockResults] = useState<{ code: string; name: string; full_code: string; market?: string | null }[]>([])
   const [stockOverview, setStockOverview] = useState<StockOverview | null>(null)
+
+  const crawlHints = useMemo(() => {
+    if (!tasks.length) {
+      return {
+        hasTasks: false,
+        stale: false,
+        rateLimited: false,
+        lastTask: null as FinnewsTask | null,
+        cadenceMinutes: null as number | null,
+        rateLimitTask: null as FinnewsTask | null,
+      }
+    }
+
+    const sorted = [...tasks].sort((a, b) => (parseTimeMs(b.created_at) || 0) - (parseTimeMs(a.created_at) || 0))
+    const lastTask = sorted[0] || null
+    const lastMs = parseTimeMs(lastTask?.created_at || null)
+    const ageMin = lastMs ? (Date.now() - lastMs) / 60000 : null
+    const stale = typeof ageMin === "number" && Number.isFinite(ageMin) ? ageMin > 15 : false
+
+    const recent = sorted.slice(0, 10)
+    const rateLimitTask = recent.find((t) => isRateLimitMessage(t.error_message || null)) || null
+
+    // Estimate cadence from recent tasks (median interval).
+    const deltas: number[] = []
+    for (let i = 0; i < Math.min(6, sorted.length - 1); i++) {
+      const a = parseTimeMs(sorted[i]?.created_at || null)
+      const b = parseTimeMs(sorted[i + 1]?.created_at || null)
+      if (!a || !b) continue
+      const d = Math.abs(a - b) / 60000
+      if (Number.isFinite(d) && d > 0) deltas.push(d)
+    }
+    deltas.sort((a, b) => a - b)
+    const cadenceMinutes = deltas.length ? deltas[Math.floor(deltas.length / 2)] : null
+
+    return {
+      hasTasks: true,
+      stale,
+      rateLimited: Boolean(rateLimitTask),
+      lastTask,
+      cadenceMinutes,
+      rateLimitTask,
+    }
+  }, [tasks])
+
+  const searchRows = useMemo(() => {
+    const rows = searchResults.map((item) => {
+      const symbols = deriveSymbols(item, secCikMap)
+      const relevance = computeRelevance({ item, symbols, query: parsedSearch, cikToTicker: secCikMap })
+      return { item, symbols, relevance }
+    })
+
+    if (!parsedSearch.hasQuery) return rows
+    return rows.sort((a, b) => {
+      if (b.relevance.score !== a.relevance.score) return b.relevance.score - a.relevance.score
+      const bt = parseTimeMs(b.item.publish_time || b.item.created_at || null) || 0
+      const at = parseTimeMs(a.item.publish_time || a.item.created_at || null) || 0
+      return bt - at
+    })
+  }, [parsedSearch, searchResults, secCikMap])
 
   // Load SEC CIK -> ticker map (static asset) for SEC filing enrichment.
   useEffect(() => {
@@ -606,6 +768,33 @@ export default function FinnewsPage() {
                     {JSON.stringify(taskStats)}
                   </div>
                 ) : null}
+                <div className="mt-3 rounded-md border bg-muted/20 p-3 text-xs">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline">Freshness</Badge>
+                    {crawlHints.hasTasks ? (
+                      crawlHints.stale ? <Badge variant="destructive">Data may be stale</Badge> : <Badge variant="secondary">Fresh</Badge>
+                    ) : (
+                      <Badge variant="outline">No crawl yet</Badge>
+                    )}
+                    {crawlHints.rateLimited ? <Badge variant="destructive">Rate limit</Badge> : null}
+                  </div>
+                  <div className="mt-2 text-muted-foreground">
+                    <span className="font-medium text-foreground">Last crawl:</span>{" "}
+                    {crawlHints.lastTask?.created_at ? formatRelative(crawlHints.lastTask.created_at) : "-"}
+                    {" · "}
+                    <span className="font-medium text-foreground">Cadence:</span>{" "}
+                    {typeof crawlHints.cadenceMinutes === "number" ? `~${Math.round(crawlHints.cadenceMinutes)}m` : "-"}
+                    {" · "}
+                    <span className="font-medium text-foreground">Saved:</span>{" "}
+                    {typeof crawlHints.lastTask?.saved_count === "number" ? crawlHints.lastTask.saved_count : "-"}
+                  </div>
+                  {crawlHints.rateLimitTask?.error_message ? (
+                    <div className="mt-2 text-destructive">
+                      Rate limit detected in recent task. Tip: reduce crawl frequency, increase provider quota, or retry later.
+                      <div className="mt-1 text-[11px] opacity-90">{crawlHints.rateLimitTask.error_message}</div>
+                    </div>
+                  ) : null}
+                </div>
               </CardContent>
             </Card>
 
@@ -756,6 +945,22 @@ export default function FinnewsPage() {
                   {searchLoading ? "Searching" : "Search"}
                 </Button>
               </div>
+              {crawlHints.rateLimited ? (
+                <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive">
+                  <div className="font-semibold">Provider rate-limited recently</div>
+                  <div className="mt-1 text-destructive/90">
+                    FinnewsHunter hit a rate limit while crawling. Results may be incomplete until the next successful crawl.
+                  </div>
+                </div>
+              ) : crawlHints.stale ? (
+                <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+                  <div className="font-semibold text-foreground">Data may be stale</div>
+                  <div className="mt-1">
+                    Last crawl was {crawlHints.lastTask?.created_at ? formatRelative(crawlHints.lastTask.created_at) : "-"}.
+                    Run a crawl to refresh news/filings before relying on results.
+                  </div>
+                </div>
+              ) : null}
               {detailError ? <div className="text-xs text-destructive">{detailError}</div> : null}
               <div className="h-80 overflow-y-auto rounded-md border">
                 <Table>
@@ -764,13 +969,14 @@ export default function FinnewsPage() {
                       <TableHead>Headline</TableHead>
                       <TableHead className="w-[90px]">Type</TableHead>
                       <TableHead className="w-[160px]">Tickers</TableHead>
+                      <TableHead className="w-[170px]">Why matched</TableHead>
                       <TableHead className="w-[120px]">Sentiment</TableHead>
                       <TableHead>Source</TableHead>
                       <TableHead>Published</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {searchResults.map((item) => (
+                    {searchRows.map(({ item, symbols, relevance }) => (
                       <TableRow
                         key={`${item.id}-${item.url || item.source_url || ""}`}
                         className="cursor-pointer"
@@ -785,19 +991,40 @@ export default function FinnewsPage() {
                           {isSecUrl(item.url) ? <Badge variant="outline">SEC</Badge> : <Badge variant="outline">News</Badge>}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
-                          {(() => {
-                            const symbols = deriveSymbols(item, secCikMap)
-                            if (!symbols.length) return "-"
-                            return (
-                              <div className="flex flex-wrap gap-1">
-                                {symbols.slice(0, 6).map((code) => (
-                                  <Badge key={code} variant="secondary">
-                                    {code}
-                                  </Badge>
-                                ))}
-                              </div>
-                            )
-                          })()}
+                          {!symbols.length ? (
+                            "-"
+                          ) : (
+                            <div className="flex flex-wrap gap-1">
+                              {symbols.slice(0, 6).map((code) => (
+                                <Badge key={code} variant="secondary">
+                                  {code}
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {relevance.reasons.length ? (
+                            <div className="flex flex-wrap gap-1">
+                              {relevance.reasons.map((r) => (
+                                <Badge
+                                  key={`${r.kind}-${r.label}`}
+                                  variant="outline"
+                                  title={
+                                    r.kind === "ticker"
+                                      ? "Ticker match"
+                                      : r.kind === "keyword"
+                                        ? "Keyword match"
+                                        : "SEC CIK mapped ticker"
+                                  }
+                                >
+                                  {r.kind}:{r.label}
+                                </Badge>
+                              ))}
+                            </div>
+                          ) : (
+                            <span title={`score ${relevance.score}`}>-</span>
+                          )}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {(() => {

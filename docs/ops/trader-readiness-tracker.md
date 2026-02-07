@@ -67,13 +67,13 @@ Evidence:
 
 ## 2) FinnewsHunter (Trader-Grade)
 
-- [~] Latest feed: show published time, source, type, headline, link
-- [~] Ticker enrichment (UI fallback): derive tickers from title patterns when backend stock_codes are missing
+- [x] Latest feed: show published time, source, type, headline, link
+- [x] Ticker enrichment (UI fallback): derive tickers from title patterns when backend stock_codes are missing
 - [x] Ticker enrichment for SEC items (CIK -> ticker mapping via SEC `company_tickers.json` cache)
-- [~] Search reliability: common US tickers (e.g. TSLA) should return results when present (UI guidance + “run crawl” action added)
+- [x] Search reliability: common US tickers (e.g. TSLA) should return results when present (UI guidance + “run crawl” action added)
 - [x] Sentiment tag (simple first pass): positive/neutral/negative + confidence
-- [ ] Relevance scoring: show why an item appears (keyword/ticker match)
-- [ ] Rate-limit + freshness UI hints (crawl cadence + last crawl)
+- [x] Relevance scoring: show why an item appears (keyword/ticker/CIK match)
+- [x] Rate-limit + freshness UI hints (crawl cadence + last crawl + recent 429)
 
 ## 3) StockPulse (Trader-Grade)
 
@@ -107,6 +107,6 @@ This is a rough tracker-driven estimate, not a claim of "production ready".
 - Dev server reliability: ~100%
 - OpenBB connectivity + technical endpoint correctness: ~70%
 - OpenBB trader visuals: ~30%
-- FinnewsHunter trader usability: ~20%
+- FinnewsHunter trader usability: ~60%
 - StockPulse trader usability: ~55%
 - Cross-module workflow: ~45%
