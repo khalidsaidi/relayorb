@@ -16,7 +16,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Separator } from "@/components/ui/separator"
 import { resolveMarketDataProxyUrl, resolveFinnewsUrl } from "@/lib/runtime-urls"
 import { fetchJsonOrThrow } from "@/lib/http"
-import { ExternalLink, RefreshCw, PlayCircle, Search, FlaskConical, Info, Activity, ListChecks, Newspaper, AlertTriangle } from "lucide-react"
+import { ExternalLink, RefreshCw, PlayCircle, Search, FlaskConical, Info, Activity, ListChecks, Newspaper, AlertTriangle, Copy } from "lucide-react"
 import { toast } from "sonner"
 
 const defaultLimit = 50
@@ -46,7 +46,8 @@ type NewsItem = {
   id: string | number
   title: string
   content?: string | null
-  url: string
+  url?: string | null
+  source_url?: string | null
   source: string
   publish_time?: string | null
   sentiment_score?: number | null
@@ -91,6 +92,43 @@ type StockOverview = {
   recent_sentiment?: number | null
   sentiment_trend?: string
   last_news_time?: string | null
+}
+
+function normalizeNewsItem(raw: any): NewsItem {
+  const url = raw?.url ?? raw?.source_url ?? null
+  return {
+    id: raw?.id ?? "",
+    title: raw?.title ?? "",
+    content: raw?.content ?? raw?.summary ?? null,
+    url,
+    source_url: raw?.source_url ?? (raw?.url ?? null),
+    source: raw?.source ?? "",
+    publish_time: raw?.publish_time ?? null,
+    sentiment_score: raw?.sentiment_score ?? null,
+    stock_codes: Array.isArray(raw?.stock_codes) ? raw.stock_codes : raw?.stock_codes ?? undefined,
+    created_at: raw?.created_at ?? null,
+  }
+}
+
+function extractCiks(text: string) {
+  // CIKs are typically 10 digits (zero-padded).
+  const matches = String(text || "").match(/\b\d{10}\b/g) || []
+  return Array.from(new Set(matches))
+}
+
+function isSecUrl(url?: string | null) {
+  if (!url) return false
+  return url.includes("sec.gov") || url.includes("www.sec.gov")
+}
+
+async function copyText(label: string, value: string) {
+  try {
+    await navigator.clipboard.writeText(value)
+    toast.success(`Copied ${label}`)
+  } catch (err) {
+    console.warn("copy failed", err)
+    toast.error(`Copy failed (${label})`)
+  }
 }
 
 export default function FinnewsPage() {
@@ -187,6 +225,14 @@ export default function FinnewsPage() {
     }
   }, [fetchJson, queryBase])
 
+  // Trader default: US sources. If the backend exposes `us_rss`, pick it by default.
+  useEffect(() => {
+    if (searchSource) return
+    if (!providers.length) return
+    const hasUs = providers.some((p) => p.name === "us_rss")
+    if (hasUs) setSearchSource("us_rss")
+  }, [providers, searchSource])
+
   const runRealtimeCrawl = useCallback(async () => {
     setCrawlLoading(true)
     setError(null)
@@ -214,7 +260,7 @@ export default function FinnewsPage() {
       if (searchSource) params.set("provider", searchSource)
       params.set("limit", String(searchLimit || defaultLimit))
       const data = await fetchJson(`/api/v1/news/v2/fetch?${params.toString()}`)
-      const items: NewsItem[] = Array.isArray(data?.data) ? data.data : []
+      const items: NewsItem[] = Array.isArray(data?.data) ? data.data.map(normalizeNewsItem) : []
       setSearchResults(items)
     } catch (err) {
       setDetailError(err instanceof Error ? err.message : "Unknown error")
@@ -223,15 +269,19 @@ export default function FinnewsPage() {
     }
   }, [fetchJson, searchQuery, searchSource, searchLimit])
 
-  const loadDetail = useCallback(
-    async (id: string | number) => {
+  const showDetail = useCallback(
+    async (item: NewsItem) => {
       setDetailError(null)
-      setNewsDetail(null)
-      try {
-        const data = await fetchJson(`/api/v1/news/${id}`)
-        setNewsDetail(data)
-      } catch (err) {
-        setDetailError(err instanceof Error ? err.message : "Unknown error")
+      setNewsDetail(item)
+
+      // For legacy (DB) news items, fetch full detail by numeric ID.
+      if (typeof item.id === "number") {
+        try {
+          const data = await fetchJson(`/api/v1/news/${item.id}`)
+          setNewsDetail(normalizeNewsItem({ ...item, ...data }))
+        } catch (err) {
+          setDetailError(err instanceof Error ? err.message : "Unknown error")
+        }
       }
     },
     [fetchJson]
@@ -446,6 +496,8 @@ export default function FinnewsPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>{t("finnews.headline")}</TableHead>
+                      <TableHead className="w-[90px]">Type</TableHead>
+                      <TableHead className="w-[160px]">Tickers</TableHead>
                       <TableHead>{t("finnews.source")}</TableHead>
                       <TableHead>{t("finnews.published")}</TableHead>
                     </TableRow>
@@ -453,13 +505,24 @@ export default function FinnewsPage() {
                   <TableBody>
                     {latest.map((item) => (
                       <TableRow key={item.id}>
-                        <TableCell className="max-w-[520px]">
-                          <button
-                            className="text-left text-sm font-medium text-foreground hover:underline"
-                            onClick={() => window.open(item.url, "_blank", "noopener,noreferrer")}
-                          >
-                            {item.title}
-                          </button>
+	                        <TableCell className="max-w-[520px]">
+	                          <button
+	                            className="text-left text-sm font-medium text-foreground hover:underline"
+	                            onClick={() => {
+	                              if (!item.url) return
+	                              window.open(item.url, "_blank", "noopener,noreferrer")
+	                            }}
+	                          >
+	                            {item.title}
+	                          </button>
+	                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {isSecUrl(item.url) ? <Badge variant="outline">SEC</Badge> : <Badge variant="outline">News</Badge>}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {Array.isArray(item.stock_codes) && item.stock_codes.length
+                            ? item.stock_codes.slice(0, 6).join(", ")
+                            : "-"}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">{item.source}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">
@@ -495,11 +558,11 @@ export default function FinnewsPage() {
                   onChange={(e) => setSearchSource(e.target.value || undefined)}
                 >
                   <option value="">Any provider</option>
-                  <option value="us_rss">US news RSS</option>
-                  <option value="sec_edgar">SEC EDGAR</option>
-                  <option value="yahoo_finance">Yahoo Finance</option>
-                  <option value="seeking_alpha">Seeking Alpha</option>
-                  <option value="marketwatch">MarketWatch</option>
+                  {providers.map((p) => (
+                    <option key={p.name} value={p.name}>
+                      {p.display_name || p.name}
+                    </option>
+                  ))}
                 </select>
                 <Input
                   className="w-24"
@@ -520,6 +583,8 @@ export default function FinnewsPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Headline</TableHead>
+                      <TableHead className="w-[90px]">Type</TableHead>
+                      <TableHead className="w-[160px]">Tickers</TableHead>
                       <TableHead>Source</TableHead>
                       <TableHead>Published</TableHead>
                     </TableRow>
@@ -530,11 +595,19 @@ export default function FinnewsPage() {
                         key={item.id}
                         className="cursor-pointer"
                         onClick={() => {
-                          loadDetail(item.id)
+                          showDetail(item)
                         }}
                       >
                         <TableCell className="max-w-[520px] text-sm font-medium text-foreground">
                           {item.title}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {isSecUrl(item.url) ? <Badge variant="outline">SEC</Badge> : <Badge variant="outline">News</Badge>}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {Array.isArray(item.stock_codes) && item.stock_codes.length
+                            ? item.stock_codes.slice(0, 6).join(", ")
+                            : "-"}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">{item.source}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">{formatRelative(item.publish_time || item.created_at)}</TableCell>
@@ -546,17 +619,81 @@ export default function FinnewsPage() {
               {newsDetail ? (
                 <div className="rounded-md border bg-muted/30 p-3 text-xs space-y-2">
                   <div className="font-semibold">{newsDetail.title}</div>
-                  <div className="text-muted-foreground">{newsDetail.source}</div>
-                  <div className="text-muted-foreground">{formatRelative(newsDetail.publish_time || newsDetail.created_at)}</div>
-                  <Separator />
-                  <div className="whitespace-pre-wrap text-sm">{newsDetail.content || "(no content)"}</div>
-                  <div>
-                    <Button variant="link" size="sm" onClick={() => window.open(newsDetail.url, "_blank", "noopener,noreferrer")}>
-                      Open source
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
+                      <div className="text-muted-foreground">{newsDetail.source}</div>
+                      <div className="text-muted-foreground">{formatRelative(newsDetail.publish_time || newsDetail.created_at)}</div>
+                      {newsDetail.url ? (
+                        <div className="flex flex-wrap items-center gap-2">
+                          {isSecUrl(newsDetail.url) ? <Badge variant="outline">SEC</Badge> : <Badge variant="outline">News</Badge>}
+                          {extractCiks(newsDetail.title + " " + (newsDetail.url || "")).map((cik) => (
+                            <Badge key={cik} variant="secondary">
+                              CIK {cik}
+                            </Badge>
+                          ))}
+                          {Array.isArray(newsDetail.stock_codes) && newsDetail.stock_codes.length ? (
+                            <div className="flex flex-wrap items-center gap-2">
+                              {newsDetail.stock_codes.slice(0, 12).map((code) => (
+                                <Badge key={code} variant="secondary">
+                                  {code}
+                                </Badge>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      <Separator />
+                      <div className="whitespace-pre-wrap text-sm">{newsDetail.content || "(no content)"}</div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {newsDetail.url ? (
+                          <>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => window.open(newsDetail.url || "", "_blank", "noopener,noreferrer")}
+                            >
+                              <ExternalLink className="mr-2 h-4 w-4" />
+                              {isSecUrl(newsDetail.url) ? "Open SEC filing" : "Open source"}
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => copyText("URL", newsDetail.url || "")}
+                            >
+                              <Copy className="mr-2 h-4 w-4" />
+                              Copy URL
+                            </Button>
+                          </>
+                        ) : (
+                          <div className="text-xs text-muted-foreground">No source URL.</div>
+                        )}
+
+                        {Array.isArray(newsDetail.stock_codes) && newsDetail.stock_codes.length ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => copyText("tickers", newsDetail.stock_codes!.join(", "))}
+                          >
+                            <Copy className="mr-2 h-4 w-4" />
+                            Copy tickers
+                          </Button>
+                        ) : null}
+
+                        {(() => {
+                          const ciks = extractCiks(newsDetail.title + " " + (newsDetail.url || ""))
+                          if (!ciks.length) return null
+                          return (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => copyText("CIK", ciks.join(", "))}
+                            >
+                              <Copy className="mr-2 h-4 w-4" />
+                              Copy CIK
+                            </Button>
+                          )
+                        })()}
+                      </div>
+                    </div>
+                  ) : null}
             </CardContent>
           </Card>
         </TabsContent>

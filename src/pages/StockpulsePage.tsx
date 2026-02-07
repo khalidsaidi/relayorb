@@ -130,6 +130,25 @@ type StockpulseProviderTest = {
   error?: string
 }
 
+type ExplorerRoute = {
+  id: string
+  label: string
+  method: "GET" | "POST" | "DELETE"
+  path: string
+  description: string
+  query?: Array<{ name: string; placeholder?: string }>
+  pathParams?: Array<{ name: string; placeholder?: string }>
+  bodyExample?: unknown
+}
+
+type ExplorerResult = {
+  url: string
+  ok: boolean
+  status: number
+  data?: unknown
+  error?: string
+}
+
 function parseTimestamp(value?: string | null) {
   if (!value) return null
   const normalized = value.includes("T") ? value : value.replace(" ", "T")
@@ -168,6 +187,13 @@ function ratingTone(rating?: string) {
   }
 }
 
+function renderAny(value: unknown) {
+  if (value === null || value === undefined) return "-"
+  if (typeof value === "number") return Number.isFinite(value) ? value.toFixed(2) : "-"
+  if (typeof value === "string") return value
+  return JSON.stringify(value)
+}
+
 const AI_PROVIDER_OPTIONS = [
   {
     id: "openai",
@@ -199,10 +225,7 @@ const AI_PROVIDER_OPTIONS = [
 
 function MetricCard({ label, value }: { label: string; value: unknown }) {
   const display = (() => {
-    if (value === null || value === undefined) return "-"
-    if (typeof value === "number") return Number.isFinite(value) ? value.toFixed(2) : "-"
-    if (typeof value === "string") return value
-    return JSON.stringify(value)
+    return renderAny(value)
   })()
   return (
     <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2">
@@ -217,6 +240,145 @@ export default function StockpulsePage() {
   const baseUrl = useMemo(() => resolveStockpulseUrl(), [])
   const proxyBase = useMemo(() => resolveMarketDataProxyUrl(), [])
   const queryBase = proxyBase ? `${proxyBase}/v1/stockpulse` : baseUrl
+
+  const explorerRoutes: ExplorerRoute[] = useMemo(
+    () => [
+      {
+        id: "status",
+        label: "Status",
+        method: "GET",
+        path: "/api/status",
+        description: "Service heartbeat and last check time.",
+      },
+      {
+        id: "stats",
+        label: "Stats",
+        method: "GET",
+        path: "/api/stats",
+        description: "Aggregated stats (alerts + per-ticker sentiment counts).",
+        query: [{ name: "market", placeholder: "US | India | All" }],
+      },
+      {
+        id: "alerts",
+        label: "Alerts",
+        method: "GET",
+        path: "/api/alerts",
+        description: "Recent alerts emitted by the pipeline.",
+      },
+      {
+        id: "news",
+        label: "News",
+        method: "GET",
+        path: "/api/news",
+        description: "Recent news items. Optional ticker filter.",
+        query: [{ name: "ticker", placeholder: "AAPL" }],
+      },
+      {
+        id: "stocks",
+        label: "Stocks (list)",
+        method: "GET",
+        path: "/api/stocks",
+        description: "Monitored stocks list. Optional market filter.",
+        query: [{ name: "market", placeholder: "US | India | All" }],
+      },
+      {
+        id: "stocks_search",
+        label: "Stocks (search)",
+        method: "GET",
+        path: "/api/stocks/search",
+        description: "Search tickers to add to monitoring list.",
+        query: [{ name: "q", placeholder: "TSLA" }],
+      },
+      {
+        id: "stocks_add",
+        label: "Stocks (add)",
+        method: "POST",
+        path: "/api/stocks",
+        description: "Add a stock to monitoring list.",
+        bodyExample: { ticker: "TSLA", name: "Tesla, Inc.", market: "US" },
+      },
+      {
+        id: "stocks_delete",
+        label: "Stocks (remove)",
+        method: "DELETE",
+        path: "/api/stocks/{ticker}",
+        description: "Remove a stock from monitoring list.",
+        pathParams: [{ name: "ticker", placeholder: "TSLA" }],
+      },
+      {
+        id: "ratings",
+        label: "AI ratings (bulk)",
+        method: "GET",
+        path: "/api/ai/ratings",
+        description: "Bulk ratings snapshot (may omit tickers; see coverage card).",
+      },
+      {
+        id: "rating",
+        label: "AI rating (one ticker)",
+        method: "GET",
+        path: "/api/ai/rating/{ticker}",
+        description: "Compute or fetch rating for a single ticker.",
+        pathParams: [{ name: "ticker", placeholder: "AAPL" }],
+      },
+      {
+        id: "chart",
+        label: "Chart",
+        method: "GET",
+        path: "/api/chart/{ticker}",
+        description: "OHLCV chart series for a ticker.",
+        pathParams: [{ name: "ticker", placeholder: "AAPL" }],
+        query: [{ name: "period", placeholder: "1mo | 3mo | 1y" }],
+      },
+      {
+        id: "ai_providers",
+        label: "AI providers (list)",
+        method: "GET",
+        path: "/api/settings/ai-providers",
+        description: "Configured AI providers (OpenAI/Anthropic/etc) for chat.",
+      },
+      {
+        id: "ai_add_provider",
+        label: "AI provider (add)",
+        method: "POST",
+        path: "/api/settings/ai-provider",
+        description: "Add an AI provider and optionally activate it.",
+        bodyExample: { provider_name: "openai", api_key: "sk-...", model: "gpt-4o" },
+      },
+      {
+        id: "ai_activate",
+        label: "AI provider (activate)",
+        method: "POST",
+        path: "/api/settings/ai-provider/{id}/activate",
+        description: "Activate a configured AI provider.",
+        pathParams: [{ name: "id", placeholder: "1" }],
+      },
+      {
+        id: "ai_delete",
+        label: "AI provider (delete)",
+        method: "DELETE",
+        path: "/api/settings/ai-provider/{id}",
+        description: "Delete a configured AI provider.",
+        pathParams: [{ name: "id", placeholder: "1" }],
+      },
+      {
+        id: "ai_test",
+        label: "AI provider (test)",
+        method: "POST",
+        path: "/api/settings/test-ai",
+        description: "Test if a provider/model/key can run a minimal request.",
+        bodyExample: { provider_name: "openai", api_key: "sk-...", model: "gpt-4o" },
+      },
+      {
+        id: "chat",
+        label: "Chat ask",
+        method: "POST",
+        path: "/api/chat/ask",
+        description: "Ask the AI assistant about a ticker.",
+        bodyExample: { ticker: "AAPL", question: "Any risks today?", thinking_level: "balanced" },
+      },
+    ],
+    []
+  )
 
   const checkHealth = useCallback(async () => {
     if (!queryBase) {
@@ -248,6 +410,9 @@ export default function StockpulsePage() {
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResults, setSearchResults] = useState<StockpulseSearch[]>([])
   const [searchLoading, setSearchLoading] = useState(false)
+  const [bulkTickers, setBulkTickers] = useState("")
+  const [bulkMarket, setBulkMarket] = useState("US")
+  const [bulkLoading, setBulkLoading] = useState(false)
 
   const [marketFilter, setMarketFilter] = useState("All")
   const [newsTicker, setNewsTicker] = useState("")
@@ -313,7 +478,13 @@ export default function StockpulsePage() {
       setStats(statsData)
       setAlerts(alertsData)
       setNews(newsData)
-      setStocks(stocksData)
+      const stocksArray: StockpulseStock[] = Array.isArray(stocksData) ? stocksData : []
+      const marketNorm = marketFilter === "All" ? null : marketFilter.toLowerCase()
+      const filtered =
+        marketNorm === null
+          ? stocksArray
+          : stocksArray.filter((s) => String(s.market || "").toLowerCase() === marketNorm)
+      setStocks(filtered)
       setLastUpdated(new Date().toISOString())
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
@@ -536,6 +707,63 @@ export default function StockpulsePage() {
     [fetchJson, refreshCore, marketFilter]
   )
 
+  const handleBulkAdd = useCallback(async () => {
+    if (!queryBase) return
+    const raw = bulkTickers
+      .split(/[\s,;]+/)
+      .map((t) => t.trim().toUpperCase())
+      .filter(Boolean)
+    const unique = Array.from(new Set(raw))
+    if (!unique.length) return
+
+    setBulkLoading(true)
+    setError(null)
+    const market = (bulkMarket || "US").trim() || "US"
+
+    const concurrency = 3
+    let idx = 0
+
+    async function addOne(ticker: string) {
+      // Try to resolve a friendly name via search, but don't block on it.
+      let name = ticker
+      try {
+        const results: StockpulseSearch[] = await fetchJson(
+          `/api/stocks/search?q=${encodeURIComponent(ticker)}`
+        )
+        const exact = (results || []).find((r) => r.ticker?.toUpperCase() === ticker)
+        if (exact?.name) name = exact.name
+      } catch {
+        // ignore
+      }
+      await fetchJson("/api/stocks", {
+        method: "POST",
+        body: JSON.stringify({ ticker, name, market }),
+      })
+    }
+
+    async function worker() {
+      while (idx < unique.length) {
+        const next = unique[idx]
+        idx += 1
+        try {
+          await addOne(next)
+        } catch (err) {
+          console.warn("bulk add failed", next, err)
+        }
+      }
+    }
+
+    try {
+      toast.message(`Adding ${unique.length} tickers to ${market}…`)
+      await Promise.all(Array.from({ length: concurrency }).map(() => worker()))
+      toast.success("Bulk add complete")
+      setBulkTickers("")
+      await refreshCore()
+    } finally {
+      setBulkLoading(false)
+    }
+  }, [bulkTickers, bulkMarket, fetchJson, queryBase, refreshCore])
+
   const handleRemoveStock = useCallback(
     async (ticker: string) => {
       setError(null)
@@ -593,6 +821,103 @@ export default function StockpulsePage() {
     rows.sort((a, b) => (b.score || 0) - (a.score || 0))
     return rows
   }, [stocks, stockTickers, ratingsByTicker])
+
+  const missingRatings = useMemo(() => {
+    return ratingsTable.filter((r) => r.rating === "MISSING").map((r) => r.ticker)
+  }, [ratingsTable])
+
+  const computeMissingRatings = useCallback(async () => {
+    if (!queryBase) return
+    if (!missingRatings.length) {
+      toast.success("No missing tickers.")
+      return
+    }
+    const tickers = missingRatings.slice(0, 30) // safety cap
+    toast.message(`Computing ${tickers.length} missing ratings...`)
+
+    // Low-concurrency to avoid slamming the backend/LLM.
+    const concurrency = 3
+    let idx = 0
+    async function worker() {
+      while (idx < tickers.length) {
+        const next = tickers[idx]
+        idx += 1
+        try {
+          await fetchJson(`/api/ai/rating/${encodeURIComponent(next)}`)
+        } catch (err) {
+          console.warn("compute rating failed", next, err)
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: concurrency }).map(() => worker()))
+    await refreshRatings()
+  }, [fetchJson, queryBase, missingRatings, refreshRatings])
+
+  const [explorerRouteId, setExplorerRouteId] = useState<string>(explorerRoutes[0]?.id || "status")
+  const [explorerQuery, setExplorerQuery] = useState<Record<string, string>>({})
+  const [explorerPathParams, setExplorerPathParams] = useState<Record<string, string>>({})
+  const [explorerBody, setExplorerBody] = useState<string>("")
+  const [explorerLoading, setExplorerLoading] = useState(false)
+  const [explorerResult, setExplorerResult] = useState<ExplorerResult | null>(null)
+
+  const selectedRoute = useMemo(
+    () => explorerRoutes.find((r) => r.id === explorerRouteId) || explorerRoutes[0],
+    [explorerRoutes, explorerRouteId]
+  )
+
+  useEffect(() => {
+    if (!selectedRoute) return
+    const nextQuery: Record<string, string> = {}
+    selectedRoute.query?.forEach((p) => {
+      nextQuery[p.name] = ""
+    })
+    const nextPath: Record<string, string> = {}
+    selectedRoute.pathParams?.forEach((p) => {
+      nextPath[p.name] = ""
+    })
+    setExplorerQuery(nextQuery)
+    setExplorerPathParams(nextPath)
+    setExplorerBody(selectedRoute.bodyExample ? JSON.stringify(selectedRoute.bodyExample, null, 2) : "")
+    setExplorerResult(null)
+  }, [selectedRoute?.id])
+
+  const runExplorer = useCallback(async () => {
+    if (!queryBase || !selectedRoute) return
+    setExplorerLoading(true)
+    setExplorerResult(null)
+    try {
+      let path = selectedRoute.path
+      Object.entries(explorerPathParams).forEach(([k, v]) => {
+        path = path.replace(`{${k}}`, encodeURIComponent((v || "").trim()))
+      })
+      const qs = new URLSearchParams()
+      Object.entries(explorerQuery).forEach(([k, v]) => {
+        if (!v || !String(v).trim()) return
+        qs.set(k, String(v).trim())
+      })
+      const url = `${queryBase}${path}${qs.toString() ? `?${qs.toString()}` : ""}`
+
+      const init: RequestInit = { method: selectedRoute.method }
+      if (selectedRoute.method === "POST") {
+        if (explorerBody.trim()) {
+          init.body = explorerBody
+          init.headers = { "Content-Type": "application/json" }
+        } else {
+          init.body = "{}"
+          init.headers = { "Content-Type": "application/json" }
+        }
+      }
+
+      // Use the same helper to get consistent error messages.
+      const data = await fetchJson(path + (qs.toString() ? `?${qs.toString()}` : ""), init)
+      setExplorerResult({ url, ok: true, status: 200, data })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setExplorerResult({ url: `${queryBase}${selectedRoute.path}`, ok: false, status: 0, error: msg })
+    } finally {
+      setExplorerLoading(false)
+    }
+  }, [fetchJson, queryBase, selectedRoute, explorerBody, explorerQuery, explorerPathParams])
 
   useEffect(() => {
     if (!ratingsTable.length || selectedTicker) return
@@ -728,6 +1053,22 @@ export default function StockpulsePage() {
           <CardContent className="space-y-3">
             <div className="text-xs text-muted-foreground">
               {t("stockpulse.ratingsUpdated", { time: formatRelative(ratingsUpdated) })}
+            </div>
+            <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-muted-foreground">
+                  Coverage: {ratingsTable.length} rows, {missingRatings.length} missing
+                </div>
+                <Button size="sm" variant="outline" disabled={!missingRatings.length || !queryBase} onClick={computeMissingRatings}>
+                  Compute missing now
+                </Button>
+              </div>
+              {missingRatings.length ? (
+                <div className="mt-2 text-xs text-muted-foreground">
+                  Missing: {missingRatings.slice(0, 20).join(", ")}
+                  {missingRatings.length > 20 ? " ..." : ""}
+                </div>
+              ) : null}
             </div>
             {ratingsTable.length ? (
               <Table>
@@ -1100,6 +1441,39 @@ export default function StockpulsePage() {
             <CardTitle className="text-base">{t("stockpulse.manageTitle")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="rounded-md border border-border/60 bg-muted/20 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs font-medium text-foreground">Bulk import</div>
+                <div className="flex items-center gap-2">
+                  <select
+                    className="h-8 rounded-md border border-input bg-background px-2 py-1 text-xs"
+                    value={bulkMarket}
+                    onChange={(e) => setBulkMarket(e.target.value)}
+                  >
+                    <option value="US">US</option>
+                    <option value="India">India</option>
+                  </select>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!bulkTickers.trim() || !queryBase || bulkLoading}
+                    onClick={handleBulkAdd}
+                  >
+                    {bulkLoading ? "Adding…" : "Bulk add"}
+                  </Button>
+                </div>
+              </div>
+              <textarea
+                className="mt-2 min-h-[86px] w-full rounded-md border border-input bg-background p-3 font-mono text-[12px]"
+                value={bulkTickers}
+                onChange={(e) => setBulkTickers(e.target.value)}
+                placeholder={"AAPL MSFT NVDA\nTSLA AMZN\n(whitespace, commas, and new lines all work)"}
+              />
+              <div className="mt-2 text-[11px] text-muted-foreground">
+                Uses StockPulse search to fill names when possible, then adds tickers to the monitored list.
+              </div>
+            </div>
+
             <div className="grid gap-3 md:grid-cols-[1fr_auto]">
               <div className="space-y-2">
                 <Label htmlFor="stock-search">{t("stockpulse.searchLabel")}</Label>
@@ -1157,6 +1531,41 @@ export default function StockpulsePage() {
               </div>
             ) : null}
 
+            <div className="rounded-md border border-border/60 bg-muted/20 p-3 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="font-semibold text-foreground">Bulk add tickers</div>
+                <div className="flex items-center gap-2">
+                  <Label className="text-xs text-muted-foreground">Market</Label>
+                  <select
+                    className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                    value={bulkMarket}
+                    onChange={(e) => setBulkMarket(e.target.value)}
+                  >
+                    <option value="US">US</option>
+                    <option value="India">India</option>
+                  </select>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!queryBase || bulkLoading || !bulkTickers.trim()}
+                    onClick={handleBulkAdd}
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    {bulkLoading ? "Adding..." : "Bulk add"}
+                  </Button>
+                </div>
+              </div>
+              <textarea
+                className="min-h-[96px] w-full rounded-md border border-input bg-background p-3 font-mono text-[12px]"
+                value={bulkTickers}
+                onChange={(e) => setBulkTickers(e.target.value)}
+                placeholder="Paste tickers separated by commas/spaces/newlines, e.g.\nAAPL MSFT NVDA\nTSLA, AMZN"
+              />
+              <div className="text-xs text-muted-foreground">
+                Tip: This helps you bring your whole US watchlist into StockPulse so ratings and news coverage are complete.
+              </div>
+            </div>
+
             <div className="rounded-md border">
               <Table>
                 <TableHeader>
@@ -1200,6 +1609,136 @@ export default function StockpulsePage() {
                 </TableBody>
               </Table>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card className="xl:col-span-2">
+          <CardHeader className="flex flex-row items-center justify-between gap-3">
+            <CardTitle className="text-base">Explorer</CardTitle>
+            <Button size="sm" variant="outline" disabled={!queryBase || explorerLoading} onClick={runExplorer}>
+              {explorerLoading ? "Running..." : "Run"}
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <div className="text-xs text-muted-foreground">
+              Explore every StockPulse backend route with parameters and inspect results (tables first, raw JSON optional).
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="space-y-1">
+                <Label>Route</Label>
+                <select
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={explorerRouteId}
+                  onChange={(e) => setExplorerRouteId(e.target.value)}
+                >
+                  {explorerRoutes.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.label} ({r.method} {r.path})
+                    </option>
+                  ))}
+                </select>
+                <div className="text-xs text-muted-foreground">{selectedRoute?.description}</div>
+              </div>
+              <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs">
+                <div className="font-medium">Endpoint</div>
+                <div className="mt-1 break-all text-muted-foreground">{queryBase ? `${queryBase}${selectedRoute?.path}` : "-"}</div>
+              </div>
+            </div>
+
+            {selectedRoute?.pathParams?.length ? (
+              <div className="grid gap-2 md:grid-cols-3">
+                {selectedRoute.pathParams.map((p) => (
+                  <div key={p.name} className="space-y-1">
+                    <Label className="text-xs">{p.name}</Label>
+                    <Input
+                      value={explorerPathParams[p.name] || ""}
+                      onChange={(e) => setExplorerPathParams((prev) => ({ ...prev, [p.name]: e.target.value }))}
+                      placeholder={p.placeholder || ""}
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {selectedRoute?.query?.length ? (
+              <div className="grid gap-2 md:grid-cols-3">
+                {selectedRoute.query.map((p) => (
+                  <div key={p.name} className="space-y-1">
+                    <Label className="text-xs">{p.name}</Label>
+                    <Input
+                      value={explorerQuery[p.name] || ""}
+                      onChange={(e) => setExplorerQuery((prev) => ({ ...prev, [p.name]: e.target.value }))}
+                      placeholder={p.placeholder || ""}
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {selectedRoute?.method === "POST" ? (
+              <div className="space-y-1">
+                <Label>JSON body</Label>
+                <textarea
+                  className="min-h-[140px] w-full rounded-md border border-input bg-background p-3 font-mono text-[12px]"
+                  value={explorerBody}
+                  onChange={(e) => setExplorerBody(e.target.value)}
+                  placeholder='{"ticker":"AAPL"}'
+                />
+              </div>
+            ) : null}
+
+            {explorerResult ? (
+              <div className="rounded-md border border-border/60 bg-muted/20 p-3">
+                <div className="text-xs text-muted-foreground">Result from: {explorerResult.url}</div>
+                {explorerResult.ok ? null : (
+                  <div className="mt-2 text-xs text-destructive">{explorerResult.error || "Request failed."}</div>
+                )}
+	                {Array.isArray(explorerResult.data) ? (
+	                  <div className="mt-3 overflow-x-auto rounded-md border border-border/60 bg-background">
+	                    <Table>
+	                      <TableHeader>
+	                        <TableRow>
+	                          {Object.keys((((explorerResult.data as any[])[0] || {}) as any))
+	                            .slice(0, 8)
+	                            .map((k) => (
+	                              <TableHead key={k}>{k}</TableHead>
+	                            ))}
+	                        </TableRow>
+	                      </TableHeader>
+	                      <TableBody>
+	                        {(explorerResult.data as any[]).slice(0, 20).map((row, idx) => (
+	                          <TableRow key={idx}>
+	                            {Object.keys((((explorerResult.data as any[])[0] || {}) as any))
+	                              .slice(0, 8)
+	                              .map((k) => (
+	                                <TableCell key={k} className="text-xs text-muted-foreground">
+	                                  {renderAny((row as any)[k])}
+	                                </TableCell>
+	                              ))}
+	                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : explorerResult.data && typeof explorerResult.data === "object" ? (
+                  <div className="mt-3 grid gap-2 md:grid-cols-3">
+                    {Object.entries(explorerResult.data as any)
+                      .slice(0, 12)
+                      .map(([k, v]) => (
+                        <MetricCard key={k} label={k} value={v} />
+                      ))}
+                  </div>
+                ) : null}
+                <details className="mt-3">
+                  <summary className="cursor-pointer text-xs text-muted-foreground">Raw JSON</summary>
+                  <pre className="mt-2 max-h-72 overflow-auto rounded-md bg-background p-3 text-[12px] text-foreground">
+                    {JSON.stringify(explorerResult.data, null, 2)}
+                  </pre>
+                </details>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       </div>

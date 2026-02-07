@@ -113,6 +113,116 @@ def ensure_us_rss_crawler() -> None:
     target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
 
+def ensure_financial_us_rss_provider() -> None:
+    """
+    Add a US RSS provider to the *Financial Data Layer* (v2 News API).
+
+    This is separate from the legacy crawler tool. The frontend uses `/api/v1/news/v2/*`
+    endpoints which rely on `app/financial/providers/*`.
+    """
+    src_root = Path("/tmp/overrides/financial/providers/us_rss")
+    if not src_root.exists():
+        raise FileNotFoundError(f"Missing override provider dir: {src_root}")
+
+    dst_root = ROOT / "app/financial/providers/us_rss"
+    (dst_root / "fetchers").mkdir(parents=True, exist_ok=True)
+
+    for rel in [
+        "__init__.py",
+        "provider.py",
+        "fetchers/__init__.py",
+        "fetchers/news.py",
+    ]:
+        src = src_root / rel
+        dst = dst_root / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def ensure_financial_tools_setup_default_providers() -> None:
+    """
+    Patch `setup_default_providers()` to honor FINNEWS_MARKET.
+
+    - FINNEWS_MARKET=us: register only `us_rss`
+    - else: register the upstream CN providers
+    """
+    path = ROOT / "app/financial/tools.py"
+    text = read(path)
+    lines = text.splitlines()
+
+    start = None
+    for idx, line in enumerate(lines):
+        if line.startswith("def setup_default_providers"):
+            start = idx
+            break
+    if start is None:
+        raise ValueError("setup_default_providers not found in financial/tools.py")
+
+    # Find end of function by locating next top-level `def ` after start
+    end = len(lines)
+    for idx in range(start + 1, len(lines)):
+        if lines[idx].startswith("def ") and not lines[idx].startswith("def setup_default_providers"):
+            end = idx
+            break
+
+    replacement = dedent(
+        """
+        def setup_default_providers():
+            \"\"\"
+            Register default Providers.
+
+            This function is called at API import time (e.g. `api/v1/news_v2.py`) to ensure
+            the global registry is ready.
+
+            Behavior:
+            - FINNEWS_MARKET=us: register only `us_rss`
+            - else: register upstream CN providers
+            \"\"\"
+            from app.core.config import settings
+            from .registry import get_registry
+
+            market = (getattr(settings, "FINNEWS_MARKET", "cn") or "cn").lower()
+            registry = get_registry()
+
+            # Make initialization deterministic: if this runs more than once, reset the registry.
+            registry.clear()
+
+            if market == "us":
+                from .providers.us_rss import UsRssProvider
+
+                providers = [("us_rss", UsRssProvider)]
+            else:
+                from .providers.sina import SinaProvider
+                from .providers.tencent import TencentProvider
+                from .providers.nbd import NbdProvider
+                from .providers.eastmoney import EastmoneyProvider
+                from .providers.yicai import YicaiProvider
+                from .providers.netease import NeteaseProvider
+
+                providers = [
+                    ("sina", SinaProvider),
+                    ("tencent", TencentProvider),
+                    ("nbd", NbdProvider),
+                    ("eastmoney", EastmoneyProvider),
+                    ("yicai", YicaiProvider),
+                    ("163", NeteaseProvider),
+                ]
+
+            for name, provider_class in providers:
+                try:
+                    registry.register(provider_class())
+                    logger.debug(f"Registered provider: {name}")
+                except Exception as e:
+                    logger.warning(f"Failed to register provider {name}: {e}")
+
+            logger.info(f"Registered {len(registry.list_providers())} providers: {registry.list_providers()}")
+        """
+    ).strip("\n").splitlines()
+
+    lines[start:end] = replacement
+    write(path, "\n".join(lines) + "\n")
+
+
 def ensure_crawl_tasks() -> None:
     path = ROOT / "app/tasks/crawl_tasks.py"
     text = read(path)
@@ -379,6 +489,8 @@ def main():
     ensure_config_settings()
     ensure_tools_init()
     ensure_us_rss_crawler()
+    ensure_financial_us_rss_provider()
+    ensure_financial_tools_setup_default_providers()
     ensure_crawl_tasks()
     ensure_celery_schedule()
     ensure_news_api()

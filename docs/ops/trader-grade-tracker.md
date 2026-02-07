@@ -5,7 +5,7 @@ This file is the source of truth for what "done" means and what remains.
 ## Progress
 
 - Target: close every `[ ]` in this file.
-- Current: build is green (`npm run build`), local dev runs in `tmux relayorb_dev`.
+- Current: build is green (`npm run build`), local dev runs in `tmux relayorb_dev` (binds `0.0.0.0:5173`, HMR targets WSL IPv4).
 
 ## Definition Of Done (Trader-Grade)
 
@@ -47,6 +47,7 @@ This file is the source of truth for what "done" means and what remains.
 - [x] A2. Standardize fetch error display: show service, URL, status, body excerpt, hint.
 - [x] A3. Fix Recharts sizing warning robustly (render only after container has measured size).
 - [x] A4. Add request timeout + retry policy for UI fetches where appropriate (no infinite hangs).
+- [x] A5. Fix WSL/Windows dev-server HMR: websocket uses WSL IPv4 by default (avoids `ws://localhost` failures from Windows).
 
 ### B) OpenBB (Trader UI)
 
@@ -57,21 +58,21 @@ This file is the source of truth for what "done" means and what remains.
 - [x] B5. Fundamentals: statement tables (income/balance/cashflow) + ratios (P/E, P/B, yield, etc.).
 - [x] B6. Technicals: indicator selector (RSI/MA/BB) + chart overlays + "key signals" panel.
 - [x] B7. Watchlist: persistence + clear UI state (add/remove, saved views, re-open).
-- [ ] B8. Explorer polish: endpoint descriptions, parameter defaults, templates for common tasks.
+- [x] B8. Explorer polish: endpoint descriptions, parameter defaults, templates for common tasks.
 
 ### C) StockPulse (Expose Everything + Performance)
 
-- [ ] C1. Fix AI chat (seed provider on backend; `/api/chat/ask` returns success).
+- [x] C1. Fix AI chat (seed provider on backend; `/api/chat/ask` returns success).
 - [x] C2. Apply market filter consistently to ratings table (filter by `/api/stocks?market=...`).
-- [ ] C3. Make `/api/ai/ratings` fast: cache + parallelize + avoid LLM calls in bulk path.
+- [x] C3. Make `/api/ai/ratings` fast: cache + parallelize + avoid LLM calls in bulk path.
 - [x] C4. Add explicit per-ticker error rows when rating calc fails (no silent drops).
-- [ ] C5. Add StockPulse Explorer tab (all routes, params, render results).
-- [ ] C6. Ensure US watchlist coverage is complete (bulk import + verify all active tickers show).
+- [x] C5. Add StockPulse Explorer tab (all routes, params, render results).
+- [x] C6. Ensure US watchlist coverage is complete (bulk import + verify all active tickers show).
 
 ### D) Finnews (US Trader Defaults)
 
-- [ ] D1. Ensure default market is US and UI defaults to US sources/filters.
-- [ ] D2. Improve result drill-down: highlight tickers/CIKs, “Open in SEC” and “Open in source”.
+- [x] D1. Ensure default market is US and UI defaults to US sources/filters.
+- [x] D2. Improve result drill-down: highlight tickers/CIKs, “Open in SEC” and “Open in source”.
 
 ## Verification Checklist (Run Before Marking 100%)
 
@@ -88,4 +89,5 @@ This file is the source of truth for what "done" means and what remains.
 ## Dev Server (WSL/Windows)
 
 - Dev should always be started via `npm run dev` (it runs `scripts/dev-wsl.sh`).
-- If HMR websockets fail from Windows, confirm the page is opened via the WSL IP shown at startup (not IPv6 `localhost`).
+- Dev server runs in `tmux relayorb_dev` so it stays up across terminal disconnects.
+- If HMR websockets fail from Windows, open the UI via the WSL IP shown at startup (e.g. `http://172.25.x.x:5173/`).

@@ -45,11 +45,22 @@ type ApiOperation = {
   params: ApiParam[]
 }
 
+type ExplorerTemplate = {
+  id: string
+  label: string
+  description: string
+  method: string
+  path: string
+  // Optional template param overrides. We allow `undefined` so template objects can omit keys
+  // without fighting TS's union inference.
+  params?: Record<string, string | undefined>
+}
+
 // Only expose providers that are marked enabled in env (comma‑separated).
 function resolveProviders() {
   const allowed = new Set(["yfinance", "intrinio"]) // FMP deliberately hidden until credentials validate (401 currently)
   const raw = (import.meta.env.VITE_OPENBB_PROVIDERS || "").trim()
-  if (!raw) return ["yfinance"]
+  if (!raw) return ["yfinance", "intrinio"]
   const parsed = raw
     .split(",")
     .map((p: string) => p.trim())
@@ -519,6 +530,86 @@ export default function OpenbbPage() {
   const proxyBase = useMemo(() => resolveMarketDataProxyUrl(), [])
   const queryBase = proxyBase ? `${proxyBase}/v1/openbb` : apiUrl
 
+  const explorerTemplates = useMemo<ExplorerTemplate[]>(
+    () => [
+      {
+        id: "quote",
+        label: "Quote",
+        description: "Latest quote (bid/ask/last/volume).",
+        method: "GET",
+        path: "/api/v1/equity/price/quote",
+      },
+      {
+        id: "history_1d",
+        label: "History (1d)",
+        description: "Daily candles for a date range.",
+        method: "GET",
+        path: "/api/v1/equity/price/historical",
+        params: { interval: "1d" },
+      },
+      {
+        id: "profile",
+        label: "Profile",
+        description: "Company profile (sector/industry/description).",
+        method: "GET",
+        path: "/api/v1/equity/profile",
+      },
+      {
+        id: "income",
+        label: "Income statement",
+        description: "Fundamentals: income statement.",
+        method: "GET",
+        path: "/api/v1/equity/fundamental/income",
+      },
+      {
+        id: "balance",
+        label: "Balance sheet",
+        description: "Fundamentals: balance sheet.",
+        method: "GET",
+        path: "/api/v1/equity/fundamental/balance",
+      },
+      {
+        id: "cash",
+        label: "Cash flow",
+        description: "Fundamentals: cash flow statement.",
+        method: "GET",
+        path: "/api/v1/equity/fundamental/cash",
+      },
+      {
+        id: "rsi_14",
+        label: "RSI (14)",
+        description: "Technicals: Relative Strength Index.",
+        method: "GET",
+        path: "/api/v1/technical/relative_strength_index",
+        params: { interval: "1d", length: "14" },
+      },
+      {
+        id: "ma_20",
+        label: "Moving average (20)",
+        description: "Technicals: Moving average (length=20).",
+        method: "GET",
+        path: "/api/v1/technical/moving_average",
+        params: { interval: "1d", length: "20" },
+      },
+      {
+        id: "bb_20",
+        label: "Bollinger (20)",
+        description: "Technicals: Bollinger bands (length=20).",
+        method: "GET",
+        path: "/api/v1/technical/bollinger_bands",
+        params: { interval: "1d", length: "20" },
+      },
+      {
+        id: "news",
+        label: "Company news",
+        description: "Latest headlines for a symbol.",
+        method: "GET",
+        path: "/api/v1/news",
+      },
+    ],
+    []
+  )
+
   const openbbFetch = async (
     path: string,
     params: Record<string, string | number | undefined>,
@@ -648,10 +739,13 @@ export default function OpenbbPage() {
   const [commoditySelection, setCommoditySelection] = useState("brent")
 
   const [specOps, setSpecOps] = useState<ApiOperation[]>([])
+  const [specTagDescriptions, setSpecTagDescriptions] = useState<Record<string, string>>({})
   const [specError, setSpecError] = useState<string | null>(null)
   const [selectedTag, setSelectedTag] = useState<string>("")
   const [selectedOpId, setSelectedOpId] = useState<string>("")
+  const [endpointSearch, setEndpointSearch] = useState<string>("")
   const [paramValues, setParamValues] = useState<Record<string, string>>({})
+  const [explorerTemplateId, setExplorerTemplateId] = useState<string>("")
   const [explorerResult, setExplorerResult] = useState<ResponseState>()
   const [explorerLoading, setExplorerLoading] = useState(false)
 
@@ -713,6 +807,16 @@ export default function OpenbbPage() {
         const url = `${queryBase}/openapi.json`
         const json = await fetchJsonOrThrow("OpenBB", url, undefined, 15000)
         const paths: Record<string, Record<string, any>> = json.paths || {}
+        const tagDescriptions: Record<string, string> = {}
+        if (Array.isArray(json.tags)) {
+          json.tags.forEach((t: any) => {
+            if (!t || typeof t !== "object") return
+            const name = String(t.name || "").trim()
+            if (!name) return
+            const desc = typeof t.description === "string" ? t.description.trim() : ""
+            if (desc) tagDescriptions[name] = desc
+          })
+        }
         const ops: ApiOperation[] = []
         Object.entries(paths).forEach(([path, methods]) => {
           Object.entries(methods || {}).forEach(([method, def]) => {
@@ -731,6 +835,7 @@ export default function OpenbbPage() {
           })
         })
         setSpecOps(ops)
+        setSpecTagDescriptions(tagDescriptions)
         const firstTag = ops[0]?.tag || ""
         setSelectedTag(firstTag)
         const firstOp = ops.find((op) => op.tag === firstTag) || ops[0]
@@ -749,11 +854,81 @@ export default function OpenbbPage() {
     return Array.from(tags)
   }, [specOps])
 
+  const selectedTagDescription = useMemo(() => {
+    if (!selectedTag) return ""
+    return specTagDescriptions[selectedTag] || ""
+  }, [specTagDescriptions, selectedTag])
+
   const filteredOps = useMemo(() => {
-    return specOps.filter((op) => (selectedTag ? op.tag === selectedTag : true))
-  }, [specOps, selectedTag])
+    const byTag = specOps.filter((op) => (selectedTag ? op.tag === selectedTag : true))
+    const q = endpointSearch.trim().toLowerCase()
+    if (!q) return byTag
+    return byTag.filter((op) => {
+      const hay = `${op.method} ${op.path} ${op.summary || ""} ${op.tag}`.toLowerCase()
+      return hay.includes(q)
+    })
+  }, [specOps, selectedTag, endpointSearch])
 
   const selectedOp = useMemo(() => filteredOps.find((op) => op.id === selectedOpId) || filteredOps[0], [filteredOps, selectedOpId])
+
+  // If the user filters endpoints, keep the selected endpoint valid.
+  useEffect(() => {
+    if (!filteredOps.length) return
+    if (selectedOpId && filteredOps.some((op) => op.id === selectedOpId)) return
+    setSelectedOpId(filteredOps[0].id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredOps])
+
+  const defaultExplorerSymbol = useMemo(() => {
+    const first = quickSymbols
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .find(Boolean)
+    return first || "AAPL"
+  }, [quickSymbols])
+
+  const availableExplorerTemplates = useMemo(() => {
+    if (!specOps.length) return []
+    const byKey = new Map(specOps.map((op) => [`${op.method} ${op.path}`, op]))
+    return explorerTemplates
+      .map((tpl) => ({ tpl, op: byKey.get(`${tpl.method} ${tpl.path}`) }))
+      .filter((x) => Boolean(x.op))
+      .map((x) => ({ ...x.tpl, op: x.op as ApiOperation }))
+  }, [explorerTemplates, specOps])
+
+  const defaultsForOp = useMemo(() => {
+    return (op: ApiOperation | undefined) => {
+      const next: Record<string, string> = {}
+      if (!op) return next
+
+      // OpenAPI defaults
+      op.params.forEach((p) => {
+        const def = p.schema?.default
+        if (def === undefined || def === null) return
+        next[p.name] = String(def)
+      })
+
+      // Sensible trading defaults
+      if (op.params.some((p) => p.name === "symbol") && !next.symbol) next.symbol = defaultExplorerSymbol
+      if (op.params.some((p) => p.name === "provider") && !next.provider) next.provider = quickProvider
+      if (op.params.some((p) => p.name === "interval") && !next.interval) next.interval = "1d"
+      return next
+    }
+  }, [defaultExplorerSymbol, quickProvider])
+
+  const opDefaults = useMemo(() => {
+    return selectedOp ? defaultsForOp(selectedOp) : {}
+  }, [selectedOp, defaultsForOp])
+
+  // When switching endpoints, prefill parameters with defaults so the user doesn't start from a blank form.
+  useEffect(() => {
+    if (!selectedOp) return
+    if (Object.keys(paramValues).length) return
+    const next = defaultsForOp(selectedOp)
+    if (!Object.keys(next).length) return
+    setParamValues(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedOp?.id])
 
   const handleParamChange = (name: string, value: string) => {
     setParamValues((prev) => ({ ...prev, [name]: value }))
@@ -1586,6 +1761,40 @@ export default function OpenbbPage() {
                   {specError}
                 </div>
               ) : null}
+              {availableExplorerTemplates.length ? (
+                <div className="space-y-2">
+                  <Label>Template</Label>
+                  <select
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={explorerTemplateId}
+                    onChange={(e) => {
+                      const nextId = e.target.value
+                      setExplorerTemplateId(nextId)
+                      if (!nextId) return
+                      const tpl = availableExplorerTemplates.find((x) => x.id === nextId)
+                      if (!tpl) return
+                      setSelectedTag(tpl.op.tag)
+                      setSelectedOpId(tpl.op.id)
+                      const overrides = Object.fromEntries(
+                        Object.entries(tpl.params || {}).filter(([, v]) => typeof v === "string" && v.length)
+                      ) as Record<string, string>
+                      const merged: Record<string, string> = { ...defaultsForOp(tpl.op), ...overrides }
+                      setParamValues(merged)
+                      setExplorerResult(undefined)
+                    }}
+                  >
+                    <option value="">(custom)</option>
+                    {availableExplorerTemplates.map((tpl) => (
+                      <option key={tpl.id} value={tpl.id}>
+                        {tpl.label} · {tpl.description}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="text-[11px] text-muted-foreground">
+                    Templates prefill parameters so you can run common trader queries quickly.
+                  </div>
+                </div>
+              ) : null}
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="space-y-2">
                   <Label>Tag</Label>
@@ -1598,6 +1807,7 @@ export default function OpenbbPage() {
                       const first = specOps.find((op) => op.tag === tag)
                       setSelectedOpId(first?.id || "")
                       setParamValues({})
+                      setExplorerTemplateId("")
                       setExplorerResult(undefined)
                     }}
                   >
@@ -1607,15 +1817,29 @@ export default function OpenbbPage() {
                       </option>
                     ))}
                   </select>
+                  {selectedTagDescription ? (
+                    <div className="text-[11px] text-muted-foreground">{selectedTagDescription}</div>
+                  ) : (
+                    <div className="text-[11px] text-muted-foreground">
+                      {filteredOps.length} endpoint{filteredOps.length === 1 ? "" : "s"} in this tag
+                    </div>
+                  )}
                 </div>
                 <div className="space-y-2 md:col-span-2">
                   <Label>Endpoint</Label>
+                  <Input
+                    value={endpointSearch}
+                    onChange={(e) => setEndpointSearch(e.target.value)}
+                    placeholder="Filter endpoints (e.g. rsi, income, /api/v1/equity)..."
+                    className="mb-2"
+                  />
                   <select
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     value={selectedOpId}
                     onChange={(e) => {
                       setSelectedOpId(e.target.value)
                       setParamValues({})
+                      setExplorerTemplateId("")
                       setExplorerResult(undefined)
                     }}
                   >
@@ -1632,6 +1856,36 @@ export default function OpenbbPage() {
                   <div className="text-xs text-muted-foreground">
                     {selectedOp.method} {selectedOp.path} · {selectedOp.summary || ""}
                   </div>
+                  <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                    <span className="rounded-full border border-border/60 bg-muted/30 px-2 py-0.5">{selectedOp.tag}</span>
+                    <span className="rounded-full border border-border/60 bg-muted/30 px-2 py-0.5">
+                      {selectedOp.params.length} param{selectedOp.params.length === 1 ? "" : "s"}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setParamValues(opDefaults)
+                        setExplorerResult(undefined)
+                        setExplorerTemplateId("")
+                      }}
+                      disabled={!Object.keys(opDefaults).length}
+                    >
+                      Reset params
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setParamValues({})
+                        setExplorerResult(undefined)
+                        setExplorerTemplateId("")
+                      }}
+                      disabled={!selectedOp.params.length}
+                    >
+                      Clear
+                    </Button>
+                  </div>
                   {selectedOp.params.length ? (
                     <div className="grid gap-3 md:grid-cols-2">
                       {selectedOp.params.map((p) => {
@@ -1639,6 +1893,7 @@ export default function OpenbbPage() {
                         const type = p.schema?.type || ""
                         const format = p.schema?.format || ""
                         const val = paramValues[p.name] || ""
+                        const def = opDefaults[p.name]
                         const label = `${p.name}${p.required ? " *" : ""}`
                         if (enumValues && enumValues.length) {
                           return (
@@ -1657,6 +1912,7 @@ export default function OpenbbPage() {
                                 ))}
                               </select>
                               {p.description ? <div className="text-[11px] text-muted-foreground">{p.description}</div> : null}
+                              {def ? <div className="text-[11px] text-muted-foreground">Default: {def}</div> : null}
                             </div>
                           )
                         }
@@ -1674,6 +1930,7 @@ export default function OpenbbPage() {
                                 <option value="false">false</option>
                               </select>
                               {p.description ? <div className="text-[11px] text-muted-foreground">{p.description}</div> : null}
+                              {def ? <div className="text-[11px] text-muted-foreground">Default: {def}</div> : null}
                             </div>
                           )
                         }
@@ -1695,6 +1952,7 @@ export default function OpenbbPage() {
                               placeholder={p.description || ""}
                             />
                             {p.description ? <div className="text-[11px] text-muted-foreground">{p.description}</div> : null}
+                            {def ? <div className="text-[11px] text-muted-foreground">Default: {def}</div> : null}
                           </div>
                         )
                       })}
@@ -1702,13 +1960,20 @@ export default function OpenbbPage() {
                   ) : (
                     <div className="text-xs text-muted-foreground">No parameters</div>
                   )}
-                  <Button size="sm" onClick={runExplorer} disabled={explorerLoading}>
-                    <RefreshCw className="mr-2 h-4 w-4" />
-                    {explorerLoading ? "Loading" : "Run"}
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => downloadJson("openbb-explorer", explorerResult?.data)}>
-                    Export JSON
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button size="sm" onClick={runExplorer} disabled={explorerLoading}>
+                      <RefreshCw className="mr-2 h-4 w-4" />
+                      {explorerLoading ? "Loading" : "Run"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => downloadJson("openbb-explorer", explorerResult?.data)}
+                      disabled={!explorerResult?.data}
+                    >
+                      Export JSON
+                    </Button>
+                  </div>
                   <ResponseCard title="Explorer result" result={explorerResult} />
                 </div>
               ) : null}
