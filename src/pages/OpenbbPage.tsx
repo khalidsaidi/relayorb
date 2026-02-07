@@ -2001,7 +2001,7 @@ export default function OpenbbPage() {
 	              {technicals ? (
 	                <div className="grid gap-4 lg:grid-cols-2 text-xs text-muted-foreground">
 	                  <div className="lg:col-span-2 space-y-3">
-	                    <TechnicalSignalsCard technicals={technicals} />
+	                    <TechnicalOverviewCard technicals={technicals} />
 	                    <div className="grid gap-2 md:grid-cols-3">
 	                    <MetricCard label="RSI" value={(firstResult(technicals.rsi) as any)?.value || (firstResult(technicals.rsi) as any)?.rsi} />
 	                    <MetricCard label="MA" value={(firstResult(technicals.ma) as any)?.ma || (firstResult(technicals.ma) as any)?.value} />
