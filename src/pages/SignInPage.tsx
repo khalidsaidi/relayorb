@@ -9,6 +9,7 @@ import {
 import { useAuth } from "@/features/auth/auth-context"
 import { Badge } from "@/components/ui/badge"
 import { useTranslation } from "react-i18next"
+import { toast } from "sonner"
 
 export default function SignInPage() {
   const { user, blockedEmail } = useAuth()
@@ -21,7 +22,20 @@ export default function SignInPage() {
 
   async function signInGoogle() {
     if (!firebaseEnabled || !auth) return
-    await signInWithPopup(auth, new GoogleAuthProvider())
+    try {
+      await signInWithPopup(auth, new GoogleAuthProvider())
+    } catch (err: unknown) {
+      const code =
+        typeof err === "object" && err && "code" in err ? String((err as any).code) : ""
+      if (code === "auth/unauthorized-domain") {
+        toast.error(
+          `Google sign-in is blocked for this URL. Open this app on http://localhost:${window.location.port}/ (not 127.0.0.1 or a WSL IP).`
+        )
+      } else {
+        toast.error(err instanceof Error ? err.message : "Sign-in failed")
+      }
+      throw err
+    }
   }
 
   return (

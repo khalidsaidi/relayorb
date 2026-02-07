@@ -7,6 +7,16 @@ import "./index.css"
 import { AuthProvider } from "@/features/auth/AuthProvider"
 import { AppErrorBoundary } from "@/components/AppErrorBoundary"
 
+// Firebase Auth's "authorized domains" almost always includes `localhost` but not `127.0.0.1`.
+// When running under WSL/Windows, people often open `http://127.0.0.1:<port>` which breaks Google popup auth with
+// `auth/unauthorized-domain`. In dev, normalize to `localhost` automatically.
+if (import.meta.env.DEV) {
+  const { protocol, hostname, port, pathname, search, hash } = window.location
+  if (hostname === "127.0.0.1") {
+    window.location.replace(`${protocol}//localhost:${port}${pathname}${search}${hash}`)
+  }
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <AuthProvider>
