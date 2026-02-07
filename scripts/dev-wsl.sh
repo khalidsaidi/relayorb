@@ -15,15 +15,10 @@ WSL_IP="$(ip -4 addr show eth0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -
 # When the UI is opened from Windows, Vite's HMR websocket can fail if it ends up using IPv6 `localhost` (`::1`).
 # Default to an explicit IPv4 host for HMR.
 #
-# IMPORTANT: We default to the WSL IPv4 (when available). This avoids Windows->WSL port-forward edge cases where HTTP works
-# but the HMR websocket fails (and Vite reports "failed to connect to websocket").
-# You can override with `VITE_HMR_HOST=<ip>` if you need HMR reachable from another device on your LAN.
+# IMPORTANT: We default to `127.0.0.1` so both HTTP and HMR use Windows->WSL localhost forwarding (when enabled).
+# You can override with `VITE_HMR_HOST=<wsl-ip>` if you need HMR reachable from another device on your LAN.
 if [[ -z "${VITE_HMR_HOST:-}" ]]; then
-  if [[ -n "$WSL_IP" ]]; then
-    export VITE_HMR_HOST="$WSL_IP"
-  else
-    export VITE_HMR_HOST="127.0.0.1"
-  fi
+  export VITE_HMR_HOST="127.0.0.1"
 fi
 export VITE_HMR_CLIENT_PORT="$PORT"
 
