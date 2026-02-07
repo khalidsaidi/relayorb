@@ -15,7 +15,9 @@ import { Input } from "@/components/ui/input"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Separator } from "@/components/ui/separator"
 import { resolveMarketDataProxyUrl, resolveFinnewsUrl } from "@/lib/runtime-urls"
+import { fetchJsonOrThrow } from "@/lib/http"
 import { ExternalLink, RefreshCw, PlayCircle, Search, FlaskConical, Info, Activity, ListChecks, Newspaper, AlertTriangle } from "lucide-react"
+import { toast } from "sonner"
 
 const defaultLimit = 50
 
@@ -97,6 +99,21 @@ export default function FinnewsPage() {
   const proxyBase = useMemo(() => resolveMarketDataProxyUrl(), [])
   const queryBase = proxyBase ? `${proxyBase}/v1/finnews` : baseUrl
 
+  const checkHealth = useCallback(async () => {
+    if (!queryBase) {
+      toast.error(t("finnews.notConfigured"))
+      return
+    }
+    const url = `${queryBase}/health`
+    try {
+      await fetchJsonOrThrow("Finnews", url, undefined, 15000)
+      toast.success("[Finnews] healthy")
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(msg)
+    }
+  }, [queryBase, t])
+
   const [health, setHealth] = useState<FinnewsHealth | null>(null)
   const [latest, setLatest] = useState<NewsItem[]>([])
   const [tasks, setTasks] = useState<FinnewsTask[]>([])
@@ -132,18 +149,15 @@ export default function FinnewsPage() {
       if (!queryBase) {
         throw new Error(t("finnews.notConfigured"))
       }
-      const res = await fetch(`${queryBase}${path}`.replace(/\s+/g, "%20"), {
-        headers: {
-          "Content-Type": "application/json",
-        },
-        ...init,
-      })
-      if (!res.ok) {
-        const text = await res.text()
-        throw new Error(text || `Request failed (${res.status})`)
+      const url = `${queryBase}${path}`.replace(/\s+/g, "%20")
+      const method = (init?.method || "GET").toUpperCase()
+      const headers = new Headers(init?.headers || {})
+      headers.set("Accept", "application/json")
+      if (method !== "GET" && method !== "HEAD" && !headers.has("Content-Type")) {
+        headers.set("Content-Type", "application/json")
       }
-      if (res.status === 204) return null
-      return res.json()
+      const data = await fetchJsonOrThrow("Finnews", url, { ...init, headers }, 30000)
+      return data
     },
     [queryBase, t]
   )
@@ -309,6 +323,9 @@ export default function FinnewsPage() {
             >
               <RefreshCw className="mr-2 h-4 w-4" />
               {loading ? t("finnews.refreshing") : t("finnews.refresh")}
+            </Button>
+            <Button variant="outline" size="sm" disabled={!queryBase} onClick={checkHealth}>
+              Health
             </Button>
             <Button
               variant="outline"

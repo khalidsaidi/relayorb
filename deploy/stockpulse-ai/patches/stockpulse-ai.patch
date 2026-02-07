@@ -1,0 +1,213 @@
+diff --git a/ai_analytics.py b/ai_analytics.py
+index fb4dd09..286547d 100644
+--- a/ai_analytics.py
++++ b/ai_analytics.py
+@@ -7,14 +7,32 @@ Analyzes technical indicators, news sentiment, and social media to provide stock
+ import sqlite3
+ import requests
+ import logging
++import os
++import time
++import threading
+ from datetime import datetime, timedelta
+ from typing import Dict, List, Tuple, Optional
+ import json
++from concurrent.futures import ThreadPoolExecutor, as_completed
+ 
+ logger = logging.getLogger(__name__)
+ 
+ DB_PATH = 'stock_news.db'
+ 
++RATINGS_CACHE_TTL_SEC = int(os.getenv("STOCKPULSE_RATINGS_CACHE_TTL_SEC", "20"))
++PRICE_CACHE_TTL_SEC = int(os.getenv("STOCKPULSE_PRICE_CACHE_TTL_SEC", "300"))
++RATINGS_MAX_WORKERS = int(os.getenv("STOCKPULSE_RATINGS_MAX_WORKERS", "8"))
++DISABLE_AI_SUMMARY_IN_BULK = os.getenv("STOCKPULSE_DISABLE_AI_SUMMARY_IN_BULK", "true").lower() in (
++    "1",
++    "true",
++    "yes",
++    "y",
++)
++
++_cache_lock = threading.Lock()
++_price_cache = {}   # (ticker, period) -> {ts, data}
++_ratings_cache = {"ts": 0.0, "data": None}  # {ts, data(list)}
++
+ 
+ class StockAnalytics:
+     def __init__(self, db_path=DB_PATH):
+@@ -27,6 +45,13 @@ class StockAnalytics:
+     def get_stock_price_data(self, ticker: str, period='1mo') -> Dict:
+         """Fetch stock price data from Yahoo Finance"""
+         try:
++            cache_key = (ticker.upper(), period)
++            now = time.time()
++            with _cache_lock:
++                cached = _price_cache.get(cache_key)
++                if cached and (now - cached.get("ts", 0.0)) < PRICE_CACHE_TTL_SEC:
++                    return cached.get("data", {}) or {}
++
+             url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}"
+             params = {
+                 'range': period,
+@@ -53,6 +78,9 @@ class StockAnalytics:
+                     'timestamps': timestamps
+                 }
+ 
++                with _cache_lock:
++                    _price_cache[cache_key] = {"ts": time.time(), "data": prices}
++
+                 return prices
+ 
+         except Exception as e:
+@@ -220,7 +248,7 @@ class StockAnalytics:
+             'sources': sources
+         }
+ 
+-    def calculate_ai_rating(self, ticker: str) -> Dict:
++    def calculate_ai_rating(self, ticker: str, allow_ai_summary: bool = True) -> Dict:
+         """
+         AI-powered stock rating combining technical analysis and sentiment
+         Returns comprehensive rating and analysis
+@@ -361,7 +389,7 @@ class StockAnalytics:
+         currency = 'INR' if is_indian else 'USD'
+ 
+         # Generate AI summary
+-        summary_text, ai_powered = self._generate_summary(rating, final_score, technical_signals, sentiment_signals)
++        summary_text, ai_powered = self._generate_summary(rating, final_score, technical_signals, sentiment_signals, allow_ai_summary=allow_ai_summary)
+ 
+         return {
+             'ticker': ticker,
+@@ -386,38 +414,39 @@ class StockAnalytics:
+         }
+ 
+     def _generate_summary(self, rating: str, score: float, technical_signals: List[str],
+-                         sentiment_signals: List[str]) -> tuple:
++                         sentiment_signals: List[str], allow_ai_summary: bool = True) -> tuple:
+         """Generate AI summary of the analysis. Returns (summary_text, is_ai_powered)"""
+-        # Try to use real AI if configured
+-        try:
+-            from settings_manager import get_active_ai_provider
+-            from ai_providers import AIProviderFactory
++        if allow_ai_summary:
++            # Try to use real AI if configured
++            try:
++                from settings_manager import get_active_ai_provider
++                from ai_providers import AIProviderFactory
+ 
+-            provider_config = get_active_ai_provider()
++                provider_config = get_active_ai_provider()
+ 
+-            if provider_config:
+-                logger.info(f"Using AI provider: {provider_config['provider_name']} - {provider_config['model']}")
++                if provider_config:
++                    logger.info(f"Using AI provider: {provider_config['provider_name']} - {provider_config['model']}")
+ 
+-                # Create AI provider
+-                provider = AIProviderFactory.create_provider(
+-                    provider_config['provider_name'],
+-                    provider_config['api_key'],
+-                    provider_config['model']
+-                )
++                    # Create AI provider
++                    provider = AIProviderFactory.create_provider(
++                        provider_config['provider_name'],
++                        provider_config['api_key'],
++                        provider_config['model']
++                    )
+ 
+-                if provider:
+-                    # Create detailed prompt for AI
+-                    prompt = self._create_ai_prompt(rating, score, technical_signals, sentiment_signals)
++                    if provider:
++                        # Create detailed prompt for AI
++                        prompt = self._create_ai_prompt(rating, score, technical_signals, sentiment_signals)
+ 
+-                    # Get AI analysis (with timeout protection)
+-                    ai_summary = provider.generate_analysis(prompt, max_tokens=300)
++                        # Get AI analysis
++                        ai_summary = provider.generate_analysis(prompt, max_tokens=300)
+ 
+-                    # Return AI summary if successful
+-                    if ai_summary and not ai_summary.startswith('Error:'):
+-                        logger.info("AI analysis generated successfully")
+-                        return (ai_summary, True)
+-        except Exception as e:
+-            logger.error(f"Error generating AI summary: {e}")
++                        # Return AI summary if successful
++                        if ai_summary and not ai_summary.startswith('Error:'):
++                            logger.info("AI analysis generated successfully")
++                            return (ai_summary, True)
++            except Exception as e:
++                logger.error(f"Error generating AI summary: {e}")
+ 
+         # Fallback to basic summary if AI is not available
+         summaries = {
+@@ -453,7 +482,14 @@ Be direct and actionable. Avoid disclaimers."""
+         return prompt
+ 
+     def get_all_ratings(self) -> List[Dict]:
+-        """Get AI ratings for all active stocks"""
++        """Get AI ratings for all active stocks (cached + parallelized)."""
++        now = time.time()
++        with _cache_lock:
++            cached = _ratings_cache.get("data")
++            cached_ts = float(_ratings_cache.get("ts", 0.0) or 0.0)
++        if cached and (now - cached_ts) < RATINGS_CACHE_TTL_SEC:
++            return cached
++
+         conn = sqlite3.connect(self.db_path)
+         conn.row_factory = sqlite3.Row
+         cursor = conn.cursor()
+@@ -466,20 +502,38 @@ Be direct and actionable. Avoid disclaimers."""
+ 
+         conn.close()
+ 
+-        ratings = []
+-        for ticker in stocks:
+-            try:
+-                rating = self.calculate_ai_rating(ticker)
+-                ratings.append(rating)
+-            except Exception as e:
+-                logger.error(f"Error calculating rating for {ticker}: {e}")
+-                ratings.append({
+-                    'ticker': ticker,
+-                    'rating': 'ERROR',
+-                    'score': 0,
+-                    'confidence': 0,
+-                    'message': str(e)
+-                })
++        if not stocks:
++            return []
++
++        # Bulk endpoint should be fast. By default, do NOT call LLM per ticker here.
++        allow_ai_summary = not DISABLE_AI_SUMMARY_IN_BULK
++        max_workers = max(1, min(RATINGS_MAX_WORKERS, len(stocks)))
++        ratings: List[Dict] = []
++
++        def _worker(t: str) -> Dict:
++            return self.calculate_ai_rating(t, allow_ai_summary=allow_ai_summary)
++
++        with ThreadPoolExecutor(max_workers=max_workers) as executor:
++            futures = {executor.submit(_worker, ticker): ticker for ticker in stocks}
++            for future in as_completed(futures):
++                ticker = futures[future]
++                try:
++                    ratings.append(future.result())
++                except Exception as e:
++                    logger.error(f"Error calculating rating for {ticker}: {e}")
++                    ratings.append({
++                        'ticker': ticker,
++                        'rating': 'ERROR',
++                        'score': 0,
++                        'confidence': 0,
++                        'message': str(e)
++                    })
++
++        ratings.sort(key=lambda r: (r.get("ticker") or ""))
++
++        with _cache_lock:
++            _ratings_cache["ts"] = time.time()
++            _ratings_cache["data"] = ratings
+ 
+         return ratings
+ 

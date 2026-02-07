@@ -6,9 +6,12 @@ import { Label } from "@/components/ui/label"
 import { ExternalLink, RefreshCw, Info } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { resolveOpenbbApiUrl, resolveMarketDataProxyUrl } from "@/lib/runtime-urls"
+import { fetchJsonOrThrow, fetchJsonWithMeta, HttpRequestError } from "@/lib/http"
 import { toast } from "sonner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from "recharts"
+import { ChartFrame } from "@/components/charts/ChartFrame"
+import { CandlesChart, type Candle } from "@/components/charts/CandlesChart"
+import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from "recharts"
 
 type ResponseState = {
   url: string
@@ -73,7 +76,26 @@ function buildUrl(base: string, path: string, params: Record<string, string | nu
 
 function renderValue(value: unknown) {
   if (value === null || value === undefined) return "—"
-  if (typeof value === "number" && Number.isFinite(value)) return value.toString()
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const abs = Math.abs(value)
+    // Compact for large magnitudes, fixed for typical prices/ratios.
+    if (abs >= 1000) {
+      try {
+        return new Intl.NumberFormat(undefined, {
+          notation: "compact",
+          maximumFractionDigits: 2,
+        }).format(value)
+      } catch {
+        return value.toLocaleString(undefined, { maximumFractionDigits: 2 })
+      }
+    }
+    if (abs >= 1) {
+      const fixed = value.toFixed(2)
+      return fixed.endsWith(".00") ? fixed.slice(0, -3) : fixed
+    }
+    // Very small values: keep a few sig figs.
+    return value.toPrecision(3)
+  }
   if (typeof value === "string") return value
   return JSON.stringify(value)
 }
@@ -99,6 +121,26 @@ function normalizeRows(data: unknown): Record<string, unknown>[] {
   if (Array.isArray(data)) return data as Record<string, unknown>[]
   if (Array.isArray((data as any)?.results)) return (data as any).results as Record<string, unknown>[]
   return []
+}
+
+function toCandles(data: unknown): Candle[] {
+  const rows = normalizeRows(data)
+  if (!rows.length) return []
+  const out: Candle[] = []
+  rows.forEach((row) => {
+    const dateRaw = (row as any).date || (row as any).datetime || (row as any).timestamp
+    const date = typeof dateRaw === "string" ? dateRaw : dateRaw ? String(dateRaw) : ""
+    if (!date) return
+    const open = Number((row as any).open)
+    const high = Number((row as any).high)
+    const low = Number((row as any).low)
+    const close = Number((row as any).close ?? (row as any).adj_close ?? (row as any).last_price ?? (row as any).price)
+    if (!Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) return
+    const volumeRaw = (row as any).volume ?? (row as any).total_volume
+    const volume = volumeRaw === null || volumeRaw === undefined ? null : Number(volumeRaw)
+    out.push({ time: date, open, high, low, close, volume })
+  })
+  return out
 }
 
 function renderKeyValueTable(data: Record<string, unknown>) {
@@ -250,20 +292,27 @@ function renderLineChart(data: unknown, xKey = "date", yKeys: string[] = []) {
   const numericKeys = pickChartKeys(rows, yKeys)
   if (!numericKeys.length) return null
   return (
-    <div className="h-64 w-full min-h-[240px]">
-      <ResponsiveContainer width="100%" height={240}>
-        <LineChart data={rows} margin={{ left: 8, right: 8, top: 8, bottom: 8 }}>
+    <ChartFrame height={240} className="min-h-[240px]">
+      {({ width, height }) => (
+        <LineChart width={width} height={height} data={rows} margin={{ left: 8, right: 8, top: 8, bottom: 8 }}>
           <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.3} />
           <XAxis dataKey={resolvedXKey} tick={{ fontSize: 10 }} minTickGap={16} />
-          <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
+          <YAxis tick={{ fontSize: 10 }} domain={["auto", "auto"]} />
           <Tooltip contentStyle={{ fontSize: "11px" }} />
           <Legend wrapperStyle={{ fontSize: "11px" }} />
           {numericKeys.slice(0, 4).map((k, idx) => (
-            <Line key={k} type="monotone" dataKey={k} stroke={['#2563eb', '#16a34a', '#f97316', '#a855f7'][idx % 4]} dot={false} strokeWidth={1.6} />
+            <Line
+              key={k}
+              type="monotone"
+              dataKey={k}
+              stroke={["#2563eb", "#16a34a", "#f97316", "#a855f7"][idx % 4]}
+              dot={false}
+              strokeWidth={1.6}
+            />
           ))}
         </LineChart>
-      </ResponsiveContainer>
-    </div>
+      )}
+    </ChartFrame>
   )
 }
 
@@ -293,11 +342,39 @@ function buildComparisonSeries(history: { sym: string; data: any }[]) {
   })
 }
 
-function renderComparisonChart(history: { sym: string; data: any }[]) {
+function normalizeComparisonSeries(series: Record<string, unknown>[], symbols: string[]) {
+  const bases = new Map<string, number>()
+  symbols.forEach((sym) => {
+    for (const row of series) {
+      const v = (row as any)[sym]
+      if (typeof v === "number" && Number.isFinite(v)) {
+        bases.set(sym, v)
+        break
+      }
+    }
+  })
+
+  return series.map((row) => {
+    const out: Record<string, unknown> = { date: (row as any).date }
+    symbols.forEach((sym) => {
+      const base = bases.get(sym)
+      const v = (row as any)[sym]
+      if (typeof v === "number" && Number.isFinite(v) && base && Number.isFinite(base)) {
+        out[sym] = ((v / base) - 1) * 100
+      }
+    })
+    return out
+  })
+}
+
+function renderComparisonChart(history: { sym: string; data: any }[], mode: "price" | "pct" = "price") {
   if (!history.length) return null
-  const series = buildComparisonSeries(history)
-  if (!series.length) return null
   const symbols = history.map((h) => h.sym)
+  let series = buildComparisonSeries(history)
+  if (!series.length) return null
+  if (mode === "pct") {
+    series = normalizeComparisonSeries(series, symbols)
+  }
   return renderLineChart(series, "date", symbols)
 }
 
@@ -442,6 +519,68 @@ export default function OpenbbPage() {
   const proxyBase = useMemo(() => resolveMarketDataProxyUrl(), [])
   const queryBase = proxyBase ? `${proxyBase}/v1/openbb` : apiUrl
 
+  const openbbFetch = async (
+    path: string,
+    params: Record<string, string | number | undefined>,
+    timeoutMs = 30000
+  ) => {
+    if (!queryBase) {
+      throw new Error(t("openbb.notConfigured"))
+    }
+    const url = buildUrl(queryBase, path, params)
+    return fetchJsonWithMeta("OpenBB", url, undefined, timeoutMs)
+  }
+
+  const safeOpenbb = async (
+    sym: string,
+    path: string,
+    params: Record<string, string | number | undefined>,
+    timeoutMs = 30000
+  ) => {
+    try {
+      const meta = await openbbFetch(path, params, timeoutMs)
+      const data = meta.data
+      const emptyResults =
+        meta.ok &&
+        data &&
+        typeof data === "object" &&
+        Array.isArray((data as any).results) &&
+        (data as any).results.length === 0
+      const noData = meta.ok && ((Array.isArray(data) && data.length === 0) || data === null || emptyResults)
+      return {
+        sym,
+        status: meta.status,
+        ok: meta.ok,
+        data,
+        warning: noData ? `[OpenBB] no data: ${sym} ${path} (try another provider)` : undefined,
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return {
+        sym,
+        status: err instanceof HttpRequestError ? err.status : 0,
+        ok: false,
+        data: null,
+        error: message,
+      }
+    }
+  }
+
+  const checkHealth = async () => {
+    if (!queryBase) {
+      toast.error(t("openbb.notConfigured"))
+      return
+    }
+    const url = `${queryBase}/openapi.json`
+    try {
+      const res = await fetchJsonWithMeta("OpenBB", url, undefined, 15000)
+      toast.success(`[OpenBB] healthy (${res.status})`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(msg)
+    }
+  }
+
   // Custom request (kept for advanced users)
   const [customPath, setCustomPath] = useState("/api/v1/equity/price/quote")
   const [customQuery, setCustomQuery] = useState(
@@ -467,6 +606,7 @@ export default function OpenbbPage() {
   const [watchlistAlerts, setWatchlistAlerts] = useState<Record<string, string[]>>({})
   const [historyLog, setHistoryLog] = useState<{ symbols: string; range: string; provider: string; ts: number }[]>([])
   const [comparisonSymbols, setComparisonSymbols] = useState("AAPL, MSFT")
+  const [comparisonChartMode, setComparisonChartMode] = useState<"price" | "pct">("pct")
   const [comparisonData, setComparisonData] = useState<Record<string, any>[]>([])
   const [comparisonValuation, setComparisonValuation] = useState<Record<string, any>[]>([])
   const [comparisonTech, setComparisonTech] = useState<Record<string, any>[]>([])
@@ -528,38 +668,24 @@ export default function OpenbbPage() {
     const url = buildUrl(queryBase, path, params)
     setLoading(true)
     try {
-      const res = await fetch(url)
-      const text = await res.text()
-      let data: unknown = null
-      try {
-        data = JSON.parse(text)
-      } catch {
-        data = text
-      }
-      const status = res.status
-      const asString = typeof data === "string" ? data : ""
+      const meta = await fetchJsonWithMeta("OpenBB", url, undefined, 30000)
+      const data = meta.data
       const emptyResults =
-        res.ok &&
+        meta.ok &&
         data &&
         typeof data === "object" &&
         Array.isArray((data as any).results) &&
         (data as any).results.length === 0
-      const noData = res.ok && ((Array.isArray(data) && data.length === 0) || data === null || emptyResults)
+      const noData = meta.ok && ((Array.isArray(data) && data.length === 0) || data === null || emptyResults)
       const errorMsg = (() => {
-        if (noData) return "Provider returned no data. Try another provider."
-        if (!res.ok) {
-          if (status === 401) return "Authentication failed (401). Check provider credentials."
-          if (status === 403) return "Access denied (403). Provider limit reached."
-          return asString || `Provider error (${status})`
-        }
+        if (noData) return `[OpenBB] no data: ${url} (try another provider)`
         return undefined
       })()
       if (errorMsg) toast.error(errorMsg)
-      if (!res.ok) console.error("OpenBB error", { status, data })
       setter({
         url,
-        status: res.status,
-        ok: res.ok,
+        status: meta.status,
+        ok: meta.ok,
         data,
         error: errorMsg,
       })
@@ -568,7 +694,7 @@ export default function OpenbbPage() {
       toast.error(message)
       setter({
         url,
-        status: 0,
+        status: error instanceof HttpRequestError ? error.status : 0,
         ok: false,
         data: null,
         error: message,
@@ -584,9 +710,8 @@ export default function OpenbbPage() {
       if (!queryBase) return
       try {
         setSpecError(null)
-        const res = await fetch(`${queryBase}/openapi.json`)
-        if (!res.ok) throw new Error(`openapi fetch failed (${res.status})`)
-        const json = await res.json()
+        const url = `${queryBase}/openapi.json`
+        const json = await fetchJsonOrThrow("OpenBB", url, undefined, 15000)
         const paths: Record<string, Record<string, any>> = json.paths || {}
         const ops: ApiOperation[] = []
         Object.entries(paths).forEach(([path, methods]) => {
@@ -684,58 +809,36 @@ export default function OpenbbPage() {
     setQuickHistory([])
     try {
       const startDate = computeStartDate(quickRange)
+
       const histPromises = symbols.map((sym) =>
-        fetch(buildUrl(queryBase, "/api/v1/equity/price/historical", { symbol: sym, provider: quickProvider, interval: "1d", start_date: startDate })).then(async (r) => ({
-          sym,
-          status: r.status,
-          ok: r.ok,
-          data: await r.json().catch(() => null),
-        }))
+        safeOpenbb(sym, "/api/v1/equity/price/historical", {
+          symbol: sym,
+          provider: quickProvider,
+          interval: "1d",
+          start_date: startDate,
+        })
       )
       const quotePromises = symbols.map((sym) =>
-        fetch(buildUrl(queryBase, "/api/v1/equity/price/quote", { symbol: sym, provider: quickProvider })).then(async (r) => ({
-          sym,
-          status: r.status,
-          ok: r.ok,
-          data: await r.json().catch(() => null),
-        }))
+        safeOpenbb(sym, "/api/v1/equity/price/quote", { symbol: sym, provider: quickProvider })
       )
       const newsPromises = symbols.map((sym) =>
-        fetch(buildUrl(queryBase, "/api/v1/news", { symbol: sym, provider: quickProvider })).then(async (r) => ({
-          sym,
-          status: r.status,
-          ok: r.ok,
-          data: await r.json().catch(() => null),
-        }))
+        safeOpenbb(sym, "/api/v1/news", { symbol: sym, provider: quickProvider })
       )
       const fundPromises = symbols.map(async (sym) => {
-        const [profile, income, balance, cash] = await Promise.all([
-          fetch(buildUrl(queryBase, "/api/v1/equity/profile", { symbol: sym, provider: quickProvider })).then((r) =>
-            r.json().catch(() => null)
-          ),
-          fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/income", { symbol: sym, provider: quickProvider })).then((r) =>
-            r.json().catch(() => null)
-          ),
-          fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/balance", { symbol: sym, provider: quickProvider })).then((r) =>
-            r.json().catch(() => null)
-          ),
-          fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/cash_flow", { symbol: sym, provider: quickProvider })).then((r) =>
-            r.json().catch(() => null)
-          ),
+        const [profile, income, balance, cash, metrics] = await Promise.all([
+          safeOpenbb(sym, "/api/v1/equity/profile", { symbol: sym, provider: quickProvider }).then((r) => r.data),
+          safeOpenbb(sym, "/api/v1/equity/fundamental/income", { symbol: sym, provider: quickProvider }).then((r) => r.data),
+          safeOpenbb(sym, "/api/v1/equity/fundamental/balance", { symbol: sym, provider: quickProvider }).then((r) => r.data),
+          safeOpenbb(sym, "/api/v1/equity/fundamental/cash", { symbol: sym, provider: quickProvider }).then((r) => r.data),
+          safeOpenbb(sym, "/api/v1/equity/fundamental/metrics", { symbol: sym, provider: quickProvider }).then((r) => r.data),
         ])
-        return { profile, income, balance, cash }
+        return { profile, income, balance, cash, metrics }
       })
       const techPromises = symbols.map(async (sym) => {
         const [rsi, ma, bb] = await Promise.all([
-          fetch(buildUrl(queryBase, "/api/v1/technical/relative_strength_index", { symbol: sym, interval: "1d", length: 14, provider: quickProvider })).then((r) =>
-            r.json().catch(() => null)
-          ),
-          fetch(buildUrl(queryBase, "/api/v1/technical/moving_average", { symbol: sym, interval: "1d", length: 20, provider: quickProvider })).then((r) =>
-            r.json().catch(() => null)
-          ),
-          fetch(buildUrl(queryBase, "/api/v1/technical/bollinger_bands", { symbol: sym, interval: "1d", length: 20, std: 2, provider: quickProvider })).then(
-            (r) => r.json().catch(() => null)
-          ),
+          safeOpenbb(sym, "/api/v1/technical/relative_strength_index", { symbol: sym, interval: "1d", length: 14, provider: quickProvider }).then((r) => r.data),
+          safeOpenbb(sym, "/api/v1/technical/moving_average", { symbol: sym, interval: "1d", length: 20, provider: quickProvider }).then((r) => r.data),
+          safeOpenbb(sym, "/api/v1/technical/bollinger_bands", { symbol: sym, interval: "1d", length: 20, std: 2, provider: quickProvider }).then((r) => r.data),
         ])
         return { rsi, ma, bb }
       })
@@ -768,20 +871,10 @@ export default function OpenbbPage() {
       setQuickFundMap(fundMap)
       setQuickTechMap(techMap)
       setHistoryLog((prev) => [{ symbols: quickSymbols, range: quickRange, provider: quickProvider, ts: Date.now() }, ...prev].slice(0, 20))
-      // Fetch fundamentals/technicals for the first symbol to enrich cards
-      const primary = symbols[0]
-      if (primary) {
-        fetch(buildUrl(queryBase, "/api/v1/equity/profile", { symbol: primary, provider: quickProvider }))
-          .then((r) => r.json().catch(() => null))
-          .then((data) => setFundamentals(data))
-          .catch(() => setFundamentals(null))
-        fetch(buildUrl(queryBase, "/api/v1/technical/relative_strength_index", { symbol: primary, interval: "1d", length: 14, provider: quickProvider }))
-          .then((r) => r.json().catch(() => null))
-          .then((data) => setTechnicals(data))
-          .catch(() => setTechnicals(null))
-      }
-      quotes.filter((q) => !q.ok).forEach((q) => toast.error(`${q.sym}: ${q.status}`))
-      history.filter((h) => !h.ok).forEach((h) => toast.error(`${h.sym}: ${h.status}`))
+      quotes.filter((q: any) => !q.ok).forEach((q: any) => toast.error(q.error || `${q.sym}: ${q.status}`))
+      history.filter((h: any) => !h.ok).forEach((h: any) => toast.error(h.error || `${h.sym}: ${h.status}`))
+      quotes.filter((q: any) => q.warning).forEach((q: any) => toast.error(q.warning))
+      history.filter((h: any) => h.warning).forEach((h: any) => toast.error(h.warning))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Quick lookup failed")
     } finally {
@@ -807,45 +900,42 @@ export default function OpenbbPage() {
     try {
       const res = await Promise.all(
         symbols.map((sym) =>
-          fetch(buildUrl(queryBase, "/api/v1/equity/price/quote", { symbol: sym, provider: quickProvider })).then(async (r) => ({
-            sym,
-            ok: r.ok,
-            status: r.status,
-            data: await r.json().catch(() => null),
-          }))
+          safeOpenbb(sym, "/api/v1/equity/price/quote", { symbol: sym, provider: quickProvider })
         )
       )
       const ok = res.filter((r) => r.ok)
       setComparisonData(ok)
-      // fetch valuation for comparison
+      res.filter((r) => !r.ok).forEach((r) => toast.error(r.error || `${r.sym}: ${r.status}`))
+      res.filter((r) => r.warning).forEach((r) => toast.error(r.warning))
+
       const valuationRes = await Promise.all(
         symbols.map((sym) =>
-          fetch(buildUrl(queryBase, "/api/v1/equity/profile", { symbol: sym, provider: quickProvider })).then(async (r) => ({
-            sym,
-            ok: r.ok,
-            status: r.status,
-            data: await r.json().catch(() => null),
-          }))
+          safeOpenbb(sym, "/api/v1/equity/fundamental/metrics", { symbol: sym, provider: quickProvider })
         )
       )
       setComparisonValuation(valuationRes.filter((r) => r.ok))
       const techRes = await Promise.all(
         symbols.map(async (sym) => {
           const [rsi, ma, bb] = await Promise.all([
-            fetch(
-              buildUrl(queryBase, "/api/v1/technical/relative_strength_index", {
-                symbol: sym,
-                interval: "1d",
-                length: 14,
-                provider: quickProvider,
-              })
-            ).then((r) => r.json().catch(() => null)),
-            fetch(buildUrl(queryBase, "/api/v1/technical/moving_average", { symbol: sym, interval: "1d", length: 20, provider: quickProvider })).then(
-              (r) => r.json().catch(() => null)
-            ),
-            fetch(
-              buildUrl(queryBase, "/api/v1/technical/bollinger_bands", { symbol: sym, interval: "1d", length: 20, std: 2, provider: quickProvider })
-            ).then((r) => r.json().catch(() => null)),
+            safeOpenbb(sym, "/api/v1/technical/relative_strength_index", {
+              symbol: sym,
+              interval: "1d",
+              length: 14,
+              provider: quickProvider,
+            }).then((r) => r.data),
+            safeOpenbb(sym, "/api/v1/technical/moving_average", {
+              symbol: sym,
+              interval: "1d",
+              length: 20,
+              provider: quickProvider,
+            }).then((r) => r.data),
+            safeOpenbb(sym, "/api/v1/technical/bollinger_bands", {
+              symbol: sym,
+              interval: "1d",
+              length: 20,
+              std: 2,
+              provider: quickProvider,
+            }).then((r) => r.data),
           ])
           return { sym, rsi, ma, bb }
         })
@@ -853,21 +943,21 @@ export default function OpenbbPage() {
       setComparisonTech(techRes)
       const histRes = await Promise.all(
         symbols.map((sym) =>
-          fetch(buildUrl(queryBase, "/api/v1/equity/price/historical", { symbol: sym, provider: quickProvider, interval: "1d", start_date: computeStartDate(quickRange) })).then(async (r) => ({
-            sym,
-            ok: r.ok,
-            status: r.status,
-            data: await r.json().catch(() => null),
-          }))
+          safeOpenbb(sym, "/api/v1/equity/price/historical", {
+            symbol: sym,
+            provider: quickProvider,
+            interval: "1d",
+            start_date: computeStartDate(quickRange),
+          })
         )
       )
       setComparisonHistory(histRes.filter((r) => r.ok))
       const fundRes = await Promise.all(
         symbols.map(async (sym) => {
           const [income, balance, cash] = await Promise.all([
-            fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/income", { symbol: sym, provider: quickProvider })).then((r) => r.json().catch(() => null)),
-            fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/balance", { symbol: sym, provider: quickProvider })).then((r) => r.json().catch(() => null)),
-            fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/cash_flow", { symbol: sym, provider: quickProvider })).then((r) => r.json().catch(() => null)),
+            safeOpenbb(sym, "/api/v1/equity/fundamental/income", { symbol: sym, provider: quickProvider }).then((r) => r.data),
+            safeOpenbb(sym, "/api/v1/equity/fundamental/balance", { symbol: sym, provider: quickProvider }).then((r) => r.data),
+            safeOpenbb(sym, "/api/v1/equity/fundamental/cash", { symbol: sym, provider: quickProvider }).then((r) => r.data),
           ])
           return { sym, income, balance, cash }
         })
@@ -877,7 +967,6 @@ export default function OpenbbPage() {
         fundMap[f.sym] = f
       })
       setComparisonFund(fundMap)
-      res.filter((r) => !r.ok).forEach((r) => toast.error(`${r.sym}: ${r.status}`))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Comparison failed")
     } finally {
@@ -892,28 +981,38 @@ export default function OpenbbPage() {
     }
     setFundLoading(true)
     try {
-      const profilePromise = fundSelections.profile
-        ? fetch(buildUrl(queryBase, "/api/v1/equity/profile", { symbol: fundSymbol, provider: quickProvider })).then((r) =>
-            r.json().catch(() => null)
-          )
-        : Promise.resolve(null)
-      const incomePromise = fundSelections.income
-        ? fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/income", { symbol: fundSymbol, provider: quickProvider })).then((r) =>
-            r.json().catch(() => null)
-          )
-        : Promise.resolve(null)
-      const balancePromise = fundSelections.balance
-        ? fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/balance", { symbol: fundSymbol, provider: quickProvider })).then((r) =>
-            r.json().catch(() => null)
-          )
-        : Promise.resolve(null)
-      const cashPromise = fundSelections.cash
-        ? fetch(buildUrl(queryBase, "/api/v1/equity/fundamental/cash_flow", { symbol: fundSymbol, provider: quickProvider })).then((r) =>
-            r.json().catch(() => null)
-          )
-        : Promise.resolve(null)
-      const [profile, income, balance, cash] = await Promise.all([profilePromise, incomePromise, balancePromise, cashPromise])
-      setFundamentals({ profile, income, balance, cash })
+      const [profileRes, incomeRes, balanceRes, cashRes, metricsRes] = await Promise.all([
+        fundSelections.profile
+          ? safeOpenbb(fundSymbol, "/api/v1/equity/profile", { symbol: fundSymbol, provider: quickProvider })
+          : Promise.resolve(null),
+        fundSelections.income
+          ? safeOpenbb(fundSymbol, "/api/v1/equity/fundamental/income", { symbol: fundSymbol, provider: quickProvider })
+          : Promise.resolve(null),
+        fundSelections.balance
+          ? safeOpenbb(fundSymbol, "/api/v1/equity/fundamental/balance", { symbol: fundSymbol, provider: quickProvider })
+          : Promise.resolve(null),
+        fundSelections.cash
+          ? safeOpenbb(fundSymbol, "/api/v1/equity/fundamental/cash", { symbol: fundSymbol, provider: quickProvider })
+          : Promise.resolve(null),
+        fundSelections.valuation
+          ? safeOpenbb(fundSymbol, "/api/v1/equity/fundamental/metrics", { symbol: fundSymbol, provider: quickProvider })
+          : Promise.resolve(null),
+      ])
+
+      ;[profileRes, incomeRes, balanceRes, cashRes, metricsRes]
+        .filter(Boolean)
+        .forEach((r: any) => {
+          if (!r.ok) toast.error(r.error || `${r.sym}: ${r.status}`)
+          if (r.warning) toast.error(r.warning)
+        })
+
+      setFundamentals({
+        profile: (profileRes as any)?.data ?? null,
+        income: (incomeRes as any)?.data ?? null,
+        balance: (balanceRes as any)?.data ?? null,
+        cash: (cashRes as any)?.data ?? null,
+        metrics: (metricsRes as any)?.data ?? null,
+      })
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Fundamentals failed")
     } finally {
@@ -928,23 +1027,46 @@ export default function OpenbbPage() {
     }
     setTechLoading(true)
     try {
-      const rsiPromise = techSelections.rsi
-        ? fetch(
-            buildUrl(queryBase, "/api/v1/technical/relative_strength_index", { symbol: techSymbol, interval: "1d", length: 14, provider: quickProvider })
-          ).then((r) => r.json().catch(() => null))
-        : Promise.resolve(null)
-      const maPromise = techSelections.ma
-        ? fetch(buildUrl(queryBase, "/api/v1/technical/moving_average", { symbol: techSymbol, interval: "1d", length: 20, provider: quickProvider })).then(
-            (r) => r.json().catch(() => null)
-          )
-        : Promise.resolve(null)
-      const bbPromise = techSelections.bb
-        ? fetch(
-            buildUrl(queryBase, "/api/v1/technical/bollinger_bands", { symbol: techSymbol, interval: "1d", length: 20, std: 2, provider: quickProvider })
-          ).then((r) => r.json().catch(() => null))
-        : Promise.resolve(null)
-      const [rsi, ma, bb] = await Promise.all([rsiPromise, maPromise, bbPromise])
-      setTechnicals({ rsi, ma, bb })
+      const [rsiRes, maRes, bbRes] = await Promise.all([
+        techSelections.rsi
+          ? safeOpenbb(techSymbol, "/api/v1/technical/relative_strength_index", {
+              symbol: techSymbol,
+              interval: "1d",
+              length: 14,
+              provider: quickProvider,
+            })
+          : Promise.resolve(null),
+        techSelections.ma
+          ? safeOpenbb(techSymbol, "/api/v1/technical/moving_average", {
+              symbol: techSymbol,
+              interval: "1d",
+              length: 20,
+              provider: quickProvider,
+            })
+          : Promise.resolve(null),
+        techSelections.bb
+          ? safeOpenbb(techSymbol, "/api/v1/technical/bollinger_bands", {
+              symbol: techSymbol,
+              interval: "1d",
+              length: 20,
+              std: 2,
+              provider: quickProvider,
+            })
+          : Promise.resolve(null),
+      ])
+
+      ;[rsiRes, maRes, bbRes]
+        .filter(Boolean)
+        .forEach((r: any) => {
+          if (!r.ok) toast.error(r.error || `${r.sym}: ${r.status}`)
+          if (r.warning) toast.error(r.warning)
+        })
+
+      setTechnicals({
+        rsi: (rsiRes as any)?.data ?? null,
+        ma: (maRes as any)?.data ?? null,
+        bb: (bbRes as any)?.data ?? null,
+      })
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Technical fetch failed")
     } finally {
@@ -966,10 +1088,10 @@ export default function OpenbbPage() {
       const results = await Promise.all(
         selected.map(async ([key]) => {
           const indicator = indicatorMap[key]
-          const data = await fetch(buildUrl(queryBase, "/api/v1/economy/macro", { indicator, provider: "fred" })).then((r) =>
-            r.json().catch(() => null)
-          )
-          return [key, data] as const
+          const res = await safeOpenbb(key, "/api/v1/economy/macro", { indicator, provider: "fred" })
+          if (!res.ok) toast.error(res.error || `${res.sym}: ${res.status}`)
+          if (res.warning) toast.error(res.warning)
+          return [key, res.data] as const
         })
       )
       const next: Record<string, any> = {}
@@ -989,9 +1111,14 @@ export default function OpenbbPage() {
     if (!queryBase) return
     setCryptoLoading(true)
     try {
-      const res = await fetch(buildUrl(queryBase, "/api/v1/crypto/price/historical", { symbol, interval: cryptoInterval, provider: quickProvider }))
-      const data = await res.json().catch(() => null)
-      setCryptoData(data)
+      const res = await safeOpenbb(symbol, "/api/v1/crypto/price/historical", {
+        symbol,
+        interval: cryptoInterval,
+        provider: quickProvider,
+      })
+      if (!res.ok) toast.error(res.error || `${res.sym}: ${res.status}`)
+      if (res.warning) toast.error(res.warning)
+      setCryptoData(res.data as any)
     } catch (err) {
       setCryptoData(null)
       toast.error(err instanceof Error ? err.message : "Crypto fetch failed")
@@ -1004,9 +1131,13 @@ export default function OpenbbPage() {
     if (!queryBase) return
     setCommodityLoading(true)
     try {
-      const res = await fetch(buildUrl(queryBase, "/api/v1/commodity/price/spot", { commodity: commoditySelection, provider: "fred" }))
-      const data = await res.json().catch(() => null)
-      setCommodityData(data)
+      const res = await safeOpenbb(commoditySelection, "/api/v1/commodity/price/spot", {
+        commodity: commoditySelection,
+        provider: "fred",
+      })
+      if (!res.ok) toast.error(res.error || `${res.sym}: ${res.status}`)
+      if (res.warning) toast.error(res.warning)
+      setCommodityData(res.data as any)
     } catch (err) {
       setCommodityData(null)
       toast.error(err instanceof Error ? err.message : "Commodity fetch failed")
@@ -1081,6 +1212,14 @@ export default function OpenbbPage() {
               >
                 <ExternalLink className="mr-2 h-4 w-4" />
                 {t("openbb.openApi")}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={checkHealth}
+              >
+                <Info className="mr-2 h-4 w-4" />
+                Health
               </Button>
             </div>
           ) : null}
@@ -1226,15 +1365,17 @@ export default function OpenbbPage() {
                     </CardHeader>
                     <CardContent className="grid gap-3 md:grid-cols-2 text-xs text-muted-foreground">
                       {Object.entries(quickFundMap).map(([sym, data]) => {
-                        const row = firstResult((data as any).profile)
+                        const profileRow = firstResult((data as any).profile)
+                        const metricsRow = firstResult((data as any).metrics)
                         return (
                           <div key={sym} className="rounded-md border border-border/50 bg-muted/30 p-3 space-y-2">
                             <div className="text-sm font-semibold text-foreground">{sym}</div>
                             <div className="grid grid-cols-2 gap-2">
-                              <MetricCard label="Market cap" value={(row as any).market_cap} />
-                              <MetricCard label="Sector" value={(row as any).sector} />
-                              <MetricCard label="P/E" value={(row as any).pe_ratio || (row as any).pe} />
-                              <MetricCard label="Dividend" value={(row as any).dividend_yield} />
+                              <MetricCard label="Market cap" value={(metricsRow as any).market_cap ?? (profileRow as any).market_cap} />
+                              <MetricCard label="Sector" value={(profileRow as any).sector} />
+                              <MetricCard label="P/E" value={(metricsRow as any).pe_ratio} />
+                              <MetricCard label="P/B" value={(metricsRow as any).pb_ratio} />
+                              <MetricCard label="Dividend" value={(metricsRow as any).dividend_yield ?? (profileRow as any).dividend_yield} />
                             </div>
                             <details className="rounded border border-border/40 bg-muted/20 p-2">
                               <summary className="cursor-pointer text-[11px] text-muted-foreground">Statements</summary>
@@ -1290,7 +1431,16 @@ export default function OpenbbPage() {
                   {quickHistory.map((h) => (
                     <div key={h.sym} className="rounded-md border border-border/50 bg-muted/40 p-2">
                       <div className="text-sm font-semibold text-foreground">{h.sym}</div>
-                      {renderLineChart(h.data, "date", ["close", "adj_close", "last_price", "price"]) || renderTable(h.data)}
+                      {(() => {
+                        const candles = toCandles(h.data)
+                        if (candles.length) {
+                          return <CandlesChart candles={candles} height={260} />
+                        }
+                        return (
+                          renderLineChart(h.data, "date", ["close", "adj_close", "last_price", "price"]) ||
+                          renderTable(h.data)
+                        )
+                      })()}
                     </div>
                   ))}
                 </CardContent>
@@ -1324,7 +1474,13 @@ export default function OpenbbPage() {
                     <CardHeader>
                       <CardTitle className="text-sm">Quick chart</CardTitle>
                     </CardHeader>
-                    <CardContent>{renderLineChart(quickHistory[0]?.data, "date", ["close", "adj_close", "last_price", "price"])}</CardContent>
+                    <CardContent>
+                      {(() => {
+                        const candles = toCandles(quickHistory[0]?.data)
+                        if (candles.length) return <CandlesChart candles={candles} height={280} />
+                        return renderLineChart(quickHistory[0]?.data, "date", ["close", "adj_close", "last_price", "price"])
+                      })()}
+                    </CardContent>
                   </Card>
                 ) : null}
                 {fundamentals ? <FundOverviewCard profile={fundamentals.profile} /> : null}
@@ -1602,11 +1758,19 @@ export default function OpenbbPage() {
                 <div className="space-y-3 text-xs text-muted-foreground">
                   {comparisonHistory.length ? (
                     <Card className="border-border/70">
-                      <CardHeader>
-                        <CardTitle className="text-sm">Price comparison</CardTitle>
+                      <CardHeader className="flex flex-row items-center justify-between gap-3">
+                        <CardTitle className="text-sm">Comparison chart</CardTitle>
+                        <select
+                          className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                          value={comparisonChartMode}
+                          onChange={(e) => setComparisonChartMode(e.target.value as any)}
+                        >
+                          <option value="pct">% from start</option>
+                          <option value="price">Price</option>
+                        </select>
                       </CardHeader>
                       <CardContent>
-                        {renderComparisonChart(comparisonHistory) || <div>No chart data</div>}
+                        {renderComparisonChart(comparisonHistory, comparisonChartMode) || <div>No chart data</div>}
                       </CardContent>
                     </Card>
                   ) : null}
@@ -1762,15 +1926,12 @@ export default function OpenbbPage() {
                       </CardContent>
                     </Card>
                   ) : null}
-                  {fundamentals.profile ? (
+                  {fundamentals.metrics ? (
                     <ValuationTable
                       rows={[
                         {
                           symbol: fundSymbol,
-                          market_cap: (firstResult(fundamentals.profile) as any).market_cap,
-                          pe_ratio: (firstResult(fundamentals.profile) as any).pe_ratio || (firstResult(fundamentals.profile) as any).pe,
-                          pb_ratio: (firstResult(fundamentals.profile) as any).pb_ratio,
-                          dividend_yield: (firstResult(fundamentals.profile) as any).dividend_yield,
+                          ...(firstResult(fundamentals.metrics) as any),
                         },
                       ]}
                     />
@@ -1837,16 +1998,19 @@ export default function OpenbbPage() {
               <Button size="sm" variant="outline" onClick={() => downloadJson(`technicals-${techSymbol}`, technicals)}>
                 Export JSON
               </Button>
-              {technicals ? (
-                <div className="grid gap-4 lg:grid-cols-2 text-xs text-muted-foreground">
-                  <div className="grid gap-2 md:grid-cols-3 lg:col-span-2">
-                    <MetricCard label="RSI" value={(firstResult(technicals.rsi) as any)?.value || (firstResult(technicals.rsi) as any)?.rsi} />
-                    <MetricCard label="MA" value={(firstResult(technicals.ma) as any)?.ma || (firstResult(technicals.ma) as any)?.value} />
-                    <MetricCard label="BB Upper" value={(firstResult(technicals.bb) as any)?.upper} />
-                  </div>
-                  {technicals.rsi ? (
-                    <Card className="border-border/70">
-                      <CardHeader>
+	              {technicals ? (
+	                <div className="grid gap-4 lg:grid-cols-2 text-xs text-muted-foreground">
+	                  <div className="lg:col-span-2 space-y-3">
+	                    <TechnicalSignalsCard technicals={technicals} />
+	                    <div className="grid gap-2 md:grid-cols-3">
+	                    <MetricCard label="RSI" value={(firstResult(technicals.rsi) as any)?.value || (firstResult(technicals.rsi) as any)?.rsi} />
+	                    <MetricCard label="MA" value={(firstResult(technicals.ma) as any)?.ma || (firstResult(technicals.ma) as any)?.value} />
+	                    <MetricCard label="BB Upper" value={(firstResult(technicals.bb) as any)?.upper} />
+	                    </div>
+	                  </div>
+	                  {technicals.rsi ? (
+	                    <Card className="border-border/70">
+	                      <CardHeader>
                         <CardTitle className="text-sm">RSI (14)</CardTitle>
                       </CardHeader>
                       <CardContent className="space-y-2">
@@ -2084,7 +2248,49 @@ function MetricCard({ label, value, hint }: { label: string; value: unknown; hin
 
 function StatementTable({ title, rows }: { title: string; rows: Record<string, unknown>[] }) {
   if (!rows?.length) return null
-  const cols = Object.keys(rows[0]).slice(0, 6)
+  const first = rows[0] || {}
+  const keys = new Set(Object.keys(first))
+  const lower = title.toLowerCase()
+  const kind = lower.includes("income") ? "income" : lower.includes("balance") ? "balance" : lower.includes("cash") ? "cash" : "other"
+
+  const preferredByKind: Record<string, string[]> = {
+    income: [
+      "period_ending",
+      "total_revenue",
+      "gross_profit",
+      "operating_income",
+      "ebitda",
+      "net_income",
+      "basic_earnings_per_share",
+      "diluted_earnings_per_share",
+    ],
+    balance: [
+      "period_ending",
+      "cash_and_cash_equivalents",
+      "cash_cash_equivalents_and_short_term_investments",
+      "total_assets",
+      "total_liabilities_net_minority_interest",
+      "common_stock_equity",
+      "long_term_debt",
+      "net_debt",
+      "current_liabilities",
+    ],
+    cash: [
+      "period_ending",
+      "operating_cash_flow",
+      "cash_flow_from_continuing_operating_activities",
+      "capital_expenditure",
+      "free_cash_flow",
+      "investing_cash_flow",
+      "financing_cash_flow",
+      "net_change_in_cash_and_equivalents",
+      "end_cash_position",
+    ],
+    other: ["period_ending", "date"],
+  }
+
+  const preferred = preferredByKind[kind] || preferredByKind.other
+  const cols = preferred.filter((k) => keys.has(k)).concat(Object.keys(first).filter((k) => !preferred.includes(k))).slice(0, 8)
   return (
     <Card className="border-border/70">
       <CardHeader>

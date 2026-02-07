@@ -12,6 +12,10 @@ export default defineConfig(({ mode }) => {
     /^\/+/,
     ""
   )
+  // `loadEnv()` reads `.env*` files; for dev we also want runtime env vars set by scripts (e.g. `dev-wsl.sh`).
+  const hmrHost = (process.env.VITE_HMR_HOST || env.VITE_HMR_HOST || "").trim()
+  const hmrClientPortRaw = (process.env.VITE_HMR_CLIENT_PORT || env.VITE_HMR_CLIENT_PORT || "").trim()
+  const hmrClientPort = hmrClientPortRaw ? Number(hmrClientPortRaw) : undefined
 
   return {
     plugins: [react(), tailwindcss()],
@@ -21,6 +25,13 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
+      hmr: hmrHost
+        ? {
+            protocol: "ws",
+            host: hmrHost,
+            clientPort: hmrClientPort || 5173,
+          }
+        : undefined,
       proxy: {
         "/proxy": {
           target: proxyBase,

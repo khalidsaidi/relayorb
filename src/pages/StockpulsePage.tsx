@@ -14,8 +14,11 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { resolveMarketDataProxyUrl, resolveStockpulseUrl } from "@/lib/runtime-urls"
+import { fetchJsonOrThrow } from "@/lib/http"
 import { ExternalLink, RefreshCw, Search, Trash2, Plus } from "lucide-react"
-import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from "recharts"
+import { toast } from "sonner"
+import { ChartFrame } from "@/components/charts/ChartFrame"
+import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from "recharts"
 
 type StockpulseStatus = {
   last_check?: string | null
@@ -215,6 +218,21 @@ export default function StockpulsePage() {
   const proxyBase = useMemo(() => resolveMarketDataProxyUrl(), [])
   const queryBase = proxyBase ? `${proxyBase}/v1/stockpulse` : baseUrl
 
+  const checkHealth = useCallback(async () => {
+    if (!queryBase) {
+      toast.error(t("stockpulse.notConfigured"))
+      return
+    }
+    const url = `${queryBase}/api/status`
+    try {
+      await fetchJsonOrThrow("StockPulse", url, undefined, 15000)
+      toast.success(`[StockPulse] healthy`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(msg)
+    }
+  }, [queryBase, t])
+
   const [status, setStatus] = useState<StockpulseStatus | null>(null)
   const [stats, setStats] = useState<StockpulseStats | null>(null)
   const [alerts, setAlerts] = useState<StockpulseAlert[]>([])
@@ -262,17 +280,14 @@ export default function StockpulsePage() {
       if (!queryBase) {
         throw new Error(t("stockpulse.notConfigured"))
       }
-      const res = await fetch(`${queryBase}${path}`, {
-        headers: {
-          "Content-Type": "application/json",
-        },
-        ...init,
-      })
-      if (!res.ok) {
-        const text = await res.text()
-        throw new Error(text || `Request failed (${res.status})`)
+      const url = `${queryBase}${path}`
+      const method = (init?.method || "GET").toUpperCase()
+      const headers = new Headers(init?.headers || {})
+      headers.set("Accept", "application/json")
+      if (method !== "GET" && method !== "HEAD" && !headers.has("Content-Type")) {
+        headers.set("Content-Type", "application/json")
       }
-      return res.json()
+      return fetchJsonOrThrow("StockPulse", url, { ...init, headers }, 30000)
     },
     [queryBase, t]
   )
@@ -471,7 +486,14 @@ export default function StockpulsePage() {
           thinking_level: chatThinking,
         }),
       })
-      setChatAnswer(data?.answer || data?.error || "No response.")
+      const answer = data?.answer || data?.error || "No response."
+      setChatAnswer(answer)
+      const errText = String(data?.error || "")
+      if (errText.toLowerCase().includes("no ai provider configured")) {
+        toast.error(
+          "StockPulse AI is not configured. Add a provider below, or set OPENAI_API_KEY on the StockPulse service."
+        )
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {
@@ -497,12 +519,13 @@ export default function StockpulsePage() {
     async (result: StockpulseSearch) => {
       setError(null)
       try {
+        const market = marketFilter === "All" ? "US" : marketFilter
         await fetchJson("/api/stocks", {
           method: "POST",
           body: JSON.stringify({
             ticker: result.ticker,
             name: result.name || result.ticker,
-            market: "US",
+            market,
           }),
         })
         await refreshCore()
@@ -510,7 +533,7 @@ export default function StockpulsePage() {
         setError(err instanceof Error ? err.message : "Unknown error")
       }
     },
-    [fetchJson, refreshCore]
+    [fetchJson, refreshCore, marketFilter]
   )
 
   const handleRemoveStock = useCallback(
@@ -542,26 +565,43 @@ export default function StockpulsePage() {
 
   const stockTickers = useMemo(() => new Set(stocks.map((s) => s.ticker.toUpperCase())), [stocks])
 
-  // `/api/ai/ratings` does not return market metadata. Filter by the currently-loaded stock list,
-  // which already respects the market filter via `/api/stocks?market=...`.
-  const ratingsFiltered = useMemo(() => {
-    if (!stockTickers.size) return ratings
-    return ratings.filter((r) => stockTickers.has(r.ticker.toUpperCase()))
-  }, [ratings, stockTickers])
+  const ratingsByTicker = useMemo(() => {
+    const map = new Map<string, StockpulseRating>()
+    ratings.forEach((r) => map.set(r.ticker.toUpperCase(), r))
+    return map
+  }, [ratings])
 
-  const ratingsSorted = useMemo(() => {
-    if (!ratingsFiltered.length) return []
-    return [...ratingsFiltered].sort((a, b) => (b.score || 0) - (a.score || 0))
-  }, [ratingsFiltered])
+  // `/api/ai/ratings` is global and may omit tickers. Make missing ratings explicit for the
+  // currently loaded stock list (which already respects `/api/stocks?market=...`).
+  const ratingsTable = useMemo(() => {
+    if (!stockTickers.size) return []
+    const rows: StockpulseRating[] = []
+    stocks.forEach((s) => {
+      const r = ratingsByTicker.get(s.ticker.toUpperCase())
+      if (r) {
+        rows.push(r)
+      } else {
+        rows.push({
+          ticker: s.ticker,
+          rating: "MISSING",
+          score: 0,
+          confidence: 0,
+          message: "No rating returned yet (still computing or provider unavailable).",
+        })
+      }
+    })
+    rows.sort((a, b) => (b.score || 0) - (a.score || 0))
+    return rows
+  }, [stocks, stockTickers, ratingsByTicker])
 
   useEffect(() => {
-    if (!ratingsSorted.length || selectedTicker) return
-    const first = ratingsSorted[0].ticker
+    if (!ratingsTable.length || selectedTicker) return
+    const first = ratingsTable[0].ticker
     setSelectedTicker(first)
     setChartSymbol(first)
     loadRatingDetail(first)
     fetchChart(first, chartPeriod)
-  }, [ratingsSorted, selectedTicker, loadRatingDetail, fetchChart, chartPeriod])
+  }, [ratingsTable, selectedTicker, loadRatingDetail, fetchChart, chartPeriod])
 
   return (
     <div className="space-y-6">
@@ -584,6 +624,9 @@ export default function StockpulsePage() {
             >
               <RefreshCw className="mr-2 h-4 w-4" />
               {coreLoading ? t("stockpulse.refreshing") : t("stockpulse.refresh")}
+            </Button>
+            <Button variant="outline" size="sm" disabled={!queryBase} onClick={checkHealth}>
+              Health
             </Button>
             <Button
               variant="outline"
@@ -686,7 +729,7 @@ export default function StockpulsePage() {
             <div className="text-xs text-muted-foreground">
               {t("stockpulse.ratingsUpdated", { time: formatRelative(ratingsUpdated) })}
             </div>
-            {ratingsSorted.length ? (
+            {ratingsTable.length ? (
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -700,7 +743,7 @@ export default function StockpulsePage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {ratingsSorted.map((rating) => (
+                  {ratingsTable.map((rating) => (
                     <TableRow
                       key={rating.ticker}
                       className="cursor-pointer"
@@ -814,9 +857,9 @@ export default function StockpulsePage() {
                   <MetricCard label="High" value={chartData.stats?.high_price} />
                   <MetricCard label="Low" value={chartData.stats?.low_price} />
                 </div>
-                <div className="h-60 w-full min-h-[240px]">
-                  <ResponsiveContainer width="100%" height={240}>
-                    <LineChart data={chartData.data}>
+                <ChartFrame height={240} className="min-h-[240px]">
+                  {({ width, height }) => (
+                    <LineChart width={width} height={height} data={chartData.data}>
                       <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.3} />
                       <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={16} />
                       <YAxis tick={{ fontSize: 10 }} domain={["auto", "auto"]} />
@@ -824,8 +867,8 @@ export default function StockpulsePage() {
                       <Legend wrapperStyle={{ fontSize: "11px" }} />
                       <Line type="monotone" dataKey="close" stroke="#2563eb" dot={false} strokeWidth={1.6} />
                     </LineChart>
-                  </ResponsiveContainer>
-                </div>
+                  )}
+                </ChartFrame>
               </>
             ) : (
               <div className="text-xs text-muted-foreground">No chart data yet.</div>

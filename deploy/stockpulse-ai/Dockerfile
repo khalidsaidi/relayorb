@@ -6,7 +6,13 @@ RUN apt-get update \
 
 WORKDIR /app
 
-RUN git clone --depth 1 https://github.com/amitpatole/stockpulse-ai.git .
+# Pin upstream to a known-good commit so our patch applies deterministically.
+ARG STOCKPULSE_AI_REF=20c640b248ed0742c619e495cd12de8791ac3d1f
+RUN git clone https://github.com/amitpatole/stockpulse-ai.git . \
+  && git checkout "$STOCKPULSE_AI_REF"
+
+COPY patches /patches
+RUN if [ -f /patches/stockpulse-ai.patch ]; then git apply /patches/stockpulse-ai.patch; fi
 
 RUN pip install --no-cache-dir -r requirements.txt
 
