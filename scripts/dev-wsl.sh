@@ -24,12 +24,12 @@ export VITE_HMR_CLIENT_PORT="$PORT"
 
 if [[ -n "$WSL_IP" ]]; then
   echo "Dev server URLs:"
-  echo "  WSL     : http://localhost:${PORT}/"
-  echo "  Windows : http://127.0.0.1:${PORT}/"
-  echo "            (Recommended: IPv4 avoids some Windows browsers sticking to IPv6 ::1 for localhost.)"
   echo "  Windows : http://localhost:${PORT}/"
-  echo "            (If this fails: Windows may have excluded this port or your browser may be using IPv6; use 127.0.0.1 above or pick another port.)"
+  echo "            (Recommended for Firebase Google sign-in. Avoid 127.0.0.1/WSL IP unless you added them as authorized domains.)"
+  echo "  Windows : http://127.0.0.1:${PORT}/"
+  echo "            (Fallback if your browser resolves localhost to IPv6 ::1. Note: Google sign-in may fail with auth/unauthorized-domain unless 127.0.0.1 is in Firebase Auth > Authorized domains.)"
   echo "  Windows : http://${WSL_IP}:${PORT}/"
+  echo "            (Network URL. Google sign-in will fail unless this IP is an authorized domain; prefer localhost.)"
 else
   echo "Dev server URL: http://127.0.0.1:${PORT}/"
 fi

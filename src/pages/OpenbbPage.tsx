@@ -126,9 +126,33 @@ function formatRelativeTime(value?: string | null) {
   return `${days}d ago`
 }
 
+function normalizeAsOf(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === "number" && Number.isFinite(value)) {
+    // Heuristic: seconds vs millis.
+    const ms = value < 1_000_000_000_000 ? value * 1000 : value
+    const d = new Date(ms)
+    return Number.isNaN(d.getTime()) ? null : d.toISOString()
+  }
+  if (typeof value !== "string") return null
+  const raw = value.trim()
+  if (!raw) return null
+  if (/^\\d{10,13}$/.test(raw)) {
+    const n = Number(raw)
+    if (!Number.isFinite(n)) return null
+    const ms = raw.length <= 10 ? n * 1000 : n
+    const d = new Date(ms)
+    return Number.isNaN(d.getTime()) ? null : d.toISOString()
+  }
+  const d = new Date(raw)
+  if (!Number.isNaN(d.getTime())) return d.toISOString()
+  return raw
+}
+
 function firstResult(data: any): Record<string, unknown> {
   if (!data) return {}
   if (Array.isArray(data?.results) && data.results.length) return data.results[0]
+  if (Array.isArray(data?.results) && data.results.length === 0) return {}
   if (Array.isArray(data) && data.length) return data[0]
   if (typeof data === "object") return data
   return {}
@@ -137,6 +161,7 @@ function firstResult(data: any): Record<string, unknown> {
 function lastResult(data: any): Record<string, unknown> {
   if (!data) return {}
   if (Array.isArray(data?.results) && data.results.length) return data.results[data.results.length - 1]
+  if (Array.isArray(data?.results) && data.results.length === 0) return {}
   if (Array.isArray(data) && data.length) return data[data.length - 1]
   if (typeof data === "object") return data
   return {}
@@ -699,13 +724,28 @@ function ResponseCard({ title, result, showRawJson }: { title: string; result?: 
   )
 }
 
-function QuoteCard({ quote }: { quote: Record<string, unknown> }) {
+function QuoteCard({ quote, provider }: { quote: Record<string, unknown>; provider?: string }) {
   if (!quote || !Object.keys(quote).length) return null
+  const asOf = normalizeAsOf(
+    (quote as any).updated_at ??
+      (quote as any).timestamp ??
+      (quote as any).datetime ??
+      (quote as any).date ??
+      (quote as any).as_of ??
+      (quote as any).last_timestamp ??
+      (quote as any).last_trade_time
+  )
   return (
     <div className="rounded-md border border-border/50 bg-muted/30 p-3 space-y-1 text-xs text-muted-foreground">
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold text-foreground">{renderValue(quote.symbol || quote.ticker || quote.name)}</span>
         <span className="text-sm font-semibold text-foreground">{renderValue(quote.last_price || quote.price || quote.close)}</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+        {provider ? <span>Provider: {provider}</span> : null}
+        {asOf ? <span title={asOf}>As of: {formatRelativeTime(asOf)}</span> : null}
+        {provider === "yfinance" ? <span className="text-muted-foreground/80">Delayed feed (typical)</span> : null}
+        {provider === "intrinio" ? <span className="text-muted-foreground/80">May be sparse</span> : null}
       </div>
       <div className="grid grid-cols-2 gap-x-3 gap-y-1">
         <span>Bid / Ask</span>
@@ -1829,7 +1869,7 @@ export default function OpenbbPage() {
                       <div className="grid gap-3 md:grid-cols-2">
                         {quickQuotes.map((q) => {
                           const payload = firstResult(q.data)
-                          return <QuoteCard key={q.sym} quote={{ ...payload, symbol: q.sym }} />
+                          return <QuoteCard key={q.sym} quote={{ ...payload, symbol: q.sym }} provider={quickProvider} />
                         })}
                       </div>
                     </CardContent>
@@ -2524,7 +2564,7 @@ export default function OpenbbPage() {
                       return (
                         <div key={c.sym} className="rounded-md border border-border/50 bg-muted/30 p-3 space-y-2">
                           <div className="text-sm font-semibold text-foreground">{c.sym}</div>
-                          <QuoteCard quote={{ ...row, symbol: c.sym }} />
+                          <QuoteCard quote={{ ...row, symbol: c.sym }} provider={quickProvider} />
                           <div className="grid gap-2 md:grid-cols-2">
                             <MetricCard label="Market cap" value={(valRow as any).market_cap} />
                             <MetricCard label="P/E" value={(valRow as any).pe_ratio || (valRow as any).pe} />

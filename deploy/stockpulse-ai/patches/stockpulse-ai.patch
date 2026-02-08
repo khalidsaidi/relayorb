@@ -1,5 +1,5 @@
 diff --git a/ai_analytics.py b/ai_analytics.py
-index fb4dd09..73142c8 100644
+index fb4dd09..f11d4bd 100644
 --- a/ai_analytics.py
 +++ b/ai_analytics.py
 @@ -7,14 +7,34 @@ Analyzes technical indicators, news sentiment, and social media to provide stock
@@ -31,7 +31,7 @@ index fb4dd09..73142c8 100644
 +
 +_cache_lock = threading.Lock()
 +_price_cache = {}   # (ticker, period) -> {ts, data}
-+_ratings_cache = {"ts": 0.0, "data": None}  # {ts, data(list)}
++_ratings_cache = {}  # market_key -> {ts, data(list)}
 +_rating_history_state = {"ts": 0.0}
 +
  
@@ -254,23 +254,42 @@ index fb4dd09..73142c8 100644
  
          # Fallback to basic summary if AI is not available
          summaries = {
-@@ -453,7 +590,14 @@ Be direct and actionable. Avoid disclaimers."""
+@@ -452,34 +589,65 @@ Be direct and actionable. Avoid disclaimers."""
+ 
          return prompt
  
-     def get_all_ratings(self) -> List[Dict]:
+-    def get_all_ratings(self) -> List[Dict]:
 -        """Get AI ratings for all active stocks"""
-+        """Get AI ratings for all active stocks (cached + parallelized)."""
++    def get_all_ratings(self, market: Optional[str] = None) -> List[Dict]:
++        """Get AI ratings for active stocks (cached + parallelized).
++
++        If `market` is provided (e.g. 'US' or 'India'), only ratings for that market
++        are returned. This mirrors `/api/stocks?market=...`.
++        """
++        market_key = (market or 'All').strip() or 'All'
++        cache_key = market_key
++
 +        now = time.time()
 +        with _cache_lock:
-+            cached = _ratings_cache.get("data")
-+            cached_ts = float(_ratings_cache.get("ts", 0.0) or 0.0)
-+        if cached and (now - cached_ts) < RATINGS_CACHE_TTL_SEC:
++            cached_entry = _ratings_cache.get(cache_key)
++            cached = cached_entry.get('data') if cached_entry else None
++            cached_ts = float((cached_entry or {}).get('ts', 0.0) or 0.0)
++        if cached is not None and (now - cached_ts) < RATINGS_CACHE_TTL_SEC:
 +            return cached
 +
          conn = sqlite3.connect(self.db_path)
          conn.row_factory = sqlite3.Row
          cursor = conn.cursor()
-@@ -466,20 +610,40 @@ Be direct and actionable. Avoid disclaimers."""
+ 
+         try:
+-            cursor.execute('SELECT ticker FROM stocks WHERE active = 1 ORDER BY ticker')
++            if market_key and market_key != 'All':
++                cursor.execute('SELECT ticker FROM stocks WHERE active = 1 AND market = ? ORDER BY ticker', (market_key,))
++            else:
++                cursor.execute('SELECT ticker FROM stocks WHERE active = 1 ORDER BY ticker')
+             stocks = [row['ticker'] for row in cursor.fetchall()]
+         except sqlite3.OperationalError:
+             stocks = []
  
          conn.close()
  
@@ -289,9 +308,10 @@ index fb4dd09..73142c8 100644
 -                    'message': str(e)
 -                })
 +        if not stocks:
++            with _cache_lock:
++                _ratings_cache[cache_key] = {'ts': time.time(), 'data': []}
 +            return []
 +
-+        # Bulk endpoint should be fast. By default, do NOT call LLM per ticker here.
 +        allow_ai_summary = not DISABLE_AI_SUMMARY_IN_BULK
 +        max_workers = max(1, min(RATINGS_MAX_WORKERS, len(stocks)))
 +        ratings: List[Dict] = []
@@ -307,29 +327,33 @@ index fb4dd09..73142c8 100644
 +                    ratings.append(future.result())
 +                except Exception as e:
 +                    logger.error(f"Error calculating rating for {ticker}: {e}")
-+                    ratings.append({
-+                        'ticker': ticker,
-+                        'rating': 'ERROR',
-+                        'score': 0,
-+                        'confidence': 0,
-+                        'message': str(e)
-+                    })
++                    ratings.append({'ticker': ticker, 'rating': 'ERROR', 'score': 0, 'confidence': 0, 'message': str(e)})
 +
-+        ratings.sort(key=lambda r: (r.get("ticker") or ""))
-+
++        ratings.sort(key=lambda r: (r.get('ticker') or ''))
 +        self._maybe_persist_rating_history(ratings)
 +
 +        with _cache_lock:
-+            _ratings_cache["ts"] = time.time()
-+            _ratings_cache["data"] = ratings
++            _ratings_cache[cache_key] = {'ts': time.time(), 'data': ratings}
  
          return ratings
  
 diff --git a/dashboard.py b/dashboard.py
-index 9b7d981..b4dc291 100755
+index 9b7d981..d1afec0 100755
 --- a/dashboard.py
 +++ b/dashboard.py
-@@ -252,6 +252,20 @@ def get_ai_rating(ticker):
+@@ -237,9 +237,10 @@ def remove_stock_endpoint(ticker):
+ @app.route('/api/ai/ratings')
+ def get_ai_ratings():
+     """Get AI ratings for all stocks"""
++    market = request.args.get('market', None)
+     from ai_analytics import StockAnalytics
+     analytics = StockAnalytics()
+-    ratings = analytics.get_all_ratings()
++    ratings = analytics.get_all_ratings(market)
+     return jsonify(ratings)
+ 
+ 
+@@ -252,6 +253,20 @@ def get_ai_rating(ticker):
      return jsonify(rating)
  
  

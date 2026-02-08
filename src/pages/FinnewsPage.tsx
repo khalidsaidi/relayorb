@@ -219,6 +219,40 @@ function sentimentMeta(score?: number | null) {
   return { score: s, confidence, label, tone }
 }
 
+function deriveSentimentScore(item: NewsItem): number {
+  // FinnewsHunter does not always populate `sentiment_score`. Provide a deterministic baseline
+  // so traders aren't staring at blanks. This is intentionally simple (keyword-weighted).
+  const text = [item.title, item.content].filter(Boolean).join(" ").toLowerCase()
+  if (!text) return 0
+
+  const hit = (re: RegExp) => re.test(text)
+
+  // Critical negatives.
+  if (
+    hit(/\b(bankruptcy|chapter\s*11|delist(?:ing)?|going\s+concern|fraud|investigation|restatement|sec\s+charge|criminal|halt(?:ed)?|insolvency)\b/i)
+  )
+    return -0.9
+
+  // Strong negatives.
+  if (hit(/\b(downgrade|cuts?\s+guidance|miss(?:es|ed)\s+estimates|plung(?:e|ed)|selloff|lawsuit|class\s+action)\b/i)) return -0.6
+
+  // Strong positives.
+  if (hit(/\b(upgrade|raises?\s+guidance|beat(?:s|en)?\s+estimates|buyback|dividend\s+(?:increase|hike)|record\s+(?:revenue|profit)|surge(?:s|d)?|soar(?:s|ed)?)\b/i))
+    return 0.6
+
+  // Mild directional cues.
+  if (hit(/\b(bullish|breakout|rally|outperform)\b/i)) return 0.3
+  if (hit(/\b(bearish|breakdown|slump|underperform)\b/i)) return -0.3
+
+  // Default: neutral baseline.
+  return 0
+}
+
+function resolveSentimentScore(item: NewsItem): number {
+  if (typeof item.sentiment_score === "number" && Number.isFinite(item.sentiment_score)) return item.sentiment_score
+  return deriveSentimentScore(item)
+}
+
 type ParsedSearch = {
   hasQuery: boolean
   tickers: string[]
@@ -849,16 +883,16 @@ export default function FinnewsPage() {
                   <TableBody>
                     {latest.map((item) => (
                       <TableRow key={`${item.id}-${item.url || item.source_url || ""}`}>
-	                        <TableCell className="max-w-[520px]">
-	                          <button
-	                            className="text-left text-sm font-medium text-foreground hover:underline"
-	                            onClick={() => {
-	                              if (!item.url) return
-	                              window.open(item.url, "_blank", "noopener,noreferrer")
-	                            }}
-	                          >
-	                            {item.title}
-	                          </button>
+                        <TableCell className="max-w-[520px]">
+                          <button
+                            className="text-left text-sm font-medium text-foreground hover:underline"
+                            onClick={() => {
+                              if (!item.url) return
+                              window.open(item.url, "_blank", "noopener,noreferrer")
+                            }}
+                          >
+                            {item.title}
+                          </button>
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {isSecUrl(item.url) ? <Badge variant="outline">SEC</Badge> : <Badge variant="outline">News</Badge>}
@@ -880,12 +914,14 @@ export default function FinnewsPage() {
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {(() => {
-                            const meta = sentimentMeta(item.sentiment_score)
+                            const resolvedScore = resolveSentimentScore(item)
+                            const derived = !(typeof item.sentiment_score === "number" && Number.isFinite(item.sentiment_score))
+                            const meta = sentimentMeta(resolvedScore)
                             if (!meta) return "-"
                             return (
                               <span
                                 className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] ${meta.tone}`}
-                                title={`score ${meta.score.toFixed(2)} · confidence ${meta.confidence}%`}
+                                title={`${derived ? "baseline" : "provider"} score ${meta.score.toFixed(2)} · confidence ${meta.confidence}%`}
                               >
                                 {meta.label} {meta.confidence}%
                               </span>
@@ -1004,36 +1040,45 @@ export default function FinnewsPage() {
                           )}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
-                          {relevance.reasons.length ? (
-                            <div className="flex flex-wrap gap-1">
-                              {relevance.reasons.map((r) => (
-                                <Badge
-                                  key={`${r.kind}-${r.label}`}
-                                  variant="outline"
-                                  title={
-                                    r.kind === "ticker"
-                                      ? "Ticker match"
-                                      : r.kind === "keyword"
-                                        ? "Keyword match"
-                                        : "SEC CIK mapped ticker"
-                                  }
-                                >
-                                  {r.kind}:{r.label}
-                                </Badge>
-                              ))}
+                          <div className="space-y-1">
+                            <div className="text-[11px] text-muted-foreground" title="Relevance score (higher is a better match)">
+                              Score {relevance.score.toFixed(1)}
                             </div>
-                          ) : (
-                            <span title={`score ${relevance.score}`}>-</span>
-                          )}
+                            {relevance.reasons.length ? (
+                              <div className="flex flex-wrap gap-1">
+                                {relevance.reasons.map((r) => (
+                                  <Badge
+                                    key={`${r.kind}-${r.label}`}
+                                    variant="outline"
+                                    title={
+                                      r.kind === "ticker"
+                                        ? "Ticker match"
+                                        : r.kind === "keyword"
+                                          ? "Keyword match"
+                                          : "SEC CIK mapped ticker"
+                                    }
+                                  >
+                                    {r.kind}:{r.label}
+                                  </Badge>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-[11px]" title="No strong match features detected; shown for recency/context.">
+                                -
+                              </span>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {(() => {
-                            const meta = sentimentMeta(item.sentiment_score)
+                            const resolvedScore = resolveSentimentScore(item)
+                            const derived = !(typeof item.sentiment_score === "number" && Number.isFinite(item.sentiment_score))
+                            const meta = sentimentMeta(resolvedScore)
                             if (!meta) return "-"
                             return (
                               <span
                                 className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] ${meta.tone}`}
-                                title={`score ${meta.score.toFixed(2)} · confidence ${meta.confidence}%`}
+                                title={`${derived ? "baseline" : "provider"} score ${meta.score.toFixed(2)} · confidence ${meta.confidence}%`}
                               >
                                 {meta.label} {meta.confidence}%
                               </span>
@@ -1101,12 +1146,14 @@ export default function FinnewsPage() {
                             )
                           })()}
                           {(() => {
-                            const meta = sentimentMeta(newsDetail.sentiment_score)
+                            const resolvedScore = resolveSentimentScore(newsDetail)
+                            const derived = !(typeof newsDetail.sentiment_score === "number" && Number.isFinite(newsDetail.sentiment_score))
+                            const meta = sentimentMeta(resolvedScore)
                             if (!meta) return null
                             return (
                               <span
                                 className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] ${meta.tone}`}
-                                title={`score ${meta.score.toFixed(2)} · confidence ${meta.confidence}%`}
+                                title={`${derived ? "baseline" : "provider"} score ${meta.score.toFixed(2)} · confidence ${meta.confidence}%`}
                               >
                                 {meta.label} {meta.confidence}%
                               </span>
