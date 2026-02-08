@@ -26,7 +26,7 @@ if [[ -n "$WSL_IP" ]]; then
   echo "  Windows : http://localhost:${PORT}/"
   echo "            (Recommended for Firebase Google sign-in. Avoid 127.0.0.1/WSL IP unless you added them as authorized domains.)"
   echo "  Windows : http://127.0.0.1:${PORT}/"
-  echo "            (NOTE: On many WSL2 setups this does NOT forward to WSL. Prefer localhost.)"
+  echo "            (Should work now that Vite binds IPv4. Prefer localhost for Firebase sign-in.)"
   echo "  Windows : http://${WSL_IP}:${PORT}/"
   echo "            (Network URL. Google sign-in will fail unless this IP is an authorized domain; prefer localhost.)"
 else
@@ -34,6 +34,9 @@ else
 fi
 echo "HMR websocket: ws://${VITE_HMR_HOST}:${VITE_HMR_CLIENT_PORT}/"
 
-# Bind to IPv6 "any" so Windows browsers that resolve `localhost` to `::1` can still reach the dev server.
-# With `net.ipv6.bindv6only=0` (default on Ubuntu/WSL), this also accepts IPv4.
-exec vite --host :: --port "$PORT" --strictPort --clearScreen false
+# Bind to IPv4 "any" so Windows can reach the dev server via `http://localhost:$PORT/` and/or `http://127.0.0.1:$PORT/`.
+#
+# Some WSL2 setups only publish localhost-forwarded ports for IPv4 listeners, which would make `127.0.0.1` fail if we
+# bind Vite to IPv6-only. Firebase sign-in still requires using `localhost` (authorized domain), but having IPv4
+# listening avoids "can't reach dev server" situations when a browser prefers IPv4.
+exec vite --host 0.0.0.0 --port "$PORT" --strictPort --clearScreen false
