@@ -62,5 +62,5 @@ Scope: trader research console only. Execution/portfolio/risk/broker/ORB is **pa
 ## Closure
 
 - [x] `npm run build` passes locally
-- [ ] No remaining diffs (`git status --porcelain` is empty)
-- [ ] Commit + push
+- [x] No remaining diffs (`git status --porcelain` is empty)
+- [x] Commit + push
