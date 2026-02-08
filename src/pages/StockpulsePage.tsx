@@ -78,6 +78,7 @@ type StockpulseRating = {
   score: number
   confidence: number
   current_price?: number | null
+  currency?: string | null
   currency_symbol?: string | null
   rsi?: number | null
   sentiment_score?: number | null
@@ -1187,7 +1188,7 @@ export default function StockpulsePage() {
                       <TableCell>{rating.confidence?.toFixed(1)}</TableCell>
                       <TableCell>
                         {rating.current_price && rating.currency_symbol
-                          ? `${rating.currency_symbol}${rating.current_price.toFixed(2)}`
+                          ? `${rating.currency_symbol}${rating.current_price.toFixed(2)}${rating.currency ? ` ${rating.currency}` : ""}`
                           : "-"}
                       </TableCell>
                       <TableCell>{rating.rsi ?? "-"}</TableCell>
@@ -1317,7 +1318,11 @@ export default function StockpulsePage() {
                                 <TableCell className="text-xs">{p.rating || "-"}</TableCell>
                                 <TableCell className="text-xs">{typeof p.score === "number" ? p.score.toFixed(1) : "-"}</TableCell>
                                 <TableCell className="text-xs">{p.rsi ?? "-"}</TableCell>
-                                <TableCell className="text-xs">{typeof p.current_price === "number" ? p.current_price.toFixed(2) : "-"}</TableCell>
+                                <TableCell className="text-xs">
+                                  {typeof p.current_price === "number"
+                                    ? `${p.current_price.toFixed(2)}${p.currency ? ` ${p.currency}` : ""}`
+                                    : "-"}
+                                </TableCell>
                               </TableRow>
                             ))}
                           </TableBody>
@@ -1368,9 +1373,30 @@ export default function StockpulsePage() {
             {chartData ? (
               <>
                 <div className="grid gap-2 md:grid-cols-3">
-                  <MetricCard label="Current" value={chartData.stats?.current_price} />
-                  <MetricCard label="High" value={chartData.stats?.high_price} />
-                  <MetricCard label="Low" value={chartData.stats?.low_price} />
+                  <MetricCard
+                    label="Current"
+                    value={
+                      typeof chartData.stats?.current_price === "number"
+                        ? `${chartData.currency_symbol || ""}${chartData.stats.current_price.toFixed(2)}`
+                        : "-"
+                    }
+                  />
+                  <MetricCard
+                    label="High"
+                    value={
+                      typeof chartData.stats?.high_price === "number"
+                        ? `${chartData.currency_symbol || ""}${chartData.stats.high_price.toFixed(2)}`
+                        : "-"
+                    }
+                  />
+                  <MetricCard
+                    label="Low"
+                    value={
+                      typeof chartData.stats?.low_price === "number"
+                        ? `${chartData.currency_symbol || ""}${chartData.stats.low_price.toFixed(2)}`
+                        : "-"
+                    }
+                  />
                 </div>
                 <ChartFrame height={240} className="min-h-[240px]">
                   {({ width, height }) => (

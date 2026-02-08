@@ -32,6 +32,8 @@ deploy/bot-host/stockpulse-data/
 deploy/bot-host/finnews-postgres/
 e2e_report_*.md
 tmp-*.json
+tmp.verify-oss-console.*
+tmp.*.png
 
 # Editor directories and files
 .vscode/*

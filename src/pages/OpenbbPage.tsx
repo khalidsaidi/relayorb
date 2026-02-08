@@ -3,10 +3,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Badge } from "@/components/ui/badge"
 import { ExternalLink, RefreshCw, Info } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { useSearchParams } from "react-router-dom"
-import { resolveOpenbbApiUrl, resolveMarketDataProxyUrl } from "@/lib/runtime-urls"
+import { resolveOpenbbApiUrl, resolveMarketDataProxyUrl, resolveFinnewsUrl } from "@/lib/runtime-urls"
 import { fetchJsonOrThrow, fetchJsonWithMeta, HttpRequestError } from "@/lib/http"
 import { toast } from "sonner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -27,6 +28,15 @@ type HistoryResult = {
   data: any
   ok?: boolean
   status?: number
+}
+
+type QuickHeadline = {
+  sym: string
+  title: string
+  url?: string | null
+  source?: string | null
+  publish_time?: string | null
+  created_at?: string | null
 }
 
 type ApiParam = {
@@ -810,7 +820,9 @@ export default function OpenbbPage() {
   const [searchParams] = useSearchParams()
   const apiUrl = useMemo(() => resolveOpenbbApiUrl(), [])
   const proxyBase = useMemo(() => resolveMarketDataProxyUrl(), [])
+  const finnewsUrl = useMemo(() => resolveFinnewsUrl(), [])
   const queryBase = proxyBase ? `${proxyBase}/v1/openbb` : apiUrl
+  const finnewsBase = proxyBase ? `${proxyBase}/v1/finnews` : finnewsUrl
 
   const explorerTemplates = useMemo<ExplorerTemplate[]>(
     () => [
@@ -856,14 +868,6 @@ export default function OpenbbPage() {
         description: "Fundamentals: cash flow statement.",
         method: "GET",
         path: "/api/v1/equity/fundamental/cash",
-      },
-      {
-        id: "news",
-        label: "Company news",
-        description: "Latest headlines for a symbol.",
-        method: "GET",
-        path: "/api/v1/news/company",
-        params: { provider: DEFAULT_QUOTE_PROVIDER, symbol: "AAPL", limit: "10" },
       },
     ],
     []
@@ -945,7 +949,7 @@ export default function OpenbbPage() {
   const [quickRange, setQuickRange] = useState("1M")
   const [quickQuotes, setQuickQuotes] = useState<Record<string, any>[]>([])
   const [quickHistory, setQuickHistory] = useState<Record<string, any>[]>([])
-  const [quickNews, setQuickNews] = useState<Record<string, any>[]>([])
+  const [quickNews, setQuickNews] = useState<QuickHeadline[]>([])
   const [quickFund, setQuickFund] = useState<Record<string, any> | null>(null)
   const [quickTech, setQuickTech] = useState<Record<string, any> | null>(null)
   const [quickFundMap, setQuickFundMap] = useState<Record<string, any>>({})
@@ -1310,6 +1314,7 @@ export default function OpenbbPage() {
     setQuickLoading(true)
     setQuickQuotes([])
     setQuickHistory([])
+    setQuickNews([])
     try {
       const displayStartDate = computeDisplayStartDate(quickRange)
       const minLookbackStartDate = computeDisplayStartDate("6M")
@@ -1326,9 +1331,29 @@ export default function OpenbbPage() {
       const quotePromises = symbols.map((sym) =>
         safeOpenbb(sym, "/api/v1/equity/price/quote", { symbol: sym, provider: quickProvider })
       )
-      const newsPromises = symbols.map((sym) =>
-        safeOpenbb(sym, "/api/v1/news/company", { symbol: sym, provider: quickProvider, limit: 10, sort: "created", order: "desc" })
-      )
+      const newsPromises = finnewsBase
+        ? symbols.map(async (sym) => {
+            const params = new URLSearchParams()
+            params.set("keywords", sym)
+            params.set("provider", "us_rss")
+            params.set("limit", "8")
+            const url = `${finnewsBase}/api/v1/news/v2/fetch?${params.toString()}`
+            const meta = await fetchJsonWithMeta("Finnews", url, undefined, 30000)
+            const raw = meta.data as any
+            const items = Array.isArray(raw?.data) ? raw.data : Array.isArray(raw) ? raw : []
+            const normalized: QuickHeadline[] = items
+              .map((it: any) => ({
+                sym,
+                title: String(it?.title || it?.headline || "").trim(),
+                url: (it?.url ?? it?.source_url ?? null) as any,
+                source: (it?.source ?? null) as any,
+                publish_time: (it?.publish_time ?? null) as any,
+                created_at: (it?.created_at ?? null) as any,
+              }))
+              .filter((it: QuickHeadline) => Boolean(it.title))
+            return { sym, ok: meta.ok, status: meta.status, items: normalized, error: meta.ok ? "" : `[Finnews] ${meta.status}` }
+          })
+        : []
       const fundPromises = symbols.map(async (sym) => {
         const [profile, income, balance, cash, metrics] = await Promise.all([
           safeOpenbb(sym, "/api/v1/equity/profile", { symbol: sym, provider: quickProvider }).then((r) => r.data),
@@ -1348,10 +1373,17 @@ export default function OpenbbPage() {
       ])
       const okQuotes = quotes.filter((q) => q.ok)
       const okHist = history.filter((h) => h.ok)
-      const okNews = news.filter((n) => n.ok)
       setQuickQuotes(okQuotes)
       setQuickHistory(okHist)
-      setQuickNews(okNews)
+      if (Array.isArray(news) && news.length) {
+        const headlines = news.flatMap((bucket: any) => (Array.isArray(bucket?.items) ? bucket.items : []))
+        setQuickNews(headlines)
+        const failed = news.filter((b: any) => b && b.ok === false)
+        if (failed.length) {
+          toast.message(`Finnews: ${failed.length} headline fetch(es) failed (see console).`)
+          failed.slice(0, 3).forEach((b: any) => console.warn("Finnews headlines failed", b.sym, b.status, b.error))
+        }
+      }
       setQuickFund(fundArr[0]?.profile || null)
       const fundMap: Record<string, any> = {}
       fundArr.forEach((f, idx) => {
@@ -2010,21 +2042,35 @@ export default function OpenbbPage() {
                 {quickNews.length ? (
                   <Card className="border-border/70">
                     <CardHeader>
-                      <CardTitle className="text-sm">News</CardTitle>
+                      <CardTitle className="text-sm">Headlines (Finnews)</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-2 text-xs text-muted-foreground max-h-64 overflow-auto">
-                      {quickNews
-                        .flatMap((n) => (Array.isArray(n.data?.results) ? n.data.results.map((item: any) => ({ sym: n.sym, ...item })) : []))
-                        .slice(0, 10)
-                        .map((item, idx) => (
-                          <div key={idx} className="rounded-md border border-border/40 bg-muted/20 p-2">
-                            <div className="text-foreground font-semibold text-sm">{item.title || item.headline}</div>
-                            <div className="text-[11px] text-muted-foreground flex flex-wrap gap-2">
-                              <span>{item.publisher || item.source}</span>
-                              {item.datetime || item.date ? <span>{item.datetime || item.date}</span> : null}
+                      {quickNews.slice(0, 12).map((item, idx) => (
+                        <div key={`${item.sym}-${idx}`} className="rounded-md border border-border/40 bg-muted/20 p-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="text-foreground font-semibold text-sm">{item.title}</div>
+                              <div className="text-[11px] text-muted-foreground flex flex-wrap gap-2">
+                                <Badge variant="secondary">{item.sym}</Badge>
+                                {item.source ? <span>{item.source}</span> : null}
+                                {item.publish_time || item.created_at ? (
+                                  <span>{item.publish_time || item.created_at}</span>
+                                ) : null}
+                              </div>
                             </div>
+                            {item.url ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-[11px]"
+                                onClick={() => window.open(item.url || "", "_blank", "noopener,noreferrer")}
+                              >
+                                Open
+                              </Button>
+                            ) : null}
                           </div>
-                        ))}
+                        </div>
+                      ))}
                     </CardContent>
                   </Card>
                 ) : null}

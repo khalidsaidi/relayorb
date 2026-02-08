@@ -21,9 +21,37 @@ function formatRelative(value?: string) {
   return `${days}d ago`
 }
 
+function formatUntil(ms: number) {
+  const n = Number(ms || 0)
+  if (!Number.isFinite(n) || n <= 0) return "-"
+  const diffMs = n - Date.now()
+  if (diffMs <= 0) return "now"
+  const minutes = Math.ceil(diffMs / 60000)
+  if (minutes <= 1) return "in 1m"
+  if (minutes < 60) return `in ${minutes}m`
+  const hours = Math.ceil(minutes / 60)
+  if (hours < 24) return `in ${hours}h`
+  const days = Math.ceil(hours / 24)
+  return `in ${days}d`
+}
+
 export function AlertsBell() {
-  const { alerts, unreadCount, settings, setSettings, pollNow, clearAlerts, markAllRead, finnewsBase, stockpulseBase } =
-    useInAppAlerts()
+  const {
+    alerts,
+    unreadCount,
+    settings,
+    setSettings,
+    isMuted,
+    mutedUntilMs,
+    muteForMs,
+    muteUntilEndOfDay,
+    unmute,
+    pollNow,
+    clearAlerts,
+    markAllRead,
+    finnewsBase,
+    stockpulseBase,
+  } = useInAppAlerts()
 
   const [open, setOpen] = useState(false)
 
@@ -154,14 +182,53 @@ export function AlertsBell() {
             </div>
           </div>
 
-          <label className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs">
-            <input
-              type="checkbox"
-              checked={settings.toastOnNew}
-              onChange={(e) => setSettings((prev) => ({ ...prev, toastOnNew: e.target.checked }))}
-            />
-            <span className="text-muted-foreground">Toast on new alerts</span>
-          </label>
+          <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={settings.toastOnNew}
+                onChange={(e) => setSettings((prev) => ({ ...prev, toastOnNew: e.target.checked }))}
+              />
+              <span className="text-muted-foreground">Toast on new alerts</span>
+            </label>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Badge variant={isMuted ? "destructive" : "secondary"} className="text-[10px]">
+                {isMuted ? `Muted ${formatUntil(mutedUntilMs)}` : "Live"}
+              </Badge>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 px-2 text-[11px]"
+                onClick={() => muteForMs(60 * 60 * 1000)}
+                disabled={isMuted}
+                title="Mute toasts for 1 hour"
+              >
+                Mute 1h
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 px-2 text-[11px]"
+                onClick={muteUntilEndOfDay}
+                disabled={isMuted}
+                title="Mute toasts until the end of your local day"
+              >
+                Mute today
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 text-[11px]"
+                onClick={unmute}
+                disabled={!isMuted}
+              >
+                Unmute
+              </Button>
+            </div>
+            <div className="mt-2 text-[11px] text-muted-foreground">
+              Muting only disables toast popups. Alerts still record in the list.
+            </div>
+          </div>
         </div>
 
         <div className="mt-3">
@@ -216,4 +283,3 @@ export function AlertsBell() {
     </Popover>
   )
 }
-

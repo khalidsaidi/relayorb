@@ -33,6 +33,7 @@ type Settings = {
 type PersistedState = {
   bootstrapped?: boolean
   lastViewedAt?: number
+  mutedUntilMs?: number
   lastFilingKeyByTicker?: Record<string, string>
   lastRatingByTicker?: Record<string, string>
   lastRsiBucketByTicker?: Record<string, "oversold" | "neutral" | "overbought">
@@ -286,6 +287,33 @@ export function useInAppAlerts() {
     return alerts.filter((a) => new Date(a.createdAt).getTime() > lastViewed).length
   }, [alerts, state.lastViewedAt])
 
+  const mutedUntilMs = useMemo(() => {
+    const raw = Number(state.mutedUntilMs || 0)
+    return Number.isFinite(raw) && raw > 0 ? raw : 0
+  }, [state.mutedUntilMs])
+
+  const isMuted = useMemo(() => mutedUntilMs > Date.now(), [mutedUntilMs])
+
+  const muteForMs = useCallback((ms: number) => {
+    const dur = Math.max(0, Number(ms) || 0)
+    if (!dur) {
+      setState((prev) => ({ ...prev, mutedUntilMs: 0 }))
+      return
+    }
+    setState((prev) => ({ ...prev, mutedUntilMs: Date.now() + dur }))
+  }, [])
+
+  const muteUntilEndOfDay = useCallback(() => {
+    const now = new Date()
+    const end = new Date(now)
+    end.setHours(23, 59, 59, 999)
+    setState((prev) => ({ ...prev, mutedUntilMs: end.getTime() }))
+  }, [])
+
+  const unmute = useCallback(() => {
+    setState((prev) => ({ ...prev, mutedUntilMs: 0 }))
+  }, [])
+
   const markAllRead = useCallback(() => {
     setState((prev) => ({ ...prev, lastViewedAt: Date.now() }))
   }, [])
@@ -456,7 +484,7 @@ export function useInAppAlerts() {
         lastRsiBucketByTicker: lastRsiBucket,
       }))
 
-      if (settings.toastOnNew) {
+      if (settings.toastOnNew && !isMuted) {
         nextAlerts.slice(0, 3).forEach((a) => toast.message(a.title))
       }
     } else {
@@ -467,7 +495,18 @@ export function useInAppAlerts() {
         lastRsiBucketByTicker: lastRsiBucket,
       }))
     }
-  }, [alerts, finnewsBase, loadSecCikMap, settings, state.bootstrapped, state.lastFilingKeyByTicker, state.lastRatingByTicker, state.lastRsiBucketByTicker, stockpulseBase])
+  }, [
+    alerts,
+    finnewsBase,
+    isMuted,
+    loadSecCikMap,
+    settings,
+    state.bootstrapped,
+    state.lastFilingKeyByTicker,
+    state.lastRatingByTicker,
+    state.lastRsiBucketByTicker,
+    stockpulseBase,
+  ])
 
   // Poll loop
   useEffect(() => {
@@ -483,6 +522,11 @@ export function useInAppAlerts() {
     setSettings,
     alerts,
     unreadCount,
+    isMuted,
+    mutedUntilMs,
+    muteForMs,
+    muteUntilEndOfDay,
+    unmute,
     openbbBase,
     finnewsBase,
     stockpulseBase,
@@ -491,4 +535,3 @@ export function useInAppAlerts() {
     markAllRead,
   }
 }
-

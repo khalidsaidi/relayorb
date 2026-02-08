@@ -1121,6 +1121,16 @@ export default function FinnewsPage() {
               ) : null}
               {newsDetail ? (
                 <div className="rounded-md border bg-muted/30 p-3 text-xs space-y-2">
+                  {crawlHints.rateLimited ? (
+                    <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-[11px] text-destructive">
+                      Provider rate-limited recently. Detail may be incomplete until the next successful crawl.
+                    </div>
+                  ) : crawlHints.stale ? (
+                    <div className="rounded-md border border-border/60 bg-muted/20 p-2 text-[11px] text-muted-foreground">
+                      Data may be stale. Last crawl was{" "}
+                      {crawlHints.lastTask?.created_at ? formatRelative(crawlHints.lastTask.created_at) : "-"}.
+                    </div>
+                  ) : null}
                   <div className="font-semibold">{newsDetail.title}</div>
                       <div className="text-muted-foreground">{newsDetail.source}</div>
                       <div className="text-muted-foreground">{formatRelative(newsDetail.publish_time || newsDetail.created_at)}</div>
@@ -1161,6 +1171,41 @@ export default function FinnewsPage() {
                           })()}
                         </div>
                       ) : null}
+                      {(() => {
+                        const symbols = deriveSymbols(newsDetail, secCikMap)
+                        const relevance = computeRelevance({ item: newsDetail, symbols, query: parsedSearch, cikToTicker: secCikMap })
+                        const hasQuery = Boolean(searchQuery.trim() || searchSource)
+                        if (!hasQuery && relevance.score <= 1 && !relevance.reasons.length) return null
+                        return (
+                          <div className="rounded-md border border-border/60 bg-background p-2 text-[11px] text-muted-foreground">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold text-foreground">Why matched</span>
+                              <span title="Relevance score (higher is a better match)">Score {relevance.score.toFixed(1)}</span>
+                            </div>
+                            {relevance.reasons.length ? (
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {relevance.reasons.map((r) => (
+                                  <Badge
+                                    key={`${r.kind}-${r.label}`}
+                                    variant="outline"
+                                    title={
+                                      r.kind === "ticker"
+                                        ? "Ticker match"
+                                        : r.kind === "keyword"
+                                          ? "Keyword match"
+                                          : "SEC CIK mapped ticker"
+                                    }
+                                  >
+                                    {r.kind}:{r.label}
+                                  </Badge>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="mt-1">No strong match features detected; shown for recency/context.</div>
+                            )}
+                          </div>
+                        )
+                      })()}
                       <Separator />
                       <div className="whitespace-pre-wrap text-sm">{newsDetail.content || "(no content)"}</div>
                       <div className="flex flex-wrap items-center gap-2">

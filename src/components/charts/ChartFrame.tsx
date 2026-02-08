@@ -44,6 +44,12 @@ export function ChartFrame({
       // Guard against rare cases where an embedded browser reports NaN sizes during layout.
       // Recharts treats those as invalid and will warn loudly.
       if (!Number.isFinite(next.width) || !Number.isFinite(next.height)) return
+      // Extremely rare: some browser/WSL combos can briefly report -1 during resize.
+      // Treat that as "not visible" so chart libs don't warn.
+      if (next.width <= 0 || next.height <= 0) {
+        setSize((prev) => (prev ? null : prev))
+        return
+      }
       // Some layouts (hidden tabs, collapsed panels) can report extremely small sizes.
       // Instead of keeping the last "good" size (which can cause chart libs to warn),
       // explicitly unmount children until the container is visible again.
