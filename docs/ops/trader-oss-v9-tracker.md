@@ -16,11 +16,11 @@ Evidence / how we verify:
 
 ## 0) Dev Server (WSL/Windows)
 - [x] Dev server managed by tmux: `bash scripts/ui-dev.sh start|stop|restart|status|logs`
-- [x] Port fixed at `5173` by default (override via `VITE_DEV_PORT=...`)
+- [x] Port fixed at `5300` by default (override via `VITE_DEV_PORT=...`)
 - [x] Listens on IPv4 all-interfaces (`0.0.0.0`) for Windows reachability
-- [x] HMR points to `ws://localhost:<port>/` (stable when you browse via `http://localhost:<port>/`)
+- [x] HMR points to `ws://127.0.0.1:<port>/` (avoids IPv6-first `localhost` WS failures)
 - [x] Firebase Google sign-in guidance:
-  Use `http://localhost:5173/` in dev. Avoid `127.0.0.1` / WSL IP unless they’re added to Firebase Authorized Domains.
+  Use `http://localhost:5300/` (or whichever `VITE_DEV_PORT` you run) in dev. Avoid `127.0.0.1` / WSL IP unless they’re added to Firebase Authorized Domains.
 
 ---
 
@@ -97,4 +97,3 @@ Files:
 ## Verified Runs
 - [x] Local E2E passed (`tmp.verify-oss-console.ok.png`)
 - [x] Prod E2E passed (`tmp.verify-oss-console.ok.png`)
-
