@@ -113,25 +113,6 @@ async function postJson(
   }
 }
 
-async function getJson(
-  service: string,
-  url: string,
-  timeoutMs = 20000
-): Promise<{ ok: boolean; status: number; text: string }> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const res = await fetch(url, { headers: { Accept: "application/json" }, signal: controller.signal })
-    const text = await res.text().catch(() => "")
-    return { ok: res.ok, status: res.status, text }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return { ok: false, status: 0, text: `[${service}] ${msg}` }
-  } finally {
-    clearTimeout(timeout)
-  }
-}
-
 function pickFirstResult(data: any): QuoteResult {
   if (!data) return {}
   if (Array.isArray(data?.results) && data.results.length) return data.results[0] as QuoteResult
