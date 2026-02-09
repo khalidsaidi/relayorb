@@ -794,7 +794,7 @@ def ensure_targeted_stock_crawl_us() -> None:
                     "duplicates": duplicate_count,
                     "sources": sources,
                 }
-                task_record.progress = {"current": 100, "total": 100, "message": f\"Done: +{saved_count} new items\"}
+                task_record.progress = {"current": 100, "total": 100, "message": f"Done: +{saved_count} new items"}
                 db.commit()
 
                 return {
@@ -809,12 +809,12 @@ def ensure_targeted_stock_crawl_us() -> None:
                 }
 
             except Exception as e:
-                logger.error(f\"[Task {task_record.id if task_record else 'unknown'}] US targeted crawl failed: {e}\", exc_info=True)
+                logger.error(f"[Task {task_record.id if task_record else 'unknown'}] US targeted crawl failed: {e}", exc_info=True)
                 if task_record:
                     task_record.status = TaskStatus.FAILED
                     task_record.completed_at = datetime.utcnow()
                     task_record.error_message = str(e)[:1000]
-                    task_record.progress = {"current": 0, "total": 100, "message": f\"Failed: {str(e)[:100]}\"}
+                    task_record.progress = {"current": 0, "total": 100, "message": f"Failed: {str(e)[:100]}"}
                     db.commit()
                 raise
             finally:
@@ -823,9 +823,9 @@ def ensure_targeted_stock_crawl_us() -> None:
     ).strip("\n")
 
     pattern = re.compile(
-        r"@celery_app\\.task\\(bind=True, name=\"app\\.tasks\\.crawl_tasks\\.targeted_stock_crawl_task\"\\)\\n"
-        r"def targeted_stock_crawl_task\\(.*?\\n"
-        r"@celery_app\\.task\\(bind=True, name=\"app\\.tasks\\.crawl_tasks\\.build_knowledge_graph_task\"\\)",
+        r"@celery_app\.task\(bind=True, name=\"app\.tasks\.crawl_tasks\.targeted_stock_crawl_task\"\)\n"
+        r"def targeted_stock_crawl_task\(.*?\n"
+        r"@celery_app\.task\(bind=True, name=\"app\.tasks\.crawl_tasks\.build_knowledge_graph_task\"\)",
         re.S,
     )
     m = pattern.search(text)
