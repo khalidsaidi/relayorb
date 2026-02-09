@@ -85,7 +85,7 @@ type SyncSummary = {
   at: string
   openbb: { added: number; total: number }
   stockpulse: { ok: number; already: number; failed: number }
-  finnews: { ok: number; failed: number }
+  finnews: { queued: number; already: number; failed: number }
 }
 
 async function postJson(
@@ -251,19 +251,32 @@ export default function TraderDashboardPage() {
           })
         )
 
-        // Finnews: warm stock overviews (best-effort). Finnews crawling is global; this makes the Stocks tab useful.
-        let fnOk = 0
+        // Finnews: queue targeted crawls so the stock actually shows up in Finnews stock/news endpoints.
+        // Without this, small-cap tickers often won't appear in the global headline crawl.
+        let fnQueued = 0
+        let fnAlready = 0
         let fnFailed = 0
         const fnQueue = [...symbolsToSync]
-        const fnConcurrency = Math.min(4, fnQueue.length || 1)
+        const fnConcurrency = Math.min(2, fnQueue.length || 1)
         await Promise.all(
           Array.from({ length: fnConcurrency }).map(async () => {
             for (;;) {
               const sym = fnQueue.shift()
               if (!sym) return
-              const res = await getJson("Finnews", `${finnewsUrl}/api/v1/stocks/${encodeURIComponent(sym)}`, 20000)
-              if (res.ok) fnOk += 1
-              else {
+              const res = await postJson(
+                "Finnews",
+                `${finnewsUrl}/api/v1/stocks/${encodeURIComponent(sym)}/targeted-crawl`,
+                { stock_name: sym, days: 30 },
+                30000
+              )
+              if (res.ok) {
+                fnQueued += 1
+              } else {
+                const msg = res.text.toLowerCase()
+                if (res.status === 409 || msg.includes("already") || msg.includes("running")) {
+                  fnAlready += 1
+                  continue
+                }
                 fnFailed += 1
                 console.warn("Finnews stock warm failed", sym, res.status, res.text)
               }
@@ -275,13 +288,13 @@ export default function TraderDashboardPage() {
           at: new Date().toISOString(),
           openbb: { added, total: merged.length },
           stockpulse: { ok: spOk, already: spAlready, failed: spFailed },
-          finnews: { ok: fnOk, failed: fnFailed },
+          finnews: { queued: fnQueued, already: fnAlready, failed: fnFailed },
         }
         setSyncSummary(next)
 
-        if (added || spOk || spAlready || fnOk) {
+        if (added || spOk || spAlready || fnQueued || fnAlready) {
           toast.success(
-            `Watchlist synced: OpenBB +${added}, StockPulse ${spOk + spAlready}/${symbolsToSync.length}, Finnews ${fnOk}/${symbolsToSync.length}`
+            `Watchlist synced: OpenBB +${added}, StockPulse ${spOk + spAlready}/${symbolsToSync.length}, Finnews ${fnQueued + fnAlready}/${symbolsToSync.length}`
           )
         }
         if (spFailed || fnFailed) {
@@ -474,7 +487,7 @@ export default function TraderDashboardPage() {
               <span>
                 Watchlist synced {formatRelative(syncSummary.at)} · OpenBB +{syncSummary.openbb.added} · StockPulse{" "}
                 {syncSummary.stockpulse.ok + syncSummary.stockpulse.already}/{symbols.length} · Finnews{" "}
-                {syncSummary.finnews.ok}/{symbols.length}
+                {syncSummary.finnews.queued + syncSummary.finnews.already}/{symbols.length}
               </span>
             ) : (
               <span>

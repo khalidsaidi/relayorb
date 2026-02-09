@@ -28,7 +28,7 @@ Evidence / how we verify:
 Goal: symbols entered in Trader should keep the three tools in sync.
 - [x] Trader “Run lookup” merges symbols into `localStorage.openbb_watchlist`
 - [x] Trader “Run lookup” pushes symbols into StockPulse monitored list (`POST /api/stocks`)
-- [x] Trader “Run lookup” warms Finnews stock overviews (best-effort `GET /api/v1/stocks/{ticker}`)
+- [x] Trader “Run lookup” queues Finnews targeted crawl (best-effort `POST /api/v1/stocks/{ticker}/targeted-crawl`)
 - [x] Trader shows a sync status line + toasts for partial failures
 - [x] E2E verifier asserts the StockPulse sync request happens
 

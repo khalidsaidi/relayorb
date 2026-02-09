@@ -184,9 +184,10 @@ async function verifyTrader(page, baseUrl) {
   const w2 = wait2xx(page, "/stockpulse/api/ai/rating/", "StockPulse rating (Trader)")
   const w3 = wait2xx(page, "/finnews/api/v1/news/latest", "Finnews latest (Trader)")
   const w4 = wait2xxOrAlready(page, "/stockpulse/api/stocks", "StockPulse watchlist sync (Trader)")
+  const w5 = wait2xx(page, "/finnews/api/v1/stocks/", "Finnews targeted crawl (Trader)")
 
   await page.getByRole("button", { name: /Run lookup/i }).click()
-  await allOrThrow("Trader", [w1, w2, w3, w4])
+  await allOrThrow("Trader", [w1, w2, w3, w4, w5])
 }
 
 async function verifyOpenbb(page, baseUrl) {
