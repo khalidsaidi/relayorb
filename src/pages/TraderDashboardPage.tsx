@@ -54,6 +54,25 @@ type FinnewsItem = {
   stock_codes?: string[]
 }
 
+type FinnewsStockNewsItem = {
+  id: number
+  title: string
+  content: string
+  url: string
+  source: string
+  publish_time?: string | null
+  sentiment_score?: number | null
+  has_analysis?: boolean
+}
+
+type TraderNewsItem = {
+  id: string
+  title: string
+  url?: string | null
+  source?: string
+  publishedAt?: string | null
+}
+
 function parseSymbols(raw: string) {
   return raw
     .split(/[,\n\r\t ]+/g)
@@ -181,6 +200,7 @@ export default function TraderDashboardPage() {
   const [quotesBySymbol, setQuotesBySymbol] = useState<Record<string, QuoteResult>>({})
   const [ratingsBySymbol, setRatingsBySymbol] = useState<Record<string, StockpulseRating>>({})
   const [finnewsLatest, setFinnewsLatest] = useState<FinnewsItem[]>([])
+  const [finnewsBySymbol, setFinnewsBySymbol] = useState<Record<string, FinnewsStockNewsItem[]>>({})
 
   const symbols = useMemo(() => parseSymbols(symbolsRaw), [symbolsRaw])
 
@@ -344,11 +364,29 @@ export default function TraderDashboardPage() {
       const items = Array.isArray(finnewsRes.data) ? (finnewsRes.data as FinnewsItem[]) : []
       setFinnewsLatest(items)
 
+      const finnewsStockRes = await Promise.allSettled(
+        symbols.map(async (sym) => {
+          const url = `${finnewsUrl}/api/v1/stocks/${encodeURIComponent(sym)}/news?limit=10`
+          const res = await fetchJsonWithMeta<FinnewsStockNewsItem[]>("Finnews", url)
+          const list = Array.isArray(res.data) ? res.data : []
+          return { sym, list }
+        })
+      )
+      const nextFinnewsBySymbol: Record<string, FinnewsStockNewsItem[]> = {}
+      finnewsStockRes.forEach((r) => {
+        if (r.status === "fulfilled") nextFinnewsBySymbol[r.value.sym] = r.value.list
+        else console.warn("Finnews stock news failed", r.reason)
+      })
+      setFinnewsBySymbol(nextFinnewsBySymbol)
+
       const quoteRejected = quotesRes.filter((r) => r.status === "rejected")
       if (quoteRejected.length) toast.message(`OpenBB: ${quoteRejected.length} quote(s) failed (see console).`)
 
       const ratingRejected = ratingsRes.filter((r) => r.status === "rejected")
       if (ratingRejected.length) toast.message(`StockPulse: ${ratingRejected.length} rating(s) failed (see console).`)
+
+      const finnewsStockRejected = finnewsStockRes.filter((r) => r.status === "rejected")
+      if (finnewsStockRejected.length) toast.message(`Finnews: ${finnewsStockRejected.length} stock news fetch(es) failed (see console).`)
 
       quotesRes.forEach((r) => {
         if (r.status !== "rejected") return
@@ -483,7 +521,22 @@ export default function TraderDashboardPage() {
         {symbols.map((sym) => {
           const quote = quotesBySymbol[sym]
           const rating = ratingsBySymbol[sym]
-          const items = newsBySymbol[sym] || []
+          const stockNews = finnewsBySymbol[sym] || []
+          const stockItems: TraderNewsItem[] = stockNews.map((n) => ({
+            id: `stock:${n.id}`,
+            title: n.title,
+            url: n.url,
+            source: n.source,
+            publishedAt: n.publish_time,
+          }))
+          const latestItems: TraderNewsItem[] = (newsBySymbol[sym] || []).map((n) => ({
+            id: `latest:${String(n.id)}`,
+            title: n.title,
+            url: n.url || null,
+            source: n.source,
+            publishedAt: n.publish_time || n.created_at || null,
+          }))
+          const items = stockItems.length ? stockItems : latestItems
           return (
             <Card key={sym} className="border-border/70">
               <CardHeader className="flex flex-row items-start justify-between gap-3">
@@ -573,11 +626,11 @@ export default function TraderDashboardPage() {
                   {items.length ? (
                     <div className="mt-2 space-y-2">
                       {items.slice(0, 4).map((n) => (
-                        <div key={String(n.id)} className="flex items-start justify-between gap-3">
+                        <div key={n.id} className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="text-foreground text-xs font-medium truncate">{n.title}</div>
                             <div className="text-[11px] text-muted-foreground">
-                              {n.source || "Finnews"} · {formatRelative(n.publish_time || n.created_at)}
+                              {n.source || "Finnews"} · {formatRelative(n.publishedAt || null)}
                             </div>
                           </div>
                           {n.url ? (
@@ -595,7 +648,7 @@ export default function TraderDashboardPage() {
                     </div>
                   ) : (
                     <div className="mt-2 text-xs text-muted-foreground">
-                      No matched items in the latest saved feed yet. Try running a Finnews crawl or using Search.
+                      No items yet. Finnews targeted crawl is queued on run; refresh in 30-60s or open Finnews for details.
                     </div>
                   )}
                 </div>
