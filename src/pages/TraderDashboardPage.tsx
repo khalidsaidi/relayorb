@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import { ExternalLink, RefreshCw } from "lucide-react"
-import { resolveFinnewsUrl, resolveOpenbbApiUrl, resolveStockpulseUrl } from "@/lib/runtime-urls"
+import { resolveFinnewsUrl, resolveMarketDataProxyUrl, resolveOpenbbApiUrl, resolveStockpulseUrl } from "@/lib/runtime-urls"
 import { fetchJsonWithMeta } from "@/lib/http"
 import { toast } from "sonner"
 
@@ -60,6 +60,76 @@ function parseSymbols(raw: string) {
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean)
     .slice(0, 50)
+}
+
+function safeParseJson<T>(raw: string | null): T | null {
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as T
+  } catch {
+    return null
+  }
+}
+
+function loadOpenbbWatchlist(): string[] {
+  const list = safeParseJson<unknown>(localStorage.getItem("openbb_watchlist"))
+  if (!Array.isArray(list)) return []
+  return list.map((x) => String(x || "").trim().toUpperCase()).filter(Boolean)
+}
+
+function saveOpenbbWatchlist(symbols: string[]) {
+  localStorage.setItem("openbb_watchlist", JSON.stringify(symbols))
+}
+
+type SyncSummary = {
+  at: string
+  openbb: { added: number; total: number }
+  stockpulse: { ok: number; already: number; failed: number }
+  finnews: { ok: number; failed: number }
+}
+
+async function postJson(
+  service: string,
+  url: string,
+  body: unknown,
+  timeoutMs = 20000
+): Promise<{ ok: boolean; status: number; text: string }> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+    const text = await res.text().catch(() => "")
+    return { ok: res.ok, status: res.status, text }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { ok: false, status: 0, text: `[${service}] ${msg}` }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function getJson(
+  service: string,
+  url: string,
+  timeoutMs = 20000
+): Promise<{ ok: boolean; status: number; text: string }> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, { headers: { Accept: "application/json" }, signal: controller.signal })
+    const text = await res.text().catch(() => "")
+    return { ok: res.ok, status: res.status, text }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { ok: false, status: 0, text: `[${service}] ${msg}` }
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 function pickFirstResult(data: any): QuoteResult {
@@ -116,13 +186,16 @@ export default function TraderDashboardPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
 
-  const openbbUrl = useMemo(() => resolveOpenbbApiUrl(), [])
-  const finnewsUrl = useMemo(() => resolveFinnewsUrl(), [])
-  const stockpulseUrl = useMemo(() => resolveStockpulseUrl(), [])
+  const proxyBase = useMemo(() => resolveMarketDataProxyUrl(), [])
+  const openbbUrl = useMemo(() => (proxyBase ? `${proxyBase}/v1/openbb` : resolveOpenbbApiUrl()), [proxyBase])
+  const finnewsUrl = useMemo(() => (proxyBase ? `${proxyBase}/v1/finnews` : resolveFinnewsUrl()), [proxyBase])
+  const stockpulseUrl = useMemo(() => (proxyBase ? `${proxyBase}/v1/stockpulse` : resolveStockpulseUrl()), [proxyBase])
 
   const [symbolsRaw, setSymbolsRaw] = useState("AAPL MSFT NVDA TSLA AMZN META GOOGL")
   const [provider, setProvider] = useState<"yfinance" | "intrinio">("yfinance")
   const [loading, setLoading] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [syncSummary, setSyncSummary] = useState<SyncSummary | null>(null)
 
   const [quotesBySymbol, setQuotesBySymbol] = useState<Record<string, QuoteResult>>({})
   const [ratingsBySymbol, setRatingsBySymbol] = useState<Record<string, StockpulseRating>>({})
@@ -130,9 +203,101 @@ export default function TraderDashboardPage() {
 
   const symbols = useMemo(() => parseSymbols(symbolsRaw), [symbolsRaw])
 
+  const syncWatchlist = useCallback(
+    async (symbolsToSync: string[]) => {
+      if (!finnewsUrl || !stockpulseUrl) return null
+      if (!symbolsToSync.length) return null
+
+      setSyncing(true)
+      try {
+        // Canonical local watchlist for the console:
+        // - OpenBB uses it directly.
+        // - In-app alerts use it.
+        // - StockPulse can import it and we also push into StockPulse directly here.
+        const before = loadOpenbbWatchlist()
+        const merged = Array.from(new Set([...before, ...symbolsToSync])).slice(0, 500)
+        saveOpenbbWatchlist(merged)
+        const added = Math.max(0, merged.length - before.length)
+
+        // StockPulse: ensure tickers are actively monitored so sentiment/ratings fill in.
+        let spOk = 0
+        let spAlready = 0
+        let spFailed = 0
+        const spQueue = [...symbolsToSync]
+        const spConcurrency = Math.min(4, spQueue.length || 1)
+        await Promise.all(
+          Array.from({ length: spConcurrency }).map(async () => {
+            for (;;) {
+              const sym = spQueue.shift()
+              if (!sym) return
+              const res = await postJson(
+                "StockPulse",
+                `${stockpulseUrl}/api/stocks`,
+                { ticker: sym, name: sym, market: "US" },
+                20000
+              )
+              if (res.ok) {
+                spOk += 1
+                continue
+              }
+              const msg = res.text.toLowerCase()
+              if (res.status === 409 || msg.includes("already") || msg.includes("exists")) {
+                spAlready += 1
+                continue
+              }
+              spFailed += 1
+              console.warn("StockPulse add failed", sym, res.status, res.text)
+            }
+          })
+        )
+
+        // Finnews: warm stock overviews (best-effort). Finnews crawling is global; this makes the Stocks tab useful.
+        let fnOk = 0
+        let fnFailed = 0
+        const fnQueue = [...symbolsToSync]
+        const fnConcurrency = Math.min(4, fnQueue.length || 1)
+        await Promise.all(
+          Array.from({ length: fnConcurrency }).map(async () => {
+            for (;;) {
+              const sym = fnQueue.shift()
+              if (!sym) return
+              const res = await getJson("Finnews", `${finnewsUrl}/api/v1/stocks/${encodeURIComponent(sym)}`, 20000)
+              if (res.ok) fnOk += 1
+              else {
+                fnFailed += 1
+                console.warn("Finnews stock warm failed", sym, res.status, res.text)
+              }
+            }
+          })
+        )
+
+        const next: SyncSummary = {
+          at: new Date().toISOString(),
+          openbb: { added, total: merged.length },
+          stockpulse: { ok: spOk, already: spAlready, failed: spFailed },
+          finnews: { ok: fnOk, failed: fnFailed },
+        }
+        setSyncSummary(next)
+
+        if (added || spOk || spAlready || fnOk) {
+          toast.success(
+            `Watchlist synced: OpenBB +${added}, StockPulse ${spOk + spAlready}/${symbolsToSync.length}, Finnews ${fnOk}/${symbolsToSync.length}`
+          )
+        }
+        if (spFailed || fnFailed) {
+          toast.message(`Some sync steps failed (StockPulse ${spFailed}, Finnews ${fnFailed}). See console.`)
+        }
+        return next
+      } finally {
+        setSyncing(false)
+      }
+    },
+    [finnewsUrl, stockpulseUrl]
+  )
+
   const run = useCallback(async () => {
     if (!openbbUrl || !finnewsUrl || !stockpulseUrl) {
-      toast.error("Configure VITE_OPENBB_API_URL, VITE_FINNEWS_URL and VITE_STOCKPULSE_URL first.")
+      toast.error("Configure VITE_MARKET_DATA_PROXY_URL (recommended) or VITE_OPENBB_API_URL/VITE_FINNEWS_URL/VITE_STOCKPULSE_URL.")
       return
     }
     if (!symbols.length) {
@@ -142,6 +307,9 @@ export default function TraderDashboardPage() {
 
     setLoading(true)
     try {
+      // Ensure the symbols are also monitored by the upstream tools (esp. StockPulse) so the dashboard doesn't go stale.
+      await syncWatchlist(symbols)
+
       // 1) OpenBB quotes (fast and trader-essential)
       const quoteReqs = symbols.map((sym) => {
         const url = `${openbbUrl}/api/v1/equity/price/quote?symbol=${encodeURIComponent(sym)}&provider=${encodeURIComponent(provider)}`
@@ -202,7 +370,7 @@ export default function TraderDashboardPage() {
     } finally {
       setLoading(false)
     }
-  }, [finnewsUrl, openbbUrl, provider, stockpulseUrl, symbols])
+  }, [finnewsUrl, openbbUrl, provider, stockpulseUrl, symbols, syncWatchlist])
 
   const newsBySymbol = useMemo(() => {
     const out: Record<string, FinnewsItem[]> = {}
@@ -298,6 +466,21 @@ export default function TraderDashboardPage() {
             >
               Open StockPulse
             </Button>
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            {syncing ? (
+              <span>Syncing watchlist to StockPulse/Finnews…</span>
+            ) : syncSummary ? (
+              <span>
+                Watchlist synced {formatRelative(syncSummary.at)} · OpenBB +{syncSummary.openbb.added} · StockPulse{" "}
+                {syncSummary.stockpulse.ok + syncSummary.stockpulse.already}/{symbols.length} · Finnews{" "}
+                {syncSummary.finnews.ok}/{symbols.length}
+              </span>
+            ) : (
+              <span>
+                Tip: Run lookup also syncs these symbols into your OpenBB watchlist and StockPulse monitoring list.
+              </span>
+            )}
           </div>
         </CardContent>
       </Card>

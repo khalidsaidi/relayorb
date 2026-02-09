@@ -3,13 +3,11 @@ set -euo pipefail
 
 #
 # NOTE (WSL on Windows):
-# Some Windows setups reserve/exclude TCP port ranges that can prevent WSL "localhost forwarding" from working
-# on certain ports. We've observed an excluded range covering 5171-5270, which includes Vite's default 5173.
-# When that happens, Windows cannot reach `http://127.0.0.1:5173/` even though the server is running in WSL.
+# We want the dev server reachable from Windows while preserving Firebase Google sign-in.
+# Google sign-in requires using an authorized domain, which typically includes `localhost` but NOT your WSL IP.
 #
-# Default to 5170 (outside that common excluded range) so Windows `localhost` works out-of-the-box.
-# You can still override with `VITE_DEV_PORT=5173`, but Windows localhost forwarding may fail.
-PORT="${VITE_DEV_PORT:-5170}"
+# Default to Vite's conventional port (5173). Override with `VITE_DEV_PORT=...` if it conflicts.
+PORT="${VITE_DEV_PORT:-5173}"
 
 WSL_IP="$(ip -4 addr show eth0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n 1 || true)"
 # When the UI is opened from Windows, Vite's HMR websocket must use a hostname that Windows can route
@@ -34,9 +32,7 @@ else
 fi
 echo "HMR websocket: ws://${VITE_HMR_HOST}:${VITE_HMR_CLIENT_PORT}/"
 
-# Bind to IPv4 "any" so Windows can reach the dev server via `http://localhost:$PORT/` and/or `http://127.0.0.1:$PORT/`.
-#
-# Some WSL2 setups only publish localhost-forwarded ports for IPv4 listeners, which would make `127.0.0.1` fail if we
-# bind Vite to IPv6-only. Firebase sign-in still requires using `localhost` (authorized domain), but having IPv4
-# listening avoids "can't reach dev server" situations when a browser prefers IPv4.
+# Bind to IPv4 "any" for maximum compatibility with Windows<->WSL localhost forwarding.
+# In practice, Windows browsers often try IPv6 first for `localhost`; if that fails they fall back
+# to IPv4. Binding to `0.0.0.0` ensures the IPv4 fallback works.
 exec vite --host 0.0.0.0 --port "$PORT" --strictPort --clearScreen false

@@ -139,6 +139,30 @@ async function wait2xx(page, urlIncludes, label, timeoutMs = 45000) {
   }
 }
 
+async function wait2xxOrAlready(page, urlIncludes, label, timeoutMs = 45000) {
+  const res = await waitResponse(page, urlIncludes, label, timeoutMs)
+  const status = res.status()
+  if (status >= 200 && status < 300) return
+  if (status === 409) return
+  if (status === 400) {
+    let body = ""
+    try {
+      body = await res.text()
+    } catch {
+      body = ""
+    }
+    const lower = body.toLowerCase()
+    if (lower.includes("already") || lower.includes("exists")) return
+  }
+  let body = ""
+  try {
+    body = await res.text()
+  } catch {
+    // ignore
+  }
+  throw new Error(`${label} returned ${status}: ${urlIncludes} ${formatBodySnippet(body)}`)
+}
+
 async function allOrThrow(label, promises) {
   const results = await Promise.allSettled(promises)
   const errors = results
@@ -159,9 +183,10 @@ async function verifyTrader(page, baseUrl) {
   const w1 = wait2xx(page, "/openbb/api/v1/equity/price/quote", "OpenBB quote (Trader)")
   const w2 = wait2xx(page, "/stockpulse/api/ai/rating/", "StockPulse rating (Trader)")
   const w3 = wait2xx(page, "/finnews/api/v1/news/latest", "Finnews latest (Trader)")
+  const w4 = wait2xxOrAlready(page, "/stockpulse/api/stocks", "StockPulse watchlist sync (Trader)")
 
   await page.getByRole("button", { name: /Run lookup/i }).click()
-  await allOrThrow("Trader", [w1, w2, w3])
+  await allOrThrow("Trader", [w1, w2, w3, w4])
 }
 
 async function verifyOpenbb(page, baseUrl) {

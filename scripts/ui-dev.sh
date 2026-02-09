@@ -12,7 +12,7 @@ set -euo pipefail
 #
 # Notes (WSL):
 # - The underlying dev command is `npm run dev`, which runs `scripts/dev-wsl.sh`.
-# - Default port is set by `scripts/dev-wsl.sh` to 5170 to avoid common Windows excluded port ranges (5171-5270).
+# - Default port is set by `scripts/dev-wsl.sh` (defaults to 5173).
 
 SESSION="relayorb_dev"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -57,7 +57,7 @@ case "$cmd" in
     if has_session; then
       echo "Dev server running (tmux session: $SESSION)."
       # Best-effort port detection (prints common ports).
-      for p in 5170 5173 5300; do
+      for p in 5173 5170 5300; do
         (lsof -nP -iTCP:${p} -sTCP:LISTEN 2>/dev/null || true) | sed -n '1,3p'
       done
       echo
