@@ -20,6 +20,13 @@ import process from "process"
 import admin from "firebase-admin"
 import { chromium } from "playwright"
 
+const BAD_CONSOLE_PATTERNS = [
+  { re: /width\(-1\).*height\(-1\).*chart/i, label: "Recharts invalid size" },
+  { re: /change in the order of Hooks/i, label: "React hooks order violation" },
+  { re: /Should have a queue/i, label: "React invalid hook call" },
+  { re: /auth\/unauthorized-domain/i, label: "Firebase unauthorized domain" },
+]
+
 function parseArgs(argv) {
   const out = { base: "https://relayorb.web.app", email: "" }
   for (let i = 0; i < argv.length; i++) {
@@ -290,6 +297,23 @@ async function main() {
   const browser = await chromium.launch()
   const context = await browser.newContext()
   const page = await context.newPage()
+  const badConsole = []
+
+  page.on("console", (msg) => {
+    const type = msg.type()
+    if (type !== "warning" && type !== "error") return
+    const text = msg.text()
+    for (const p of BAD_CONSOLE_PATTERNS) {
+      if (p.re.test(text)) {
+        badConsole.push({ type, label: p.label, text })
+        break
+      }
+    }
+  })
+  page.on("pageerror", (err) => {
+    const text = err instanceof Error ? err.message : String(err)
+    badConsole.push({ type: "pageerror", label: "Unhandled page error", text })
+  })
 
   try {
     await signInWithCustomTokenCompat({ page, baseUrl, firebaseConfig, customToken: token })
@@ -307,6 +331,14 @@ async function main() {
       console.error("Saved screenshot: tmp.verify-oss-console.ok.png")
     } catch {
       // ignore
+    }
+
+    if (badConsole.length) {
+      const rendered = badConsole
+        .slice(0, 8)
+        .map((e) => `- [${e.type}] ${e.label}: ${String(e.text || "").slice(0, 260)}`)
+        .join("\n")
+      throw new Error(`Console errors/warnings detected during verification:\n${rendered}`)
     }
   } catch (err) {
     const msg = err instanceof Error ? err.stack || err.message : String(err)

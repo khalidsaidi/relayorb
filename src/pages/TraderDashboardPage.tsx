@@ -65,6 +65,16 @@ type FinnewsStockNewsItem = {
   has_analysis?: boolean
 }
 
+type FinnewsTargetedCrawlStatus = {
+  status?: string
+  progress?: { current?: number; total?: number; message?: string } | null
+  crawled_count?: number | null
+  saved_count?: number | null
+  error_message?: string | null
+  started_at?: string | null
+  completed_at?: string | null
+}
+
 type TraderNewsItem = {
   id: string
   title: string
@@ -201,6 +211,8 @@ export default function TraderDashboardPage() {
   const [ratingsBySymbol, setRatingsBySymbol] = useState<Record<string, StockpulseRating>>({})
   const [finnewsLatest, setFinnewsLatest] = useState<FinnewsItem[]>([])
   const [finnewsBySymbol, setFinnewsBySymbol] = useState<Record<string, FinnewsStockNewsItem[]>>({})
+  const [finnewsErrorsBySymbol, setFinnewsErrorsBySymbol] = useState<Record<string, string>>({})
+  const [finnewsStatusBySymbol, setFinnewsStatusBySymbol] = useState<Record<string, FinnewsTargetedCrawlStatus>>({})
 
   const symbols = useMemo(() => parseSymbols(symbolsRaw), [symbolsRaw])
 
@@ -364,20 +376,45 @@ export default function TraderDashboardPage() {
       const items = Array.isArray(finnewsRes.data) ? (finnewsRes.data as FinnewsItem[]) : []
       setFinnewsLatest(items)
 
-      const finnewsStockRes = await Promise.allSettled(
+      const finnewsStockRes = await Promise.all(
         symbols.map(async (sym) => {
           const url = `${finnewsUrl}/api/v1/stocks/${encodeURIComponent(sym)}/news?limit=10`
-          const res = await fetchJsonWithMeta<FinnewsStockNewsItem[]>("Finnews", url)
-          const list = Array.isArray(res.data) ? res.data : []
-          return { sym, list }
+          try {
+            const res = await fetchJsonWithMeta<FinnewsStockNewsItem[]>("Finnews", url, undefined, 30000)
+            const list = Array.isArray(res.data) ? res.data : []
+            return { sym, list, err: null as string | null }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            return { sym, list: [] as FinnewsStockNewsItem[], err: msg }
+          }
         })
       )
       const nextFinnewsBySymbol: Record<string, FinnewsStockNewsItem[]> = {}
+      const nextFinnewsErrors: Record<string, string> = {}
       finnewsStockRes.forEach((r) => {
-        if (r.status === "fulfilled") nextFinnewsBySymbol[r.value.sym] = r.value.list
-        else console.warn("Finnews stock news failed", r.reason)
+        nextFinnewsBySymbol[r.sym] = r.list
+        if (r.err) {
+          nextFinnewsErrors[r.sym] = r.err
+          console.warn("Finnews stock news failed", r.sym, r.err)
+        }
       })
       setFinnewsBySymbol(nextFinnewsBySymbol)
+      setFinnewsErrorsBySymbol(nextFinnewsErrors)
+
+      // Finnews freshness/rate-limit hints: fetch targeted crawl status per ticker (best-effort).
+      const statusRes = await Promise.allSettled(
+        symbols.map(async (sym) => {
+          const url = `${finnewsUrl}/api/v1/stocks/${encodeURIComponent(sym)}/targeted-crawl/status`
+          const res = await fetchJsonWithMeta<FinnewsTargetedCrawlStatus>("Finnews", url, undefined, 15000)
+          return { sym, status: res.data }
+        })
+      )
+      const nextStatus: Record<string, FinnewsTargetedCrawlStatus> = {}
+      statusRes.forEach((r) => {
+        if (r.status !== "fulfilled") return
+        nextStatus[r.value.sym] = r.value.status || {}
+      })
+      setFinnewsStatusBySymbol(nextStatus)
 
       const quoteRejected = quotesRes.filter((r) => r.status === "rejected")
       if (quoteRejected.length) toast.message(`OpenBB: ${quoteRejected.length} quote(s) failed (see console).`)
@@ -385,7 +422,7 @@ export default function TraderDashboardPage() {
       const ratingRejected = ratingsRes.filter((r) => r.status === "rejected")
       if (ratingRejected.length) toast.message(`StockPulse: ${ratingRejected.length} rating(s) failed (see console).`)
 
-      const finnewsStockRejected = finnewsStockRes.filter((r) => r.status === "rejected")
+      const finnewsStockRejected = finnewsStockRes.filter((r) => Boolean(r.err))
       if (finnewsStockRejected.length) toast.message(`Finnews: ${finnewsStockRejected.length} stock news fetch(es) failed (see console).`)
 
       quotesRes.forEach((r) => {
@@ -421,6 +458,35 @@ export default function TraderDashboardPage() {
     })
     return out
   }, [finnewsLatest, symbols])
+
+  const formatFinnewsStatus = useCallback((sym: string) => {
+    const s = finnewsStatusBySymbol[sym]
+    if (!s) return null
+    const status = (s.status || "").toLowerCase()
+    const at = s.completed_at || s.started_at || null
+    const rel = at ? formatRelative(at) : null
+    const crawled = typeof s.crawled_count === "number" ? s.crawled_count : null
+    const saved = typeof s.saved_count === "number" ? s.saved_count : null
+    if (status === "failed") {
+      const err = s.error_message ? String(s.error_message).slice(0, 140) : "Unknown error"
+      return `Crawl failed${rel ? ` (${rel})` : ""}: ${err}`
+    }
+    if (status === "running") {
+      const cur = s.progress?.current
+      const total = s.progress?.total
+      const pct = typeof cur === "number" && typeof total === "number" && total > 0 ? Math.round((cur / total) * 100) : null
+      const msg = s.progress?.message ? String(s.progress.message) : ""
+      return `Crawl running${pct !== null ? ` (${pct}%)` : ""}${msg ? ` · ${msg}` : ""}`
+    }
+    if (status === "completed") {
+      const parts: string[] = []
+      if (rel) parts.push(`completed ${rel}`)
+      if (crawled !== null) parts.push(`${crawled} found`)
+      if (saved !== null) parts.push(`+${saved} new`)
+      return parts.length ? `Crawl ${parts.join(" · ")}` : "Crawl completed"
+    }
+    return status ? `Crawl: ${status}` : null
+  }, [finnewsStatusBySymbol])
 
   return (
     <div className="space-y-6">
@@ -522,6 +588,8 @@ export default function TraderDashboardPage() {
           const quote = quotesBySymbol[sym]
           const rating = ratingsBySymbol[sym]
           const stockNews = finnewsBySymbol[sym] || []
+          const finnewsErr = finnewsErrorsBySymbol[sym]
+          const finnewsStatus = formatFinnewsStatus(sym)
           const stockItems: TraderNewsItem[] = stockNews.map((n) => ({
             id: `stock:${n.id}`,
             title: n.title,
@@ -623,6 +691,7 @@ export default function TraderDashboardPage() {
 
                 <div className="rounded-md border border-border/60 bg-muted/20 p-3">
                   <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Latest filings/news</div>
+                  {finnewsStatus ? <div className="mt-1 text-[11px] text-muted-foreground">{finnewsStatus}</div> : null}
                   {items.length ? (
                     <div className="mt-2 space-y-2">
                       {items.slice(0, 4).map((n) => (
@@ -648,7 +717,9 @@ export default function TraderDashboardPage() {
                     </div>
                   ) : (
                     <div className="mt-2 text-xs text-muted-foreground">
-                      No items yet. Finnews targeted crawl is queued on run; refresh in 30-60s or open Finnews for details.
+                      {finnewsErr
+                        ? `Finnews fetch failed: ${finnewsErr}`
+                        : "No items yet. Finnews targeted crawl is queued on run; refresh in 30-60s or open Finnews for details."}
                     </div>
                   )}
                 </div>
