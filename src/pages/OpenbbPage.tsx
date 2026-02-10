@@ -555,27 +555,31 @@ function renderProfileTable(profile: Record<string, unknown> | null | undefined)
   const p = firstResult(profile)
   if (!p || !Object.keys(p).length) return null
 
-  const rows: Array<{ label: string; value: unknown }> = [
-    { label: "Name", value: (p as any).name },
-    { label: "Stock exchange", value: (p as any).stock_exchange ?? (p as any).exchange },
-    { label: "Sector", value: (p as any).sector },
-    { label: "Industry", value: (p as any).industry },
-    { label: "Market cap", value: (p as any).market_cap },
-    { label: "Full time employees", value: (p as any).full_time_employees },
+  const rows: Array<[label: string, value: unknown]> = [
+    ["Name", (p as any).name],
+    ["Stock exchange", (p as any).stock_exchange ?? (p as any).exchange],
+    ["Sector", (p as any).sector],
+    ["Industry", (p as any).industry],
+    ["Market cap", (p as any).market_cap],
+    ["Full time employees", (p as any).full_time_employees],
   ]
 
   return (
-    <div className="rounded-md border border-border/60 bg-muted/20">
-      <div className="divide-y divide-border/50">
-        {rows.map((r) => (
-          <div key={r.label} className="grid gap-1 px-3 py-2 sm:grid-cols-3">
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{r.label}</div>
-            <div className="min-w-0 break-words text-sm font-medium text-foreground sm:col-span-2">
-              {renderValue(r.value)}
-            </div>
-          </div>
-        ))}
-      </div>
+    <div className="overflow-hidden rounded-md border border-border/60 bg-muted/20">
+      <table className="w-full text-left text-xs">
+        <tbody className="divide-y divide-border/50">
+          {rows.map(([label, value]) => (
+            <tr key={label}>
+              <th className="w-40 px-3 py-2 align-top text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                {label}
+              </th>
+              <td className="min-w-0 px-3 py-2 text-sm font-medium text-foreground break-words">
+                {renderValue(value)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -2239,15 +2243,15 @@ export default function OpenbbPage() {
                 </div>
               ) : (
                 <div className="overflow-x-auto rounded-md border border-border/60 bg-background">
-                  <table className="w-full text-left text-xs">
+                  <table className="w-full table-fixed text-left text-xs">
                     <thead className="bg-muted/60 text-[11px] uppercase tracking-wide text-muted-foreground">
                       <tr>
-                        <th className="px-3 py-2 font-medium">Symbol</th>
-                        <th className="px-3 py-2 font-medium">Last</th>
-                        <th className="px-3 py-2 font-medium">Change</th>
-                        <th className="px-3 py-2 font-medium">Volume</th>
-                        <th className="px-3 py-2 font-medium">Status</th>
-                        <th className="px-3 py-2 font-medium">Actions</th>
+                        <th className="w-[84px] px-3 py-2 font-medium">Symbol</th>
+                        <th className="w-[96px] px-3 py-2 font-medium">Last</th>
+                        <th className="w-[96px] px-3 py-2 font-medium">Change</th>
+                        <th className="w-[120px] px-3 py-2 font-medium">Volume</th>
+                        <th className="w-[84px] px-3 py-2 font-medium">Status</th>
+                        <th className="w-[320px] px-3 py-2 font-medium">Actions</th>
                       </tr>
                     </thead>
                     <tbody>

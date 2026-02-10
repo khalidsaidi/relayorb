@@ -187,6 +187,7 @@ export default function TraderDashboardPage() {
 
   const TRADER_SYMBOLS_KEY = "relayorb_trader_symbols_v1"
   const [symbolsRaw, setSymbolsRaw] = useState("")
+  const [savedSymbolsRaw, setSavedSymbolsRaw] = useState("")
   const [provider, setProvider] = useState<"yfinance" | "intrinio">("yfinance")
   const [loading, setLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -203,19 +204,23 @@ export default function TraderDashboardPage() {
   useEffect(() => {
     try {
       const raw = localStorage.getItem(TRADER_SYMBOLS_KEY)
-      if (raw && raw.trim()) setSymbolsRaw(raw)
+      if (raw && raw.trim()) setSavedSymbolsRaw(raw)
     } catch {
       // ignore
     }
   }, [])
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(TRADER_SYMBOLS_KEY, symbolsRaw)
-    } catch {
-      // ignore
-    }
-  }, [symbolsRaw])
+  const persistSymbols = useCallback(
+    (raw: string) => {
+      try {
+        localStorage.setItem(TRADER_SYMBOLS_KEY, raw)
+        setSavedSymbolsRaw(raw)
+      } catch {
+        // ignore
+      }
+    },
+    [setSavedSymbolsRaw]
+  )
 
   const symbols = useMemo(() => parseSymbols(symbolsRaw), [symbolsRaw])
 
@@ -344,6 +349,7 @@ export default function TraderDashboardPage() {
       return
     }
 
+    persistSymbols(symbolsRaw)
     setLoading(true)
     try {
       // Ensure the symbols are also monitored by the upstream tools (esp. StockPulse) so the dashboard doesn't go stale.
@@ -452,7 +458,7 @@ export default function TraderDashboardPage() {
     } finally {
       setLoading(false)
     }
-  }, [finnewsUrl, openbbUrl, provider, stockpulseUrl, symbols, syncWatchlist])
+  }, [finnewsUrl, openbbUrl, persistSymbols, provider, stockpulseUrl, symbols, symbolsRaw, syncWatchlist])
 
   const newsBySymbol = useMemo(() => {
     const out: Record<string, FinnewsItem[]> = {}
@@ -521,8 +527,28 @@ export default function TraderDashboardPage() {
                 onChange={(e) => setSymbolsRaw(e.target.value)}
                 placeholder="AAPL MSFT NVDA"
               />
-              <div className="text-[11px] text-muted-foreground">
-                Tip: spaces, commas, and new lines all work. Max 50 symbols.
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                <span>Tip: spaces, commas, and new lines all work. Max 50 symbols.</span>
+                <div className="flex items-center gap-2">
+                  {savedSymbolsRaw.trim() && !symbolsRaw.trim() ? (
+                    <button
+                      type="button"
+                      className="underline underline-offset-4 hover:text-foreground"
+                      onClick={() => setSymbolsRaw(savedSymbolsRaw)}
+                    >
+                      Load last run
+                    </button>
+                  ) : null}
+                  {symbolsRaw.trim() ? (
+                    <button
+                      type="button"
+                      className="underline underline-offset-4 hover:text-foreground"
+                      onClick={() => setSymbolsRaw("")}
+                    >
+                      Clear
+                    </button>
+                  ) : null}
+                </div>
               </div>
             </div>
             <div className="space-y-1">
