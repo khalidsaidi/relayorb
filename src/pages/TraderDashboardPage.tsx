@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { useNavigate } from "react-router-dom"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import { ExternalLink, RefreshCw } from "lucide-react"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { resolveFinnewsUrl, resolveMarketDataProxyUrl, resolveOpenbbApiUrl, resolveStockpulseUrl } from "@/lib/runtime-urls"
 import { fetchJsonWithMeta } from "@/lib/http"
 import { getOpenbbWatchlistSnapshot, setOpenbbWatchlist } from "@/lib/openbb-watchlist"
@@ -184,11 +185,13 @@ export default function TraderDashboardPage() {
   const finnewsUrl = useMemo(() => (proxyBase ? `${proxyBase}/v1/finnews` : resolveFinnewsUrl()), [proxyBase])
   const stockpulseUrl = useMemo(() => (proxyBase ? `${proxyBase}/v1/stockpulse` : resolveStockpulseUrl()), [proxyBase])
 
-  const [symbolsRaw, setSymbolsRaw] = useState("AAPL MSFT NVDA TSLA AMZN META GOOGL")
+  const TRADER_SYMBOLS_KEY = "relayorb_trader_symbols_v1"
+  const [symbolsRaw, setSymbolsRaw] = useState("")
   const [provider, setProvider] = useState<"yfinance" | "intrinio">("yfinance")
   const [loading, setLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [syncSummary, setSyncSummary] = useState<SyncSummary | null>(null)
+  const [detailsSymbol, setDetailsSymbol] = useState<string | null>(null)
 
   const [quotesBySymbol, setQuotesBySymbol] = useState<Record<string, QuoteResult>>({})
   const [ratingsBySymbol, setRatingsBySymbol] = useState<Record<string, StockpulseRating>>({})
@@ -196,6 +199,23 @@ export default function TraderDashboardPage() {
   const [finnewsBySymbol, setFinnewsBySymbol] = useState<Record<string, FinnewsStockNewsItem[]>>({})
   const [finnewsErrorsBySymbol, setFinnewsErrorsBySymbol] = useState<Record<string, string>>({})
   const [finnewsStatusBySymbol, setFinnewsStatusBySymbol] = useState<Record<string, FinnewsTargetedCrawlStatus>>({})
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(TRADER_SYMBOLS_KEY)
+      if (raw && raw.trim()) setSymbolsRaw(raw)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TRADER_SYMBOLS_KEY, symbolsRaw)
+    } catch {
+      // ignore
+    }
+  }, [symbolsRaw])
 
   const symbols = useMemo(() => parseSymbols(symbolsRaw), [symbolsRaw])
 
@@ -598,6 +618,7 @@ export default function TraderDashboardPage() {
             publishedAt: n.publish_time || n.created_at || null,
           }))
           const items = stockItems.length ? stockItems : latestItems
+          const stockpulseSummary = rating?.analysis_summary || rating?.message || ""
           return (
             <Card key={sym} className="border-border/70">
               <CardHeader className="flex flex-row items-start justify-between gap-3">
@@ -618,6 +639,11 @@ export default function TraderDashboardPage() {
                   </div>
                   <div className="text-[11px] text-muted-foreground">
                     Vol {typeof quote?.volume === "number" ? quote.volume.toLocaleString() : "—"}
+                  </div>
+                  <div className="mt-2 flex justify-end">
+                    <Button size="sm" variant="outline" onClick={() => setDetailsSymbol(sym)}>
+                      Details
+                    </Button>
                   </div>
                 </div>
               </CardHeader>
@@ -651,8 +677,17 @@ export default function TraderDashboardPage() {
                       RSI: {typeof rating?.rsi === "number" ? rating.rsi.toFixed(2) : "—"}
                     </div>
                     <div className="mt-1 text-[11px] text-muted-foreground line-clamp-2">
-                      {rating?.analysis_summary || rating?.message || "—"}
+                      {stockpulseSummary || "—"}
                     </div>
+                    {stockpulseSummary && stockpulseSummary.length > 140 ? (
+                      <button
+                        type="button"
+                        className="mt-1 text-[11px] text-muted-foreground underline underline-offset-4 hover:text-foreground"
+                        onClick={() => setDetailsSymbol(sym)}
+                      >
+                        Read full analysis
+                      </button>
+                    ) : null}
                   </div>
                   <div className="rounded-md border border-border/60 bg-muted/20 p-3">
                     <div className="text-[11px] uppercase tracking-wide">Quick actions</div>
@@ -721,6 +756,139 @@ export default function TraderDashboardPage() {
           )
         })}
       </div>
+
+      <Dialog open={Boolean(detailsSymbol)} onOpenChange={(open) => (!open ? setDetailsSymbol(null) : null)}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {detailsSymbol || ""} {detailsSymbol && quotesBySymbol[detailsSymbol]?.name ? `· ${quotesBySymbol[detailsSymbol]?.name}` : ""}
+            </DialogTitle>
+          </DialogHeader>
+          {detailsSymbol ? (
+            <div className="space-y-4 text-sm">
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => navigate(`/openbb?${new URLSearchParams({ symbols: detailsSymbol }).toString()}`)}
+                >
+                  Open OpenBB
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => navigate(`/stockpulse?${new URLSearchParams({ ticker: detailsSymbol }).toString()}`)}
+                >
+                  Open StockPulse
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => navigate(`/finnews?${new URLSearchParams({ q: detailsSymbol }).toString()}`)}
+                >
+                  Search Finnews
+                </Button>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+                  <div className="text-[11px] uppercase tracking-wide">OpenBB</div>
+                  {(() => {
+                    const q = quotesBySymbol[detailsSymbol]
+                    if (!q) return <div className="mt-1">No quote loaded yet. Run lookup.</div>
+                    return (
+                      <div className="mt-2 space-y-1 text-foreground">
+                        <div>Last: {typeof q.last_price === "number" ? q.last_price.toFixed(2) : "—"}</div>
+                        <div>
+                          Bid/Ask: {typeof q.bid === "number" ? q.bid.toFixed(2) : "—"} / {typeof q.ask === "number" ? q.ask.toFixed(2) : "—"}
+                        </div>
+                        <div>
+                          High/Low: {typeof q.high === "number" ? q.high.toFixed(2) : "—"} / {typeof q.low === "number" ? q.low.toFixed(2) : "—"}
+                        </div>
+                        <div>
+                          MA50/MA200: {typeof q.ma_50d === "number" ? q.ma_50d.toFixed(2) : "—"} / {typeof q.ma_200d === "number" ? q.ma_200d.toFixed(2) : "—"}
+                        </div>
+                      </div>
+                    )
+                  })()}
+                </div>
+
+                <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+                  <div className="text-[11px] uppercase tracking-wide">StockPulse</div>
+                  {(() => {
+                    const r = ratingsBySymbol[detailsSymbol]
+                    if (!r) return <div className="mt-1">No rating loaded yet. Run lookup.</div>
+                    return (
+                      <div className="mt-2 space-y-2">
+                        <div className="text-foreground">
+                          {r.rating ? <Badge variant="secondary">{r.rating}</Badge> : null}{" "}
+                          <span className="ml-2">
+                            Score {typeof r.score === "number" ? r.score.toFixed(1) : "—"} (conf{" "}
+                            {typeof r.confidence === "number" ? r.confidence.toFixed(1) : "—"})
+                          </span>
+                        </div>
+                        <div className="text-foreground">RSI: {typeof r.rsi === "number" ? r.rsi.toFixed(2) : "—"}</div>
+                        <div className="whitespace-pre-wrap text-[12px] text-foreground">
+                          {r.analysis_summary || r.message || "—"}
+                        </div>
+                      </div>
+                    )
+                  })()}
+                </div>
+              </div>
+
+              <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+                <div className="text-[11px] uppercase tracking-wide">Latest filings/news</div>
+                {(() => {
+                  const stockNews = finnewsBySymbol[detailsSymbol] || []
+                  const finnewsErr = finnewsErrorsBySymbol[detailsSymbol]
+                  const stockItems: TraderNewsItem[] = stockNews.map((n) => ({
+                    id: `stock:${n.id}`,
+                    title: n.title,
+                    url: n.url,
+                    source: n.source,
+                    publishedAt: n.publish_time,
+                  }))
+                  const latestItems: TraderNewsItem[] = (newsBySymbol[detailsSymbol] || []).map((n) => ({
+                    id: `latest:${String(n.id)}`,
+                    title: n.title,
+                    url: n.url || null,
+                    source: n.source,
+                    publishedAt: n.publish_time || n.created_at || null,
+                  }))
+                  const items = (stockItems.length ? stockItems : latestItems).slice(0, 20)
+                  if (finnewsErr) return <div className="mt-2 text-xs text-foreground">Finnews fetch failed: {finnewsErr}</div>
+                  if (!items.length) return <div className="mt-2 text-xs text-foreground">No items yet (targeted crawl runs on lookup).</div>
+                  return (
+                    <div className="mt-2 space-y-2">
+                      {items.map((n) => (
+                        <div key={n.id} className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-foreground text-xs font-medium">{n.title}</div>
+                            <div className="text-[11px] text-muted-foreground">
+                              {n.source || "Finnews"} · {formatRelative(n.publishedAt || null)}
+                            </div>
+                          </div>
+                          {n.url ? (
+                            <button
+                              type="button"
+                              className="shrink-0 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                              onClick={() => window.open(n.url || "", "_blank", "noopener,noreferrer")}
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              Open
+                            </button>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  )
+                })()}
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
