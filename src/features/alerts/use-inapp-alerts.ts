@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { resolveFinnewsUrl, resolveMarketDataProxyUrl, resolveOpenbbApiUrl, resolveStockpulseUrl } from "@/lib/runtime-urls"
 import { fetchJsonOrThrow } from "@/lib/http"
+import { getOpenbbWatchlistSnapshot } from "@/lib/openbb-watchlist"
 import { toast } from "sonner"
 
 export type InAppAlertType = "filing" | "rating" | "rsi"
@@ -72,13 +73,6 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
 
 function normalizeTicker(s: string) {
   return String(s || "").trim().toUpperCase()
-}
-
-function loadOpenbbWatchlist(): string[] {
-  const raw = localStorage.getItem("openbb_watchlist")
-  const list = safeParseJson<unknown>(raw)
-  if (!Array.isArray(list)) return []
-  return list.map((x) => normalizeTicker(String(x))).filter(Boolean)
 }
 
 function normalizeAlertKey(key: string) {
@@ -323,18 +317,24 @@ export function useInAppAlerts() {
     setState((prev) => ({ ...prev, lastViewedAt: Date.now() }))
   }, [])
 
+  const emptyWatchlistToastShownRef = useRef(false)
+
   const pollNow = useCallback(async () => {
     if (!settings.enabled) return
     if (!finnewsBase && !stockpulseBase) return
 
-    const watchlist = loadOpenbbWatchlist()
+    const watchlist = getOpenbbWatchlistSnapshot()
     const prefs = loadOpenbbWatchlistAlertPrefs()
 
     // If nothing is configured, don’t spam the user; show a single guidance toast.
     if (!watchlist.length) {
-      toast.message("No OpenBB watchlist yet. Add symbols in OpenBB → Watchlist to enable alerts.")
+      if (!emptyWatchlistToastShownRef.current) {
+        toast.message("No watchlist symbols yet. Add symbols in OpenBB → Watchlist (or run a lookup in Trader) to enable alerts.")
+        emptyWatchlistToastShownRef.current = true
+      }
       return
     }
+    emptyWatchlistToastShownRef.current = false
 
     const wantsByTicker = new Map<
       string,
