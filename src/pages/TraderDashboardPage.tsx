@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
-import { ExternalLink, RefreshCw } from "lucide-react"
+import { Copy, ExternalLink, RefreshCw } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { resolveFinnewsUrl, resolveMarketDataProxyUrl, resolveOpenbbApiUrl, resolveStockpulseUrl } from "@/lib/runtime-urls"
 import { fetchJsonWithMeta } from "@/lib/http"
@@ -91,6 +91,158 @@ function parseSymbols(raw: string) {
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean)
     .slice(0, 50)
+}
+
+function fmtNumber(value: unknown, digits = 2) {
+  const n = typeof value === "number" ? value : null
+  if (n === null || !Number.isFinite(n)) return "—"
+  return n.toFixed(digits)
+}
+
+function fmtInteger(value: unknown) {
+  const n = typeof value === "number" ? value : null
+  if (n === null || !Number.isFinite(n)) return "—"
+  return Math.round(n).toLocaleString()
+}
+
+async function copyTextToClipboard(text: string) {
+  // Prefer the async Clipboard API, but fall back to a temporary textarea for
+  // non-secure contexts (e.g. WSL IPs) or older browsers.
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    // ignore
+  }
+
+  try {
+    const el = document.createElement("textarea")
+    el.value = text
+    el.setAttribute("readonly", "true")
+    el.style.position = "fixed"
+    el.style.top = "0"
+    el.style.left = "0"
+    el.style.opacity = "0"
+    document.body.appendChild(el)
+    el.select()
+    const ok = document.execCommand("copy")
+    document.body.removeChild(el)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+function buildAiPrompt(params: {
+  symbol: string
+  provider: string
+  generatedAtIso: string
+  quote?: QuoteResult | null
+  rating?: StockpulseRating | null
+  finnewsItems?: FinnewsStockNewsItem[]
+  finnewsLatest?: TraderNewsItem[]
+  finnewsStatus?: string | null
+}) {
+  const {
+    symbol,
+    provider,
+    generatedAtIso,
+    quote,
+    rating,
+    finnewsItems = [],
+    finnewsLatest = [],
+    finnewsStatus,
+  } = params
+
+  const q = quote || null
+  const r = rating || null
+
+  const lines: string[] = []
+
+  lines.push(
+    [
+      "You are a trading analysis assistant for US equities.",
+      "Use ONLY the data provided below. Do not hallucinate missing fundamentals/technicals/news; call out gaps explicitly.",
+      "",
+      "Return your answer with these sections:",
+      "1) One-sentence thesis (bullish / neutral / bearish).",
+      "2) Key catalysts from filings/news (with dates, what matters, and what to watch next).",
+      "3) Sentiment + narrative (from StockPulse and headlines).",
+      "4) Technical setup (trend vs MA50/MA200, RSI, key levels, invalidation).",
+      "5) Two scenarios: base case vs. risk case (what would flip the thesis).",
+      "6) Questions: what additional data would you want before a trade.",
+      "",
+      `Ticker: ${symbol}`,
+      `As-of: ${generatedAtIso}`,
+      "",
+    ].join("\n")
+  )
+
+  lines.push("DATA: OpenBB (market/price/fundamentals snapshot)")
+  lines.push(`- Provider: ${provider}`)
+  if (!q) {
+    lines.push("- Quote: MISSING (not loaded)")
+  } else {
+    lines.push(`- Name: ${q.name || "—"}`)
+    lines.push(`- Exchange: ${q.exchange || "—"}`)
+    lines.push(`- Last: ${fmtNumber(q.last_price)}`)
+    lines.push(`- Open: ${fmtNumber(q.open)}`)
+    lines.push(`- High/Low: ${fmtNumber(q.high)} / ${fmtNumber(q.low)}`)
+    lines.push(`- Prev close: ${fmtNumber(q.prev_close)}`)
+    lines.push(`- Volume: ${fmtInteger(q.volume)}`)
+    lines.push(`- Bid/Ask: ${fmtNumber(q.bid)} / ${fmtNumber(q.ask)}`)
+    lines.push(`- Market cap: ${fmtInteger(q.market_cap)}`)
+    lines.push(`- P/E: ${fmtNumber(q.pe_ratio, 2)}`)
+    lines.push(`- P/B: ${fmtNumber(q.pb_ratio, 2)}`)
+    lines.push(`- Dividend yield: ${fmtNumber(q.dividend_yield, 4)}`)
+    lines.push(`- MA50/MA200: ${fmtNumber(q.ma_50d)} / ${fmtNumber(q.ma_200d)}`)
+  }
+  lines.push("")
+
+  lines.push("DATA: StockPulse (sentiment + AI rating)")
+  if (!r) {
+    lines.push("- Rating: MISSING (not loaded)")
+  } else {
+    lines.push(`- Rating: ${r.rating || "—"}`)
+    lines.push(`- Score: ${typeof r.score === "number" ? r.score.toFixed(1) : "—"} / 100`)
+    lines.push(`- Confidence: ${typeof r.confidence === "number" ? r.confidence.toFixed(1) : "—"} / 100`)
+    lines.push(`- RSI: ${typeof r.rsi === "number" ? r.rsi.toFixed(2) : "—"}`)
+    if (r.analysis_summary || r.message) {
+      lines.push("- Summary:")
+      lines.push(String(r.analysis_summary || r.message || "").trim())
+    }
+  }
+  lines.push("")
+
+  lines.push("DATA: FinnewsHunter (filings/news)")
+  if (finnewsStatus) lines.push(`- Targeted crawl status: ${finnewsStatus}`)
+  if (finnewsItems.length) {
+    lines.push("- Per-ticker items (most recent first):")
+    finnewsItems.slice(0, 10).forEach((it) => {
+      const when = it.publish_time || "—"
+      const sent = typeof it.sentiment_score === "number" ? it.sentiment_score.toFixed(2) : "—"
+      const url = it.url || "—"
+      lines.push(`  - [${when}] ${it.source || "Finnews"} (sentiment_score ${sent}) ${it.title} (${url})`)
+    })
+  } else if (finnewsLatest.length) {
+    lines.push("- Matched from latest feed (fallback):")
+    finnewsLatest.slice(0, 10).forEach((it) => {
+      const when = it.publishedAt || "—"
+      const url = it.url || "—"
+      lines.push(`  - [${when}] ${it.source || "Finnews"} ${it.title} (${url})`)
+    })
+  } else {
+    lines.push("- Items: NONE yet (crawl may still be running).")
+  }
+
+  lines.push("")
+  lines.push("Constraints:")
+  lines.push("- Long-only bias is OK to mention, but do not invent position sizing or portfolio context unless explicitly asked.")
+  lines.push("- If the data looks inconsistent (e.g. missing RSI but MA present), explain what that likely means and what to verify.")
+  lines.push("")
+  lines.push("Now produce the analysis.")
+
+  return lines.join("\n")
 }
 
 type SyncSummary = {
@@ -507,6 +659,39 @@ export default function TraderDashboardPage() {
     return status ? `Crawl: ${status}` : null
   }, [finnewsStatusBySymbol])
 
+  const copyAiPrompt = useCallback(
+    async (sym: string) => {
+      const nowIso = new Date().toISOString()
+      const quote = quotesBySymbol[sym] || null
+      const rating = ratingsBySymbol[sym] || null
+      const finnewsItems = finnewsBySymbol[sym] || []
+      const finnewsStatus = formatFinnewsStatus(sym)
+      const finnewsLatest = (newsBySymbol[sym] || []).slice(0, 12).map((n) => ({
+        id: `latest:${String(n.id)}`,
+        title: n.title,
+        url: n.url || null,
+        source: n.source,
+        publishedAt: n.publish_time || n.created_at || null,
+      }))
+
+      const text = buildAiPrompt({
+        symbol: sym,
+        provider,
+        generatedAtIso: nowIso,
+        quote,
+        rating,
+        finnewsItems,
+        finnewsLatest,
+        finnewsStatus,
+      })
+
+      const ok = await copyTextToClipboard(text)
+      if (ok) toast.success(`Copied AI prompt for ${sym}`)
+      else toast.error("Copy failed. Try using the deployed site (https) instead of an IP-based dev URL.")
+    },
+    [finnewsBySymbol, formatFinnewsStatus, newsBySymbol, provider, quotesBySymbol, ratingsBySymbol]
+  )
+
   return (
     <div className="space-y-6">
       <div>
@@ -717,7 +902,11 @@ export default function TraderDashboardPage() {
                   </div>
                   <div className="rounded-md border border-border/60 bg-muted/20 p-3">
                     <div className="text-[11px] uppercase tracking-wide">Quick actions</div>
-                    <div className="mt-2 flex flex-wrap gap-2">
+                  <div className="mt-2 flex flex-wrap gap-2">
+                      <Button size="sm" variant="outline" onClick={() => copyAiPrompt(sym)} title="Copy a prompt you can paste into ChatGPT/Claude/etc.">
+                        <Copy className="mr-2 h-4 w-4" />
+                        Copy AI prompt
+                      </Button>
                       <Button
                         size="sm"
                         variant="outline"
@@ -793,6 +982,10 @@ export default function TraderDashboardPage() {
           {detailsSymbol ? (
             <div className="space-y-4 text-sm">
               <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={() => copyAiPrompt(detailsSymbol)} title="Copy a prompt you can paste into ChatGPT/Claude/etc.">
+                  <Copy className="mr-2 h-4 w-4" />
+                  Copy AI prompt
+                </Button>
                 <Button
                   size="sm"
                   variant="outline"
