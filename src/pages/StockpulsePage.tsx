@@ -1192,11 +1192,11 @@ export default function StockpulsePage() {
                           : "-"}
                       </TableCell>
                       <TableCell>{rating.rsi ?? "-"}</TableCell>
-                      <TableCell className="max-w-[420px] text-xs text-muted-foreground md:whitespace-normal">
+                      <TableCell className="max-w-[520px] text-xs text-muted-foreground md:whitespace-normal">
                         {(() => {
                           const summary = rating.analysis_summary || rating.message || "-"
                           return (
-                            <div className="line-clamp-2 whitespace-normal break-words" title={summary}>
+                            <div className="line-clamp-3 whitespace-normal break-words" title={summary}>
                               {summary}
                             </div>
                           )
