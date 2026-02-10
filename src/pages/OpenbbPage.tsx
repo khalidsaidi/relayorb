@@ -14,6 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ChartFrame } from "@/components/charts/ChartFrame"
 import { CandlesChart, type Candle } from "@/components/charts/CandlesChart"
 import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from "recharts"
+import { useOpenbbWatchlist } from "@/lib/use-openbb-watchlist"
 
 type ResponseState = {
   url: string
@@ -956,7 +957,7 @@ export default function OpenbbPage() {
   const [quickTechMap, setQuickTechMap] = useState<Record<string, any>>({})
   const [quickLoading, setQuickLoading] = useState(false)
   const [savedQueries, setSavedQueries] = useState<{ symbols: string; range: string; provider: string }[]>([])
-  const [watchlist, setWatchlist] = useState<string[]>([])
+  const [watchlist, setWatchlist] = useOpenbbWatchlist()
   const [watchlistAlerts, setWatchlistAlerts] = useState<Record<string, string[]>>({})
   const [watchlistSnapshot, setWatchlistSnapshot] = useState<Record<string, any>>({})
   const [watchlistSnapshotErrors, setWatchlistSnapshotErrors] = useState<Record<string, string>>({})
@@ -1700,11 +1701,9 @@ export default function OpenbbPage() {
   // Persistence for watchlist/history/saved queries
   useEffect(() => {
     try {
-      const storedWatch = localStorage.getItem("openbb_watchlist")
       const storedHist = localStorage.getItem("openbb_history")
       const storedSaved = localStorage.getItem("openbb_saved")
       const storedAlerts = localStorage.getItem("openbb_watchlist_alerts")
-      if (storedWatch) setWatchlist(JSON.parse(storedWatch))
       if (storedHist) setHistoryLog(JSON.parse(storedHist))
       if (storedSaved) setSavedQueries(JSON.parse(storedSaved))
       if (storedAlerts) setWatchlistAlerts(JSON.parse(storedAlerts))
@@ -1712,10 +1711,6 @@ export default function OpenbbPage() {
       /* ignore */
     }
   }, [])
-
-  useEffect(() => {
-    localStorage.setItem("openbb_watchlist", JSON.stringify(watchlist))
-  }, [watchlist])
 
   useEffect(() => {
     localStorage.setItem("openbb_watchlist_alerts", JSON.stringify(watchlistAlerts))

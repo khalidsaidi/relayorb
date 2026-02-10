@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label"
 import { ExternalLink, RefreshCw } from "lucide-react"
 import { resolveFinnewsUrl, resolveMarketDataProxyUrl, resolveOpenbbApiUrl, resolveStockpulseUrl } from "@/lib/runtime-urls"
 import { fetchJsonWithMeta } from "@/lib/http"
+import { getOpenbbWatchlistSnapshot, setOpenbbWatchlist } from "@/lib/openbb-watchlist"
 import { toast } from "sonner"
 
 type QuoteResult = {
@@ -91,28 +92,10 @@ function parseSymbols(raw: string) {
     .slice(0, 50)
 }
 
-function safeParseJson<T>(raw: string | null): T | null {
-  if (!raw) return null
-  try {
-    return JSON.parse(raw) as T
-  } catch {
-    return null
-  }
-}
-
-function loadOpenbbWatchlist(): string[] {
-  const list = safeParseJson<unknown>(localStorage.getItem("openbb_watchlist"))
-  if (!Array.isArray(list)) return []
-  return list.map((x) => String(x || "").trim().toUpperCase()).filter(Boolean)
-}
-
-function saveOpenbbWatchlist(symbols: string[]) {
-  localStorage.setItem("openbb_watchlist", JSON.stringify(symbols))
-}
-
 type SyncSummary = {
   at: string
-  openbb: { added: number; total: number }
+  count: number
+  openbb: { ok: number; added: number; already: number; total: number }
   stockpulse: { ok: number; already: number; failed: number }
   finnews: { queued: number; already: number; failed: number }
 }
@@ -223,20 +206,29 @@ export default function TraderDashboardPage() {
 
       setSyncing(true)
       try {
+        const unique = Array.from(new Set(symbolsToSync))
+
         // Canonical local watchlist for the console:
         // - OpenBB uses it directly.
         // - In-app alerts use it.
         // - StockPulse can import it and we also push into StockPulse directly here.
-        const before = loadOpenbbWatchlist()
-        const merged = Array.from(new Set([...before, ...symbolsToSync])).slice(0, 500)
-        saveOpenbbWatchlist(merged)
-        const added = Math.max(0, merged.length - before.length)
+        const before = getOpenbbWatchlistSnapshot()
+        const beforeSet = new Set(before)
+        let openbbAdded = 0
+        let openbbAlready = 0
+        for (const sym of unique) {
+          if (beforeSet.has(sym)) openbbAlready += 1
+          else openbbAdded += 1
+        }
+        const merged = Array.from(new Set([...before, ...unique])).slice(0, 500)
+        setOpenbbWatchlist(merged)
+        const openbbOk = openbbAdded + openbbAlready
 
         // StockPulse: ensure tickers are actively monitored so sentiment/ratings fill in.
         let spOk = 0
         let spAlready = 0
         let spFailed = 0
-        const spQueue = [...symbolsToSync]
+        const spQueue = [...unique]
         const spConcurrency = Math.min(4, spQueue.length || 1)
         await Promise.all(
           Array.from({ length: spConcurrency }).map(async () => {
@@ -269,7 +261,7 @@ export default function TraderDashboardPage() {
         let fnQueued = 0
         let fnAlready = 0
         let fnFailed = 0
-        const fnQueue = [...symbolsToSync]
+        const fnQueue = [...unique]
         const fnConcurrency = Math.min(2, fnQueue.length || 1)
         await Promise.all(
           Array.from({ length: fnConcurrency }).map(async () => {
@@ -299,15 +291,16 @@ export default function TraderDashboardPage() {
 
         const next: SyncSummary = {
           at: new Date().toISOString(),
-          openbb: { added, total: merged.length },
+          count: unique.length,
+          openbb: { ok: openbbOk, added: openbbAdded, already: openbbAlready, total: merged.length },
           stockpulse: { ok: spOk, already: spAlready, failed: spFailed },
           finnews: { queued: fnQueued, already: fnAlready, failed: fnFailed },
         }
         setSyncSummary(next)
 
-        if (added || spOk || spAlready || fnQueued || fnAlready) {
+        if (openbbAdded || spOk || spAlready || fnQueued || fnAlready) {
           toast.success(
-            `Watchlist synced: OpenBB +${added}, StockPulse ${spOk + spAlready}/${symbolsToSync.length}, Finnews ${fnQueued + fnAlready}/${symbolsToSync.length}`
+            `Watchlist synced: OpenBB ${openbbOk}/${unique.length} (+${openbbAdded}), StockPulse ${spOk + spAlready}/${unique.length}, Finnews ${fnQueued + fnAlready}/${unique.length}`
           )
         }
         if (spFailed || fnFailed) {
@@ -570,13 +563,13 @@ export default function TraderDashboardPage() {
               <span>Syncing watchlist to StockPulse/Finnews…</span>
             ) : syncSummary ? (
               <span>
-                Watchlist synced {formatRelative(syncSummary.at)} · OpenBB +{syncSummary.openbb.added} · StockPulse{" "}
-                {syncSummary.stockpulse.ok + syncSummary.stockpulse.already}/{symbols.length} · Finnews{" "}
-                {syncSummary.finnews.queued + syncSummary.finnews.already}/{symbols.length}
+                Watchlist synced {formatRelative(syncSummary.at)} · OpenBB {syncSummary.openbb.ok}/{syncSummary.count} (+{syncSummary.openbb.added})
+                {" · "}StockPulse {syncSummary.stockpulse.ok + syncSummary.stockpulse.already}/{syncSummary.count}
+                {" · "}Finnews {syncSummary.finnews.queued + syncSummary.finnews.already}/{syncSummary.count}
               </span>
             ) : (
               <span>
-                Tip: Run lookup also syncs these symbols into your OpenBB watchlist and StockPulse monitoring list.
+                Tip: Run lookup also syncs these symbols into your OpenBB watchlist, StockPulse monitoring list, and queues Finnews targeted crawls.
               </span>
             )}
           </div>

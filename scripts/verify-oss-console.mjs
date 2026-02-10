@@ -186,6 +186,16 @@ async function allOrThrow(label, promises) {
 async function verifyTrader(page, baseUrl) {
   await page.goto(`${baseUrl}/trader`, { waitUntil: "domcontentloaded" })
 
+  // Make the run deterministic and ensure the watchlist sync path is actually exercised.
+  await page.evaluate(() => {
+    try {
+      localStorage.removeItem("openbb_watchlist")
+    } catch {
+      // ignore
+    }
+  })
+  await page.getByPlaceholder("AAPL MSFT NVDA").fill("BBAI TSLA")
+
   // Start response waits before clicking to avoid races on fast endpoints.
   const w1 = wait2xx(page, "/openbb/api/v1/equity/price/quote", "OpenBB quote (Trader)")
   const w2 = wait2xx(page, "/stockpulse/api/ai/rating/", "StockPulse rating (Trader)")
@@ -195,6 +205,26 @@ async function verifyTrader(page, baseUrl) {
 
   await page.getByRole("button", { name: /Run lookup/i }).click()
   await allOrThrow("Trader", [w1, w2, w3, w4, w5])
+
+  const watch = await page.evaluate(() => {
+    try {
+      return JSON.parse(localStorage.getItem("openbb_watchlist") || "[]")
+    } catch {
+      return []
+    }
+  })
+  if (!Array.isArray(watch) || !watch.includes("BBAI") || !watch.includes("TSLA")) {
+    throw new Error(`Trader did not persist OpenBB watchlist (expected BBAI+TSLA). Got: ${JSON.stringify(watch).slice(0, 120)}`)
+  }
+}
+
+async function verifyOpenbbWatchlist(page, baseUrl) {
+  await page.goto(`${baseUrl}/openbb?tab=watchlist`, { waitUntil: "domcontentloaded" })
+  await page.getByRole("tab", { name: /Watchlist/i }).click()
+
+  // The watchlist list is client-side (localStorage). It must show the tickers from Trader sync.
+  await page.locator("span").filter({ hasText: /\bBBAI\b/ }).first().waitFor({ timeout: 20000 })
+  await page.locator("span").filter({ hasText: /\bTSLA\b/ }).first().waitFor({ timeout: 20000 })
 }
 
 async function verifyOpenbb(page, baseUrl) {
@@ -318,6 +348,7 @@ async function main() {
   try {
     await signInWithCustomTokenCompat({ page, baseUrl, firebaseConfig, customToken: token })
     await verifyTrader(page, baseUrl)
+    await verifyOpenbbWatchlist(page, baseUrl)
     await verifyOpenbb(page, baseUrl)
     await verifyFinnews(page, baseUrl)
     await verifyStockpulse(page, baseUrl)
