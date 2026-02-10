@@ -550,6 +550,36 @@ function renderMetricGrid(data: Record<string, unknown> | null | undefined, keys
   )
 }
 
+function renderProfileTable(profile: Record<string, unknown> | null | undefined) {
+  if (!profile) return null
+  const p = firstResult(profile)
+  if (!p || !Object.keys(p).length) return null
+
+  const rows: Array<{ label: string; value: unknown }> = [
+    { label: "Name", value: (p as any).name },
+    { label: "Stock exchange", value: (p as any).stock_exchange ?? (p as any).exchange },
+    { label: "Sector", value: (p as any).sector },
+    { label: "Industry", value: (p as any).industry },
+    { label: "Market cap", value: (p as any).market_cap },
+    { label: "Full time employees", value: (p as any).full_time_employees },
+  ]
+
+  return (
+    <div className="rounded-md border border-border/60 bg-muted/20">
+      <div className="divide-y divide-border/50">
+        {rows.map((r) => (
+          <div key={r.label} className="grid gap-1 px-3 py-2 sm:grid-cols-3">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{r.label}</div>
+            <div className="min-w-0 break-words text-sm font-medium text-foreground sm:col-span-2">
+              {renderValue(r.value)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function pickChartKeys(rows: Record<string, unknown>[], yKeys: string[]) {
   const sample = rows.slice(0, 20)
   const numericSet = new Set<string>()
@@ -778,14 +808,13 @@ function QuoteCard({ quote, provider }: { quote: Record<string, unknown>; provid
 
 function FundOverviewCard({ profile }: { profile: Record<string, unknown> }) {
   if (!profile || !Object.keys(profile).length) return null
-  const p = firstResult(profile)
   return (
     <Card className="border-border/70">
       <CardHeader>
         <CardTitle className="text-sm">Fundamentals snapshot</CardTitle>
       </CardHeader>
-      <CardContent className="grid gap-3 md:grid-cols-3 text-xs text-muted-foreground">
-        {renderMetricGrid(p, ["name", "stock_exchange", "sector", "industry", "market_cap", "full_time_employees"])}
+      <CardContent className="space-y-3 text-xs text-muted-foreground">
+        {renderProfileTable(profile)}
       </CardContent>
     </Card>
   )
@@ -2727,8 +2756,8 @@ export default function OpenbbPage() {
                       <CardHeader>
                         <CardTitle className="text-sm">Profile</CardTitle>
                       </CardHeader>
-                      <CardContent className="grid gap-3 md:grid-cols-3">
-                        {renderMetricGrid(firstResult(fundamentals.profile), ["name", "stock_exchange", "sector", "industry", "market_cap", "full_time_employees"])}
+                      <CardContent className="space-y-3 text-xs text-muted-foreground">
+                        {renderProfileTable(fundamentals.profile)}
                       </CardContent>
                     </Card>
                   ) : null}
