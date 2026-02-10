@@ -241,7 +241,7 @@ export function AlertsBell() {
 
           {!alerts.length ? (
             <div className="mt-2 rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
-              No alerts yet. Add tickers in OpenBB → Watchlist and enable alert toggles, then click Poll.
+              No alerts yet. Add tickers in OpenBB → Watchlist (or run a lookup in Trader), enable alert toggles, then click Poll.
             </div>
           ) : (
             <div className="mt-2 max-h-[280px] space-y-2 overflow-auto pr-1">
