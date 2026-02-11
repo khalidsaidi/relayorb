@@ -875,12 +875,7 @@ export default function FinnewsPage() {
                       <TableHead>{t("finnews.headline")}</TableHead>
                       <TableHead className="w-[90px]">Type</TableHead>
                       <TableHead className="w-[160px]">Tickers</TableHead>
-                      <TableHead className="w-[160px] whitespace-nowrap">
-                        <span className="hidden md:inline">Sentiment</span>
-                        <span className="md:hidden" title="Sentiment">
-                          Sent
-                        </span>
-                      </TableHead>
+                      <TableHead className="min-w-[180px] whitespace-nowrap">Sentiment</TableHead>
                       <TableHead>{t("finnews.source")}</TableHead>
                       <TableHead>{t("finnews.published")}</TableHead>
                     </TableRow>
@@ -1011,12 +1006,7 @@ export default function FinnewsPage() {
                       <TableHead className="w-[90px]">Type</TableHead>
                       <TableHead className="w-[160px]">Tickers</TableHead>
                       <TableHead className="w-[170px]">Why matched</TableHead>
-                      <TableHead className="w-[160px] whitespace-nowrap">
-                        <span className="hidden md:inline">Sentiment</span>
-                        <span className="md:hidden" title="Sentiment">
-                          Sent
-                        </span>
-                      </TableHead>
+                      <TableHead className="min-w-[180px] whitespace-nowrap">Sentiment</TableHead>
                       <TableHead>Source</TableHead>
                       <TableHead>Published</TableHead>
                     </TableRow>

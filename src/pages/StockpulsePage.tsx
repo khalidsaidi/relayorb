@@ -451,6 +451,7 @@ export default function StockpulsePage() {
   const [chartPeriod, setChartPeriod] = useState("1mo")
   const [chartData, setChartData] = useState<StockpulseChart | null>(null)
   const [chartLoading, setChartLoading] = useState(false)
+  const [expandedSummaryByTicker, setExpandedSummaryByTicker] = useState<Record<string, boolean>>({})
 
   const [chatTicker, setChatTicker] = useState("AAPL")
   const [chatQuestion, setChatQuestion] = useState("")
@@ -1164,7 +1165,7 @@ export default function StockpulsePage() {
                     <TableHead>{t("stockpulse.confidence")}</TableHead>
                     <TableHead>{t("stockpulse.price")}</TableHead>
                     <TableHead>{t("stockpulse.rsi")}</TableHead>
-                    <TableHead>{t("stockpulse.summary")}</TableHead>
+                    <TableHead className="min-w-[320px]">{t("stockpulse.summary")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1192,12 +1193,34 @@ export default function StockpulsePage() {
                           : "-"}
                       </TableCell>
                       <TableCell>{rating.rsi ?? "-"}</TableCell>
-                      <TableCell className="max-w-[520px] text-xs text-muted-foreground md:whitespace-normal">
+                      <TableCell className="min-w-[320px] max-w-[640px] text-xs text-muted-foreground md:whitespace-normal">
                         {(() => {
                           const summary = rating.analysis_summary || rating.message || "-"
+                          const isExpanded = Boolean(expandedSummaryByTicker[rating.ticker])
+                          const isLong = summary.length > 220
                           return (
-                            <div className="line-clamp-3 whitespace-normal break-words" title={summary}>
-                              {summary}
+                            <div className="space-y-1">
+                              <div
+                                className={isExpanded ? "whitespace-normal break-words" : "line-clamp-3 whitespace-normal break-words"}
+                                title={summary}
+                              >
+                                {summary}
+                              </div>
+                              {isLong ? (
+                                <button
+                                  type="button"
+                                  className="text-[11px] underline underline-offset-4 hover:text-foreground"
+                                  onClick={(event) => {
+                                    event.stopPropagation()
+                                    setExpandedSummaryByTicker((prev) => ({
+                                      ...prev,
+                                      [rating.ticker]: !prev[rating.ticker],
+                                    }))
+                                  }}
+                                >
+                                  {isExpanded ? "Show less" : "Show more"}
+                                </button>
+                              ) : null}
                             </div>
                           )
                         })()}

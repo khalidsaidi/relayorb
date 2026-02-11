@@ -31,6 +31,7 @@ type QuoteResult = {
   dividend_yield?: number
   ma_50d?: number
   ma_200d?: number
+  __provider?: string
 }
 
 type StockpulseRating = {
@@ -91,6 +92,57 @@ function parseSymbols(raw: string) {
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean)
     .slice(0, 50)
+}
+
+function quoteProviderCandidates(requested: string) {
+  const order = ["yfinance", "intrinio"]
+  const out: string[] = []
+  const push = (p: string) => {
+    const key = String(p || "").trim().toLowerCase()
+    if (!key) return
+    if (!order.includes(key)) return
+    if (out.includes(key)) return
+    out.push(key)
+  }
+  push(requested)
+  order.forEach(push)
+  return out.length ? out : ["yfinance"]
+}
+
+async function fetchOpenbbQuoteWithFallback(openbbUrl: string, symbol: string, requestedProvider: string) {
+  let firstFailure: { sym: string; ok: false; status: number; data: null; providerUsed: string; error?: string } | null = null
+  let firstNoData: { sym: string; ok: true; status: number; data: unknown; providerUsed: string; warning: string } | null = null
+
+  for (const provider of quoteProviderCandidates(requestedProvider)) {
+    const url = `${openbbUrl}/api/v1/equity/price/quote?symbol=${encodeURIComponent(symbol)}&provider=${encodeURIComponent(provider)}`
+    try {
+      const res = await fetchJsonWithMeta("OpenBB", url, undefined, 25000)
+      const data = res.data
+      const noData = Array.isArray((data as any)?.results) && (data as any).results.length === 0
+      if (noData) {
+        if (!firstNoData) {
+          firstNoData = {
+            sym: symbol,
+            ok: true,
+            status: res.status,
+            data,
+            providerUsed: provider,
+            warning: `[OpenBB] no quote data for ${symbol} using ${provider}`,
+          }
+        }
+        continue
+      }
+      return { sym: symbol, ok: res.ok, status: res.status, data, providerUsed: provider }
+    } catch (error) {
+      const status = error instanceof Error && "status" in (error as any) ? Number((error as any).status || 0) : 0
+      const message = error instanceof Error ? error.message : String(error)
+      if (!firstFailure) {
+        firstFailure = { sym: symbol, ok: false, status, data: null, providerUsed: provider, error: message }
+      }
+    }
+  }
+
+  return firstNoData || firstFailure || { sym: symbol, ok: false, status: 0, data: null, providerUsed: requestedProvider, error: "quote fetch failed" }
 }
 
 function fmtNumber(value: unknown, digits = 2) {
@@ -452,8 +504,32 @@ export default function TraderDashboardPage() {
           })
         )
 
-        // Finnews: queue targeted crawls so the stock actually shows up in Finnews stock/news endpoints.
-        // Without this, small-cap tickers often won't appear in the global headline crawl.
+        // Finnews: first attempt to register symbols in the Stocks catalog (if this endpoint
+        // is available in the running Finnews build), then queue targeted crawls.
+        // Without this, small-cap tickers often won't appear in stock-specific endpoints.
+        const fnRegisterQueue = [...unique]
+        const fnRegisterConcurrency = Math.min(2, fnRegisterQueue.length || 1)
+        await Promise.all(
+          Array.from({ length: fnRegisterConcurrency }).map(async () => {
+            for (;;) {
+              const sym = fnRegisterQueue.shift()
+              if (!sym) return
+              const registerRes = await postJson(
+                "Finnews",
+                `${finnewsUrl}/api/v1/stocks`,
+                { stock_code: sym, stock_name: sym, market: "US" },
+                20000
+              )
+              // Some deployments don't expose POST /api/v1/stocks. Treat unsupported methods
+              // as non-fatal and continue with targeted crawl warm-up.
+              if (registerRes.ok || registerRes.status === 404 || registerRes.status === 405) continue
+              const msg = registerRes.text.toLowerCase()
+              if (registerRes.status === 409 || msg.includes("already") || msg.includes("exists")) continue
+              console.warn("Finnews stock register failed", sym, registerRes.status, registerRes.text)
+            }
+          })
+        )
+
         let fnQueued = 0
         let fnAlready = 0
         let fnFailed = 0
@@ -467,7 +543,8 @@ export default function TraderDashboardPage() {
               const res = await postJson(
                 "Finnews",
                 `${finnewsUrl}/api/v1/stocks/${encodeURIComponent(sym)}/targeted-crawl`,
-                { stock_name: sym, days: 30 },
+                // US-first explicit hint; ignored safely by older deployments.
+                { stock_name: sym, days: 30, source: "us_rss", provider: "us_rss", market: "US" },
                 30000
               )
               if (res.ok) {
@@ -526,11 +603,8 @@ export default function TraderDashboardPage() {
       // Ensure the symbols are also monitored by the upstream tools (esp. StockPulse) so the dashboard doesn't go stale.
       await syncWatchlist(symbols)
 
-      // 1) OpenBB quotes (fast and trader-essential)
-      const quoteReqs = symbols.map((sym) => {
-        const url = `${openbbUrl}/api/v1/equity/price/quote?symbol=${encodeURIComponent(sym)}&provider=${encodeURIComponent(provider)}`
-        return fetchJsonWithMeta("OpenBB", url, undefined, 25000).then((r) => ({ sym, ...r }))
-      })
+      // 1) OpenBB quotes (with provider fallback so sparse/empty providers don't blank a symbol)
+      const quoteReqs = symbols.map((sym) => fetchOpenbbQuoteWithFallback(openbbUrl, sym, provider))
 
       // 2) StockPulse ratings (on-demand per ticker)
       const ratingReqs = symbols.map((sym) => {
@@ -551,7 +625,9 @@ export default function TraderDashboardPage() {
       quotesRes.forEach((res) => {
         if (res.status !== "fulfilled") return
         if (!res.value.ok) return
-        nextQuotes[res.value.sym] = pickFirstResult(res.value.data)
+        const payload = pickFirstResult(res.value.data)
+        payload.__provider = res.value.providerUsed || provider
+        nextQuotes[res.value.sym] = payload
       })
       setQuotesBySymbol(nextQuotes)
 
@@ -608,6 +684,12 @@ export default function TraderDashboardPage() {
 
       const quoteRejected = quotesRes.filter((r) => r.status === "rejected")
       if (quoteRejected.length) toast.message(`OpenBB: ${quoteRejected.length} quote(s) failed (see console).`)
+
+      quotesRes.forEach((r) => {
+        if (r.status !== "fulfilled") return
+        if ((r.value as any).warning) toast.message((r.value as any).warning)
+        if (!r.value.ok) console.warn("OpenBB quote failed", r.value.sym, r.value.providerUsed, r.value.status, (r.value as any).error)
+      })
 
       const ratingRejected = ratingsRes.filter((r) => r.status === "rejected")
       if (ratingRejected.length) toast.message(`StockPulse: ${ratingRejected.length} rating(s) failed (see console).`)
@@ -682,6 +764,7 @@ export default function TraderDashboardPage() {
     async (sym: string) => {
       const nowIso = new Date().toISOString()
       const quote = quotesBySymbol[sym] || null
+      const providerUsed = quote?.__provider || provider
       const rating = ratingsBySymbol[sym] || null
       const finnewsItems = finnewsBySymbol[sym] || []
       const finnewsStatus = formatFinnewsStatus(sym)
@@ -695,7 +778,7 @@ export default function TraderDashboardPage() {
 
       const text = buildAiPrompt({
         symbol: sym,
-        provider,
+        provider: providerUsed,
         generatedAtIso: nowIso,
         quote,
         rating,
@@ -729,7 +812,7 @@ export default function TraderDashboardPage() {
               <Input
                 value={symbolsRaw}
                 onChange={(e) => setSymbolsRaw(e.target.value)}
-                placeholder="AAPL MSFT NVDA"
+                placeholder="Type symbols (comma/space/new line separated)"
               />
               <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
                 <span>Tip: spaces, commas, and new lines all work. Max 50 symbols.</span>
@@ -810,7 +893,7 @@ export default function TraderDashboardPage() {
           </div>
           <div className="text-[11px] text-muted-foreground">
             {syncing ? (
-              <span>Syncing watchlist to StockPulse/Finnews…</span>
+              <span>Syncing watchlist to OpenBB/StockPulse/Finnews…</span>
             ) : syncSummary ? (
               <span>
                 Watchlist synced {formatRelative(syncSummary.at)} · OpenBB {syncSummary.openbb.ok}/{syncSummary.count} (+{syncSummary.openbb.added})
@@ -895,6 +978,9 @@ export default function TraderDashboardPage() {
                       MA50/MA200:{" "}
                       {typeof quote?.ma_50d === "number" ? quote.ma_50d.toFixed(2) : "—"} /{" "}
                       {typeof quote?.ma_200d === "number" ? quote.ma_200d.toFixed(2) : "—"}
+                    </div>
+                    <div className="mt-1 text-[11px] text-muted-foreground">
+                      Provider: {quote?.__provider || provider}
                     </div>
                   </div>
                   <div className="rounded-md border border-border/60 bg-muted/20 p-3">

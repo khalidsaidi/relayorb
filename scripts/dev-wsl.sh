@@ -10,8 +10,9 @@ set -euo pipefail
 # Some Windows installs reserve/exclude a TCP port range that includes Vite's default 5173, which breaks
 # Windows -> WSL localhost forwarding even though the server is running in WSL.
 #
-# Default to a "boring" port that is typically safe. Override with `VITE_DEV_PORT=...` if you prefer 5173.
-PORT="${VITE_DEV_PORT:-5300}"
+# Default to Vite's standard port so localhost-based tooling/docs remain consistent.
+# Override with `VITE_DEV_PORT=...` when you explicitly need another port.
+PORT="${VITE_DEV_PORT:-5173}"
 
 WSL_IP="$(ip -4 addr show eth0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n 1 || true)"
 # When the UI is opened from Windows, Vite's HMR websocket should target an IPv4 loopback hostname to avoid

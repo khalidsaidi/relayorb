@@ -358,7 +358,6 @@ async function main() {
         path: path.join(process.cwd(), "tmp.verify-oss-console.ok.png"),
         fullPage: true,
       })
-      // eslint-disable-next-line no-console
       console.error("Saved screenshot: tmp.verify-oss-console.ok.png")
     } catch {
       // ignore
@@ -375,7 +374,6 @@ async function main() {
     const msg = err instanceof Error ? err.stack || err.message : String(err)
     try {
       await page.screenshot({ path: path.join(process.cwd(), "tmp.verify-oss-console.png"), fullPage: true })
-      // eslint-disable-next-line no-console
       console.error("Saved screenshot: tmp.verify-oss-console.png")
     } catch {}
     throw new Error(msg)
@@ -385,7 +383,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  // eslint-disable-next-line no-console
   console.error(err instanceof Error ? err.message : String(err))
   process.exit(1)
 })

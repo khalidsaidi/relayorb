@@ -57,6 +57,22 @@ type ApiOperation = {
   params: ApiParam[]
 }
 
+type ProviderProbeState = {
+  ok: boolean
+  status?: number
+  reason?: string
+}
+
+type FallbackResult = {
+  sym: string
+  status: number
+  ok: boolean
+  data: unknown
+  warning?: string
+  error?: string
+  providerUsed?: string
+}
+
 type ExplorerTemplate = {
   id: string
   label: string
@@ -66,6 +82,33 @@ type ExplorerTemplate = {
   // Optional template param overrides. We allow `undefined` so template objects can omit keys
   // without fighting TS's union inference.
   params?: Record<string, string | undefined>
+}
+
+type ScreenerValidationResult = {
+  parsed: {
+    maxResults: number
+    minPrice?: number
+    maxPrice?: number
+    minMarketCap?: number
+    maxMarketCap?: number
+    minVolume?: number
+    minDividendYield?: number
+    minBeta?: number
+    maxBeta?: number
+  }
+  errors: string[]
+}
+
+type ScreenerFieldSupport = {
+  maxResults: boolean
+  minPrice: boolean
+  maxPrice: boolean
+  minMarketCap: boolean
+  maxMarketCap: boolean
+  minVolume: boolean
+  minDividendYield: boolean
+  minBeta: boolean
+  maxBeta: boolean
 }
 
 function findParamName(params: ApiParam[], aliases: string[]) {
@@ -99,6 +142,154 @@ function resolveProviders() {
 
 const AVAILABLE_QUOTE_PROVIDERS = resolveProviders()
 const DEFAULT_QUOTE_PROVIDER = AVAILABLE_QUOTE_PROVIDERS[0]
+const DISABLED_PROVIDERS = new Set(["fmp", "tiingo", "benzinga", "finviz", "standard"])
+
+function providersForPath(path: string): string[] {
+  if (/\/api\/v1\/equity\/price\/quote$/i.test(path)) return ["yfinance", "intrinio"]
+  if (/\/api\/v1\/equity\/price\/historical$/i.test(path)) return ["polygon", "yfinance", "intrinio"]
+  if (/\/api\/v1\/equity\/fundamental\/(income|balance|cash)$/i.test(path)) return ["polygon", "yfinance", "intrinio"]
+  if (/\/api\/v1\/equity\/fundamental\/metrics$/i.test(path)) return ["yfinance", "intrinio"]
+  if (/\/api\/v1\/equity\/profile$/i.test(path)) return ["yfinance", "intrinio"]
+  if (/\/api\/v1\/news\/company$/i.test(path)) return ["polygon", "yfinance", "intrinio"]
+  if (/\/api\/v1\/crypto\/price\/historical$/i.test(path)) return ["yfinance", "intrinio"]
+  return []
+}
+
+function shouldRetryNoData(path: string): boolean {
+  return (
+    /\/api\/v1\/equity\/price\/quote$/i.test(path) ||
+    /\/api\/v1\/equity\/price\/historical$/i.test(path) ||
+    /\/api\/v1\/equity\/fundamental\/(income|balance|cash|metrics)$/i.test(path) ||
+    /\/api\/v1\/equity\/profile$/i.test(path) ||
+    /\/api\/v1\/news\/company$/i.test(path) ||
+    /\/api\/v1\/crypto\/price\/historical$/i.test(path)
+  )
+}
+
+function noDataPayload(data: unknown) {
+  if (data === null) return true
+  if (Array.isArray(data)) return data.length === 0
+  if (!data || typeof data !== "object") return false
+  const results = (data as any).results
+  return Array.isArray(results) && results.length === 0
+}
+
+function providerCandidatesForRequest(path: string, requestedProvider?: string) {
+  const requested = (requestedProvider || "").trim().toLowerCase()
+  const preferred = providersForPath(path)
+  const out: string[] = []
+
+  const push = (p: string) => {
+    const key = (p || "").trim().toLowerCase()
+    if (!key) return
+    if (DISABLED_PROVIDERS.has(key)) return
+    if (out.includes(key)) return
+    out.push(key)
+  }
+
+  if (requested) push(requested)
+  preferred.forEach(push)
+  return out
+}
+
+function sanitizeOpenbbError(error: unknown, fallback: string) {
+  if (!(error instanceof HttpRequestError)) {
+    return error instanceof Error ? error.message : fallback
+  }
+  if (error.kind === "timeout") return "OpenBB request timed out. Try again in a few seconds."
+  if (error.kind === "network") return "OpenBB is unreachable from this browser. Check endpoint and network."
+
+  const status = error.status
+  if (status === 400 || status === 422) return "Invalid screener filters. Fix highlighted fields and run again."
+  if (status === 401) return "Provider authentication failed. Switch provider or verify credentials."
+  if (status === 403) return "Provider access denied for this request. Try another provider or reduce scope."
+  if (status === 404) return "Screener endpoint is unavailable in this OpenBB deployment."
+  if (status === 429) return "Rate limit reached. Wait a moment and run again."
+  if (status >= 500) return "OpenBB backend error. Try again shortly."
+  return fallback
+}
+
+function isAllowedNumericInput(raw: string, allowNegative = false) {
+  // Allow partial numeric text while typing (including trailing dot), but reject exponent and symbols.
+  if (allowNegative) return /^-?\d*(?:\.\d*)?$/.test(raw)
+  return /^\d*(?:\.\d*)?$/.test(raw)
+}
+
+function parseScreenerFilters(filters: {
+  minPrice: string
+  maxPrice: string
+  minMarketCap: string
+  maxMarketCap: string
+  minVolume: string
+  minBeta: string
+  maxBeta: string
+  minDividendYield: string
+  maxResults: string
+}, support?: ScreenerFieldSupport): ScreenerValidationResult {
+  const errors: string[] = []
+  const parsed: ScreenerValidationResult["parsed"] = { maxResults: 100 }
+
+  const parseNum = (
+    label: string,
+    raw: string,
+    opts: { required?: boolean; min?: number; max?: number; integer?: boolean; allowNegative?: boolean } = {}
+  ) => {
+    const value = raw.trim()
+    if (!value) {
+      if (opts.required) errors.push(`${label} is required.`)
+      return undefined
+    }
+    if (/[eE]/.test(value)) {
+      errors.push(`${label} must be plain digits (scientific notation is not allowed).`)
+      return undefined
+    }
+    const exact = opts.allowNegative ? /^-?(?:\d+|\d*\.\d+)$/ : /^(?:\d+|\d*\.\d+)$/
+    if (!exact.test(value)) {
+      errors.push(`${label} must be a valid number.`)
+      return undefined
+    }
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric)) {
+      errors.push(`${label} must be a finite number.`)
+      return undefined
+    }
+    if (opts.integer && !Number.isInteger(numeric)) {
+      errors.push(`${label} must be a whole number.`)
+      return undefined
+    }
+    if (opts.min !== undefined && numeric < opts.min) errors.push(`${label} must be >= ${opts.min}.`)
+    if (opts.max !== undefined && numeric > opts.max) errors.push(`${label} must be <= ${opts.max}.`)
+    return numeric
+  }
+
+  parsed.maxResults =
+    parseNum("Max rows", filters.maxResults, {
+      required: true,
+      integer: true,
+      min: 1,
+      max: 5000,
+    }) ?? 100
+  if (!support || support.minPrice) parsed.minPrice = parseNum("Min price", filters.minPrice, { min: 0, max: 1_000_000 })
+  if (!support || support.maxPrice) parsed.maxPrice = parseNum("Max price", filters.maxPrice, { min: 0, max: 1_000_000 })
+  if (!support || support.minMarketCap) parsed.minMarketCap = parseNum("Min market cap", filters.minMarketCap, { min: 0, max: 1_000_000_000_000_000 })
+  if (!support || support.maxMarketCap) parsed.maxMarketCap = parseNum("Max market cap", filters.maxMarketCap, { min: 0, max: 1_000_000_000_000_000 })
+  if (!support || support.minVolume) parsed.minVolume = parseNum("Min volume", filters.minVolume, { min: 0, max: 10_000_000_000_000 })
+  if (!support || support.minDividendYield) parsed.minDividendYield = parseNum("Min dividend yield", filters.minDividendYield, { min: 0, max: 100 })
+  if (!support || support.minBeta) parsed.minBeta = parseNum("Min beta", filters.minBeta, { min: -10, max: 10, allowNegative: true })
+  if (!support || support.maxBeta) parsed.maxBeta = parseNum("Max beta", filters.maxBeta, { min: -10, max: 10, allowNegative: true })
+
+  if (parsed.minPrice !== undefined && parsed.maxPrice !== undefined && parsed.minPrice > parsed.maxPrice) {
+    errors.push("Min price must be less than or equal to Max price.")
+  }
+  if (parsed.minMarketCap !== undefined && parsed.maxMarketCap !== undefined && parsed.minMarketCap > parsed.maxMarketCap) {
+    errors.push("Min market cap must be less than or equal to Max market cap.")
+  }
+  if (parsed.minBeta !== undefined && parsed.maxBeta !== undefined && parsed.minBeta > parsed.maxBeta) {
+    errors.push("Min beta must be less than or equal to Max beta.")
+  }
+
+  return { parsed, errors: Array.from(new Set(errors)) }
+}
 
 function buildUrl(base: string, path: string, params: Record<string, string | number | undefined>) {
   // `new URL("/x", "https://host/base")` will drop `/base` and resolve to `https://host/x`.
@@ -612,6 +803,25 @@ function renderScreenerTable(data: unknown) {
   )
 }
 
+function isMoverEndpoint(path: unknown) {
+  const normalized = String(path || "").toLowerCase()
+  if (!normalized) return false
+  return (
+    /\/gainers$/.test(normalized) ||
+    /\/losers$/.test(normalized) ||
+    /\/most_active$/.test(normalized) ||
+    /\/active$/.test(normalized)
+  )
+}
+
+function isMarketMoverRow(row: Record<string, unknown>) {
+  const endpoint = (row as any)?._source_endpoint
+  if (isMoverEndpoint(endpoint)) return true
+  const explicit = (row as any)?.is_market_mover ?? (row as any)?.market_mover
+  if (typeof explicit === "boolean") return explicit
+  return false
+}
+
 function renderMetricGrid(data: Record<string, unknown> | null | undefined, keys: string[]) {
   if (!data) return null
   return (
@@ -997,34 +1207,67 @@ export default function OpenbbPage() {
     path: string,
     params: Record<string, string | number | undefined>,
     timeoutMs = 30000
-  ) => {
-    try {
-      const meta = await openbbFetch(path, params, timeoutMs)
-      const data = meta.data
-      const emptyResults =
-        meta.ok &&
-        data &&
-        typeof data === "object" &&
-        Array.isArray((data as any).results) &&
-        (data as any).results.length === 0
-      const noData = meta.ok && ((Array.isArray(data) && data.length === 0) || data === null || emptyResults)
-      return {
-        sym,
-        status: meta.status,
-        ok: meta.ok,
-        data,
-        warning: noData ? `[OpenBB] no data: ${sym} ${path} (try another provider)` : undefined,
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      return {
-        sym,
-        status: err instanceof HttpRequestError ? err.status : 0,
-        ok: false,
-        data: null,
-        error: message,
+  ): Promise<FallbackResult> => {
+    const hasProviderParam = Object.prototype.hasOwnProperty.call(params, "provider")
+    const rawRequested = hasProviderParam ? String(params.provider || "") : ""
+    const candidates = hasProviderParam ? providerCandidatesForRequest(path, rawRequested) : []
+
+    const attemptOnce = async (providerOverride?: string): Promise<FallbackResult> => {
+      const nextParams = { ...params }
+      if (hasProviderParam && providerOverride) nextParams.provider = providerOverride
+      try {
+        const meta = await openbbFetch(path, nextParams, timeoutMs)
+        const data = meta.data
+        const noData = meta.ok && noDataPayload(data)
+        return {
+          sym,
+          status: meta.status,
+          ok: meta.ok,
+          data,
+          warning: noData ? `[OpenBB] no data: ${sym} ${path} (try another provider)` : undefined,
+          providerUsed: hasProviderParam ? String(nextParams.provider || "") : undefined,
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        return {
+          sym,
+          status: err instanceof HttpRequestError ? err.status : 0,
+          ok: false,
+          data: null,
+          error: message,
+          providerUsed: hasProviderParam ? String(nextParams.provider || "") : undefined,
+        }
       }
     }
+
+    if (!hasProviderParam || !candidates.length) {
+      return attemptOnce()
+    }
+
+    let firstNoData: FallbackResult | null = null
+    let firstFailure: FallbackResult | null = null
+
+    for (const provider of candidates) {
+      const res = await attemptOnce(provider)
+      const noData = res.ok && noDataPayload(res.data)
+      if (res.ok && !noData) return res
+      if (res.ok && noData) {
+        if (!firstNoData) firstNoData = res
+        if (!shouldRetryNoData(path)) return res
+        continue
+      }
+      if (!firstFailure) firstFailure = res
+      const retryableProviderFailure =
+        res.status === 400 ||
+        res.status === 401 ||
+        res.status === 422 ||
+        res.status === 429 ||
+        res.status === 500 ||
+        res.status === 502
+      if (!retryableProviderFailure) return res
+    }
+
+    return firstNoData || firstFailure || attemptOnce(candidates[0])
   }
 
   const checkHealth = async () => {
@@ -1111,7 +1354,7 @@ export default function OpenbbPage() {
   const [cryptoSymbol, setCryptoSymbol] = useState("BTC-USD")
   const [cryptoInterval, setCryptoInterval] = useState("1d")
   const [commoditySelection, setCommoditySelection] = useState("brent")
-  const [screenerProvider, setScreenerProvider] = useState("standard")
+  const [screenerProvider, setScreenerProvider] = useState(DEFAULT_QUOTE_PROVIDER || "yfinance")
   const [screenerFilters, setScreenerFilters] = useState({
     minPrice: "",
     maxPrice: "",
@@ -1126,6 +1369,9 @@ export default function OpenbbPage() {
   const [screenerResult, setScreenerResult] = useState<ResponseState>()
   const [screenerLoading, setScreenerLoading] = useState(false)
   const [screenerWarnings, setScreenerWarnings] = useState<string[]>([])
+  const [screenerValidationErrors, setScreenerValidationErrors] = useState<string[]>([])
+  const [screenerMoverFilter, setScreenerMoverFilter] = useState<"all" | "movers" | "non_movers">("all")
+  const [screenerProviderHealth, setScreenerProviderHealth] = useState<Record<string, ProviderProbeState>>({})
 
   const [showRawJson, setShowRawJson] = useState(false)
   const [activeTab, setActiveTab] = useState<string>("quick")
@@ -1224,21 +1470,142 @@ export default function OpenbbPage() {
     return specOps.find((op) => op.method === "GET" && /\/api\/v1\/equity\//i.test(op.path) && /screener/i.test(op.path))
   }, [specOps])
 
-  const screenerProviderOptions = useMemo(() => {
-    const fallback = Array.from(new Set(["standard", "finviz", ...AVAILABLE_QUOTE_PROVIDERS]))
+  const screenerFallbackOps = useMemo(() => {
+    if (!specOps.length) return [] as ApiOperation[]
+    const candidates = specOps.filter((op) => op.method === "GET" && /\/api\/v1\/equity\/discovery\//i.test(op.path))
+    if (!candidates.length) return [] as ApiOperation[]
+
+    const priorityPatterns = [
+      /\/gainers$/i,
+      /\/losers$/i,
+      /\/most_active$/i,
+      /\/active$/i,
+      /\/undervalued/i,
+      /\/high/i,
+      /\/growth/i,
+      /\/penny/i,
+      /\/upcoming_earnings/i,
+    ]
+
+    const picked: ApiOperation[] = []
+    const seen = new Set<string>()
+    const add = (op: ApiOperation) => {
+      if (seen.has(op.path)) return
+      if (screenerOp && op.path === screenerOp.path) return
+      seen.add(op.path)
+      picked.push(op)
+    }
+
+    priorityPatterns.forEach((pattern) => {
+      candidates.filter((op) => pattern.test(op.path)).forEach(add)
+    })
+    candidates.forEach(add)
+    return picked.slice(0, 8)
+  }, [specOps, screenerOp])
+
+  const screenerProviderOptions = useMemo<string[]>(() => {
+    const fallback: string[] = Array.from(new Set(AVAILABLE_QUOTE_PROVIDERS.map((p: string) => String(p))))
     if (!screenerOp) return fallback
     const providerParam = screenerOp.params.find((p) => String(p.name || "").toLowerCase() === "provider")
-    const enumValues = Array.isArray(providerParam?.schema?.enum)
-      ? providerParam!.schema!.enum!.map((v) => String(v))
+    const enumValues: string[] = Array.isArray(providerParam?.schema?.enum)
+      ? (providerParam!.schema!.enum! as unknown[]).map((v) => String(v))
       : []
     return enumValues.length ? enumValues : fallback
   }, [screenerOp])
 
   useEffect(() => {
-    if (!screenerProviderOptions.length) return
-    if (screenerProviderOptions.includes(screenerProvider)) return
-    setScreenerProvider(screenerProviderOptions[0])
-  }, [screenerProvider, screenerProviderOptions])
+    let cancelled = false
+
+    const probe = async () => {
+      if (!queryBase || !screenerOp || !screenerProviderOptions.length) {
+        setScreenerProviderHealth({})
+        return
+      }
+
+      const providerKey = findParamName(screenerOp.params, ["provider", "source"]) || "provider"
+      const limitKey = findParamName(screenerOp.params, ["limit", "top", "n", "n_results", "max_results"]) || "limit"
+
+      const checks = await Promise.all(
+        screenerProviderOptions.map(async (provider) => {
+          const params: Record<string, string | number | undefined> = {
+            [providerKey]: provider,
+            [limitKey]: 1,
+          }
+          const url = buildUrl(queryBase, screenerOp.path, params)
+          try {
+            await fetchJsonWithMeta("OpenBB", url, undefined, 15000)
+            return [provider, { ok: true, status: 200 } satisfies ProviderProbeState] as const
+          } catch (err) {
+            if (err instanceof HttpRequestError) {
+              const body = String(err.bodyText || "").toLowerCase()
+              let reason = `HTTP ${err.status || 0}`
+              if (body.includes("invalid api key") || body.includes("unauthorized")) {
+                reason = "auth failed (key missing or invalid)"
+              } else if (body.includes("rate limit") || body.includes("bandwidth")) {
+                reason = "rate limited"
+              } else if (err.kind === "network") {
+                reason = "network error"
+              } else if (err.kind === "timeout") {
+                reason = "timeout"
+              }
+              return [provider, { ok: false, status: err.status, reason } satisfies ProviderProbeState] as const
+            }
+            return [provider, { ok: false, reason: "unknown error" } satisfies ProviderProbeState] as const
+          }
+        })
+      )
+
+      if (cancelled) return
+      setScreenerProviderHealth(Object.fromEntries(checks) as Record<string, ProviderProbeState>)
+    }
+
+    probe()
+    return () => {
+      cancelled = true
+    }
+  }, [queryBase, screenerOp, screenerProviderOptions])
+
+  const usableScreenerProviders = useMemo(() => {
+    const eligible = screenerProviderOptions.filter((p) => screenerProviderHealth[p]?.ok !== false)
+    return eligible.length ? eligible : screenerProviderOptions
+  }, [screenerProviderHealth, screenerProviderOptions])
+
+  const unavailableScreenerProviders = useMemo(() => {
+    return screenerProviderOptions
+      .filter((p) => screenerProviderHealth[p]?.ok === false)
+      .map((p) => `${p}${screenerProviderHealth[p]?.reason ? ` (${screenerProviderHealth[p]?.reason})` : ""}`)
+  }, [screenerProviderHealth, screenerProviderOptions])
+
+  const screenerRows = useMemo(() => normalizeRows(screenerResult?.data), [screenerResult])
+  const screenerMoverCounts = useMemo(() => {
+    const movers = screenerRows.filter((row) => isMarketMoverRow(row)).length
+    return { movers, nonMovers: Math.max(0, screenerRows.length - movers) }
+  }, [screenerRows])
+  const screenerVisibleRows = useMemo(() => {
+    if (screenerMoverFilter === "all") return screenerRows
+    if (screenerMoverFilter === "movers") return screenerRows.filter((row) => isMarketMoverRow(row))
+    return screenerRows.filter((row) => !isMarketMoverRow(row))
+  }, [screenerMoverFilter, screenerRows])
+  const screenerFieldSupport = useMemo<ScreenerFieldSupport>(() => {
+    const has = (aliases: string[]) => Boolean(findParamName(screenerOp?.params || [], aliases))
+    return {
+      maxResults: true,
+      minPrice: has(["price_min", "min_price", "price_gte", "price_gt", "price_lower"]),
+      maxPrice: has(["price_max", "max_price", "price_lte", "price_lt", "price_upper"]),
+      minMarketCap: has(["market_cap_min", "min_market_cap", "market_cap_gte", "market_cap_gt", "marketcap_min", "min_marketcap"]),
+      maxMarketCap: has(["market_cap_max", "max_market_cap", "market_cap_lte", "market_cap_lt", "marketcap_max", "max_marketcap"]),
+      minVolume: has(["volume_min", "min_volume", "avg_volume_min", "average_volume_min", "volume_gte", "volume_gt"]),
+      minDividendYield: has(["dividend_yield_min", "min_dividend_yield", "dividend_min", "dividend_yield_gte", "dividend_yield_gt"]),
+      minBeta: has(["beta_min", "min_beta", "beta_gte", "beta_gt"]),
+      maxBeta: has(["beta_max", "max_beta", "beta_lte", "beta_lt"]),
+    }
+  }, [screenerOp])
+
+  useEffect(() => {
+    if (!usableScreenerProviders.length) return
+    if (usableScreenerProviders.includes(screenerProvider)) return
+    setScreenerProvider(usableScreenerProviders[0])
+  }, [screenerProvider, usableScreenerProviders])
 
   const runRequest = async (
     path: string,
@@ -1262,11 +1629,12 @@ export default function OpenbbPage() {
         Array.isArray((data as any).results) &&
         (data as any).results.length === 0
       const noData = meta.ok && ((Array.isArray(data) && data.length === 0) || data === null || emptyResults)
-      const errorMsg = (() => {
-        if (noData) return `[OpenBB] no data: ${url} (try another provider)`
-        return undefined
-      })()
-      if (errorMsg) toast.error(errorMsg)
+      const errorMsg = noData
+        ? /screener/i.test(path)
+          ? "No screener rows matched these filters. Widen criteria or switch provider."
+          : "No data returned for this request."
+        : undefined
+      if (errorMsg) toast.message(errorMsg)
       setter({
         url,
         status: meta.status,
@@ -1275,7 +1643,8 @@ export default function OpenbbPage() {
         error: errorMsg,
       })
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      const message = sanitizeOpenbbError(error, "OpenBB request failed.")
+      console.error("OpenBB request failed", { path, params, error })
       toast.error(message)
       setter({
         url,
@@ -1287,6 +1656,18 @@ export default function OpenbbPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const updateScreenerField = (
+    key: keyof typeof screenerFilters,
+    value: string,
+    opts: { integerOnly?: boolean; allowNegative?: boolean } = {}
+  ) => {
+    const next = value.trimStart()
+    const valid = opts.integerOnly ? /^\d*$/.test(next) : isAllowedNumericInput(next, Boolean(opts.allowNegative))
+    if (!valid) return
+    setScreenerValidationErrors([])
+    setScreenerFilters((prev) => ({ ...prev, [key]: next }))
   }
 
   // Load OpenAPI spec to expose every OpenBB endpoint
@@ -1452,17 +1833,29 @@ export default function OpenbbPage() {
       return
     }
 
-    const toNum = (raw: string) => {
-      if (!raw.trim()) return undefined
-      const parsed = Number(raw)
-      return Number.isFinite(parsed) ? parsed : undefined
+    const providerProbe = screenerProviderHealth[screenerProvider]
+    if (providerProbe?.ok === false) {
+      toast.error(`[OpenBB] Provider "${screenerProvider}" unavailable: ${providerProbe.reason || "health check failed"}`)
+      return
     }
 
-    const params: Record<string, string | number | undefined> = {}
+    const validation = parseScreenerFilters(screenerFilters, screenerFieldSupport)
+    setScreenerValidationErrors(validation.errors)
+    if (validation.errors.length) {
+      toast.error(`Fix ${validation.errors.length} input issue(s) before running screener.`)
+      return
+    }
+
     const unsupported: string[] = []
-    const bind = (label: string, aliases: string[], value: string | number | undefined) => {
+    const bind = (
+      op: ApiOperation,
+      params: Record<string, string | number | undefined>,
+      label: string,
+      aliases: string[],
+      value: string | number | undefined
+    ) => {
       if (value === undefined || value === "") return
-      const key = findParamName(screenerOp.params, aliases)
+      const key = findParamName(op.params, aliases)
       if (!key) {
         unsupported.push(label)
         return
@@ -1470,37 +1863,177 @@ export default function OpenbbPage() {
       params[key] = value
     }
 
-    bind("provider", ["provider", "source"], screenerProvider)
-    bind("limit", ["limit", "top", "n", "n_results", "max_results"], toNum(screenerFilters.maxResults) || 100)
-    bind("min price", ["price_min", "min_price", "price_gte", "price_gt", "price_lower"], toNum(screenerFilters.minPrice))
-    bind("max price", ["price_max", "max_price", "price_lte", "price_lt", "price_upper"], toNum(screenerFilters.maxPrice))
-    bind(
-      "min market cap",
-      ["market_cap_min", "min_market_cap", "market_cap_gte", "market_cap_gt", "marketcap_min", "min_marketcap"],
-      toNum(screenerFilters.minMarketCap)
-    )
-    bind(
-      "max market cap",
-      ["market_cap_max", "max_market_cap", "market_cap_lte", "market_cap_lt", "marketcap_max", "max_marketcap"],
-      toNum(screenerFilters.maxMarketCap)
-    )
-    bind("min volume", ["volume_min", "min_volume", "avg_volume_min", "average_volume_min", "volume_gte", "volume_gt"], toNum(screenerFilters.minVolume))
-    bind("min beta", ["beta_min", "min_beta", "beta_gte", "beta_gt"], toNum(screenerFilters.minBeta))
-    bind("max beta", ["beta_max", "max_beta", "beta_lte", "beta_lt"], toNum(screenerFilters.maxBeta))
-    bind(
-      "min dividend yield",
-      ["dividend_yield_min", "min_dividend_yield", "dividend_min", "dividend_yield_gte", "dividend_yield_gt"],
-      toNum(screenerFilters.minDividendYield)
-    )
-
-    const countryKey = findParamName(screenerOp.params, ["country", "region", "market", "locale"])
-    if (countryKey && !params[countryKey]) params[countryKey] = "US"
-
-    setScreenerWarnings(Array.from(new Set(unsupported)))
-    if (unsupported.length) {
-      toast.message(`[OpenBB] This screener endpoint ignores: ${Array.from(new Set(unsupported)).join(", ")}`)
+    const buildScreenerParams = (provider: string) => {
+      const params: Record<string, string | number | undefined> = {}
+      bind(screenerOp, params, "provider", ["provider", "source"], provider)
+      bind(screenerOp, params, "limit", ["limit", "top", "n", "n_results", "max_results"], validation.parsed.maxResults)
+      bind(screenerOp, params, "min price", ["price_min", "min_price", "price_gte", "price_gt", "price_lower"], validation.parsed.minPrice)
+      bind(screenerOp, params, "max price", ["price_max", "max_price", "price_lte", "price_lt", "price_upper"], validation.parsed.maxPrice)
+      bind(
+        screenerOp,
+        params,
+        "min market cap",
+        ["market_cap_min", "min_market_cap", "market_cap_gte", "market_cap_gt", "marketcap_min", "min_marketcap"],
+        validation.parsed.minMarketCap
+      )
+      bind(
+        screenerOp,
+        params,
+        "max market cap",
+        ["market_cap_max", "max_market_cap", "market_cap_lte", "market_cap_lt", "marketcap_max", "max_marketcap"],
+        validation.parsed.maxMarketCap
+      )
+      bind(
+        screenerOp,
+        params,
+        "min volume",
+        ["volume_min", "min_volume", "avg_volume_min", "average_volume_min", "volume_gte", "volume_gt"],
+        validation.parsed.minVolume
+      )
+      bind(screenerOp, params, "min beta", ["beta_min", "min_beta", "beta_gte", "beta_gt"], validation.parsed.minBeta)
+      bind(screenerOp, params, "max beta", ["beta_max", "max_beta", "beta_lte", "beta_lt"], validation.parsed.maxBeta)
+      bind(
+        screenerOp,
+        params,
+        "min dividend yield",
+        ["dividend_yield_min", "min_dividend_yield", "dividend_min", "dividend_yield_gte", "dividend_yield_gt"],
+        validation.parsed.minDividendYield
+      )
+      const countryKey = findParamName(screenerOp.params, ["country", "region", "market", "locale"])
+      if (countryKey && !params[countryKey]) params[countryKey] = "US"
+      return params
     }
-    await runRequest(screenerOp.path, params, setScreenerResult, setScreenerLoading)
+
+    const request = async (op: ApiOperation, params: Record<string, string | number | undefined>) => {
+      const url = buildUrl(queryBase, op.path, params)
+      try {
+        const meta = await fetchJsonWithMeta("OpenBB", url, undefined, 30000)
+        return {
+          url,
+          status: meta.status,
+          ok: meta.ok,
+          data: meta.data,
+        } satisfies ResponseState
+      } catch (error) {
+        const message = sanitizeOpenbbError(error, "OpenBB request failed.")
+        return {
+          url,
+          status: error instanceof HttpRequestError ? error.status : 0,
+          ok: false,
+          data: null,
+          error: message,
+        } satisfies ResponseState
+      }
+    }
+
+    const providers = [screenerProvider, ...usableScreenerProviders.filter((p) => p !== screenerProvider)]
+    setScreenerLoading(true)
+    try {
+      const uniqUnsupported = Array.from(new Set(unsupported))
+      if (uniqUnsupported.length) {
+        toast.message(`[OpenBB] This screener endpoint ignores: ${uniqUnsupported.join(", ")}`)
+      }
+
+      let primaryResult: ResponseState | null = null
+      let primaryRows: Record<string, unknown>[] = []
+      let usedProvider = screenerProvider
+      for (const provider of providers) {
+        const result = await request(screenerOp, buildScreenerParams(provider))
+        primaryResult = result
+        const rows = normalizeRows(result.data)
+        if (result.ok && rows.length) {
+          usedProvider = provider
+          primaryRows = rows
+          break
+        }
+      }
+
+      if (primaryRows.length && primaryResult) {
+        setScreenerWarnings(uniqUnsupported)
+        setScreenerResult({
+          ...primaryResult,
+          data: { results: primaryRows, meta: { provider: usedProvider, mode: "primary_screener" } },
+        })
+        return
+      }
+
+      const fallbackRows: Record<string, unknown>[] = []
+      const fallbackPaths: string[] = []
+
+      for (const provider of providers) {
+        for (const op of screenerFallbackOps) {
+          const params: Record<string, string | number | undefined> = {}
+          bind(op, params, "provider", ["provider", "source"], provider)
+          bind(op, params, "limit", ["limit", "top", "n", "n_results", "max_results"], validation.parsed.maxResults)
+          const countryKey = findParamName(op.params, ["country", "region", "market", "locale"])
+          if (countryKey && !params[countryKey]) params[countryKey] = "US"
+
+          const res = await request(op, params)
+          if (!res.ok) continue
+          const rows = normalizeRows(res.data)
+          if (!rows.length) continue
+          fallbackPaths.push(op.path)
+          rows.forEach((row) => {
+            fallbackRows.push({
+              ...row,
+              _provider: provider,
+              _source_endpoint: op.path,
+            })
+          })
+        }
+        if (fallbackRows.length) break
+      }
+
+      if (fallbackRows.length) {
+        const deduped = Array.from(
+          fallbackRows.reduce((map, row) => {
+            const key = String((row as any).symbol || (row as any).ticker || (row as any).name || JSON.stringify(row))
+              .trim()
+              .toUpperCase()
+            if (!key) return map
+            if (!map.has(key)) map.set(key, row)
+            return map
+          }, new Map<string, Record<string, unknown>>()).values()
+        )
+        setScreenerWarnings([
+          ...uniqUnsupported,
+          `Primary screener returned no rows; fallback loaded from discovery feeds (${Array.from(new Set(fallbackPaths)).length} endpoint(s)).`,
+        ])
+        setScreenerResult({
+          url: primaryResult?.url || buildUrl(queryBase, screenerOp.path, buildScreenerParams(screenerProvider)),
+          status: 200,
+          ok: true,
+          data: {
+            results: deduped,
+            meta: {
+              mode: "discovery_fallback",
+              primary_endpoint: screenerOp.path,
+              fallback_endpoints: Array.from(new Set(fallbackPaths)),
+            },
+          },
+        })
+        toast.message("Primary screener was empty. Loaded rows from OpenBB discovery feeds.")
+        return
+      }
+
+      setScreenerWarnings(uniqUnsupported)
+      if (primaryResult) {
+        setScreenerResult({
+          ...primaryResult,
+          error: primaryResult.error || "No screener rows matched. Try broader filters or another provider.",
+        })
+      } else {
+        setScreenerResult({
+          url: buildUrl(queryBase, screenerOp.path, buildScreenerParams(screenerProvider)),
+          status: 0,
+          ok: false,
+          data: null,
+          error: "Screener request could not be completed.",
+        })
+      }
+    } finally {
+      setScreenerLoading(false)
+    }
   }
 
   const runQuickLookup = async () => {
@@ -2101,7 +2634,8 @@ export default function OpenbbPage() {
                       <div className="grid gap-3 md:grid-cols-2">
                         {quickQuotes.map((q) => {
                           const payload = firstResult(q.data)
-                          return <QuoteCard key={q.sym} quote={{ ...payload, symbol: q.sym }} provider={quickProvider} />
+                          const providerUsed = typeof (q as any).providerUsed === "string" ? (q as any).providerUsed : quickProvider
+                          return <QuoteCard key={q.sym} quote={{ ...payload, symbol: q.sym }} provider={providerUsed} />
                         })}
                       </div>
                     </CardContent>
@@ -2516,92 +3050,210 @@ export default function OpenbbPage() {
 
               <div className="grid gap-3 md:grid-cols-4">
                 <div className="space-y-1">
-                  <Label>Provider</Label>
+                  <Label htmlFor="screener-provider">Provider</Label>
                   <select
+                    id="screener-provider"
+                    aria-label="Screener provider"
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     value={screenerProvider}
                     onChange={(e) => setScreenerProvider(e.target.value)}
                   >
-                    {screenerProviderOptions.map((p) => (
+                    {usableScreenerProviders.map((p) => (
                       <option key={p} value={p}>
                         {p}
                       </option>
                     ))}
                   </select>
+                  <div className="text-[11px] text-muted-foreground">
+                    Available providers are health-checked at runtime.
+                    {usableScreenerProviders.length === 1 ? ` Current available: ${usableScreenerProviders[0]}.` : ""}
+                  </div>
                 </div>
                 <div className="space-y-1">
-                  <Label>Max rows</Label>
+                  <Label htmlFor="screener-max-rows">Max rows (required)</Label>
                   <Input
+                    id="screener-max-rows"
+                    aria-label="Screener max rows"
                     value={screenerFilters.maxResults}
-                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, maxResults: e.target.value }))}
+                    onChange={(e) => updateScreenerField("maxResults", e.target.value, { integerOnly: true })}
+                    inputMode="numeric"
+                    min={1}
+                    step={1}
                     placeholder="100"
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>Min price</Label>
+                  <Label htmlFor="screener-min-price">
+                    Min price {screenerFieldSupport.minPrice ? "(optional)" : "(unsupported)"}
+                  </Label>
                   <Input
+                    id="screener-min-price"
+                    aria-label="Screener minimum price"
                     value={screenerFilters.minPrice}
-                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, minPrice: e.target.value }))}
+                    onChange={(e) => updateScreenerField("minPrice", e.target.value)}
+                    inputMode="decimal"
+                    min={0}
+                    step={0.01}
+                    disabled={!screenerFieldSupport.minPrice}
                     placeholder="2"
+                    title={!screenerFieldSupport.minPrice ? "This OpenBB screener endpoint does not support Min price." : undefined}
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>Max price</Label>
+                  <Label htmlFor="screener-max-price">
+                    Max price {screenerFieldSupport.maxPrice ? "(optional)" : "(unsupported)"}
+                  </Label>
                   <Input
+                    id="screener-max-price"
+                    aria-label="Screener maximum price"
                     value={screenerFilters.maxPrice}
-                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, maxPrice: e.target.value }))}
+                    onChange={(e) => updateScreenerField("maxPrice", e.target.value)}
+                    inputMode="decimal"
+                    min={0}
+                    step={0.01}
+                    disabled={!screenerFieldSupport.maxPrice}
                     placeholder="80"
+                    title={!screenerFieldSupport.maxPrice ? "This OpenBB screener endpoint does not support Max price." : undefined}
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>Min market cap</Label>
+                  <Label htmlFor="screener-min-market-cap">
+                    Min market cap {screenerFieldSupport.minMarketCap ? "(optional)" : "(unsupported)"}
+                  </Label>
                   <Input
+                    id="screener-min-market-cap"
+                    aria-label="Screener minimum market cap"
                     value={screenerFilters.minMarketCap}
-                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, minMarketCap: e.target.value }))}
+                    onChange={(e) => updateScreenerField("minMarketCap", e.target.value)}
+                    inputMode="numeric"
+                    min={0}
+                    step={1}
+                    disabled={!screenerFieldSupport.minMarketCap}
                     placeholder="50000000"
+                    title={!screenerFieldSupport.minMarketCap ? "This OpenBB screener endpoint does not support Min market cap." : undefined}
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>Max market cap</Label>
+                  <Label htmlFor="screener-max-market-cap">
+                    Max market cap {screenerFieldSupport.maxMarketCap ? "(optional)" : "(unsupported)"}
+                  </Label>
                   <Input
+                    id="screener-max-market-cap"
+                    aria-label="Screener maximum market cap"
                     value={screenerFilters.maxMarketCap}
-                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, maxMarketCap: e.target.value }))}
+                    onChange={(e) => updateScreenerField("maxMarketCap", e.target.value)}
+                    inputMode="numeric"
+                    min={0}
+                    step={1}
+                    disabled={!screenerFieldSupport.maxMarketCap}
                     placeholder="5000000000"
+                    title={!screenerFieldSupport.maxMarketCap ? "This OpenBB screener endpoint does not support Max market cap." : undefined}
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>Min volume</Label>
+                  <Label htmlFor="screener-min-volume">
+                    Min volume {screenerFieldSupport.minVolume ? "(optional)" : "(unsupported)"}
+                  </Label>
                   <Input
+                    id="screener-min-volume"
+                    aria-label="Screener minimum volume"
                     value={screenerFilters.minVolume}
-                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, minVolume: e.target.value }))}
+                    onChange={(e) => updateScreenerField("minVolume", e.target.value)}
+                    inputMode="numeric"
+                    min={0}
+                    step={1}
+                    disabled={!screenerFieldSupport.minVolume}
                     placeholder="1000000"
+                    title={!screenerFieldSupport.minVolume ? "This OpenBB screener endpoint does not support Min volume." : undefined}
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>Min dividend yield</Label>
+                  <Label htmlFor="screener-min-dividend-yield">
+                    Min dividend yield {screenerFieldSupport.minDividendYield ? "(optional)" : "(unsupported)"}
+                  </Label>
                   <Input
+                    id="screener-min-dividend-yield"
+                    aria-label="Screener minimum dividend yield"
                     value={screenerFilters.minDividendYield}
-                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, minDividendYield: e.target.value }))}
+                    onChange={(e) => updateScreenerField("minDividendYield", e.target.value)}
+                    inputMode="decimal"
+                    min={0}
+                    step={0.01}
+                    disabled={!screenerFieldSupport.minDividendYield}
                     placeholder="0"
+                    title={!screenerFieldSupport.minDividendYield ? "This OpenBB screener endpoint does not support Min dividend yield." : undefined}
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>Min beta</Label>
+                  <Label htmlFor="screener-min-beta">
+                    Min beta {screenerFieldSupport.minBeta ? "(optional)" : "(unsupported)"}
+                  </Label>
                   <Input
+                    id="screener-min-beta"
+                    aria-label="Screener minimum beta"
                     value={screenerFilters.minBeta}
-                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, minBeta: e.target.value }))}
+                    onChange={(e) => updateScreenerField("minBeta", e.target.value, { allowNegative: true })}
+                    inputMode="decimal"
+                    step={0.01}
+                    disabled={!screenerFieldSupport.minBeta}
                     placeholder="0.5"
+                    title={!screenerFieldSupport.minBeta ? "This OpenBB screener endpoint does not support Min beta." : undefined}
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>Max beta</Label>
+                  <Label htmlFor="screener-max-beta">
+                    Max beta {screenerFieldSupport.maxBeta ? "(optional)" : "(unsupported)"}
+                  </Label>
                   <Input
+                    id="screener-max-beta"
+                    aria-label="Screener maximum beta"
                     value={screenerFilters.maxBeta}
-                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, maxBeta: e.target.value }))}
+                    onChange={(e) => updateScreenerField("maxBeta", e.target.value, { allowNegative: true })}
+                    inputMode="decimal"
+                    step={0.01}
+                    disabled={!screenerFieldSupport.maxBeta}
                     placeholder="2.5"
+                    title={!screenerFieldSupport.maxBeta ? "This OpenBB screener endpoint does not support Max beta." : undefined}
                   />
                 </div>
               </div>
+
+              <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+                <div>Country is fixed to <span className="font-medium text-foreground">US</span>.</div>
+                <div>Use plain numeric values only (no scientific notation).</div>
+                <div>For range fields, min must be less than or equal to max.</div>
+                <div>Typical screener response time: 1-10 seconds depending on provider and filters.</div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-[220px_1fr]">
+                <div className="space-y-1">
+                  <Label htmlFor="screener-mover-filter">Market mover filter</Label>
+                  <select
+                    id="screener-mover-filter"
+                    aria-label="Market mover filter"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={screenerMoverFilter}
+                    onChange={(e) => setScreenerMoverFilter(e.target.value as "all" | "movers" | "non_movers")}
+                  >
+                    <option value="all">All rows</option>
+                    <option value="movers">Movers only</option>
+                    <option value="non_movers">Non-movers only</option>
+                  </select>
+                </div>
+                <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+                  <div>
+                    Movers: <span className="font-medium text-foreground">{screenerMoverCounts.movers}</span> ·
+                    Non-movers: <span className="font-medium text-foreground">{screenerMoverCounts.nonMovers}</span>
+                  </div>
+                  <div>Strict classification uses explicit mover flags or discovery mover endpoints.</div>
+                </div>
+              </div>
+
+              {screenerValidationErrors.length ? (
+                <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive">
+                  {screenerValidationErrors.join(" ")}
+                </div>
+              ) : null}
 
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" onClick={runScreener} disabled={screenerLoading || !screenerOp}>
@@ -2613,19 +3265,21 @@ export default function OpenbbPage() {
                   variant="outline"
                   onClick={() => downloadJson("openbb-screener", screenerResult?.data)}
                   disabled={!screenerResult}
+                  title={!screenerResult ? "Run screener first to export results." : undefined}
                 >
                   Export JSON
                 </Button>
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => downloadCsv("openbb-screener", normalizeRows(screenerResult?.data))}
-                  disabled={!normalizeRows(screenerResult?.data).length}
+                  onClick={() => downloadCsv("openbb-screener", screenerVisibleRows)}
+                  disabled={!screenerVisibleRows.length}
+                  title={!screenerVisibleRows.length ? "CSV export is available when visible rows are returned." : undefined}
                 >
                   Export CSV
                 </Button>
                 <Button size="sm" variant="ghost" onClick={() => setActiveTab("explorer")}>
-                  Open Explorer
+                  Open Explorer (advanced)
                 </Button>
               </div>
 
@@ -2635,14 +3289,20 @@ export default function OpenbbPage() {
                 </div>
               ) : null}
 
+              {unavailableScreenerProviders.length ? (
+                <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+                  Disabled providers (failed live health check): {unavailableScreenerProviders.join(", ")}.
+                </div>
+              ) : null}
+
               {screenerResult ? (
                 <div className="space-y-3">
                   <div className="text-xs text-muted-foreground">
-                    {normalizeRows(screenerResult.data).length
-                      ? `${normalizeRows(screenerResult.data).length} row(s) returned`
-                      : "No screener rows returned"}
+                    {screenerVisibleRows.length
+                      ? `Showing ${screenerVisibleRows.length} of ${screenerRows.length} row(s)`
+                      : "No screener rows returned. Try wider ranges, fewer constraints, or another provider."}
                   </div>
-                  {renderScreenerTable(screenerResult.data) || renderTable(screenerResult.data) || (
+                  {renderScreenerTable({ results: screenerVisibleRows }) || renderTable({ results: screenerVisibleRows }) || (
                     <div className="text-xs text-muted-foreground">No tabular screener output for this request.</div>
                   )}
                   {showRawJson ? (
@@ -2977,7 +3637,7 @@ export default function OpenbbPage() {
                       return (
                         <div key={c.sym} className="rounded-md border border-border/50 bg-muted/30 p-3 space-y-2">
                           <div className="text-sm font-semibold text-foreground">{c.sym}</div>
-                          <QuoteCard quote={{ ...row, symbol: c.sym }} provider={quickProvider} />
+                          <QuoteCard quote={{ ...row, symbol: c.sym }} provider={(c as any).providerUsed || quickProvider} />
                           <div className="grid gap-2 md:grid-cols-2">
                             <MetricCard label="Market cap" value={(valRow as any).market_cap} />
                             <MetricCard label="P/E" value={(valRow as any).pe_ratio || (valRow as any).pe} />

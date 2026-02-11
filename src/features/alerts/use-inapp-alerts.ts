@@ -286,7 +286,19 @@ export function useInAppAlerts() {
     return Number.isFinite(raw) && raw > 0 ? raw : 0
   }, [state.mutedUntilMs])
 
-  const isMuted = useMemo(() => mutedUntilMs > Date.now(), [mutedUntilMs])
+  useEffect(() => {
+    if (!mutedUntilMs) return
+    const remaining = mutedUntilMs - Date.now()
+    const timer = window.setTimeout(() => {
+      setState((prev) => {
+        if (!prev.mutedUntilMs) return prev
+        return { ...prev, mutedUntilMs: 0 }
+      })
+    }, Math.max(0, remaining))
+    return () => window.clearTimeout(timer)
+  }, [mutedUntilMs])
+
+  const isMuted = mutedUntilMs > 0
 
   const muteForMs = useCallback((ms: number) => {
     const dur = Math.max(0, Number(ms) || 0)
@@ -318,6 +330,7 @@ export function useInAppAlerts() {
   }, [])
 
   const emptyWatchlistToastShownRef = useRef(false)
+  const emptyWatchlistToastIdRef = useRef<string | number | null>(null)
 
   const pollNow = useCallback(async () => {
     if (!settings.enabled) return
@@ -329,10 +342,17 @@ export function useInAppAlerts() {
     // If nothing is configured, don’t spam the user; show a single guidance toast.
     if (!watchlist.length) {
       if (!emptyWatchlistToastShownRef.current) {
-        toast.message("No watchlist symbols yet. Add symbols in OpenBB → Watchlist (or run a lookup in Trader) to enable alerts.")
+        const id = toast.message(
+          "No watchlist symbols yet. Run a Trader lookup or add symbols in OpenBB → Watchlist to enable alerts."
+        )
+        emptyWatchlistToastIdRef.current = id
         emptyWatchlistToastShownRef.current = true
       }
       return
+    }
+    if (emptyWatchlistToastIdRef.current !== null) {
+      toast.dismiss(emptyWatchlistToastIdRef.current)
+      emptyWatchlistToastIdRef.current = null
     }
     emptyWatchlistToastShownRef.current = false
 
