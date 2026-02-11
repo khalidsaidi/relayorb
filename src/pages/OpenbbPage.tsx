@@ -68,6 +68,23 @@ type ExplorerTemplate = {
   params?: Record<string, string | undefined>
 }
 
+function findParamName(params: ApiParam[], aliases: string[]) {
+  if (!Array.isArray(params) || !params.length) return null
+  const byLower = new Map<string, string>()
+  params.forEach((p) => {
+    const name = String(p?.name || "").trim()
+    if (!name) return
+    byLower.set(name.toLowerCase(), name)
+  })
+  for (const alias of aliases) {
+    const key = String(alias || "").trim().toLowerCase()
+    if (!key) continue
+    const hit = byLower.get(key)
+    if (hit) return hit
+  }
+  return null
+}
+
 // Only expose providers that are marked enabled in env (comma‑separated).
 function resolveProviders() {
   const allowed = new Set(["yfinance", "intrinio"]) // FMP deliberately hidden until credentials validate (401 currently)
@@ -529,6 +546,62 @@ function renderTable(data: unknown) {
               {columns.map((col) => (
                 <td key={col} className="px-3 py-2 text-foreground">
                   {renderValue(row[col])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function renderScreenerTable(data: unknown) {
+  const rows = normalizeRows(data)
+  if (!rows.length || typeof rows[0] !== "object") return null
+
+  const first = rows[0]
+  const preferred = [
+    "symbol",
+    "name",
+    "exchange",
+    "sector",
+    "industry",
+    "market_cap",
+    "last_price",
+    "price",
+    "volume",
+    "beta",
+    "dividend_yield",
+  ]
+  const selected = preferred.filter((k) => k in first)
+  const columns = [...selected]
+  if (columns.length < 9) {
+    for (const key of Object.keys(first)) {
+      if (columns.includes(key)) continue
+      columns.push(key)
+      if (columns.length >= 9) break
+    }
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border/60">
+      <table className="w-full text-left text-xs">
+        <thead className="bg-muted/60 text-[11px] uppercase tracking-wide text-muted-foreground">
+          <tr>
+            {columns.map((col) => (
+              <th key={col} className="px-3 py-2 font-medium whitespace-nowrap">
+                {col.replace(/_/g, " ")}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 80).map((row, idx) => (
+            <tr key={idx} className="border-t border-border/60">
+              {columns.map((col) => (
+                <td key={col} className="px-3 py-2 text-foreground whitespace-nowrap">
+                  {renderValue((row as any)[col])}
                 </td>
               ))}
             </tr>
@@ -1038,6 +1111,21 @@ export default function OpenbbPage() {
   const [cryptoSymbol, setCryptoSymbol] = useState("BTC-USD")
   const [cryptoInterval, setCryptoInterval] = useState("1d")
   const [commoditySelection, setCommoditySelection] = useState("brent")
+  const [screenerProvider, setScreenerProvider] = useState("standard")
+  const [screenerFilters, setScreenerFilters] = useState({
+    minPrice: "",
+    maxPrice: "",
+    minMarketCap: "",
+    maxMarketCap: "",
+    minVolume: "",
+    minBeta: "",
+    maxBeta: "",
+    minDividendYield: "",
+    maxResults: "100",
+  })
+  const [screenerResult, setScreenerResult] = useState<ResponseState>()
+  const [screenerLoading, setScreenerLoading] = useState(false)
+  const [screenerWarnings, setScreenerWarnings] = useState<string[]>([])
 
   const [showRawJson, setShowRawJson] = useState(false)
   const [activeTab, setActiveTab] = useState<string>("quick")
@@ -1103,6 +1191,7 @@ export default function OpenbbPage() {
         quick: "quick",
         compare: "compare",
         watchlist: "watchlist",
+        screener: "screener",
         fundamentals: "fundamentals",
         fundamental: "fundamentals",
         technicals: "technicals",
@@ -1129,6 +1218,27 @@ export default function OpenbbPage() {
   const [explorerTemplateId, setExplorerTemplateId] = useState<string>("")
   const [explorerResult, setExplorerResult] = useState<ResponseState>()
   const [explorerLoading, setExplorerLoading] = useState(false)
+  const screenerOp = useMemo(() => {
+    const exact = specOps.find((op) => op.method === "GET" && /\/api\/v1\/equity\/(discovery\/)?screener$/i.test(op.path))
+    if (exact) return exact
+    return specOps.find((op) => op.method === "GET" && /\/api\/v1\/equity\//i.test(op.path) && /screener/i.test(op.path))
+  }, [specOps])
+
+  const screenerProviderOptions = useMemo(() => {
+    const fallback = Array.from(new Set(["standard", "finviz", ...AVAILABLE_QUOTE_PROVIDERS]))
+    if (!screenerOp) return fallback
+    const providerParam = screenerOp.params.find((p) => String(p.name || "").toLowerCase() === "provider")
+    const enumValues = Array.isArray(providerParam?.schema?.enum)
+      ? providerParam!.schema!.enum!.map((v) => String(v))
+      : []
+    return enumValues.length ? enumValues : fallback
+  }, [screenerOp])
+
+  useEffect(() => {
+    if (!screenerProviderOptions.length) return
+    if (screenerProviderOptions.includes(screenerProvider)) return
+    setScreenerProvider(screenerProviderOptions[0])
+  }, [screenerProvider, screenerProviderOptions])
 
   const runRequest = async (
     path: string,
@@ -1330,6 +1440,67 @@ export default function OpenbbPage() {
       finalPath = finalPath.replace(`{${key}}`, encodeURIComponent(val))
     })
     await runRequest(finalPath, queryParams, setExplorerResult, setExplorerLoading)
+  }
+
+  const runScreener = async () => {
+    if (!queryBase) {
+      toast.error(t("openbb.notConfigured"))
+      return
+    }
+    if (!screenerOp) {
+      toast.error("Screener endpoint not found in this OpenBB deployment. Use Explorer for raw endpoint access.")
+      return
+    }
+
+    const toNum = (raw: string) => {
+      if (!raw.trim()) return undefined
+      const parsed = Number(raw)
+      return Number.isFinite(parsed) ? parsed : undefined
+    }
+
+    const params: Record<string, string | number | undefined> = {}
+    const unsupported: string[] = []
+    const bind = (label: string, aliases: string[], value: string | number | undefined) => {
+      if (value === undefined || value === "") return
+      const key = findParamName(screenerOp.params, aliases)
+      if (!key) {
+        unsupported.push(label)
+        return
+      }
+      params[key] = value
+    }
+
+    bind("provider", ["provider", "source"], screenerProvider)
+    bind("limit", ["limit", "top", "n", "n_results", "max_results"], toNum(screenerFilters.maxResults) || 100)
+    bind("min price", ["price_min", "min_price", "price_gte", "price_gt", "price_lower"], toNum(screenerFilters.minPrice))
+    bind("max price", ["price_max", "max_price", "price_lte", "price_lt", "price_upper"], toNum(screenerFilters.maxPrice))
+    bind(
+      "min market cap",
+      ["market_cap_min", "min_market_cap", "market_cap_gte", "market_cap_gt", "marketcap_min", "min_marketcap"],
+      toNum(screenerFilters.minMarketCap)
+    )
+    bind(
+      "max market cap",
+      ["market_cap_max", "max_market_cap", "market_cap_lte", "market_cap_lt", "marketcap_max", "max_marketcap"],
+      toNum(screenerFilters.maxMarketCap)
+    )
+    bind("min volume", ["volume_min", "min_volume", "avg_volume_min", "average_volume_min", "volume_gte", "volume_gt"], toNum(screenerFilters.minVolume))
+    bind("min beta", ["beta_min", "min_beta", "beta_gte", "beta_gt"], toNum(screenerFilters.minBeta))
+    bind("max beta", ["beta_max", "max_beta", "beta_lte", "beta_lt"], toNum(screenerFilters.maxBeta))
+    bind(
+      "min dividend yield",
+      ["dividend_yield_min", "min_dividend_yield", "dividend_min", "dividend_yield_gte", "dividend_yield_gt"],
+      toNum(screenerFilters.minDividendYield)
+    )
+
+    const countryKey = findParamName(screenerOp.params, ["country", "region", "market", "locale"])
+    if (countryKey && !params[countryKey]) params[countryKey] = "US"
+
+    setScreenerWarnings(Array.from(new Set(unsupported)))
+    if (unsupported.length) {
+      toast.message(`[OpenBB] This screener endpoint ignores: ${Array.from(new Set(unsupported)).join(", ")}`)
+    }
+    await runRequest(screenerOp.path, params, setScreenerResult, setScreenerLoading)
   }
 
   const runQuickLookup = async () => {
@@ -1808,6 +1979,7 @@ export default function OpenbbPage() {
           <TabsTrigger value="quick">Quick lookup</TabsTrigger>
           <TabsTrigger value="compare">Compare</TabsTrigger>
           <TabsTrigger value="watchlist">Watchlist</TabsTrigger>
+          <TabsTrigger value="screener">Screener</TabsTrigger>
           <TabsTrigger value="fundamentals">Fundamentals</TabsTrigger>
           <TabsTrigger value="technicals">Technicals</TabsTrigger>
           <TabsTrigger value="macro">Macro</TabsTrigger>
@@ -2318,6 +2490,173 @@ export default function OpenbbPage() {
                       })}
                     </tbody>
                   </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="screener" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Equity screener</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4 text-sm">
+              {!screenerOp ? (
+                <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive">
+                  Screener endpoint is not exposed by this OpenBB deployment. Use Explorer and filter for "screener"
+                  endpoints.
+                </div>
+              ) : (
+                <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+                  Endpoint: <span className="text-foreground">{screenerOp.method} {screenerOp.path}</span> · Tag:{" "}
+                  <span className="text-foreground">{screenerOp.tag}</span>
+                </div>
+              )}
+
+              <div className="grid gap-3 md:grid-cols-4">
+                <div className="space-y-1">
+                  <Label>Provider</Label>
+                  <select
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={screenerProvider}
+                    onChange={(e) => setScreenerProvider(e.target.value)}
+                  >
+                    {screenerProviderOptions.map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label>Max rows</Label>
+                  <Input
+                    value={screenerFilters.maxResults}
+                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, maxResults: e.target.value }))}
+                    placeholder="100"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Min price</Label>
+                  <Input
+                    value={screenerFilters.minPrice}
+                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, minPrice: e.target.value }))}
+                    placeholder="2"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Max price</Label>
+                  <Input
+                    value={screenerFilters.maxPrice}
+                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, maxPrice: e.target.value }))}
+                    placeholder="80"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Min market cap</Label>
+                  <Input
+                    value={screenerFilters.minMarketCap}
+                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, minMarketCap: e.target.value }))}
+                    placeholder="50000000"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Max market cap</Label>
+                  <Input
+                    value={screenerFilters.maxMarketCap}
+                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, maxMarketCap: e.target.value }))}
+                    placeholder="5000000000"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Min volume</Label>
+                  <Input
+                    value={screenerFilters.minVolume}
+                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, minVolume: e.target.value }))}
+                    placeholder="1000000"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Min dividend yield</Label>
+                  <Input
+                    value={screenerFilters.minDividendYield}
+                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, minDividendYield: e.target.value }))}
+                    placeholder="0"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Min beta</Label>
+                  <Input
+                    value={screenerFilters.minBeta}
+                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, minBeta: e.target.value }))}
+                    placeholder="0.5"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Max beta</Label>
+                  <Input
+                    value={screenerFilters.maxBeta}
+                    onChange={(e) => setScreenerFilters((prev) => ({ ...prev, maxBeta: e.target.value }))}
+                    placeholder="2.5"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" onClick={runScreener} disabled={screenerLoading || !screenerOp}>
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  {screenerLoading ? "Running…" : "Run screener"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => downloadJson("openbb-screener", screenerResult?.data)}
+                  disabled={!screenerResult}
+                >
+                  Export JSON
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => downloadCsv("openbb-screener", normalizeRows(screenerResult?.data))}
+                  disabled={!normalizeRows(screenerResult?.data).length}
+                >
+                  Export CSV
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setActiveTab("explorer")}>
+                  Open Explorer
+                </Button>
+              </div>
+
+              {screenerWarnings.length ? (
+                <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
+                  Some filters were ignored by this endpoint: {screenerWarnings.join(", ")}.
+                </div>
+              ) : null}
+
+              {screenerResult ? (
+                <div className="space-y-3">
+                  <div className="text-xs text-muted-foreground">
+                    {normalizeRows(screenerResult.data).length
+                      ? `${normalizeRows(screenerResult.data).length} row(s) returned`
+                      : "No screener rows returned"}
+                  </div>
+                  {renderScreenerTable(screenerResult.data) || renderTable(screenerResult.data) || (
+                    <div className="text-xs text-muted-foreground">No tabular screener output for this request.</div>
+                  )}
+                  {showRawJson ? (
+                    <details className="rounded-lg border border-border/60 bg-muted/20 p-2 text-[11px]">
+                      <summary className="cursor-pointer text-muted-foreground">Raw JSON</summary>
+                      <pre className="max-h-72 overflow-auto p-2 text-[11px] text-muted-foreground">
+                        {JSON.stringify(screenerResult.data, null, 2)}
+                      </pre>
+                    </details>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground">
+                  No screener results yet. Set criteria and run the screener.
                 </div>
               )}
             </CardContent>
