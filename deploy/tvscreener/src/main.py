@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Literal
 
 import pandas as pd
@@ -124,10 +125,41 @@ def _field_info(field: Any) -> dict[str, Any]:
 def _rows_from_df(df: pd.DataFrame) -> list[dict[str, Any]]:
     if df is None or df.empty:
         return []
-    safe = df.where(pd.notna(df), None)
+
+    def _json_safe(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(k): _json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [_json_safe(v) for v in value]
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int,)):
+            return value
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        # numpy/pandas scalar support
+        if hasattr(value, "item"):
+            try:
+                return _json_safe(value.item())
+            except Exception:
+                pass
+        if isinstance(value, pd.Timestamp):
+            return value.isoformat()
+        try:
+            if pd.isna(value):
+                return None
+        except Exception:
+            pass
+        if isinstance(value, str):
+            return value
+        return str(value)
+
+    # Convert inf/-inf to NaN, then normalize NaN-like values to None recursively.
+    safe = df.replace([float("inf"), float("-inf")], pd.NA)
     records = safe.to_dict(orient="records")
-    # Ensure numpy/pandas scalars are JSON-safe.
-    return json.loads(json.dumps(records, default=str))
+    return [_json_safe(row) for row in records]
 
 
 def _resolve_market(market: str | None) -> Market | None:
