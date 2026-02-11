@@ -7,6 +7,7 @@ const zhCN = {
     openbb: "OpenBB",
     finnews: "FinnewsHunter",
     stockpulse: "StockPulse",
+    tvscreener: "TVScreener",
     signOut: "退出登录",
   },
   auth: {

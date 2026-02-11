@@ -108,6 +108,12 @@ services:
     ports:
       - "6900:6900"
 
+  tvscreener:
+    image: relayorb-tvscreener:local
+    restart: unless-stopped
+    ports:
+      - "8020:8020"
+
   stockpulse-ai:
     image: relayorb-stockpulse-ai:local
     restart: unless-stopped
@@ -127,6 +133,6 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     depends_on:
       - openbb-api
+      - tvscreener
       - stockpulse-ai
       - finnewshunter
-

@@ -31,3 +31,9 @@ export function resolveFinnewsUrl() {
   if (raw) return normalizeUrl(raw)
   return ""
 }
+
+export function resolveTvscreenerUrl() {
+  const raw = (import.meta.env.VITE_TVSCREENER_URL || "").trim()
+  if (raw) return normalizeUrl(raw)
+  return ""
+}

@@ -43,6 +43,20 @@ relayorb.34-182-77-163.sslip.io {
     respond "" 204
   }
 
+  @tvscreener_preflight {
+    path /tvscreener*
+    method OPTIONS
+  }
+  handle @tvscreener_preflight {
+    header {
+      Access-Control-Allow-Origin "*"
+      Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+      Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin, X-Requested-With, X-CSRF-Token"
+      Access-Control-Expose-Headers "Content-Length, Content-Type"
+    }
+    respond "" 204
+  }
+
   handle_path /openbb* {
     reverse_proxy http://openbb-api:6900 {
       header_down Access-Control-Allow-Origin "*"
@@ -54,6 +68,15 @@ relayorb.34-182-77-163.sslip.io {
 
   handle_path /stockpulse* {
     reverse_proxy http://stockpulse-ai:5000 {
+      header_down Access-Control-Allow-Origin "*"
+      header_down Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+      header_down Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin, X-Requested-With, X-CSRF-Token"
+      header_down Access-Control-Expose-Headers "Content-Length, Content-Type"
+    }
+  }
+
+  handle_path /tvscreener* {
+    reverse_proxy http://tvscreener:8020 {
       header_down Access-Control-Allow-Origin "*"
       header_down Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
       header_down Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin, X-Requested-With, X-CSRF-Token"
@@ -74,4 +97,3 @@ relayorb.34-182-77-163.sslip.io {
     respond "RelayOrb backend online" 200
   }
 }
-

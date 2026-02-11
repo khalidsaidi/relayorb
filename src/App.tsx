@@ -4,6 +4,7 @@ import TraderDashboardPage from "@/pages/TraderDashboardPage"
 import OpenbbPage from "@/pages/OpenbbPage"
 import FinnewsPage from "@/pages/FinnewsPage"
 import StockpulsePage from "@/pages/StockpulsePage"
+import TvscreenerPage from "@/pages/TvscreenerPage"
 import { RequireAuth } from "@/features/auth/RequireAuth"
 import { AppShell } from "@/components/layout/AppShell"
 import { Toaster } from "@/components/ui/sonner"
@@ -25,6 +26,7 @@ export default function App() {
             <Route path="/openbb" element={<OpenbbPage />} />
             <Route path="/finnews" element={<FinnewsPage />} />
             <Route path="/stockpulse" element={<StockpulsePage />} />
+            <Route path="/tvscreener" element={<TvscreenerPage />} />
           </Route>
         </Route>
 

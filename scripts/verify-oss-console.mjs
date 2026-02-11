@@ -194,7 +194,8 @@ async function verifyTrader(page, baseUrl) {
       // ignore
     }
   })
-  await page.getByPlaceholder("AAPL MSFT NVDA").fill("BBAI TSLA")
+  const symbolsInput = page.getByPlaceholder(/Type symbols/i)
+  await symbolsInput.fill("BBAI TSLA")
 
   // Start response waits before clicking to avoid races on fast endpoints.
   const w1 = wait2xx(page, "/openbb/api/v1/equity/price/quote", "OpenBB quote (Trader)")
@@ -290,6 +291,21 @@ async function verifyAlerts(page, baseUrl) {
   }
 }
 
+async function verifyTvscreener(page, baseUrl) {
+  await page.goto(`${baseUrl}/tvscreener`, { waitUntil: "domcontentloaded" })
+
+  const w2 = wait2xx(page, "/tvscreener/health", "TVScreener health")
+  await page.getByRole("button", { name: /Check health/i }).click()
+  await w2
+
+  await page.getByRole("tab", { name: /^Custom$/ }).click()
+  await page.getByLabel("Path").fill("/api/v1/discovery/gainers")
+  await page.getByLabel("Query JSON").fill('{"asset_type":"stock","limit":10}')
+  const w3 = wait2xx(page, "/tvscreener/api/v1/discovery/gainers", "TVScreener discovery")
+  await page.getByRole("button", { name: /Run custom request/i }).click()
+  await w3
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   const baseUrl = normalizeBaseUrl(args.base)
@@ -353,6 +369,7 @@ async function main() {
     await verifyFinnews(page, baseUrl)
     await verifyStockpulse(page, baseUrl)
     await verifyAlerts(page, baseUrl)
+    await verifyTvscreener(page, baseUrl)
     try {
       await page.screenshot({
         path: path.join(process.cwd(), "tmp.verify-oss-console.ok.png"),

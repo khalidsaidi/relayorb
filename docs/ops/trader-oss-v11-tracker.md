@@ -70,7 +70,23 @@ Expected: “Run lookup” makes tickers real across all 3 tools.
 - [x] `DONE` RSI threshold alerts (StockPulse RSI crosses 30/70 for watchlist tickers)
 - [x] `DONE` Alerts fire end-to-end in signed-in prod session (verified by Playwright `verifyAlerts()`)
 
-## 6) Prod Signed-In Pass (Manual)
+## 6) TVScreener Integration (New)
+
+- [x] `DONE` Dedicated TVScreener page is routed + visible in left nav (`/tvscreener`)
+- [x] `DONE` Runtime endpoint resolver + endpoint health popover include TVScreener URL
+- [x] `DONE` TVScreener backend wrapper added (`deploy/tvscreener`) with:
+  - `/health`
+  - `/openapi.json` + `/docs`
+  - `/api/v1/query` (generic field/filter/sort query)
+  - `/api/v1/discovery/{gainers|losers|active}`
+  - `/api/v1/fields/search`
+  - `/api/v1/fields/categories`
+  - `/api/v1/presets` + `/api/v1/presets/{name}`
+  - `/api/v1/stocks/search`
+- [x] `DONE` Bot-host compose + Caddy wiring include `/tvscreener*` with preflight + reverse proxy
+- [x] `DONE` Verification script includes a TVScreener pass (`verifyTvscreener`)
+
+## 7) Prod Signed-In Pass (Manual)
 
 - [x] `DONE` Signed-in verification pass (automated)
   - Script: `node scripts/verify-oss-console.mjs --base https://relayorb.web.app --email <allowlisted>`

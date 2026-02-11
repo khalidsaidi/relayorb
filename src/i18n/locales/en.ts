@@ -7,6 +7,7 @@ const en = {
     openbb: "OpenBB",
     finnews: "FinnewsHunter",
     stockpulse: "StockPulse",
+    tvscreener: "TVScreener",
     signOut: "Sign out",
   },
   auth: {

@@ -5,11 +5,11 @@ import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { LayoutDashboard, TerminalSquare, Newspaper, Radar, LogOut, ExternalLink, HeartPulse } from "lucide-react"
+import { LayoutDashboard, TerminalSquare, Newspaper, Radar, LogOut, ExternalLink, HeartPulse, SlidersHorizontal } from "lucide-react"
 import { useAuth } from "@/features/auth/auth-context"
 import { auth, firebaseEnabled } from "@/lib/firebase"
 import { signOut } from "firebase/auth"
-import { resolveFinnewsUrl, resolveOpenbbApiUrl, resolveStockpulseUrl } from "@/lib/runtime-urls"
+import { resolveFinnewsUrl, resolveOpenbbApiUrl, resolveStockpulseUrl, resolveTvscreenerUrl } from "@/lib/runtime-urls"
 import { fetchJsonOrThrow } from "@/lib/http"
 import { toast } from "sonner"
 import { AlertsBell } from "@/features/alerts/AlertsBell"
@@ -25,6 +25,7 @@ function getPageTitle(pathname: string, t: (key: string) => string) {
   if (pathname.startsWith("/openbb")) return t("nav.openbb")
   if (pathname.startsWith("/finnews")) return t("nav.finnews")
   if (pathname.startsWith("/stockpulse")) return t("nav.stockpulse")
+  if (pathname.startsWith("/tvscreener")) return t("nav.tvscreener")
   return t("nav.trader")
 }
 
@@ -37,9 +38,10 @@ export function AppShell() {
   const openbbUrl = useMemo(() => resolveOpenbbApiUrl(), [])
   const finnewsUrl = useMemo(() => resolveFinnewsUrl(), [])
   const stockpulseUrl = useMemo(() => resolveStockpulseUrl(), [])
+  const tvscreenerUrl = useMemo(() => resolveTvscreenerUrl(), [])
 
   const endpointHint = useMemo(() => {
-    const urls = [openbbUrl, finnewsUrl, stockpulseUrl].filter(Boolean)
+    const urls = [openbbUrl, finnewsUrl, stockpulseUrl, tvscreenerUrl].filter(Boolean)
     if (!urls.length) return "unconfigured"
     const host = (() => {
       try {
@@ -51,13 +53,14 @@ export function AppShell() {
     if (!host) return "custom"
     if (host.includes("sslip.io")) return "vm"
     return "custom"
-  }, [openbbUrl, finnewsUrl, stockpulseUrl])
+  }, [openbbUrl, finnewsUrl, stockpulseUrl, tvscreenerUrl])
 
   async function checkAllHealth() {
     const checks: Array<{ service: string; url: string }> = []
     if (openbbUrl) checks.push({ service: "OpenBB", url: `${openbbUrl}/openapi.json` })
     if (stockpulseUrl) checks.push({ service: "StockPulse", url: `${stockpulseUrl}/api/status` })
     if (finnewsUrl) checks.push({ service: "Finnews", url: `${finnewsUrl}/health` })
+    if (tvscreenerUrl) checks.push({ service: "TVScreener", url: `${tvscreenerUrl}/health` })
 
     if (!checks.length) {
       toast.error("No endpoints configured in env.")
@@ -80,6 +83,7 @@ export function AppShell() {
     { to: "/openbb", label: t("nav.openbb"), icon: <TerminalSquare className="h-4 w-4" /> },
     { to: "/finnews", label: t("nav.finnews"), icon: <Newspaper className="h-4 w-4" /> },
     { to: "/stockpulse", label: t("nav.stockpulse"), icon: <Radar className="h-4 w-4" /> },
+    { to: "/tvscreener", label: t("nav.tvscreener"), icon: <SlidersHorizontal className="h-4 w-4" /> },
   ]
 
   async function doSignOut() {
@@ -143,6 +147,7 @@ export function AppShell() {
                       { label: "OpenBB", url: openbbUrl, openPath: "" },
                       { label: "Finnews", url: finnewsUrl, openPath: "" },
                       { label: "StockPulse", url: stockpulseUrl, openPath: "" },
+                      { label: "TVScreener", url: tvscreenerUrl, openPath: "" },
                     ].map((row) => (
                       <div key={row.label} className="rounded-lg border border-border/60 bg-muted/20 p-2">
                         <div className="flex items-center justify-between gap-2">
