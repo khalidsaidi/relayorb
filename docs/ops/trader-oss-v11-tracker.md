@@ -14,13 +14,13 @@ Scope: research console only.
 
 ## 0) Dev UX Hygiene (WSL/Windows)
 
-- [x] `DONE` Local dev UI reachable from Windows via `http://localhost:5300/`
-  - Evidence: `powershell.exe Invoke-WebRequest http://localhost:5300/` returns `200`.
-- [x] `DONE` Vite binds all interfaces on a Windows-safe port (5300), tmux-managed
+- [x] `DONE` Local dev UI reachable from Windows via `http://localhost:5173/`
+  - Evidence: `powershell.exe Invoke-WebRequest http://localhost:5173/` returns `200`.
+- [x] `DONE` Vite binds all interfaces on port `5173`, tmux-managed
   - Script: `scripts/ui-dev.sh` (tmux session `relayorb_dev`).
 - [x] `DONE` HMR host/port is not hardcoded to 5173 (prevents websocket spam when port != 5173)
   - `vite.config.ts` honors `VITE_HMR_HOST` + `VITE_HMR_CLIENT_PORT`.
-- [x] `DONE` Dev auth is stable on Windows/WSL when using `http://localhost:5300`
+- [x] `DONE` Dev auth is stable on Windows/WSL when using `http://localhost:5173`
   - Note: using a WSL IP will still trip Firebase `auth/unauthorized-domain` unless you add it to authorized domains.
 
 ## 1) Trader Page: Unified Symbol Sync

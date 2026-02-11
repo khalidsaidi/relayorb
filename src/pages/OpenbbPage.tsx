@@ -44,7 +44,15 @@ type ApiParam = {
   name: string
   in: "query" | "path" | string
   required?: boolean
-  schema?: { enum?: string[]; type?: string; format?: string; default?: unknown }
+  schema?: {
+    enum?: string[]
+    type?: string
+    format?: string
+    default?: unknown
+    minimum?: number
+    maximum?: number
+    items?: { enum?: string[]; type?: string }
+  }
   description?: string
 }
 
@@ -111,6 +119,29 @@ type ScreenerFieldSupport = {
   maxBeta: boolean
 }
 
+type ScreenerAdvancedParam = {
+  name: string
+  label: string
+  required: boolean
+  type: string
+  description?: string
+  enumValues: string[]
+}
+
+type ScreenerAdvancedValidationResult = {
+  parsed: Record<string, string | number | boolean>
+  errors: string[]
+}
+
+const SCREENER_CAP_PRESETS = [
+  { id: "any", label: "Any cap", min: "", max: "" },
+  { id: "small", label: "Small (300M-2B)", min: "300000000", max: "2000000000" },
+  { id: "mid", label: "Mid (2B-10B)", min: "2000000000", max: "10000000000" },
+  { id: "large", label: "Large (10B+)", min: "10000000000", max: "" },
+] as const
+
+type ScreenerCapPresetId = (typeof SCREENER_CAP_PRESETS)[number]["id"] | "custom"
+
 function findParamName(params: ApiParam[], aliases: string[]) {
   if (!Array.isArray(params) || !params.length) return null
   const byLower = new Map<string, string>()
@@ -126,6 +157,152 @@ function findParamName(params: ApiParam[], aliases: string[]) {
     if (hit) return hit
   }
   return null
+}
+
+const SCREENER_RESERVED_PARAM_KEYS = new Set([
+  "provider",
+  "source",
+  "limit",
+  "top",
+  "n",
+  "n_results",
+  "max_results",
+  "price_min",
+  "min_price",
+  "price_gte",
+  "price_gt",
+  "price_lower",
+  "price_max",
+  "max_price",
+  "price_lte",
+  "price_lt",
+  "price_upper",
+  "market_cap_min",
+  "min_market_cap",
+  "market_cap_gte",
+  "market_cap_gt",
+  "marketcap_min",
+  "min_marketcap",
+  "market_cap_max",
+  "max_market_cap",
+  "market_cap_lte",
+  "market_cap_lt",
+  "marketcap_max",
+  "max_marketcap",
+  "volume_min",
+  "min_volume",
+  "avg_volume_min",
+  "average_volume_min",
+  "volume_gte",
+  "volume_gt",
+  "beta_min",
+  "min_beta",
+  "beta_gte",
+  "beta_gt",
+  "beta_max",
+  "max_beta",
+  "beta_lte",
+  "beta_lt",
+  "dividend_yield_min",
+  "min_dividend_yield",
+  "dividend_min",
+  "dividend_yield_gte",
+  "dividend_yield_gt",
+  "country",
+  "region",
+  "market",
+  "locale",
+])
+
+function isScreenerReservedParam(name: string) {
+  return SCREENER_RESERVED_PARAM_KEYS.has(String(name || "").trim().toLowerCase())
+}
+
+function paramLabel(name: string) {
+  return String(name || "")
+    .replace(/_/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^./, (c) => c.toUpperCase())
+}
+
+function parseBooleanValue(raw: string): boolean | null {
+  const value = String(raw || "").trim().toLowerCase()
+  if (["true", "1", "yes", "y"].includes(value)) return true
+  if (["false", "0", "no", "n"].includes(value)) return false
+  return null
+}
+
+function parseScreenerAdvancedFilters(
+  values: Record<string, string>,
+  params: ScreenerAdvancedParam[]
+): ScreenerAdvancedValidationResult {
+  const parsed: Record<string, string | number | boolean> = {}
+  const errors: string[] = []
+  const byName = new Map(params.map((p) => [p.name, p]))
+
+  Object.entries(values).forEach(([name, rawInput]) => {
+    const param = byName.get(name)
+    if (!param) return
+    const raw = String(rawInput || "").trim()
+    if (!raw) return
+
+    if (param.enumValues.length && !param.enumValues.includes(raw)) {
+      errors.push(`${param.label}: choose one of the allowed values.`)
+      return
+    }
+
+    if (param.type === "boolean") {
+      const boolValue = parseBooleanValue(raw)
+      if (boolValue === null) {
+        errors.push(`${param.label}: expected boolean (true/false).`)
+        return
+      }
+      parsed[name] = boolValue
+      return
+    }
+
+    if (param.type === "integer" || param.type === "number") {
+      if (/[eE]/.test(raw)) {
+        errors.push(`${param.label}: scientific notation is not allowed.`)
+        return
+      }
+      if (!/^-?(?:\d+|\d*\.\d+)$/.test(raw)) {
+        errors.push(`${param.label}: must be numeric.`)
+        return
+      }
+      const numeric = Number(raw)
+      if (!Number.isFinite(numeric)) {
+        errors.push(`${param.label}: invalid numeric value.`)
+        return
+      }
+      if (param.type === "integer" && !Number.isInteger(numeric)) {
+        errors.push(`${param.label}: must be a whole number.`)
+        return
+      }
+      parsed[name] = numeric
+      return
+    }
+
+    parsed[name] = raw
+  })
+
+  params.forEach((param) => {
+    const hasValue = String(values[param.name] || "").trim().length > 0
+    if (param.required && !hasValue) {
+      errors.push(`${param.label} is required.`)
+    }
+  })
+
+  return { parsed, errors: Array.from(new Set(errors)) }
+}
+
+function inferScreenerCapPreset(minCap: string, maxCap: string): ScreenerCapPresetId {
+  const min = String(minCap || "").trim()
+  const max = String(maxCap || "").trim()
+  const hit = SCREENER_CAP_PRESETS.find((preset) => preset.min === min && preset.max === max)
+  return hit ? hit.id : "custom"
 }
 
 // Only expose providers that are marked enabled in env (comma‑separated).
@@ -814,12 +991,82 @@ function isMoverEndpoint(path: unknown) {
   )
 }
 
+function readNumericField(row: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = (row as any)?.[key]
+    if (typeof value === "number" && Number.isFinite(value)) return value
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed)) return parsed
+    }
+  }
+  return null
+}
+
 function isMarketMoverRow(row: Record<string, unknown>) {
   const endpoint = (row as any)?._source_endpoint
   if (isMoverEndpoint(endpoint)) return true
   const explicit = (row as any)?.is_market_mover ?? (row as any)?.market_mover
   if (typeof explicit === "boolean") return explicit
+  const pctMove = readNumericField(row, [
+    "change_percent",
+    "percent_change",
+    "pct_change",
+    "change_pct",
+    "chg_pct",
+    "change_percent_1d",
+    "percent_change_1d",
+  ])
+  if (pctMove !== null && Math.abs(pctMove) >= 2) return true
+  const relativeVolume = readNumericField(row, [
+    "relative_volume",
+    "rel_volume",
+    "volume_ratio",
+    "rvol",
+    "volume_relative",
+  ])
+  if (relativeVolume !== null && relativeVolume >= 1.5) return true
+  const hintText = [
+    (row as any)?.category,
+    (row as any)?.type,
+    (row as any)?.label,
+    (row as any)?.tag,
+    (row as any)?.signal,
+  ]
+    .map((v) => String(v || "").toLowerCase())
+    .join(" ")
+  if (/\b(gainer|loser|most active|active)\b/.test(hintText)) return true
   return false
+}
+
+function applyClientScreenerFilters(
+  rows: Record<string, unknown>[],
+  parsed: ScreenerValidationResult["parsed"]
+) {
+  if (!rows.length) return rows
+  const priceKeys = ["last_price", "price", "close", "adj_close"]
+  const mktCapKeys = ["market_cap", "mktcap", "marketcap", "marketCap"]
+  const volumeKeys = ["volume", "avg_volume", "average_volume"]
+  const dividendKeys = ["dividend_yield", "dividend", "yield"]
+  const betaKeys = ["beta"]
+
+  return rows.filter((row) => {
+    const price = readNumericField(row, priceKeys)
+    const mktCap = readNumericField(row, mktCapKeys)
+    const volume = readNumericField(row, volumeKeys)
+    const dividendYield = readNumericField(row, dividendKeys)
+    const beta = readNumericField(row, betaKeys)
+
+    if (parsed.minPrice !== undefined && price !== null && price < parsed.minPrice) return false
+    if (parsed.maxPrice !== undefined && price !== null && price > parsed.maxPrice) return false
+    if (parsed.minMarketCap !== undefined && mktCap !== null && mktCap < parsed.minMarketCap) return false
+    if (parsed.maxMarketCap !== undefined && mktCap !== null && mktCap > parsed.maxMarketCap) return false
+    if (parsed.minVolume !== undefined && volume !== null && volume < parsed.minVolume) return false
+    if (parsed.minDividendYield !== undefined && dividendYield !== null && dividendYield < parsed.minDividendYield) return false
+    if (parsed.minBeta !== undefined && beta !== null && beta < parsed.minBeta) return false
+    if (parsed.maxBeta !== undefined && beta !== null && beta > parsed.maxBeta) return false
+    return true
+  })
 }
 
 function renderMetricGrid(data: Record<string, unknown> | null | undefined, keys: string[]) {
@@ -1371,7 +1618,9 @@ export default function OpenbbPage() {
   const [screenerWarnings, setScreenerWarnings] = useState<string[]>([])
   const [screenerValidationErrors, setScreenerValidationErrors] = useState<string[]>([])
   const [screenerMoverFilter, setScreenerMoverFilter] = useState<"all" | "movers" | "non_movers">("all")
+  const [screenerCapPreset, setScreenerCapPreset] = useState<ScreenerCapPresetId>("any")
   const [screenerProviderHealth, setScreenerProviderHealth] = useState<Record<string, ProviderProbeState>>({})
+  const [screenerAdvancedValues, setScreenerAdvancedValues] = useState<Record<string, string>>({})
 
   const [showRawJson, setShowRawJson] = useState(false)
   const [activeTab, setActiveTab] = useState<string>("quick")
@@ -1586,20 +1835,57 @@ export default function OpenbbPage() {
     if (screenerMoverFilter === "movers") return screenerRows.filter((row) => isMarketMoverRow(row))
     return screenerRows.filter((row) => !isMarketMoverRow(row))
   }, [screenerMoverFilter, screenerRows])
+  useEffect(() => {
+    setScreenerCapPreset(inferScreenerCapPreset(screenerFilters.minMarketCap, screenerFilters.maxMarketCap))
+  }, [screenerFilters.maxMarketCap, screenerFilters.minMarketCap])
   const screenerFieldSupport = useMemo<ScreenerFieldSupport>(() => {
     const has = (aliases: string[]) => Boolean(findParamName(screenerOp?.params || [], aliases))
     return {
       maxResults: true,
       minPrice: has(["price_min", "min_price", "price_gte", "price_gt", "price_lower"]),
       maxPrice: has(["price_max", "max_price", "price_lte", "price_lt", "price_upper"]),
-      minMarketCap: has(["market_cap_min", "min_market_cap", "market_cap_gte", "market_cap_gt", "marketcap_min", "min_marketcap"]),
-      maxMarketCap: has(["market_cap_max", "max_market_cap", "market_cap_lte", "market_cap_lt", "marketcap_max", "max_marketcap"]),
+      minMarketCap: has(["market_cap_min", "min_market_cap", "market_cap_gte", "market_cap_gt", "marketcap_min", "min_marketcap", "mktcap_min"]),
+      maxMarketCap: has(["market_cap_max", "max_market_cap", "market_cap_lte", "market_cap_lt", "marketcap_max", "max_marketcap", "mktcap_max"]),
       minVolume: has(["volume_min", "min_volume", "avg_volume_min", "average_volume_min", "volume_gte", "volume_gt"]),
       minDividendYield: has(["dividend_yield_min", "min_dividend_yield", "dividend_min", "dividend_yield_gte", "dividend_yield_gt"]),
       minBeta: has(["beta_min", "min_beta", "beta_gte", "beta_gt"]),
       maxBeta: has(["beta_max", "max_beta", "beta_lte", "beta_lt"]),
     }
   }, [screenerOp])
+
+  const screenerAdvancedParams = useMemo<ScreenerAdvancedParam[]>(() => {
+    if (!screenerOp) return []
+    return screenerOp.params
+      .filter((p) => p.in === "query")
+      .filter((p) => !isScreenerReservedParam(p.name))
+      .map((p) => {
+        const enumValues = Array.isArray(p.schema?.enum)
+          ? p.schema!.enum!.map((v) => String(v))
+          : Array.isArray(p.schema?.items?.enum)
+            ? p.schema!.items!.enum!.map((v) => String(v))
+            : []
+        return {
+          name: p.name,
+          label: paramLabel(p.name),
+          required: Boolean(p.required),
+          type: String(p.schema?.type || p.schema?.items?.type || "string").toLowerCase(),
+          description: p.description,
+          enumValues,
+        } satisfies ScreenerAdvancedParam
+      })
+      .sort((a, b) => a.label.localeCompare(b.label))
+  }, [screenerOp])
+
+  useEffect(() => {
+    const allowed = new Set(screenerAdvancedParams.map((p) => p.name))
+    setScreenerAdvancedValues((prev) => {
+      const next: Record<string, string> = {}
+      Object.entries(prev).forEach(([key, value]) => {
+        if (allowed.has(key)) next[key] = value
+      })
+      return next
+    })
+  }, [screenerAdvancedParams])
 
   useEffect(() => {
     if (!usableScreenerProviders.length) return
@@ -1840,9 +2126,11 @@ export default function OpenbbPage() {
     }
 
     const validation = parseScreenerFilters(screenerFilters, screenerFieldSupport)
-    setScreenerValidationErrors(validation.errors)
-    if (validation.errors.length) {
-      toast.error(`Fix ${validation.errors.length} input issue(s) before running screener.`)
+    const advancedValidation = parseScreenerAdvancedFilters(screenerAdvancedValues, screenerAdvancedParams)
+    const allErrors = Array.from(new Set([...validation.errors, ...advancedValidation.errors]))
+    setScreenerValidationErrors(allErrors)
+    if (allErrors.length) {
+      toast.error(`Fix ${allErrors.length} input issue(s) before running screener.`)
       return
     }
 
@@ -1873,14 +2161,14 @@ export default function OpenbbPage() {
         screenerOp,
         params,
         "min market cap",
-        ["market_cap_min", "min_market_cap", "market_cap_gte", "market_cap_gt", "marketcap_min", "min_marketcap"],
+        ["market_cap_min", "min_market_cap", "market_cap_gte", "market_cap_gt", "marketcap_min", "min_marketcap", "mktcap_min"],
         validation.parsed.minMarketCap
       )
       bind(
         screenerOp,
         params,
         "max market cap",
-        ["market_cap_max", "max_market_cap", "market_cap_lte", "market_cap_lt", "marketcap_max", "max_marketcap"],
+        ["market_cap_max", "max_market_cap", "market_cap_lte", "market_cap_lt", "marketcap_max", "max_marketcap", "mktcap_max"],
         validation.parsed.maxMarketCap
       )
       bind(
@@ -1900,7 +2188,10 @@ export default function OpenbbPage() {
         validation.parsed.minDividendYield
       )
       const countryKey = findParamName(screenerOp.params, ["country", "region", "market", "locale"])
-      if (countryKey && !params[countryKey]) params[countryKey] = "US"
+      if (countryKey && !params[countryKey]) params[countryKey] = provider === "fmp" ? "us" : "US"
+      Object.entries(advancedValidation.parsed).forEach(([key, value]) => {
+        params[key] = typeof value === "boolean" ? (value ? "true" : "false") : value
+      })
       return params
     }
 
@@ -1949,24 +2240,30 @@ export default function OpenbbPage() {
       }
 
       if (primaryRows.length && primaryResult) {
+        const filteredPrimary = applyClientScreenerFilters(primaryRows, validation.parsed)
         setScreenerWarnings(uniqUnsupported)
         setScreenerResult({
           ...primaryResult,
-          data: { results: primaryRows, meta: { provider: usedProvider, mode: "primary_screener" } },
+          data: { results: filteredPrimary, meta: { provider: usedProvider, mode: "primary_screener" } },
         })
         return
       }
 
       const fallbackRows: Record<string, unknown>[] = []
       const fallbackPaths: string[] = []
+      const moverOnlyFallbackOps = screenerFallbackOps.filter((op) => isMoverEndpoint(op.path))
+      const fallbackOpsForRun =
+        screenerMoverFilter === "movers" && moverOnlyFallbackOps.length
+          ? moverOnlyFallbackOps
+          : screenerFallbackOps
 
       for (const provider of providers) {
-        for (const op of screenerFallbackOps) {
+        for (const op of fallbackOpsForRun) {
           const params: Record<string, string | number | undefined> = {}
           bind(op, params, "provider", ["provider", "source"], provider)
           bind(op, params, "limit", ["limit", "top", "n", "n_results", "max_results"], validation.parsed.maxResults)
           const countryKey = findParamName(op.params, ["country", "region", "market", "locale"])
-          if (countryKey && !params[countryKey]) params[countryKey] = "US"
+          if (countryKey && !params[countryKey]) params[countryKey] = provider === "fmp" ? "us" : "US"
 
           const res = await request(op, params)
           if (!res.ok) continue
@@ -1985,6 +2282,37 @@ export default function OpenbbPage() {
       }
 
       if (fallbackRows.length) {
+        // If "Movers only" is selected and the first fallback pass has no movers,
+        // run a dedicated mover supplement pass before final filtering.
+        if (
+          screenerMoverFilter === "movers" &&
+          moverOnlyFallbackOps.length &&
+          !fallbackRows.some((row) => isMarketMoverRow(row))
+        ) {
+          for (const provider of providers) {
+            for (const op of moverOnlyFallbackOps) {
+              const params: Record<string, string | number | undefined> = {}
+              bind(op, params, "provider", ["provider", "source"], provider)
+              bind(op, params, "limit", ["limit", "top", "n", "n_results", "max_results"], validation.parsed.maxResults)
+              const countryKey = findParamName(op.params, ["country", "region", "market", "locale"])
+              if (countryKey && !params[countryKey]) params[countryKey] = provider === "fmp" ? "us" : "US"
+              const res = await request(op, params)
+              if (!res.ok) continue
+              const rows = normalizeRows(res.data)
+              if (!rows.length) continue
+              fallbackPaths.push(op.path)
+              rows.forEach((row) => {
+                fallbackRows.push({
+                  ...row,
+                  _provider: provider,
+                  _source_endpoint: op.path,
+                })
+              })
+            }
+            if (fallbackRows.some((row) => isMarketMoverRow(row))) break
+          }
+        }
+
         const deduped = Array.from(
           fallbackRows.reduce((map, row) => {
             const key = String((row as any).symbol || (row as any).ticker || (row as any).name || JSON.stringify(row))
@@ -1995,24 +2323,43 @@ export default function OpenbbPage() {
             return map
           }, new Map<string, Record<string, unknown>>()).values()
         )
+        const filteredFallback = applyClientScreenerFilters(deduped, validation.parsed)
+        const uniqueFallbackPaths = Array.from(new Set(fallbackPaths))
+        const primaryStatus = typeof primaryResult?.status === "number" ? primaryResult.status : 0
+        const baseWarning =
+          primaryStatus > 0
+            ? `Primary screener returned no rows (HTTP ${primaryStatus}); fallback loaded from discovery feeds (${uniqueFallbackPaths.length} endpoint(s)).`
+            : `Primary screener returned no rows; fallback loaded from discovery feeds (${uniqueFallbackPaths.length} endpoint(s)).`
+        const extraWarnings: string[] = []
+        if (!filteredFallback.length) {
+          extraWarnings.push(
+            "Fallback returned data but current filters removed all rows. Try wider ranges, clear cap constraints, or switch mover filter."
+          )
+        }
         setScreenerWarnings([
           ...uniqUnsupported,
-          `Primary screener returned no rows; fallback loaded from discovery feeds (${Array.from(new Set(fallbackPaths)).length} endpoint(s)).`,
+          baseWarning,
+          ...extraWarnings,
         ])
         setScreenerResult({
           url: primaryResult?.url || buildUrl(queryBase, screenerOp.path, buildScreenerParams(screenerProvider)),
           status: 200,
           ok: true,
           data: {
-            results: deduped,
+            results: filteredFallback,
             meta: {
               mode: "discovery_fallback",
               primary_endpoint: screenerOp.path,
-              fallback_endpoints: Array.from(new Set(fallbackPaths)),
+              primary_status: primaryStatus,
+              fallback_endpoints: uniqueFallbackPaths,
             },
           },
         })
-        toast.message("Primary screener was empty. Loaded rows from OpenBB discovery feeds.")
+        if (filteredFallback.length) {
+          toast.message("Primary screener was empty. Loaded rows from OpenBB discovery feeds.")
+        } else {
+          toast.message("Primary screener was empty. Fallback returned rows, but current filters removed them.")
+        }
         return
       }
 
@@ -3117,6 +3464,34 @@ export default function OpenbbPage() {
                   />
                 </div>
                 <div className="space-y-1">
+                  <Label htmlFor="screener-cap-preset">Market-cap preset</Label>
+                  <select
+                    id="screener-cap-preset"
+                    aria-label="Screener market-cap preset"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={screenerCapPreset}
+                    onChange={(e) => {
+                      const nextId = e.target.value as ScreenerCapPresetId
+                      setScreenerCapPreset(nextId)
+                      const preset = SCREENER_CAP_PRESETS.find((p) => p.id === nextId)
+                      if (!preset) return
+                      setScreenerValidationErrors([])
+                      setScreenerFilters((prev) => ({
+                        ...prev,
+                        minMarketCap: preset.min,
+                        maxMarketCap: preset.max,
+                      }))
+                    }}
+                  >
+                    {SCREENER_CAP_PRESETS.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.label}
+                      </option>
+                    ))}
+                    {screenerCapPreset === "custom" ? <option value="custom">Custom</option> : null}
+                  </select>
+                </div>
+                <div className="space-y-1">
                   <Label htmlFor="screener-min-market-cap">
                     Min market cap {screenerFieldSupport.minMarketCap ? "(optional)" : "(unsupported)"}
                   </Label>
@@ -3218,10 +3593,80 @@ export default function OpenbbPage() {
                 </div>
               </div>
 
+              {screenerAdvancedParams.length ? (
+                <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-medium text-foreground">Advanced endpoint filters</div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setScreenerAdvancedValues({})}
+                      className="h-7 px-2 text-xs"
+                    >
+                      Clear advanced
+                    </Button>
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Exposes all additional query filters detected from this OpenBB screener endpoint.
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {screenerAdvancedParams.map((param) => {
+                      const hint =
+                        param.enumValues.length
+                          ? `Allowed: ${param.enumValues.slice(0, 8).join(", ")}${param.enumValues.length > 8 ? ", …" : ""}`
+                          : `${param.type}${param.required ? " · required" : " · optional"}`
+                      return (
+                        <div key={param.name} className="space-y-1">
+                          <Label htmlFor={`screener-advanced-${param.name}`}>
+                            {param.label}
+                            {param.required ? " (required)" : " (optional)"}
+                          </Label>
+                          {param.enumValues.length ? (
+                            <select
+                              id={`screener-advanced-${param.name}`}
+                              aria-label={`Screener advanced filter ${param.label}`}
+                              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                              value={screenerAdvancedValues[param.name] || ""}
+                              onChange={(e) => {
+                                setScreenerValidationErrors([])
+                                setScreenerAdvancedValues((prev) => ({ ...prev, [param.name]: e.target.value }))
+                              }}
+                            >
+                              <option value="">(not set)</option>
+                              {param.enumValues.map((value) => (
+                                <option key={value} value={value}>
+                                  {value}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <Input
+                              id={`screener-advanced-${param.name}`}
+                              aria-label={`Screener advanced filter ${param.label}`}
+                              value={screenerAdvancedValues[param.name] || ""}
+                              onChange={(e) => {
+                                setScreenerValidationErrors([])
+                                setScreenerAdvancedValues((prev) => ({ ...prev, [param.name]: e.target.value }))
+                              }}
+                              placeholder={`Enter ${param.label.toLowerCase()}`}
+                            />
+                          )}
+                          <div className="text-[11px] text-muted-foreground" title={param.description || hint}>
+                            {param.description ? `${param.description} · ` : ""}
+                            {hint}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
               <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">
                 <div>Country is fixed to <span className="font-medium text-foreground">US</span>.</div>
                 <div>Use plain numeric values only (no scientific notation).</div>
                 <div>For range fields, min must be less than or equal to max.</div>
+                <div>Use market-cap presets for quick universes (small/mid/large) or set custom min/max manually.</div>
                 <div>Typical screener response time: 1-10 seconds depending on provider and filters.</div>
               </div>
 
