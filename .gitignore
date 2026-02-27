@@ -1,0 +1,15 @@
+/target/
+**/*.rs.bk
+.DS_Store
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+coverage/
+.idea/
+.vscode/
+.ai/logs/**
+.ai/artifacts/**
+.ai/notes/private/**

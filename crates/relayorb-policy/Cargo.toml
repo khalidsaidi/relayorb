@@ -1,0 +1,18 @@
+[package]
+name = "relayorb-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+config.workspace = true
+relayorb-core = { path = "../relayorb-core" }
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+time.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

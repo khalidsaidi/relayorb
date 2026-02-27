@@ -1,0 +1,13 @@
+[[allow]]
+role = "researcher"
+capability_prefix = "rag."
+side_effects = "read_only"
+
+[[allow]]
+role = "builder"
+capability_prefix = "doc."
+side_effects = "mutating"
+
+[budget]
+default_limit_per_minute = 60
+window_seconds = 60

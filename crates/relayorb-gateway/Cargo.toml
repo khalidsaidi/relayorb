@@ -1,0 +1,29 @@
+[package]
+name = "relayorb-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+hex.workspace = true
+hmac.workspace = true
+jsonwebtoken.workspace = true
+once_cell.workspace = true
+relayorb-core = { path = "../relayorb-core" }
+relayorb-policy = { path = "../relayorb-policy" }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+time.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[[bin]]
+name = "relayorb-gateway"
+path = "src/main.rs"

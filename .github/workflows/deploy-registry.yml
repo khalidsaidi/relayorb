@@ -1,0 +1,58 @@
+name: Deploy Registry
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "crates/relayorb-registry/**"
+      - "crates/relayorb-core/**"
+      - ".github/workflows/deploy-registry.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: relayorb-prod
+  REGION: us-central1
+  REPOSITORY: relayorb
+  SERVICE_NAME: relayorb-registry
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (OIDC)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_REGISTRY_DEPLOYER_SA }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
+          docker build -f crates/relayorb-registry/Dockerfile -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy Cloud Run (internal)
+        run: |
+          gcloud run deploy "${{ env.SERVICE_NAME }}" \
+            --project "${{ env.PROJECT_ID }}" \
+            --region "${{ env.REGION }}" \
+            --image "$IMAGE" \
+            --service-account relayorb-registry-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
+            --ingress internal \
+            --no-allow-unauthenticated \
+            --set-env-vars RELAYORB_ENV=prod \
+            --set-secrets DATABASE_URL=database-url:latest

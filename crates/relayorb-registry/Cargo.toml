@@ -1,0 +1,23 @@
+[package]
+name = "relayorb-registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+once_cell.workspace = true
+relayorb-core = { path = "../relayorb-core" }
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+time.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[[bin]]
+name = "relayorb-registry"
+path = "src/main.rs"

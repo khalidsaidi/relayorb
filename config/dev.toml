@@ -1,0 +1,8 @@
+relayorb_env = "dev"
+relayorb_region = "us-central1"
+registry_url = "http://127.0.0.1:8081"
+database_url = "sqlite://./data/relayorb-dev.db?mode=rwc"
+secret_auth_hmac = "relayorb-dev-secret"
+jwt_public_keys_url = ""
+otel_exporter_otlp_endpoint = ""
+policy_path = "config/policy.toml"
