@@ -7,6 +7,8 @@ on:
     paths:
       - "crates/relayorb-registry/**"
       - "crates/relayorb-core/**"
+      - "crates/relayorb-worker-sdk/**"
+      - "crates/relayorb-samples/worker-mock-rag/**"
       - "config/registry-ownership.toml"
       - "ops/smoke/registry-governance-smoke.sh"
       - ".github/workflows/deploy-registry.yml"
@@ -50,6 +52,7 @@ jobs:
 
       - name: Deploy Cloud Run
         run: |
+          REGISTRY_URL="$(gcloud run services describe "${{ env.SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
           gcloud run deploy "${{ env.SERVICE_NAME }}" \
             --project "${{ env.PROJECT_ID }}" \
             --region "${{ env.REGION }}" \
@@ -57,23 +60,25 @@ jobs:
             --service-account relayorb-registry-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
             --ingress all \
             --allow-unauthenticated \
-            --set-env-vars RELAYORB_ENV=prod,RELAYORB_SERVICE_NAME=${{ env.SERVICE_NAME }},REGISTRY_BIND_ADDR=0.0.0.0:8080,REGISTRY_OWNERSHIP_POLICY_PATH=config/registry-ownership.toml \
+            --set-env-vars RELAYORB_ENV=prod,RELAYORB_SERVICE_NAME=${{ env.SERVICE_NAME }},REGISTRY_BIND_ADDR=0.0.0.0:8080,REGISTRY_OWNERSHIP_POLICY_PATH=config/registry-ownership.toml,REGISTRY_WORKER_AUTH_MODE=oidc,REGISTRY_WORKER_OIDC_ISSUER=https://accounts.google.com,REGISTRY_WORKER_OIDC_AUDIENCE=$REGISTRY_URL,REGISTRY_WORKER_JWKS_URL=https://www.googleapis.com/oauth2/v3/certs \
             --set-secrets DATABASE_URL=database-url:latest
 
       - name: Refresh Owner Worker Registration
         shell: bash
         run: |
           set -euo pipefail
+          REGISTRY_URL="$(gcloud run services describe "${{ env.SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
           NONCE="$(date +%s)"
           gcloud run services update "${{ env.OWNER_SERVICE_NAME }}" \
             --project "${{ env.PROJECT_ID }}" \
             --region "${{ env.REGION }}" \
-            --update-env-vars "REGISTRY_SMOKE_NONCE=$NONCE"
+            --update-env-vars "REGISTRY_SMOKE_NONCE=$NONCE,REGISTRY_IDENTITY_AUDIENCE=$REGISTRY_URL"
 
       - name: Governance Smoke (post-deploy)
         shell: bash
         run: |
           set -euo pipefail
           REGISTRY_URL="$(gcloud run services describe "${{ env.SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
+          export REGISTRY_SMOKE_BEARER_TOKEN="$(gcloud auth print-identity-token --audiences "$REGISTRY_URL")"
           echo "Running governance smoke: $REGISTRY_URL"
           bash ops/smoke/registry-governance-smoke.sh "$REGISTRY_URL"

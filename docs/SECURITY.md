@@ -31,6 +31,7 @@ Default behavior:
 - Registry isolates provider lookups by environment (`env`), preventing cross-env routing.
 - Registry supports capability ownership governance in prod (`config/registry-ownership.toml`):
   - capability prefix rules map to allowed worker `serviceName` values.
+  - optional `allowed_service_accounts` binds governed capability registration to verified OIDC worker identity (service account email/subject), not only claimed `serviceName`.
   - registration is rejected with `FORBIDDEN` when a non-owner service attempts governed capability registration.
   - prod registry blocks cross-env `env` override on capability lookup.
 - Async job reads (`GET /v1/jobs/:id`) are creator-or-admin only:

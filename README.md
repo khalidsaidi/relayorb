@@ -75,6 +75,12 @@ Base config is `config/dev.toml`, overridden by env vars:
 - `JWKS_REFRESH_INTERVAL_SECONDS` (optional, default `300`)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (optional)
 - `REGISTRY_OWNERSHIP_POLICY_PATH` (optional, default `config/registry-ownership.toml`)
+- `REGISTRY_WORKER_AUTH_MODE` (`disabled` or `oidc`; optional for registry)
+- `REGISTRY_WORKER_OIDC_ISSUER` (registry worker auth, default `https://accounts.google.com`)
+- `REGISTRY_WORKER_OIDC_AUDIENCE` (required when registry worker auth mode is `oidc`)
+- `REGISTRY_WORKER_JWKS_URL` (registry worker auth, default Google JWKS URL)
+- `REGISTRY_WORKER_AUTH_CLOCK_SKEW_SECONDS` (optional for registry worker auth)
+- `REGISTRY_WORKER_JWKS_REFRESH_INTERVAL_SECONDS` (optional for registry worker auth)
 
 ## Service naming model
 
@@ -88,6 +94,7 @@ Workers should set:
 - `RELAYORB_SERVICE_NAME`
 - `REGISTRY_URL`
 - `RELAYORB_PUBLIC_BASE_URL` (or `WORKER_BASE_URL` alias)
+- `REGISTRY_IDENTITY_AUDIENCE` (required when registry enforces worker OIDC identity)
 
 ## Security
 

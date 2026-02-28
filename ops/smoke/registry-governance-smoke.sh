@@ -20,6 +20,7 @@ MAX_ATTEMPTS="${MAX_ATTEMPTS:-24}"
 SLEEP_SECONDS="${SLEEP_SECONDS:-5}"
 SMOKE_ENV="${SMOKE_ENV:-prod}"
 OVERRIDE_ENV="${OVERRIDE_ENV:-dev}"
+SMOKE_BEARER_TOKEN="${REGISTRY_SMOKE_BEARER_TOKEN:-}"
 
 TMP_DIR="$(mktemp -d /tmp/relayorb-registry-smoke.XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -34,13 +35,16 @@ curl_json() {
   local body_file="$3"
   local data="${4:-}"
 
+  local -a args
+  args=(-sS -o "$body_file" -w "%{http_code}" -X "$method")
+  if [ "$SMOKE_BEARER_TOKEN" != "" ]; then
+    args+=(-H "Authorization: Bearer $SMOKE_BEARER_TOKEN")
+  fi
+
   if [ "$data" = "" ]; then
-    curl -sS -o "$body_file" -w "%{http_code}" -X "$method" "$url"
+    curl "${args[@]}" "$url"
   else
-    curl -sS -o "$body_file" -w "%{http_code}" -X "$method" \
-      -H "content-type: application/json" \
-      --data "$data" \
-      "$url"
+    curl "${args[@]}" -H "content-type: application/json" --data "$data" "$url"
   fi
 }
 

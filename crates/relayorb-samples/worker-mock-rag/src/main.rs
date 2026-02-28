@@ -66,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .or(base.relayorb_region.clone());
     let registry_url = std::env::var("REGISTRY_URL").unwrap_or(base.registry_url);
+    let registry_identity_audience = std::env::var("REGISTRY_IDENTITY_AUDIENCE").ok();
 
     let config = WorkerConfig {
         bind_addr,
@@ -75,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
         base_url,
         region,
         registry_url,
+        registry_identity_audience,
         ttl_seconds: 60,
         heartbeat_interval_seconds: 20,
     };

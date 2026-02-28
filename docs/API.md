@@ -124,6 +124,7 @@ Service health/readiness envelope with `requestId` and `traceId`.
 Worker self-registers instance + manifests with TTL.
 Registration includes `env` and `serviceName`.
 In `prod`, capability ownership rules may restrict registration by `serviceName` for specific capability prefixes.
+When ownership rules define `allowed_service_accounts`, registration must include `Authorization: Bearer <worker id token>` and the token identity must match the rule allowlist.
 
 ### POST `/v1/heartbeat`
 Worker refreshes TTL and uploads load stats.

@@ -8,8 +8,10 @@ license.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 config.workspace = true
+jsonwebtoken.workspace = true
 once_cell.workspace = true
 relayorb-core = { path = "../relayorb-core" }
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true

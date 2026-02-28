@@ -52,6 +52,7 @@ pub struct WorkerConfig {
     pub base_url: String,
     pub region: Option<String>,
     pub registry_url: String,
+    pub registry_identity_audience: Option<String>,
     pub ttl_seconds: i64,
     pub heartbeat_interval_seconds: u64,
 }
@@ -66,6 +67,7 @@ impl Default for WorkerConfig {
             base_url: "http://127.0.0.1:8090".to_string(),
             region: Some("local".to_string()),
             registry_url: "http://127.0.0.1:8081".to_string(),
+            registry_identity_audience: None,
             ttl_seconds: 60,
             heartbeat_interval_seconds: 20,
         }
@@ -185,6 +187,7 @@ impl WorkerRuntime {
 
         let response = client
             .post(url)
+            .headers(self.registry_auth_headers(&client).await?)
             .json(&payload)
             .send()
             .await
@@ -213,7 +216,19 @@ impl WorkerRuntime {
             };
 
             let url = format!("{}/v1/heartbeat", self.config.registry_url);
-            let response = client.post(&url).json(&payload).send().await;
+            let auth_headers = match self.registry_auth_headers(&client).await {
+                Ok(headers) => headers,
+                Err(err) => {
+                    warn!(error = %err, "worker failed to prepare registry auth headers");
+                    continue;
+                }
+            };
+            let response = client
+                .post(&url)
+                .headers(auth_headers)
+                .json(&payload)
+                .send()
+                .await;
             match response {
                 Ok(res) if res.status().is_success() => {}
                 Ok(res) => {
@@ -225,6 +240,60 @@ impl WorkerRuntime {
             }
         }
     }
+
+    async fn registry_auth_headers(
+        &self,
+        client: &reqwest::Client,
+    ) -> anyhow::Result<reqwest::header::HeaderMap> {
+        let mut headers = reqwest::header::HeaderMap::new();
+        let Some(audience) = self.config.registry_identity_audience.as_deref() else {
+            return Ok(headers);
+        };
+
+        let token = fetch_metadata_identity_token(client, audience).await?;
+        let auth_value = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+            .context("failed to construct authorization header for registry")?;
+        headers.insert(reqwest::header::AUTHORIZATION, auth_value);
+        Ok(headers)
+    }
+}
+
+async fn fetch_metadata_identity_token(
+    client: &reqwest::Client,
+    audience: &str,
+) -> anyhow::Result<String> {
+    let mut url = reqwest::Url::parse(
+        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity",
+    )
+    .context("failed to parse metadata identity URL")?;
+    url.query_pairs_mut()
+        .append_pair("audience", audience)
+        .append_pair("format", "full");
+
+    let response = client
+        .get(url)
+        .header("Metadata-Flavor", "Google")
+        .send()
+        .await
+        .context("failed to fetch identity token from metadata server")?;
+
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "metadata identity token endpoint returned non-success status: {}",
+            response.status()
+        );
+    }
+
+    let token = response
+        .text()
+        .await
+        .context("failed reading identity token response body")?;
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("metadata identity token endpoint returned an empty token");
+    }
+
+    Ok(trimmed.to_string())
 }
 
 #[derive(Default)]

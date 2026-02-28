@@ -33,11 +33,16 @@
    - `JWKS_URL`
    - `AUTH_CLOCK_SKEW_SECONDS` (recommended `120`)
    - Emergency-only fallback: if running HMAC in prod, set `ALLOW_HMAC_IN_PROD=true` explicitly.
-5. Push to `main` or run deploy workflows manually:
+5. For identity-bound registry governance (recommended), configure registry worker auth:
+   - `REGISTRY_WORKER_AUTH_MODE=oidc`
+   - `REGISTRY_WORKER_OIDC_AUDIENCE=<registry-url>`
+   - optional overrides: `REGISTRY_WORKER_OIDC_ISSUER`, `REGISTRY_WORKER_JWKS_URL`
+   - workers must set `REGISTRY_IDENTITY_AUDIENCE=<registry-url>` so registration/heartbeat include service identity tokens.
+6. Push to `main` or run deploy workflows manually:
    - `.github/workflows/deploy-registry.yml`
    - `.github/workflows/deploy-gateway.yml`
    - Registry deploy workflow runs `ops/smoke/registry-governance-smoke.sh` post-deploy and fails if governance checks regress.
-6. Confirm services:
+7. Confirm services:
    - `gcloud run services list --region us-central1`
 
 ## Domain setup (GoDaddy)

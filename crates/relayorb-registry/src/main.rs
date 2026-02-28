@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, net::SocketAddr, path::Path as FsPath, str::FromStr, sync::Arc};
 
+use anyhow::Context;
 use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
@@ -7,18 +8,25 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use jsonwebtoken::{
+    decode, decode_header,
+    jwk::{Jwk, JwkSet},
+    Algorithm, DecodingKey, Validation,
+};
 use once_cell::sync::Lazy;
 use relayorb_core::{
     canonicalize_json, init_tracing, is_valid_capability_id, load_base_settings,
     validate_json_with_schema, ApiError, CapabilityManifest, CapabilitySchemaHashes, ErrorCode,
     ProviderStats, ProviderView, RelayOrbError, RequestMeta, SuccessEnvelope,
 };
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use time::OffsetDateTime;
+use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
-use tracing::{error, info, info_span};
+use tracing::{error, info, info_span, warn};
 use uuid::Uuid;
 
 static REGISTER_SCHEMA: Lazy<Value> = Lazy::new(|| {
@@ -71,6 +79,7 @@ struct AppState {
     default_ttl_seconds: i64,
     env: String,
     ownership_policy: OwnershipPolicy,
+    worker_auth: WorkerAuthConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +169,36 @@ struct OwnershipRule {
     env: Option<String>,
     #[serde(alias = "allowed_service_names")]
     allowed_service_names: Vec<String>,
+    #[serde(default)]
+    #[serde(alias = "allowed_service_accounts")]
+    allowed_service_accounts: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct WorkerIdentity {
+    subject: Option<String>,
+    email: Option<String>,
+}
+
+#[derive(Clone)]
+enum WorkerAuthConfig {
+    Disabled,
+    Oidc(OidcWorkerAuthState),
+}
+
+#[derive(Clone)]
+struct OidcWorkerAuthState {
+    issuer: String,
+    audience: String,
+    clock_skew_seconds: u64,
+    jwks: JwksCache,
+}
+
+#[derive(Clone)]
+struct JwksCache {
+    url: String,
+    client: Client,
+    value: Arc<RwLock<Arc<JwkSet>>>,
 }
 
 impl OwnershipPolicy {
@@ -183,6 +222,7 @@ impl OwnershipPolicy {
         &self,
         registration_env: &str,
         service_name: Option<&str>,
+        worker_identity: Option<&WorkerIdentity>,
         capability_id: &str,
     ) -> Result<(), RelayOrbError> {
         if !self.enforce_for_env(registration_env) {
@@ -215,6 +255,7 @@ impl OwnershipPolicy {
             })?;
 
         let mut allowed_service_names = BTreeSet::new();
+        let mut allowed_identity_bindings = BTreeSet::new();
         let mut matched_prefixes = BTreeSet::new();
 
         for rule in &matching_rules {
@@ -225,26 +266,83 @@ impl OwnershipPolicy {
                     allowed_service_names.insert(trimmed.to_string());
                 }
             }
+            for identity in &rule.allowed_service_accounts {
+                let trimmed = identity.trim().to_ascii_lowercase();
+                if !trimmed.is_empty() {
+                    allowed_identity_bindings.insert(trimmed);
+                }
+            }
         }
 
-        if allowed_service_names.contains(normalized_service_name) {
-            return Ok(());
+        if !allowed_service_names.contains(normalized_service_name) {
+            return Err(RelayOrbError::new(
+                ErrorCode::Forbidden,
+                format!(
+                    "service '{}' is not allowed to register capability '{}' in env '{}'",
+                    normalized_service_name, capability_id, registration_env
+                ),
+            )
+            .with_details(json!({
+                "env": registration_env,
+                "capabilityId": capability_id,
+                "serviceName": normalized_service_name,
+                "allowedServiceNames": allowed_service_names,
+                "matchedPrefixes": matched_prefixes,
+            })));
         }
 
-        Err(RelayOrbError::new(
-            ErrorCode::Forbidden,
-            format!(
-                "service '{}' is not allowed to register capability '{}' in env '{}'",
-                normalized_service_name, capability_id, registration_env
-            ),
-        )
-        .with_details(json!({
-            "env": registration_env,
-            "capabilityId": capability_id,
-            "serviceName": normalized_service_name,
-            "allowedServiceNames": allowed_service_names,
-            "matchedPrefixes": matched_prefixes,
-        })))
+        if !allowed_identity_bindings.is_empty() {
+            let identity = worker_identity.ok_or_else(|| {
+                RelayOrbError::new(
+                    ErrorCode::Forbidden,
+                    "worker identity token is required for governed capability registration",
+                )
+                .with_details(json!({
+                    "env": registration_env,
+                    "capabilityId": capability_id,
+                    "serviceName": normalized_service_name,
+                    "matchedPrefixes": matched_prefixes,
+                }))
+            })?;
+
+            if !identity.matches_any(&allowed_identity_bindings) {
+                return Err(RelayOrbError::new(
+                    ErrorCode::Forbidden,
+                    format!(
+                        "worker identity is not allowed to register capability '{}' in env '{}'",
+                        capability_id, registration_env
+                    ),
+                )
+                .with_details(json!({
+                    "env": registration_env,
+                    "capabilityId": capability_id,
+                    "serviceName": normalized_service_name,
+                    "workerSubject": identity.subject,
+                    "workerEmail": identity.email,
+                    "allowedServiceAccounts": allowed_identity_bindings,
+                    "matchedPrefixes": matched_prefixes,
+                })));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn requires_identity_binding(
+        &self,
+        registration_env: &str,
+        capabilities: &[CapabilityManifest],
+    ) -> bool {
+        if !self.enforce_for_env(registration_env) {
+            return false;
+        }
+
+        capabilities.iter().any(|capability| {
+            self.rules.iter().any(|rule| {
+                rule.matches(registration_env, &capability.capability_id)
+                    && rule.requires_identity_binding()
+            })
+        })
     }
 }
 
@@ -262,6 +360,225 @@ impl OwnershipRule {
 
         env_matches && capability_id.starts_with(&self.capability_prefix)
     }
+
+    fn requires_identity_binding(&self) -> bool {
+        self.allowed_service_accounts
+            .iter()
+            .any(|entry| !entry.trim().is_empty())
+    }
+}
+
+impl WorkerIdentity {
+    fn matches_any(&self, allowed: &BTreeSet<String>) -> bool {
+        if let Some(email) = &self.email {
+            if allowed.contains(&email.to_ascii_lowercase()) {
+                return true;
+            }
+        }
+
+        if let Some(subject) = &self.subject {
+            if allowed.contains(&subject.to_ascii_lowercase()) {
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
+async fn build_worker_auth_config() -> anyhow::Result<WorkerAuthConfig> {
+    let mode = std::env::var("REGISTRY_WORKER_AUTH_MODE")
+        .unwrap_or_else(|_| "disabled".to_string())
+        .trim()
+        .to_ascii_lowercase();
+
+    match mode.as_str() {
+        "disabled" => Ok(WorkerAuthConfig::Disabled),
+        "oidc" => {
+            let issuer = std::env::var("REGISTRY_WORKER_OIDC_ISSUER")
+                .unwrap_or_else(|_| "https://accounts.google.com".to_string());
+            let audience = std::env::var("REGISTRY_WORKER_OIDC_AUDIENCE")
+                .context("REGISTRY_WORKER_AUTH_MODE=oidc requires REGISTRY_WORKER_OIDC_AUDIENCE")?;
+            let jwks_url = std::env::var("REGISTRY_WORKER_JWKS_URL")
+                .unwrap_or_else(|_| "https://www.googleapis.com/oauth2/v3/certs".to_string());
+            let clock_skew_seconds = std::env::var("REGISTRY_WORKER_AUTH_CLOCK_SKEW_SECONDS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(120);
+            let client = Client::new();
+            let jwks = JwksCache::new(jwks_url, client).await?;
+            Ok(WorkerAuthConfig::Oidc(OidcWorkerAuthState {
+                issuer,
+                audience,
+                clock_skew_seconds,
+                jwks,
+            }))
+        }
+        _ => anyhow::bail!("unsupported REGISTRY_WORKER_AUTH_MODE '{mode}'"),
+    }
+}
+
+fn spawn_jwks_refresh(oidc: OidcWorkerAuthState, refresh_seconds: u64) {
+    let interval = refresh_seconds.max(30);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval));
+        loop {
+            ticker.tick().await;
+            if let Err(err) = oidc.jwks.refresh().await {
+                warn!(error = %err, "registry worker JWKS refresh failed");
+            }
+        }
+    });
+}
+
+impl JwksCache {
+    async fn new(url: String, client: Client) -> anyhow::Result<Self> {
+        let jwks = Arc::new(fetch_jwks(&client, &url).await?);
+        Ok(Self {
+            url,
+            client,
+            value: Arc::new(RwLock::new(jwks)),
+        })
+    }
+
+    async fn refresh(&self) -> anyhow::Result<()> {
+        let jwks = Arc::new(fetch_jwks(&self.client, &self.url).await?);
+        let mut guard = self.value.write().await;
+        *guard = jwks;
+        Ok(())
+    }
+
+    async fn find_key(&self, kid: &str) -> Option<Jwk> {
+        let guard = self.value.read().await;
+        guard.find(kid).cloned()
+    }
+}
+
+async fn authenticate_worker_identity(
+    auth: &WorkerAuthConfig,
+    headers: &HeaderMap,
+) -> Result<WorkerIdentity, RelayOrbError> {
+    match auth {
+        WorkerAuthConfig::Disabled => Err(RelayOrbError::new(
+            ErrorCode::Forbidden,
+            "worker identity verification is disabled on registry",
+        )),
+        WorkerAuthConfig::Oidc(oidc) => {
+            let token = bearer_token(headers).ok_or_else(|| {
+                RelayOrbError::new(ErrorCode::Unauthorized, "missing bearer token")
+            })?;
+            verify_worker_oidc_jwt(&token, oidc).await
+        }
+    }
+}
+
+async fn verify_worker_oidc_jwt(
+    token: &str,
+    oidc: &OidcWorkerAuthState,
+) -> Result<WorkerIdentity, RelayOrbError> {
+    let header = decode_header(token)
+        .map_err(|_| RelayOrbError::new(ErrorCode::Unauthorized, "invalid JWT header"))?;
+    if !is_supported_jwt_alg(header.alg) {
+        return Err(RelayOrbError::new(
+            ErrorCode::Unauthorized,
+            "unsupported JWT algorithm",
+        ));
+    }
+
+    let kid = header
+        .kid
+        .ok_or_else(|| RelayOrbError::new(ErrorCode::Unauthorized, "JWT missing kid"))?;
+
+    let mut jwk = oidc.jwks.find_key(&kid).await;
+    if jwk.is_none() {
+        oidc.jwks.refresh().await.map_err(|err| {
+            RelayOrbError::new(ErrorCode::Unauthorized, "failed refreshing JWKS")
+                .with_details(json!({ "error": err.to_string() }))
+        })?;
+        jwk = oidc.jwks.find_key(&kid).await;
+    }
+
+    let jwk = jwk.ok_or_else(|| {
+        RelayOrbError::new(
+            ErrorCode::Unauthorized,
+            "JWT kid not found in JWKS after refresh",
+        )
+    })?;
+
+    verify_worker_jwt_with_jwk(token, &jwk, oidc, header.alg)
+}
+
+fn verify_worker_jwt_with_jwk(
+    token: &str,
+    jwk: &Jwk,
+    oidc: &OidcWorkerAuthState,
+    algorithm: Algorithm,
+) -> Result<WorkerIdentity, RelayOrbError> {
+    let mut validation = Validation::new(algorithm);
+    validation.set_issuer(std::slice::from_ref(&oidc.issuer));
+    validation.set_audience(std::slice::from_ref(&oidc.audience));
+    validation.leeway = oidc.clock_skew_seconds;
+    validation.validate_exp = true;
+    validation.validate_nbf = true;
+
+    let decoding_key = DecodingKey::from_jwk(jwk)
+        .map_err(|_| RelayOrbError::new(ErrorCode::Unauthorized, "failed to build decoding key"))?;
+    let claims = decode::<Value>(token, &decoding_key, &validation)
+        .map_err(|_| RelayOrbError::new(ErrorCode::Unauthorized, "JWT verification failed"))?
+        .claims;
+
+    Ok(WorkerIdentity {
+        subject: claim_string(&claims, "sub"),
+        email: claim_string(&claims, "email"),
+    })
+}
+
+fn is_supported_jwt_alg(alg: Algorithm) -> bool {
+    matches!(
+        alg,
+        Algorithm::RS256
+            | Algorithm::RS384
+            | Algorithm::RS512
+            | Algorithm::PS256
+            | Algorithm::PS384
+            | Algorithm::PS512
+            | Algorithm::ES256
+            | Algorithm::ES384
+    )
+}
+
+fn claim_string(claims: &Value, key: &str) -> Option<String> {
+    claims
+        .get(key)
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get("authorization")?.to_str().ok()?;
+    value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))
+        .map(ToString::to_string)
+}
+
+async fn fetch_jwks(client: &Client, url: &str) -> anyhow::Result<JwkSet> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("failed to fetch JWKS from {url}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        anyhow::bail!("JWKS endpoint returned non-success status: {status}");
+    }
+
+    let body = response
+        .text()
+        .await
+        .context("failed to read JWKS response body")?;
+    let jwks: JwkSet = serde_json::from_str(&body).context("failed to parse JWKS response")?;
+    Ok(jwks)
 }
 
 #[tokio::main]
@@ -282,6 +599,16 @@ async fn main() -> anyhow::Result<()> {
     let ownership_policy_path = std::env::var("REGISTRY_OWNERSHIP_POLICY_PATH")
         .unwrap_or_else(|_| "config/registry-ownership.toml".to_string());
     let ownership_policy = OwnershipPolicy::from_path(&ownership_policy_path)?;
+    let worker_auth = build_worker_auth_config().await?;
+    let jwks_refresh_interval_seconds =
+        std::env::var("REGISTRY_WORKER_JWKS_REFRESH_INTERVAL_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(300);
+
+    if let WorkerAuthConfig::Oidc(oidc) = worker_auth.clone() {
+        spawn_jwks_refresh(oidc, jwks_refresh_interval_seconds);
+    }
 
     let pool = SqlitePool::connect(&database_url).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
@@ -295,6 +622,7 @@ async fn main() -> anyhow::Result<()> {
         default_ttl_seconds: ttl_seconds,
         env: base.relayorb_env,
         ownership_policy,
+        worker_auth,
     });
 
     let router = Router::new()
@@ -313,6 +641,10 @@ async fn main() -> anyhow::Result<()> {
         ownershipPolicyPath = %ownership_policy_path,
         ownershipRules = state.ownership_policy.rules.len(),
         ownershipEnforceInProd = state.ownership_policy.enforce_in_prod,
+        workerAuthMode = %match &state.worker_auth {
+            WorkerAuthConfig::Disabled => "disabled",
+            WorkerAuthConfig::Oidc(_) => "oidc",
+        },
         "registry listening"
     );
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -375,6 +707,18 @@ async fn register(
     let now = OffsetDateTime::now_utc().unix_timestamp();
     let ttl = request.ttl_seconds.unwrap_or(state.default_ttl_seconds);
     let registration_env = request.env.clone().unwrap_or_else(|| state.env.clone());
+    let worker_identity = if state
+        .ownership_policy
+        .requires_identity_binding(&registration_env, &request.capabilities)
+    {
+        Some(
+            authenticate_worker_identity(&state.worker_auth, &headers)
+                .await
+                .map_err(|err| api_error(&meta, err))?,
+        )
+    } else {
+        None
+    };
 
     for capability in &request.capabilities {
         state
@@ -382,6 +726,7 @@ async fn register(
             .assert_registration_allowed(
                 &registration_env,
                 request.service_name.as_deref(),
+                worker_identity.as_ref(),
                 &capability.capability_id,
             )
             .map_err(|err| api_error(&meta, err))?;
@@ -874,6 +1219,9 @@ mod tests {
                 capability_prefix: "rag.".to_string(),
                 env: Some("prod".to_string()),
                 allowed_service_names: vec!["relayorb-rag-prod".to_string()],
+                allowed_service_accounts: vec![
+                    "relayorb-rag-sa@relayorb-prod.iam.gserviceaccount.com".to_string(),
+                ],
             }],
         }
     }
@@ -881,8 +1229,15 @@ mod tests {
     #[test]
     fn ownership_allows_matching_service_in_prod() {
         let policy = prod_policy();
-        let result =
-            policy.assert_registration_allowed("prod", Some("relayorb-rag-prod"), "rag.search@v1");
+        let result = policy.assert_registration_allowed(
+            "prod",
+            Some("relayorb-rag-prod"),
+            Some(&super::WorkerIdentity {
+                subject: Some("svc-subject".to_string()),
+                email: Some("relayorb-rag-sa@relayorb-prod.iam.gserviceaccount.com".to_string()),
+            }),
+            "rag.search@v1",
+        );
         assert!(result.is_ok());
     }
 
@@ -890,7 +1245,17 @@ mod tests {
     fn ownership_rejects_non_matching_service_in_prod() {
         let policy = prod_policy();
         let err = policy
-            .assert_registration_allowed("prod", Some("relayorb-rogue-prod"), "rag.search@v1")
+            .assert_registration_allowed(
+                "prod",
+                Some("relayorb-rogue-prod"),
+                Some(&super::WorkerIdentity {
+                    subject: Some("svc-subject".to_string()),
+                    email: Some(
+                        "relayorb-rag-sa@relayorb-prod.iam.gserviceaccount.com".to_string(),
+                    ),
+                }),
+                "rag.search@v1",
+            )
             .expect_err("expected forbidden error");
         assert!(err.message.contains("not allowed"));
     }
@@ -898,8 +1263,12 @@ mod tests {
     #[test]
     fn ownership_allows_ungoverned_capability() {
         let policy = prod_policy();
-        let result =
-            policy.assert_registration_allowed("prod", Some("relayorb-other-prod"), "doc.patch@v1");
+        let result = policy.assert_registration_allowed(
+            "prod",
+            Some("relayorb-other-prod"),
+            None,
+            "doc.patch@v1",
+        );
         assert!(result.is_ok());
     }
 
@@ -909,9 +1278,19 @@ mod tests {
         let result = policy.assert_registration_allowed(
             "staging",
             Some("relayorb-rogue-staging"),
+            None,
             "rag.search@v1",
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn ownership_rejects_missing_identity_when_rule_requires_it() {
+        let policy = prod_policy();
+        let err = policy
+            .assert_registration_allowed("prod", Some("relayorb-rag-prod"), None, "rag.search@v1")
+            .expect_err("expected forbidden error");
+        assert!(err.message.contains("identity token is required"));
     }
 
     #[test]
