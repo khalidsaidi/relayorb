@@ -79,6 +79,6 @@ jobs:
         run: |
           set -euo pipefail
           REGISTRY_URL="$(gcloud run services describe "${{ env.SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
-          export REGISTRY_SMOKE_BEARER_TOKEN="$(gcloud auth print-identity-token --audiences "$REGISTRY_URL")"
+          export REGISTRY_SMOKE_BEARER_TOKEN="$(gcloud auth print-identity-token --impersonate-service-account "${{ secrets.GCP_REGISTRY_DEPLOYER_SA }}" --audiences "$REGISTRY_URL")"
           echo "Running governance smoke: $REGISTRY_URL"
           bash ops/smoke/registry-governance-smoke.sh "$REGISTRY_URL"
