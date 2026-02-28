@@ -7,6 +7,9 @@ Service health envelope with `requestId` + `traceId`.
 
 ### GET `/metrics`
 Prometheus metrics endpoint (enabled unless `RELAYORB_METRICS_EXPORTER=none`).
+Auth behavior:
+- `METRICS_AUTH_MODE=public`: no auth required.
+- `METRICS_AUTH_MODE=bearer`: requires `Authorization: Bearer <METRICS_BEARER_TOKEN>`, else `401`.
 
 ### POST `/v1/invoke`
 
@@ -128,6 +131,9 @@ Service health/readiness envelope with `requestId` and `traceId`.
 
 ### GET `/metrics`
 Prometheus metrics endpoint.
+Auth behavior:
+- `METRICS_AUTH_MODE=public`: no auth required.
+- `METRICS_AUTH_MODE=bearer`: requires `Authorization: Bearer <METRICS_BEARER_TOKEN>`, else `401`.
 
 ### POST `/v1/register`
 Worker self-registers instance + manifests with TTL.
@@ -164,6 +170,9 @@ Invokes a capability handler. Input and output are validated against manifest sc
 
 ### GET `/metrics`
 Prometheus metrics endpoint.
+Auth behavior:
+- `METRICS_AUTH_MODE=public`: no auth required.
+- `METRICS_AUTH_MODE=bearer`: requires `Authorization: Bearer <METRICS_BEARER_TOKEN>`, else `401`.
 
 ## Trace propagation
 

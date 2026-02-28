@@ -81,6 +81,7 @@ impl Default for WorkerConfig {
 #[derive(Clone)]
 pub struct WorkerRuntime {
     config: WorkerConfig,
+    metrics_auth: MetricsAuthConfig,
     manifests: HashMap<String, CapabilityManifest>,
     handlers: HashMap<String, Arc<dyn CapabilityHandler>>,
     stats: Arc<StatsTracker>,
@@ -129,6 +130,12 @@ struct MetricContext {
 
 static METRIC_CONTEXT: OnceCell<MetricContext> = OnceCell::new();
 
+#[derive(Clone)]
+enum MetricsAuthConfig {
+    Public,
+    Bearer { token: String },
+}
+
 #[async_trait]
 pub trait CapabilityHandler: Send + Sync {
     async fn handle(&self, payload: Value) -> Result<Value, RelayOrbError>;
@@ -139,6 +146,7 @@ impl WorkerRuntime {
         config: WorkerConfig,
         capabilities: Vec<CapabilityRegistration>,
     ) -> anyhow::Result<Self> {
+        let metrics_auth = build_metrics_auth_config(&config.env)?;
         let mut manifests = HashMap::new();
         let mut handlers = HashMap::new();
 
@@ -154,6 +162,7 @@ impl WorkerRuntime {
 
         Ok(Self {
             config,
+            metrics_auth,
             manifests,
             handlers,
             stats: Arc::new(StatsTracker::default()),
@@ -484,7 +493,10 @@ async fn health(headers: HeaderMap) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(SuccessEnvelope::ok(&meta, json!({"healthy": true}))))
 }
 
-async fn metrics() -> impl IntoResponse {
+async fn metrics(State(state): State<Arc<WorkerRuntime>>, headers: HeaderMap) -> impl IntoResponse {
+    if !is_metrics_request_authorized(&state.metrics_auth, &headers) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
     match render_prometheus_metrics() {
         Some(body) => (StatusCode::OK, body).into_response(),
         None => (
@@ -492,6 +504,45 @@ async fn metrics() -> impl IntoResponse {
             "metrics exporter disabled (set RELAYORB_METRICS_EXPORTER=prometheus)",
         )
             .into_response(),
+    }
+}
+
+fn build_metrics_auth_config(env: &str) -> anyhow::Result<MetricsAuthConfig> {
+    let raw_mode = std::env::var("METRICS_AUTH_MODE").unwrap_or_else(|_| {
+        if env.eq_ignore_ascii_case("prod") {
+            "bearer".to_string()
+        } else {
+            "public".to_string()
+        }
+    });
+    match raw_mode.trim().to_ascii_lowercase().as_str() {
+        "public" => Ok(MetricsAuthConfig::Public),
+        "bearer" => {
+            let token = std::env::var("METRICS_BEARER_TOKEN")
+                .context("METRICS_AUTH_MODE=bearer requires METRICS_BEARER_TOKEN")?;
+            if token.trim().is_empty() {
+                anyhow::bail!("METRICS_AUTH_MODE=bearer requires a non-empty METRICS_BEARER_TOKEN");
+            }
+            Ok(MetricsAuthConfig::Bearer { token })
+        }
+        other => anyhow::bail!("unsupported METRICS_AUTH_MODE '{other}'"),
+    }
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get("authorization")?.to_str().ok()?;
+    value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))
+        .map(ToString::to_string)
+}
+
+fn is_metrics_request_authorized(config: &MetricsAuthConfig, headers: &HeaderMap) -> bool {
+    match config {
+        MetricsAuthConfig::Public => true,
+        MetricsAuthConfig::Bearer { token } => {
+            bearer_token(headers).is_some_and(|provided| provided == *token)
+        }
     }
 }
 

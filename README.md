@@ -75,6 +75,8 @@ Base config is `config/dev.toml`, overridden by env vars:
 - `JWKS_REFRESH_INTERVAL_SECONDS` (optional, default `300`)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (optional)
 - `RELAYORB_METRICS_EXPORTER` (`prometheus` by default; set `none` to disable `/metrics`)
+- `METRICS_AUTH_MODE` (`public` or `bearer`; defaults to `bearer` in prod and `public` elsewhere)
+- `METRICS_BEARER_TOKEN` (required when `METRICS_AUTH_MODE=bearer`)
 - `REGISTRY_OWNERSHIP_POLICY_PATH` (optional, default `config/registry-ownership.toml`)
 - `REGISTRY_WORKER_AUTH_MODE` (`disabled` or `oidc`; optional for registry)
 - `REGISTRY_WORKER_OIDC_ISSUER` (registry worker auth, default `https://accounts.google.com`)
@@ -108,6 +110,11 @@ Workers should set:
     - gateway: `GET /metrics` on port `8080`
     - registry: `GET /metrics` on port `8081`
     - worker: `GET /metrics` on port `8090`
+  - In prod, `/metrics` is bearer-protected (`METRICS_AUTH_MODE=bearer`).
+  - All service metrics include the base labels:
+    - `env`, `service_name`, `version`, `region`
+  - Capability/request series also include controlled labels:
+    - `capability_id`, `result`, `error_code` (where applicable)
   - Core operational series:
     - `relayorb_gateway_invoke_latency_ms`
     - `relayorb_gateway_invoke_requests_total`

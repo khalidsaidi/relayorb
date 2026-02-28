@@ -11,6 +11,7 @@ on:
       - "crates/relayorb-samples/worker-mock-rag/**"
       - "config/registry-ownership.toml"
       - "ops/smoke/registry-governance-smoke.sh"
+      - "ops/smoke/metrics-auth-smoke.sh"
       - ".github/workflows/deploy-registry.yml"
 
 permissions:
@@ -60,8 +61,16 @@ jobs:
             --service-account relayorb-registry-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
             --ingress all \
             --allow-unauthenticated \
-            --set-env-vars RELAYORB_ENV=prod,RELAYORB_SERVICE_NAME=${{ env.SERVICE_NAME }},REGISTRY_BIND_ADDR=0.0.0.0:8080,REGISTRY_OWNERSHIP_POLICY_PATH=config/registry-ownership.toml,REGISTRY_WORKER_AUTH_MODE=oidc,REGISTRY_WORKER_OIDC_ISSUER=https://accounts.google.com,REGISTRY_WORKER_OIDC_AUDIENCE=$REGISTRY_URL,REGISTRY_WORKER_JWKS_URL=https://www.googleapis.com/oauth2/v3/certs \
-            --set-secrets DATABASE_URL=relayorb-prod-registry-db:latest
+            --set-env-vars RELAYORB_ENV=prod,RELAYORB_REGION=${{ env.REGION }},RELAYORB_SERVICE_NAME=${{ env.SERVICE_NAME }},RELAYORB_VERSION=${{ github.sha }},REGISTRY_BIND_ADDR=0.0.0.0:8080,REGISTRY_OWNERSHIP_POLICY_PATH=config/registry-ownership.toml,REGISTRY_WORKER_AUTH_MODE=oidc,REGISTRY_WORKER_OIDC_ISSUER=https://accounts.google.com,REGISTRY_WORKER_OIDC_AUDIENCE=$REGISTRY_URL,REGISTRY_WORKER_JWKS_URL=https://www.googleapis.com/oauth2/v3/certs,METRICS_AUTH_MODE=bearer \
+            --set-secrets DATABASE_URL=relayorb-prod-registry-db:latest,METRICS_BEARER_TOKEN=relayorb-prod-registry-metrics-token:latest
+
+      - name: Metrics Auth Smoke (post-deploy)
+        shell: bash
+        run: |
+          set -euo pipefail
+          REGISTRY_URL="$(gcloud run services describe "${{ env.SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
+          METRICS_TOKEN="$(gcloud secrets versions access latest --project "${{ env.PROJECT_ID }}" --secret relayorb-prod-registry-metrics-token)"
+          bash ops/smoke/metrics-auth-smoke.sh "$REGISTRY_URL" "$METRICS_TOKEN"
 
       - name: Refresh Owner Worker Registration
         shell: bash

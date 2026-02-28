@@ -21,6 +21,8 @@ This folder contains Terraform scaffolding, deployment scripts, and DNS automati
 Store all runtime secrets in Secret Manager:
 - `relayorb-prod-gateway-db`
 - `relayorb-prod-registry-db`
+- `relayorb-prod-gateway-metrics-token`
+- `relayorb-prod-registry-metrics-token`
 - `relayorb-prod-jwt-config` (optional bundle if you centralize auth config)
 - `relayorb-prod-hmac-key` (dev/fallback only)
 - `godaddy-api-key`

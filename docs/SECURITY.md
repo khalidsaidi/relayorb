@@ -49,9 +49,11 @@ Default behavior:
 - Inject secrets to Cloud Run using `--set-secrets`.
 - GoDaddy API credentials are fetched at runtime from Secret Manager.
 - Use env-scoped secrets (for example `relayorb-prod-gateway-db`, `relayorb-prod-registry-db`).
+- Use dedicated env-scoped metrics tokens (for example `relayorb-prod-gateway-metrics-token`, `relayorb-prod-registry-metrics-token`).
 
 ## Logging and telemetry
 
 - Structured JSON logs with request/trace correlation.
 - Avoid payload fields that may include sensitive data.
 - Keep auth headers and secret values out of logs.
+- Protect `/metrics` in prod with `METRICS_AUTH_MODE=bearer`; unauthenticated requests must return `401`.

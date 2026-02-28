@@ -106,6 +106,7 @@ struct AppState {
     service_name: String,
     version: String,
     region: String,
+    metrics_auth: MetricsAuthConfig,
     registry_url: String,
     auth: AuthConfig,
     client: reqwest::Client,
@@ -128,6 +129,12 @@ static METRIC_CONTEXT: OnceCell<MetricContext> = OnceCell::new();
 enum AuthConfig {
     Hmac { secret: String },
     Oidc(OidcAuthState),
+}
+
+#[derive(Clone)]
+enum MetricsAuthConfig {
+    Public,
+    Bearer { token: String },
 }
 
 #[derive(Clone)]
@@ -321,6 +328,7 @@ async fn main() -> anyhow::Result<()> {
     let budgets = SqliteBudgetStore::new(pool.clone(), policy.budget_config().clone()).await?;
     let client = reqwest::Client::new();
     let auth = build_auth_config(&base, client.clone()).await?;
+    let metrics_auth = build_metrics_auth_config(&base.relayorb_env)?;
 
     if let AuthConfig::Oidc(oidc) = auth.clone() {
         spawn_jwks_refresh(oidc, base.jwks_refresh_interval_seconds);
@@ -342,6 +350,7 @@ async fn main() -> anyhow::Result<()> {
         service_name,
         version,
         region,
+        metrics_auth,
         registry_url: base.registry_url,
         auth,
         client,
@@ -381,7 +390,10 @@ async fn health(headers: HeaderMap) -> Result<impl IntoResponse, ApiError> {
     )))
 }
 
-async fn metrics() -> impl IntoResponse {
+async fn metrics(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
+    if !is_metrics_request_authorized(&state.metrics_auth, &headers) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
     match render_prometheus_metrics() {
         Some(body) => (StatusCode::OK, body).into_response(),
         None => (
@@ -2219,6 +2231,28 @@ async fn build_auth_config(
     }
 }
 
+fn build_metrics_auth_config(env: &str) -> anyhow::Result<MetricsAuthConfig> {
+    let raw_mode = std::env::var("METRICS_AUTH_MODE").unwrap_or_else(|_| {
+        if env.eq_ignore_ascii_case("prod") {
+            "bearer".to_string()
+        } else {
+            "public".to_string()
+        }
+    });
+    match raw_mode.trim().to_ascii_lowercase().as_str() {
+        "public" => Ok(MetricsAuthConfig::Public),
+        "bearer" => {
+            let token = std::env::var("METRICS_BEARER_TOKEN")
+                .context("METRICS_AUTH_MODE=bearer requires METRICS_BEARER_TOKEN")?;
+            if token.trim().is_empty() {
+                anyhow::bail!("METRICS_AUTH_MODE=bearer requires a non-empty METRICS_BEARER_TOKEN");
+            }
+            Ok(MetricsAuthConfig::Bearer { token })
+        }
+        other => anyhow::bail!("unsupported METRICS_AUTH_MODE '{other}'"),
+    }
+}
+
 fn resolve_auth_mode(base: &relayorb_core::BaseSettings) -> String {
     let mode = base.auth_mode.trim().to_ascii_lowercase();
     if mode.is_empty() || mode == "auto" {
@@ -2398,6 +2432,15 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
         .strip_prefix("Bearer ")
         .or_else(|| value.strip_prefix("bearer "))
         .map(ToString::to_string)
+}
+
+fn is_metrics_request_authorized(config: &MetricsAuthConfig, headers: &HeaderMap) -> bool {
+    match config {
+        MetricsAuthConfig::Public => true,
+        MetricsAuthConfig::Bearer { token } => {
+            bearer_token(headers).is_some_and(|provided| provided == *token)
+        }
+    }
 }
 
 fn verify_hmac(

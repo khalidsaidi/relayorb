@@ -17,6 +17,7 @@
    - `curl http://127.0.0.1:8080/metrics | head`
    - `curl http://127.0.0.1:8081/metrics | head`
    - `curl http://127.0.0.1:8090/metrics | head`
+   - If running in bearer mode: `curl -H "Authorization: Bearer <token>" http://127.0.0.1:8080/metrics | head`
 
 ## Deploy (Cloud Run)
 
@@ -28,6 +29,8 @@
 3. Create env-scoped secrets in Secret Manager:
    - `relayorb-prod-gateway-db`
    - `relayorb-prod-registry-db`
+   - `relayorb-prod-gateway-metrics-token`
+   - `relayorb-prod-registry-metrics-token`
    - `godaddy-api-key`
    - `godaddy-api-secret`
 4. For gateway OIDC auth, configure:
@@ -46,6 +49,7 @@
    - `.github/workflows/deploy-registry.yml`
    - `.github/workflows/deploy-gateway.yml`
    - Registry deploy workflow runs `ops/smoke/registry-governance-smoke.sh` post-deploy and fails if governance checks regress.
+   - Gateway and registry deploy workflows run `ops/smoke/metrics-auth-smoke.sh` post-deploy and fail if `/metrics` auth regresses.
 7. Confirm services:
    - `gcloud run services list --region us-central1`
 
@@ -53,16 +57,17 @@
 
 1. Enable OTEL export by setting `OTEL_EXPORTER_OTLP_ENDPOINT` on gateway/registry/worker.
 2. Keep `RELAYORB_METRICS_EXPORTER=prometheus` (default) for `/metrics`.
-3. Build dashboard charts from:
-   - `relayorb_gateway_invoke_latency_ms` (p95 by `capability`)
-   - `relayorb_gateway_invoke_requests_total` (error rate by `status`/`code`)
+3. In prod, keep `METRICS_AUTH_MODE=bearer` and rotate `METRICS_BEARER_TOKEN` via Secret Manager.
+4. Build dashboard charts from:
+   - `relayorb_gateway_invoke_latency_ms` (p95 by `capability_id`)
+   - `relayorb_gateway_invoke_requests_total` (error rate by `result`/`error_code`)
    - `relayorb_gateway_idempotency_replays_total`
    - `relayorb_gateway_jobs_queued`
    - `relayorb_registry_governance_denials_total`
    - `relayorb_worker_invoke_latency_ms`
-4. Alert recommendations:
+5. Alert recommendations:
    - rising `relayorb_gateway_jobs_queued`
-   - rising `relayorb_gateway_request_errors_total{code=\"NO_HEALTHY_PROVIDERS\"}`
+   - rising `relayorb_gateway_request_errors_total{error_code=\"NO_HEALTHY_PROVIDERS\"}`
    - rising `relayorb_registry_governance_denials_total` in prod.
 
 ## Domain setup (GoDaddy)

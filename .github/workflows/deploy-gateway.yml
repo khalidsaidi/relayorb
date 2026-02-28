@@ -8,6 +8,7 @@ on:
       - "crates/relayorb-gateway/**"
       - "crates/relayorb-core/**"
       - "crates/relayorb-policy/**"
+      - "ops/smoke/metrics-auth-smoke.sh"
       - ".github/workflows/deploy-gateway.yml"
 
 permissions:
@@ -56,5 +57,13 @@ jobs:
             --image "$IMAGE" \
             --service-account relayorb-gateway-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
             --allow-unauthenticated \
-            --set-env-vars RELAYORB_ENV=prod,RELAYORB_SERVICE_NAME=${{ env.SERVICE_NAME }},REGISTRY_URL=${REGISTRY_URL},POLICY_PATH=config/policy.toml,AUTH_MODE=oidc,OIDC_ISSUER=${{ secrets.RELAYORB_PROD_OIDC_ISSUER }},OIDC_AUDIENCE=${{ secrets.RELAYORB_PROD_OIDC_AUDIENCE }},JWKS_URL=${{ secrets.RELAYORB_PROD_JWKS_URL }},AUTH_CLOCK_SKEW_SECONDS=120 \
-            --set-secrets DATABASE_URL=relayorb-prod-gateway-db:latest
+            --set-env-vars RELAYORB_ENV=prod,RELAYORB_REGION=${{ env.REGION }},RELAYORB_SERVICE_NAME=${{ env.SERVICE_NAME }},RELAYORB_VERSION=${{ github.sha }},REGISTRY_URL=${REGISTRY_URL},POLICY_PATH=config/policy.toml,AUTH_MODE=oidc,OIDC_ISSUER=${{ secrets.RELAYORB_PROD_OIDC_ISSUER }},OIDC_AUDIENCE=${{ secrets.RELAYORB_PROD_OIDC_AUDIENCE }},JWKS_URL=${{ secrets.RELAYORB_PROD_JWKS_URL }},AUTH_CLOCK_SKEW_SECONDS=120,METRICS_AUTH_MODE=bearer \
+            --set-secrets DATABASE_URL=relayorb-prod-gateway-db:latest,METRICS_BEARER_TOKEN=relayorb-prod-gateway-metrics-token:latest
+
+      - name: Metrics Auth Smoke (post-deploy)
+        shell: bash
+        run: |
+          set -euo pipefail
+          GATEWAY_URL="$(gcloud run services describe "${{ env.SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
+          METRICS_TOKEN="$(gcloud secrets versions access latest --project "${{ env.PROJECT_ID }}" --secret relayorb-prod-gateway-metrics-token)"
+          bash ops/smoke/metrics-auth-smoke.sh "$GATEWAY_URL" "$METRICS_TOKEN"

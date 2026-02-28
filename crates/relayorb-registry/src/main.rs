@@ -83,6 +83,7 @@ struct AppState {
     service_name: String,
     version: String,
     region: String,
+    metrics_auth: MetricsAuthConfig,
     ownership_policy: OwnershipPolicy,
     worker_auth: WorkerAuthConfig,
 }
@@ -199,6 +200,12 @@ struct WorkerIdentity {
 enum WorkerAuthConfig {
     Disabled,
     Oidc(OidcWorkerAuthState),
+}
+
+#[derive(Clone)]
+enum MetricsAuthConfig {
+    Public,
+    Bearer { token: String },
 }
 
 #[derive(Clone)]
@@ -577,6 +584,38 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn build_metrics_auth_config(env: &str) -> anyhow::Result<MetricsAuthConfig> {
+    let raw_mode = std::env::var("METRICS_AUTH_MODE").unwrap_or_else(|_| {
+        if env.eq_ignore_ascii_case("prod") {
+            "bearer".to_string()
+        } else {
+            "public".to_string()
+        }
+    });
+
+    match raw_mode.trim().to_ascii_lowercase().as_str() {
+        "public" => Ok(MetricsAuthConfig::Public),
+        "bearer" => {
+            let token = std::env::var("METRICS_BEARER_TOKEN")
+                .context("METRICS_AUTH_MODE=bearer requires METRICS_BEARER_TOKEN")?;
+            if token.trim().is_empty() {
+                anyhow::bail!("METRICS_AUTH_MODE=bearer requires a non-empty METRICS_BEARER_TOKEN");
+            }
+            Ok(MetricsAuthConfig::Bearer { token })
+        }
+        other => anyhow::bail!("unsupported METRICS_AUTH_MODE '{other}'"),
+    }
+}
+
+fn is_metrics_request_authorized(config: &MetricsAuthConfig, headers: &HeaderMap) -> bool {
+    match config {
+        MetricsAuthConfig::Public => true,
+        MetricsAuthConfig::Bearer { token } => {
+            bearer_token(headers).is_some_and(|provided| provided == *token)
+        }
+    }
+}
+
 async fn fetch_jwks(client: &Client, url: &str) -> anyhow::Result<JwkSet> {
     let response = client
         .get(url)
@@ -616,6 +655,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "config/registry-ownership.toml".to_string());
     let ownership_policy = OwnershipPolicy::from_path(&ownership_policy_path)?;
     let worker_auth = build_worker_auth_config().await?;
+    let metrics_auth = build_metrics_auth_config(&base.relayorb_env)?;
     let jwks_refresh_interval_seconds =
         std::env::var("REGISTRY_WORKER_JWKS_REFRESH_INTERVAL_SECONDS")
             .ok()
@@ -651,6 +691,7 @@ async fn main() -> anyhow::Result<()> {
         service_name,
         version,
         region,
+        metrics_auth,
         ownership_policy,
         worker_auth,
     });
@@ -1234,7 +1275,10 @@ async fn health(
     )))
 }
 
-async fn metrics() -> impl IntoResponse {
+async fn metrics(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
+    if !is_metrics_request_authorized(&state.metrics_auth, &headers) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
     match render_prometheus_metrics() {
         Some(body) => (StatusCode::OK, body).into_response(),
         None => (
