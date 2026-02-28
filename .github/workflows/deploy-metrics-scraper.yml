@@ -5,6 +5,8 @@ on:
   push:
     branches: [main]
     paths:
+      - "crates/relayorb-metrics-proxy/**"
+      - "crates/relayorb-core/**"
       - "infra/gcp/otel/**"
       - "infra/gcp/scripts/deploy_metrics_scraper.sh"
       - "ops/smoke/metrics-scraper-smoke.sh"

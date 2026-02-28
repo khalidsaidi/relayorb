@@ -17,3 +17,8 @@ conformance/reports/**
 infra/gcp/terraform/.terraform/
 infra/gcp/terraform/terraform.tfstate
 infra/gcp/terraform/terraform.tfstate.backup
+
+# Terraform local artifacts
+.terraform/
+*.tfstate
+*.tfstate.*

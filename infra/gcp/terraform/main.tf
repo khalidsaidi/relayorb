@@ -5,6 +5,10 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 6.0"
     }
+    external = {
+      source  = "hashicorp/external"
+      version = "~> 2.3"
+    }
   }
 }
 
@@ -47,6 +51,11 @@ resource "google_service_account" "registry" {
 resource "google_service_account" "metrics_scraper" {
   account_id   = var.metrics_scraper_service_account_id
   display_name = "RelayOrb Metrics Scraper SA"
+}
+
+resource "google_service_account" "worker_runtime" {
+  account_id   = var.worker_runtime_service_account_id
+  display_name = "RelayOrb Worker Runtime SA"
 }
 
 resource "google_project_iam_member" "gateway_secret_accessor" {

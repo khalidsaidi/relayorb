@@ -12,6 +12,7 @@ use tracing::info;
 use uuid::Uuid;
 
 struct MockRagHandler;
+struct DemoEchoHandler;
 
 #[async_trait]
 impl CapabilityHandler for MockRagHandler {
@@ -40,6 +41,22 @@ impl CapabilityHandler for MockRagHandler {
         Ok(json!({
             "results": results,
             "provider": "relayorb-rag"
+        }))
+    }
+}
+
+#[async_trait]
+impl CapabilityHandler for DemoEchoHandler {
+    async fn handle(&self, payload: Value) -> Result<Value, RelayOrbError> {
+        let text = payload.get("text").and_then(Value::as_str).ok_or_else(|| {
+            RelayOrbError::new(
+                ErrorCode::SchemaValidationFailed,
+                "'text' must be provided as a string",
+            )
+        })?;
+
+        Ok(json!({
+            "echo": text
         }))
     }
 }
@@ -85,10 +102,16 @@ async fn main() -> anyhow::Result<()> {
 
     let runtime = WorkerRuntime::new(
         config,
-        vec![CapabilityRegistration {
-            manifest: mock_rag_manifest(),
-            handler: Arc::new(MockRagHandler),
-        }],
+        vec![
+            CapabilityRegistration {
+                manifest: mock_rag_manifest(),
+                handler: Arc::new(MockRagHandler),
+            },
+            CapabilityRegistration {
+                manifest: demo_echo_manifest(),
+                handler: Arc::new(DemoEchoHandler),
+            },
+        ],
     )
     .context("failed to initialize worker runtime")?;
 
@@ -157,6 +180,58 @@ fn mock_rag_manifest() -> CapabilityManifest {
         },
         routing: CapabilityRoutingHints {
             strategy: "latency".to_string(),
+            region_affinity: None,
+        },
+    }
+}
+
+fn demo_echo_manifest() -> CapabilityManifest {
+    CapabilityManifest {
+        capability_id: "demo.echo@v1".to_string(),
+        side_effects: CapabilitySideEffects::ReadOnly,
+        input_schema: json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+                "text": {"type": "string", "minLength": 1, "maxLength": 512}
+            },
+            "additionalProperties": false
+        }),
+        output_schema: json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "required": ["echo"],
+            "properties": {
+                "echo": {"type": "string"}
+            },
+            "additionalProperties": false
+        }),
+        error_schema: json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "required": ["requestId", "traceId", "status", "error"],
+            "properties": {
+                "requestId": {"type": "string"},
+                "traceId": {"type": "string"},
+                "status": {"const": "error"},
+                "error": {
+                    "type": "object",
+                    "required": ["code", "message", "details"],
+                    "properties": {
+                        "code": {"type": "string"},
+                        "message": {"type": "string"},
+                        "details": {"type": "object"}
+                    }
+                }
+            }
+        }),
+        limits: CapabilityTimeouts {
+            timeout_ms: 2_000,
+            max_retries: 0,
+        },
+        routing: CapabilityRoutingHints {
+            strategy: "lowest_latency".to_string(),
             region_affinity: None,
         },
     }

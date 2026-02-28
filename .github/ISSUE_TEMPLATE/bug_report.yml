@@ -1,0 +1,45 @@
+name: Bug report
+description: Report a reproducible defect in RelayOrb
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Exact steps/commands/config to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs/Errors
+      description: Include relevant output (redact secrets)
+  - type: input
+    id: version
+    attributes:
+      label: Version / Commit
+      description: Tag or commit SHA
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - gateway
+        - registry
+        - worker-sdk
+        - conformance
+        - terraform/infra
+        - docs

@@ -577,7 +577,12 @@ fn claim_string(claims: &Value, key: &str) -> Option<String> {
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<String> {
-    let value = headers.get("authorization")?.to_str().ok()?;
+    header_bearer_token(headers, "authorization")
+        .or_else(|| header_bearer_token(headers, "x-serverless-authorization"))
+}
+
+fn header_bearer_token(headers: &HeaderMap, key: &str) -> Option<String> {
+    let value = headers.get(key)?.to_str().ok()?;
     value
         .strip_prefix("Bearer ")
         .or_else(|| value.strip_prefix("bearer "))
@@ -586,7 +591,7 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
 
 fn build_metrics_auth_config(env: &str) -> anyhow::Result<MetricsAuthConfig> {
     let raw_mode = std::env::var("METRICS_AUTH_MODE").unwrap_or_else(|_| {
-        if env.eq_ignore_ascii_case("prod") {
+        if env.eq_ignore_ascii_case("prod") || env.eq_ignore_ascii_case("demo") {
             "bearer".to_string()
         } else {
             "public".to_string()

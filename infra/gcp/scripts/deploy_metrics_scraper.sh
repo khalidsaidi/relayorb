@@ -42,15 +42,12 @@ fi
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet >/dev/null
 
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${SERVICE_NAME}:$(date +%Y%m%d%H%M%S)"
-docker build -f infra/gcp/otel/Dockerfile -t "${IMAGE}" infra/gcp/otel
+docker build -f infra/gcp/otel/Dockerfile -t "${IMAGE}" .
 docker push "${IMAGE}"
 
 GATEWAY_URL="$(gcloud run services describe "${GATEWAY_SERVICE_NAME}" --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.url)')"
 REGISTRY_URL="$(gcloud run services describe "${REGISTRY_SERVICE_NAME}" --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.url)')"
 WORKER_URL="$(gcloud run services describe "${WORKER_SERVICE_NAME}" --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.url)')"
-GATEWAY_TARGET="${GATEWAY_URL#https://}"
-REGISTRY_TARGET="${REGISTRY_URL#https://}"
-WORKER_TARGET="${WORKER_URL#https://}"
 
 gcloud run deploy "${SERVICE_NAME}" \
   --project "${PROJECT_ID}" \
@@ -64,7 +61,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --cpu 1 \
   --memory 512Mi \
   --no-cpu-throttling \
-  --set-env-vars "GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION},GATEWAY_METRICS_TARGET=${GATEWAY_TARGET},REGISTRY_METRICS_TARGET=${REGISTRY_TARGET},WORKER_METRICS_TARGET=${WORKER_TARGET}" \
+  --set-env-vars "GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION},GATEWAY_BASE_URL=${GATEWAY_URL},REGISTRY_BASE_URL=${REGISTRY_URL},WORKER_BASE_URL=${WORKER_URL}" \
   --set-secrets "GATEWAY_METRICS_TOKEN=${GATEWAY_METRICS_SECRET}:latest,REGISTRY_METRICS_TOKEN=${REGISTRY_METRICS_SECRET}:latest,WORKER_METRICS_TOKEN=${WORKER_METRICS_SECRET}:latest"
 
 echo "deployed ${SERVICE_NAME}"

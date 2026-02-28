@@ -10,8 +10,11 @@ on:
       - "crates/relayorb-worker-sdk/**"
       - "crates/relayorb-samples/worker-mock-rag/**"
       - "config/registry-ownership.toml"
+      - "infra/gcp/terraform/**"
       - "ops/smoke/registry-governance-smoke.sh"
+      - "ops/smoke/network-posture-smoke.sh"
       - "ops/smoke/metrics-auth-smoke.sh"
+      - "ops/smoke/metrics-scraper-smoke.sh"
       - ".github/workflows/deploy-registry.yml"
 
 permissions:
@@ -24,6 +27,8 @@ env:
   REPOSITORY: relayorb
   SERVICE_NAME: relayorb-registry-prod
   OWNER_SERVICE_NAME: relayorb-rag-prod
+  GATEWAY_SERVICE_NAME: relayorb-gateway-prod
+  SCRAPER_SERVICE_NAME: relayorb-metrics-scraper-prod
 
 jobs:
   deploy:
@@ -60,17 +65,9 @@ jobs:
             --image "$IMAGE" \
             --service-account relayorb-registry-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
             --ingress all \
-            --allow-unauthenticated \
+            --invoker-iam-check \
             --set-env-vars RELAYORB_ENV=prod,RELAYORB_REGION=${{ env.REGION }},RELAYORB_SERVICE_NAME=${{ env.SERVICE_NAME }},RELAYORB_VERSION=${{ github.sha }},REGISTRY_BIND_ADDR=0.0.0.0:8080,REGISTRY_OWNERSHIP_POLICY_PATH=config/registry-ownership.toml,REGISTRY_WORKER_AUTH_MODE=oidc,REGISTRY_WORKER_OIDC_ISSUER=https://accounts.google.com,REGISTRY_WORKER_OIDC_AUDIENCE=$REGISTRY_URL,REGISTRY_WORKER_JWKS_URL=https://www.googleapis.com/oauth2/v3/certs,METRICS_AUTH_MODE=bearer \
             --set-secrets DATABASE_URL=relayorb-prod-registry-db:latest,METRICS_BEARER_TOKEN=relayorb-prod-registry-metrics-token:latest
-
-      - name: Metrics Auth Smoke (post-deploy)
-        shell: bash
-        run: |
-          set -euo pipefail
-          REGISTRY_URL="$(gcloud run services describe "${{ env.SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
-          METRICS_TOKEN="$(gcloud secrets versions access latest --project "${{ env.PROJECT_ID }}" --secret relayorb-prod-registry-metrics-token)"
-          bash ops/smoke/metrics-auth-smoke.sh "$REGISTRY_URL" "$METRICS_TOKEN"
 
       - name: Refresh Owner Worker Registration
         shell: bash
@@ -81,13 +78,48 @@ jobs:
           gcloud run services update "${{ env.OWNER_SERVICE_NAME }}" \
             --project "${{ env.PROJECT_ID }}" \
             --region "${{ env.REGION }}" \
+            --service-account relayorb-rag-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
+            --invoker-iam-check \
             --update-env-vars "REGISTRY_SMOKE_NONCE=$NONCE,REGISTRY_IDENTITY_AUDIENCE=$REGISTRY_URL,RELAYORB_REGION=${{ env.REGION }},RELAYORB_VERSION=${{ github.sha }},METRICS_AUTH_MODE=bearer" \
             --update-secrets "METRICS_BEARER_TOKEN=relayorb-prod-worker-metrics-token:latest"
 
-      - name: Worker Metrics Auth Smoke (post-refresh)
+      - name: Verify runtime service accounts
         shell: bash
         run: |
           set -euo pipefail
+          REGISTRY_SA="$(gcloud run services describe "${{ env.SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(spec.template.spec.serviceAccountName)')"
+          WORKER_SA="$(gcloud run services describe "${{ env.OWNER_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(spec.template.spec.serviceAccountName)')"
+          [ "$REGISTRY_SA" = "relayorb-registry-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com" ]
+          [ "$WORKER_SA" = "relayorb-rag-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com" ]
+
+      - name: Verify no public invoker on private services
+        shell: bash
+        run: |
+          set -euo pipefail
+          for SERVICE in "${{ env.SERVICE_NAME }}" "${{ env.OWNER_SERVICE_NAME }}"; do
+            POLICY_JSON="$(gcloud run services get-iam-policy "$SERVICE" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format=json)"
+            HAS_ALL_USERS="$(echo "$POLICY_JSON" | jq -r '[.bindings[]? | select(.role=="roles/run.invoker") | .members[]? | select(.=="allUsers")] | length')"
+            if [ "$HAS_ALL_USERS" != "0" ]; then
+              echo "service $SERVICE still has allUsers run.invoker"
+              echo "$POLICY_JSON"
+              exit 1
+            fi
+          done
+
+      - name: Registry Metrics Auth Smoke (private service)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ALLOW_IAM_FORBIDDEN=1
+          REGISTRY_URL="$(gcloud run services describe "${{ env.SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
+          METRICS_TOKEN="$(gcloud secrets versions access latest --project "${{ env.PROJECT_ID }}" --secret relayorb-prod-registry-metrics-token)"
+          bash ops/smoke/metrics-auth-smoke.sh "$REGISTRY_URL" "$METRICS_TOKEN"
+
+      - name: Worker Metrics Auth Smoke (private service)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ALLOW_IAM_FORBIDDEN=1
           WORKER_URL="$(gcloud run services describe "${{ env.OWNER_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
           WORKER_METRICS_TOKEN="$(gcloud secrets versions access latest --project "${{ env.PROJECT_ID }}" --secret relayorb-prod-worker-metrics-token)"
           bash ops/smoke/metrics-auth-smoke.sh "$WORKER_URL" "$WORKER_METRICS_TOKEN"
@@ -100,3 +132,19 @@ jobs:
           export REGISTRY_SMOKE_BEARER_TOKEN="$(gcloud auth print-identity-token --impersonate-service-account "${{ secrets.GCP_REGISTRY_DEPLOYER_SA }}" --audiences "$REGISTRY_URL")"
           echo "Running governance smoke: $REGISTRY_URL"
           bash ops/smoke/registry-governance-smoke.sh "$REGISTRY_URL"
+
+      - name: Network Posture Smoke (private registry/worker + gateway e2e)
+        shell: bash
+        run: |
+          set -euo pipefail
+          REGISTRY_URL="$(gcloud run services describe "${{ env.SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
+          WORKER_URL="$(gcloud run services describe "${{ env.OWNER_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
+          GATEWAY_URL="$(gcloud run services describe "${{ env.GATEWAY_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
+          GATEWAY_TOKEN="$(gcloud auth print-identity-token --impersonate-service-account "${{ secrets.GCP_REGISTRY_DEPLOYER_SA }}" --audiences "${{ secrets.RELAYORB_PROD_OIDC_AUDIENCE }}")"
+          bash ops/smoke/network-posture-smoke.sh "$GATEWAY_URL" "$REGISTRY_URL" "$WORKER_URL" "$GATEWAY_TOKEN"
+
+      - name: Metrics Scraper Smoke (post-hardening)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ops/smoke/metrics-scraper-smoke.sh "${{ env.PROJECT_ID }}" "${{ env.REGION }}" "${{ env.SCRAPER_SERVICE_NAME }}" "${{ env.GATEWAY_SERVICE_NAME }}" "${{ env.SERVICE_NAME }}" "${{ env.OWNER_SERVICE_NAME }}"

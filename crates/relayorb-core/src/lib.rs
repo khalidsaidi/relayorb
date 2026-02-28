@@ -1,4 +1,5 @@
 pub mod canonical;
+pub mod cloud_run;
 pub mod config;
 pub mod errors;
 pub mod models;
@@ -7,6 +8,7 @@ pub mod telemetry;
 pub mod trace;
 
 pub use canonical::{canonicalize_json, CanonicalJson};
+pub use cloud_run::{add_cloud_run_iam_headers, cloud_run_id_token};
 pub use config::{load_base_settings, BaseSettings};
 pub use errors::{ApiError, ErrorCode, RelayOrbError};
 pub use models::{

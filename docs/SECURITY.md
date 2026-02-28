@@ -42,6 +42,18 @@ Default behavior:
   - `secretmanager.secretAccessor`
   - `cloudsql.client` (if Cloud SQL is used)
 
+## Network posture hardening (Option B)
+
+- `relayorb-gateway-prod` stays public at Cloud Run ingress and is protected by app-level OIDC auth.
+- `relayorb-registry-prod` and `relayorb-rag-prod` are private at Cloud Run IAM (`roles/run.invoker` scoped to runtime SAs only).
+- Internal service-to-service calls use Cloud Run ID tokens from metadata server:
+  - `gateway -> registry`
+  - `gateway -> worker`
+  - `worker -> registry`
+  - `metrics-scraper -> gateway/registry/worker`
+- Internal IAM auth uses `X-Serverless-Authorization: Bearer <id_token>` so app-level `Authorization` can remain dedicated to API auth or metrics bearer checks.
+- Registry governance remains identity-bound in prod using verified worker OIDC claims (`sub`/`email`) and allowed service account bindings.
+
 ## Secrets handling
 
 - Never commit secrets to git.
@@ -56,4 +68,6 @@ Default behavior:
 - Structured JSON logs with request/trace correlation.
 - Avoid payload fields that may include sensitive data.
 - Keep auth headers and secret values out of logs.
-- Protect `/metrics` in prod with `METRICS_AUTH_MODE=bearer`; unauthenticated requests must return `401`.
+- Protect `/metrics` in prod/demo with `METRICS_AUTH_MODE=bearer`.
+  - For public services (gateway), unauthenticated `/metrics` returns `401`.
+  - For private services (registry/worker), unauthenticated calls are blocked at Cloud Run IAM with `403` before app-level auth runs.

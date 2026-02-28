@@ -21,9 +21,9 @@ use axum::{
 use metrics::{counter, gauge, histogram};
 use once_cell::sync::{Lazy, OnceCell};
 use relayorb_core::{
-    init_metrics_exporter, render_prometheus_metrics, trace_id_from_traceparent,
-    traceparent_from_trace_id, validate_json_with_schema, ApiError, CapabilityManifest, ErrorCode,
-    ProviderStats, RelayOrbError, RequestMeta, SuccessEnvelope,
+    cloud_run_id_token, init_metrics_exporter, render_prometheus_metrics,
+    trace_id_from_traceparent, traceparent_from_trace_id, validate_json_with_schema, ApiError,
+    CapabilityManifest, ErrorCode, ProviderStats, RelayOrbError, RequestMeta, SuccessEnvelope,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -395,50 +395,17 @@ impl WorkerRuntime {
             return Ok(headers);
         };
 
-        let token = fetch_metadata_identity_token(client, audience).await?;
-        let auth_value = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+        let token = cloud_run_id_token(client, audience).await?;
+        let serverless_auth = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+            .context("failed to construct x-serverless-authorization header for registry")?;
+        headers.insert("x-serverless-authorization", serverless_auth);
+
+        // Preserve Authorization for registry-side identity claims extraction.
+        let authorization = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
             .context("failed to construct authorization header for registry")?;
-        headers.insert(reqwest::header::AUTHORIZATION, auth_value);
+        headers.insert(reqwest::header::AUTHORIZATION, authorization);
         Ok(headers)
     }
-}
-
-async fn fetch_metadata_identity_token(
-    client: &reqwest::Client,
-    audience: &str,
-) -> anyhow::Result<String> {
-    let mut url = reqwest::Url::parse(
-        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity",
-    )
-    .context("failed to parse metadata identity URL")?;
-    url.query_pairs_mut()
-        .append_pair("audience", audience)
-        .append_pair("format", "full");
-
-    let response = client
-        .get(url)
-        .header("Metadata-Flavor", "Google")
-        .send()
-        .await
-        .context("failed to fetch identity token from metadata server")?;
-
-    if !response.status().is_success() {
-        anyhow::bail!(
-            "metadata identity token endpoint returned non-success status: {}",
-            response.status()
-        );
-    }
-
-    let token = response
-        .text()
-        .await
-        .context("failed reading identity token response body")?;
-    let trimmed = token.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("metadata identity token endpoint returned an empty token");
-    }
-
-    Ok(trimmed.to_string())
 }
 
 #[derive(Default)]
@@ -509,7 +476,7 @@ async fn metrics(State(state): State<Arc<WorkerRuntime>>, headers: HeaderMap) ->
 
 fn build_metrics_auth_config(env: &str) -> anyhow::Result<MetricsAuthConfig> {
     let raw_mode = std::env::var("METRICS_AUTH_MODE").unwrap_or_else(|_| {
-        if env.eq_ignore_ascii_case("prod") {
+        if env.eq_ignore_ascii_case("prod") || env.eq_ignore_ascii_case("demo") {
             "bearer".to_string()
         } else {
             "public".to_string()

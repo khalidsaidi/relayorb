@@ -17,6 +17,7 @@ SERVICE_URL="${1%/}"
 METRICS_TOKEN="$2"
 METRICS_PATH="${METRICS_PATH:-/metrics}"
 METRICS_URL="${SERVICE_URL}${METRICS_PATH}"
+ALLOW_IAM_FORBIDDEN="${ALLOW_IAM_FORBIDDEN:-0}"
 TMP_DIR="$(mktemp -d /tmp/relayorb-metrics-smoke.XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -32,6 +33,12 @@ curl_status() {
 
 UNAUTH_BODY="$TMP_DIR/metrics-unauth.txt"
 UNAUTH_CODE="$(curl_status "$UNAUTH_BODY" "$METRICS_URL")"
+if [ "$UNAUTH_CODE" = "403" ] && [ "$ALLOW_IAM_FORBIDDEN" = "1" ]; then
+  log "unauthenticated metrics request returned 403 (expected for private Cloud Run IAM)"
+  log "skipping bearer-token /metrics assertion because caller does not have run.invoker in this smoke context"
+  exit 0
+fi
+
 if [ "$UNAUTH_CODE" != "401" ]; then
   log "expected 401 for unauthenticated metrics access, got $UNAUTH_CODE"
   sed -n '1,80p' "$UNAUTH_BODY" || true

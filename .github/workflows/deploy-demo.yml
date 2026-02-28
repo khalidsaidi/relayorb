@@ -1,0 +1,122 @@
+name: Deploy Anonymous Demo
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: relayorb-demo
+  REGION: us-central1
+  REPOSITORY: relayorb
+  GATEWAY_SERVICE_NAME: relayorb-gateway-demo
+  REGISTRY_SERVICE_NAME: relayorb-registry-demo
+  WORKER_SERVICE_NAME: relayorb-rag-demo
+  SCRAPER_SERVICE_NAME: relayorb-metrics-scraper-demo
+
+jobs:
+  deploy-demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (OIDC)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_DEMO_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEMO_DEPLOYER_SA }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push demo images
+        shell: bash
+        run: |
+          set -euo pipefail
+          GATEWAY_IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.GATEWAY_SERVICE_NAME }}:${{ github.sha }}"
+          REGISTRY_IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.REGISTRY_SERVICE_NAME }}:${{ github.sha }}"
+          WORKER_IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.WORKER_SERVICE_NAME }}:${{ github.sha }}"
+          SCRAPER_IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SCRAPER_SERVICE_NAME }}:${{ github.sha }}"
+
+          docker build -f crates/relayorb-gateway/Dockerfile -t "$GATEWAY_IMAGE" .
+          docker push "$GATEWAY_IMAGE"
+
+          docker build -f crates/relayorb-registry/Dockerfile -t "$REGISTRY_IMAGE" .
+          docker push "$REGISTRY_IMAGE"
+
+          docker build -f crates/relayorb-samples/worker-mock-rag/Dockerfile -t "$WORKER_IMAGE" .
+          docker push "$WORKER_IMAGE"
+
+          docker build -f infra/gcp/otel/Dockerfile -t "$SCRAPER_IMAGE" .
+          docker push "$SCRAPER_IMAGE"
+
+          {
+            echo "GATEWAY_IMAGE=$GATEWAY_IMAGE"
+            echo "REGISTRY_IMAGE=$REGISTRY_IMAGE"
+            echo "WORKER_IMAGE=$WORKER_IMAGE"
+            echo "SCRAPER_IMAGE=$SCRAPER_IMAGE"
+          } >> "$GITHUB_ENV"
+
+      - name: Terraform apply (demo stack)
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra/gcp/terraform/envs/demo init -input=false
+          terraform -chdir=infra/gcp/terraform/envs/demo apply -auto-approve -input=false \
+            -var="project_id=${{ env.PROJECT_ID }}" \
+            -var="region=${{ env.REGION }}" \
+            -var="release_version=${{ github.sha }}" \
+            -var="gateway_image=${GATEWAY_IMAGE}" \
+            -var="registry_image=${REGISTRY_IMAGE}" \
+            -var="worker_image=${WORKER_IMAGE}" \
+            -var="scraper_image=${SCRAPER_IMAGE}" \
+            -var="demo_domain_name=${{ secrets.RELAYORB_DEMO_DOMAIN_NAME }}"
+
+      - name: Resolve demo URLs
+        shell: bash
+        run: |
+          set -euo pipefail
+          HTTPS_URL="$(terraform -chdir=infra/gcp/terraform/envs/demo output -raw demo_https_url || true)"
+          HTTP_URL="$(terraform -chdir=infra/gcp/terraform/envs/demo output -raw demo_http_url)"
+          REGISTRY_URL="$(terraform -chdir=infra/gcp/terraform/envs/demo output -raw registry_service_url)"
+          WORKER_URL="$(terraform -chdir=infra/gcp/terraform/envs/demo output -raw worker_service_url)"
+
+          if [ -n "$HTTPS_URL" ]; then
+            DEMO_URL="$HTTPS_URL"
+          else
+            DEMO_URL="$HTTP_URL"
+          fi
+
+          {
+            echo "DEMO_URL=$DEMO_URL"
+            echo "REGISTRY_URL=$REGISTRY_URL"
+            echo "WORKER_URL=$WORKER_URL"
+          } >> "$GITHUB_ENV"
+
+      - name: Demo deploy verification gate
+        shell: bash
+        env:
+          APPLY_TERRAFORM: "0"
+          CHECK_RATE_LIMIT: "0"
+          DEMO_PROJECT_ID: ${{ env.PROJECT_ID }}
+          DEMO_REGION: ${{ env.REGION }}
+          GW_SVC: ${{ env.GATEWAY_SERVICE_NAME }}
+          REG_SVC: ${{ env.REGISTRY_SERVICE_NAME }}
+          RAG_SVC: ${{ env.WORKER_SERVICE_NAME }}
+          SCRAPER_SVC: ${{ env.SCRAPER_SERVICE_NAME }}
+          DEMO_LB_URL: ${{ env.DEMO_URL }}
+        run: |
+          set -euo pipefail
+          bash ops/smoke/demo-deploy-verify.sh

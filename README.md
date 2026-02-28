@@ -4,6 +4,43 @@ RelayOrb is a capability gateway for AI agents. It enforces auth and policy, rou
 
 Gateway also supports asynchronous execution via `POST /v1/submit` and `GET /v1/jobs/:jobId`.
 
+## Project Surfaces
+
+- Open-source core: runtime, SDK, conformance tooling, and docs in this repository.
+- Reference deployment: Terraform and workflows for GCP rollout.
+- Anonymous public demo: hardened showcase environment with LB-only access and private internals.
+
+## Try The Public Demo
+
+RelayOrb includes an anonymous public demo mode (no login/API key) with strict safety limits.
+
+```bash
+export RELAYORB_DEMO_URL="https://<demo-lb-domain-or-ip>"
+curl -sS -X POST "$RELAYORB_DEMO_URL/v1/invoke" \
+  -H "content-type: application/json" \
+  -d '{
+    "requestId":"demo-req-1",
+    "caller":{"agentId":"anonymous","role":"anonymous"},
+    "capability":"rag.search@v1",
+    "payload":{"query":"what is relayorb?","topK":3}
+  }' | jq
+```
+
+Forbidden capability example (expected `403`):
+
+```bash
+curl -sS -X POST "$RELAYORB_DEMO_URL/v1/invoke" \
+  -H "content-type: application/json" \
+  -d '{
+    "requestId":"demo-req-forbidden",
+    "caller":{"agentId":"anonymous","role":"anonymous"},
+    "capability":"sql.query@v1",
+    "payload":{"sql":"select 1"}
+  }' | jq
+```
+
+Demo details and limits: [docs/DEMO.md](/home/khalid/relayorb/docs/DEMO.md)
+
 ## Components
 
 - `relayorb-gateway`: invoke entrypoint, policy, routing, artifact recording
@@ -13,7 +50,7 @@ Gateway also supports asynchronous execution via `POST /v1/submit` and `GET /v1/
 - `worker-mock-rag`: sample capability provider (`rag.search@v1`)
 - `agent-client`: sample CLI invoker
 
-## Quickstart
+## Run Locally
 
 1. Start stack:
 ```bash
@@ -32,14 +69,35 @@ cargo run -p agent-client -- rag.search@v1 '{"query":"earnings guidance","topK":
 curl http://127.0.0.1:8080/v1/replay/<request-id>
 ```
 
-## Add a capability worker
+## Deploy To GCP
+
+- Core prod Terraform: `infra/gcp/terraform/`
+- Anonymous demo Terraform stack: `infra/gcp/terraform/envs/demo/`
+- Demo deploy workflow: `.github/workflows/deploy-demo.yml`
+- Terraform module source: `khalidsaidi/relayorb/google`
+- Terraform Registry (module): `https://registry.terraform.io/modules/khalidsaidi/relayorb/google/latest`
+
+Example module image pinning to GHCR release tags:
+
+```hcl
+module "relayorb" {
+  source  = "khalidsaidi/relayorb/google"
+  version = "0.1.0"
+
+  gateway_image = "ghcr.io/khalidsaidi/relayorb-gateway:v0.1.0"
+  registry_image = "ghcr.io/khalidsaidi/relayorb-registry:v0.1.0"
+  worker_image = "ghcr.io/khalidsaidi/relayorb-rag:v0.1.0"
+}
+```
+
+## Write a Capability Worker
 
 1. Define manifest with `capabilityId`, schemas, limits, and routing hints.
 2. Implement `CapabilityHandler` in an SDK-based worker.
 3. Register worker capabilities on startup and send heartbeats.
 4. Add policy rule allowing target role/capability/sideEffects.
 
-## Capability Conformance Harness
+## Verify Conformance
 
 Offline validation:
 ```bash
@@ -73,9 +131,10 @@ Base config is `config/dev.toml`, overridden by env vars:
 - `JWKS_URL` (prod oidc mode)
 - `AUTH_CLOCK_SKEW_SECONDS` (optional, default `120`)
 - `JWKS_REFRESH_INTERVAL_SECONDS` (optional, default `300`)
+- `INTERNAL_IAM_AUTH` (`on|off|auto`, default `auto`; in prod this enables Cloud Run IAM auth for internal service calls)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (optional)
 - `RELAYORB_METRICS_EXPORTER` (`prometheus` by default; set `none` to disable `/metrics`)
-- `METRICS_AUTH_MODE` (`public` or `bearer`; defaults to `bearer` in prod and `public` elsewhere)
+- `METRICS_AUTH_MODE` (`public` or `bearer`; defaults to `bearer` in prod/demo and `public` elsewhere)
 - `METRICS_BEARER_TOKEN` (required when `METRICS_AUTH_MODE=bearer`)
 - `REGISTRY_OWNERSHIP_POLICY_PATH` (optional, default `config/registry-ownership.toml`)
 - `REGISTRY_WORKER_AUTH_MODE` (`disabled` or `oidc`; optional for registry)
@@ -99,6 +158,11 @@ Workers should set:
 - `RELAYORB_PUBLIC_BASE_URL` (or `WORKER_BASE_URL` alias)
 - `REGISTRY_IDENTITY_AUDIENCE` (required when registry enforces worker OIDC identity)
 
+Production network posture:
+- Gateway stays public (OIDC-protected at app layer).
+- Registry and workers are private (Cloud Run IAM invoker check + scoped `roles/run.invoker` bindings).
+- Internal calls use `X-Serverless-Authorization: Bearer <id_token>` with audience set to the target service run.app URL.
+
 ## Observability
 
 - Tracing:
@@ -110,8 +174,11 @@ Workers should set:
     - gateway: `GET /metrics` on port `8080`
     - registry: `GET /metrics` on port `8081`
     - worker: `GET /metrics` on port `8090`
-  - In prod, `/metrics` is bearer-protected (`METRICS_AUTH_MODE=bearer`).
-  - `relayorb-metrics-scraper-prod` (OTEL collector) scrapes gateway/registry/worker metrics and exports them to Cloud Monitoring as `prometheus.googleapis.com/*`.
+- In prod/demo, `/metrics` is bearer-protected (`METRICS_AUTH_MODE=bearer`).
+  - `relayorb-metrics-scraper-prod` uses an IAM-aware local proxy so each scrape request carries both:
+    - `X-Serverless-Authorization` (Cloud Run IAM ID token)
+    - `Authorization` (metrics bearer token)
+  - Scraped series are exported to Cloud Monitoring as `prometheus.googleapis.com/*`.
   - All service metrics include the base labels:
     - `env`, `service_name`, `version`, `region`
   - Capability/request series also include controlled labels:
@@ -133,3 +200,11 @@ Workers should set:
 - Async job status reads are creator-or-admin (`GET /v1/jobs/:jobId`).
 - Registry governance smoke can be run manually:
   - `bash ops/smoke/registry-governance-smoke.sh <registry-url>`
+
+## Project Governance
+
+- License: [LICENSE](/home/khalid/relayorb/LICENSE)
+- Security reporting: [SECURITY.md](/home/khalid/relayorb/SECURITY.md)
+- Contribution guide: [CONTRIBUTING.md](/home/khalid/relayorb/CONTRIBUTING.md)
+- Code of conduct: [CODE_OF_CONDUCT.md](/home/khalid/relayorb/CODE_OF_CONDUCT.md)
+- Roadmap: [ROADMAP.md](/home/khalid/relayorb/docs/ROADMAP.md)

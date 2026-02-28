@@ -41,23 +41,35 @@
    - `JWKS_URL`
    - `AUTH_CLOCK_SKEW_SECONDS` (recommended `120`)
    - Emergency-only fallback: if running HMAC in prod, set `ALLOW_HMAC_IN_PROD=true` explicitly.
-5. For identity-bound registry governance (recommended), configure registry worker auth:
+5. For internal Cloud Run IAM auth, keep:
+   - `INTERNAL_IAM_AUTH=on` on gateway in prod.
+   - worker `REGISTRY_IDENTITY_AUDIENCE=<registry service run.app URL>`.
+   - registry worker auth mode enabled (`REGISTRY_WORKER_AUTH_MODE=oidc`).
+6. Service posture:
+   - gateway is public (`allUsers` invoker retained intentionally).
+   - registry and worker are private (`allUsers` removed; `roles/run.invoker` only for required runtime SAs).
+7. Rollout-safe order for first hardening migration:
+   - deploy code updates first (gateway, registry, worker, scraper) while old IAM policy still allows traffic.
+   - apply Terraform IAM hardening second (remove `allUsers`, enforce service-to-service invokers).
+   - run post-apply smokes immediately.
+8. For identity-bound registry governance (recommended), configure registry worker auth:
    - `REGISTRY_WORKER_AUTH_MODE=oidc`
    - `REGISTRY_WORKER_OIDC_AUDIENCE=<registry-url>`
    - optional overrides: `REGISTRY_WORKER_OIDC_ISSUER`, `REGISTRY_WORKER_JWKS_URL`
    - workers must set `REGISTRY_IDENTITY_AUDIENCE=<registry-url>` so registration/heartbeat include service identity tokens.
-6. Push to `main` or run deploy workflows manually:
+9. Push to `main` or run deploy workflows manually:
    - `.github/workflows/deploy-registry.yml`
    - `.github/workflows/deploy-gateway.yml`
    - `.github/workflows/deploy-metrics-scraper.yml`
    - Registry deploy workflow runs `ops/smoke/registry-governance-smoke.sh` post-deploy and fails if governance checks regress.
    - Registry deploy workflow refreshes `relayorb-rag-prod` with bearer metrics auth and runs worker metrics smoke.
+   - For private registry/worker services, metrics smoke accepts unauthenticated `403` at Cloud Run IAM as expected.
    - Metrics scraper workflow deploys `relayorb-metrics-scraper-prod` and keeps one instance scraping metrics continuously.
    - Metrics scraper workflow runs `ops/smoke/metrics-scraper-smoke.sh` (service ready + no recent exporter errors + key series present).
    - Gateway and registry deploy workflows run `ops/smoke/metrics-auth-smoke.sh` post-deploy and fail if `/metrics` auth regresses.
-7. Confirm services:
+10. Confirm services:
    - `gcloud run services list --region us-central1`
-8. Apply/refresh alert policies:
+11. Apply/refresh alert policies:
    - `cd infra/gcp/terraform`
    - `terraform init`
    - `terraform apply`
@@ -67,22 +79,34 @@
      - `relayorb-prod-gateway-error-rate`
      - `relayorb-prod-registry-healthy-providers-zero`
      - `relayorb-prod-gateway-jobs-queued-high`
-9. IAM drift-proofing:
+12. IAM drift-proofing:
    - Keep deploy/runtime IAM grants in `infra/gcp/terraform` (`iam.tf`).
    - Run:
      - `cd infra/gcp/terraform`
      - `terraform plan`
      - `terraform apply`
+   - `terraform plan/apply` checks `run.googleapis.com/invoker-iam-disabled` for private services via `gcloud run services describe`; ensure GCP auth is active before running.
    - No manual `gcloud ... add-iam-policy-binding` steps should be needed for:
      - metrics scraper deploy workflow
      - worker metrics secret access
      - scraper smoke queries to Logging/Monitoring APIs
+      - registry/worker Cloud Run `run.invoker` posture
+
+## Post-hardening verification
+
+1. Verify private registry/worker from an unauthenticated caller:
+   - `curl -i https://<registry-url>/health` -> expect `403`
+   - `curl -i https://<worker-url>/health` -> expect `403`
+2. Verify gateway e2e still routes:
+   - call `POST /v1/invoke` with a valid gateway OIDC bearer token and confirm `meta.routedTo` is the worker URL.
+3. Verify metrics scraping still works after private lock-down:
+   - run `ops/smoke/metrics-scraper-smoke.sh` and confirm each job has `up=1` in Cloud Monitoring.
 
 ## Observability in prod
 
 1. Enable OTEL export by setting `OTEL_EXPORTER_OTLP_ENDPOINT` on gateway/registry/worker.
 2. Keep `RELAYORB_METRICS_EXPORTER=prometheus` (default) for `/metrics`.
-3. In prod, keep `METRICS_AUTH_MODE=bearer` and rotate `METRICS_BEARER_TOKEN` via Secret Manager.
+3. In prod/demo, keep `METRICS_AUTH_MODE=bearer` and rotate `METRICS_BEARER_TOKEN` via Secret Manager.
 4. Build dashboard charts from:
    - `relayorb_gateway_invoke_latency_ms` (p95 by `capability_id`)
    - `relayorb_gateway_invoke_requests_total` (error rate by `result`/`error_code`)
@@ -105,6 +129,22 @@
 3. Verify certificate provisioning:
    - `gcloud run domain-mappings describe ...`
 
+## Anonymous demo operations
+
+1. Deploy demo stack:
+   - run `.github/workflows/deploy-demo.yml`
+2. Verify posture and behavior:
+   - `bash ops/smoke/demo-deploy-verify.sh`
+   - optional strict rate-limit assertion:
+     - `CHECK_RATE_LIMIT=1 bash ops/smoke/demo-deploy-verify.sh`
+3. Keep demo cost bounded:
+   - configure Cloud Billing budget alerts in `relayorb-demo`
+   - keep Cloud Run max instances capped
+4. Emergency traffic stop (panic button):
+   - `gcloud compute security-policies rules update 2147483647 --project relayorb-demo --security-policy relayorb-demo-armor --action deny-403`
+5. Restore traffic:
+   - `gcloud compute security-policies rules update 2147483647 --project relayorb-demo --security-policy relayorb-demo-armor --action allow`
+
 ## Rollback
 
 1. List revisions:
@@ -112,3 +152,6 @@
 2. Shift traffic back to last known good revision:
    - `gcloud run services update-traffic relayorb-gateway --to-revisions <revision>=100 --region us-central1`
 3. Validate health and invoke smoke test.
+4. If hardening breaks internal traffic, temporarily restore `allUsers` only long enough to recover and re-run:
+   - fix service-to-service IAM audience/invoker bindings,
+   - re-apply Terraform to return registry/worker to private posture.

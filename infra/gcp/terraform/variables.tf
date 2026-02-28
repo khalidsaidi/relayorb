@@ -22,16 +22,16 @@ variable "metrics_scraper_service_account_id" {
   default     = "relayorb-otel-scraper-sa"
 }
 
+variable "worker_runtime_service_account_id" {
+  type        = string
+  description = "Service account ID used by the RAG worker runtime"
+  default     = "relayorb-rag-sa"
+}
+
 variable "registry_deployer_service_account_id" {
   type        = string
   description = "Service account ID used by deploy workflows (OIDC impersonation)"
   default     = "relayorb-registry-deployer-sa"
-}
-
-variable "worker_runtime_service_account_email" {
-  type        = string
-  description = "Worker runtime service account email; defaults to the project default compute SA when empty"
-  default     = ""
 }
 
 variable "gateway_metrics_secret_name" {
@@ -68,6 +68,12 @@ variable "registry_service_name" {
   type        = string
   description = "Registry service name used in metrics labels"
   default     = "relayorb-registry-prod"
+}
+
+variable "worker_service_name" {
+  type        = string
+  description = "Worker service name used for IAM bindings"
+  default     = "relayorb-rag-prod"
 }
 
 variable "key_capability_id" {

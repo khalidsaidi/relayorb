@@ -5,7 +5,7 @@ env = "prod"
 capability_prefix = "rag."
 allowed_service_names = ["relayorb-rag-prod"]
 allowed_service_accounts = [
-  "304025149431-compute@developer.gserviceaccount.com",
+  "relayorb-rag-sa@relayorb-prod.iam.gserviceaccount.com",
 ]
 
 [[rules]]

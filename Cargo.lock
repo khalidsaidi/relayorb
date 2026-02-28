@@ -2229,6 +2229,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "config",
  "hex",
  "http",
@@ -2240,11 +2241,13 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
  "time",
+ "tokio",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
@@ -2272,6 +2275,20 @@ dependencies = [
  "time",
  "tokio",
  "tower-http 0.5.2",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "relayorb-metrics-proxy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "relayorb-core",
+ "reqwest",
+ "serde_json",
+ "tokio",
  "tracing",
  "uuid",
 ]

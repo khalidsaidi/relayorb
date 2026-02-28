@@ -1,0 +1,19 @@
+project_id = "relayorb-demo"
+region     = "us-central1"
+
+release_version = "demo"
+
+gateway_image  = "us-central1-docker.pkg.dev/relayorb-demo/relayorb/relayorb-gateway-demo:latest"
+registry_image = "us-central1-docker.pkg.dev/relayorb-demo/relayorb/relayorb-registry-demo:latest"
+worker_image   = "us-central1-docker.pkg.dev/relayorb-demo/relayorb/relayorb-rag-demo:latest"
+scraper_image  = "us-central1-docker.pkg.dev/relayorb-demo/relayorb/relayorb-metrics-scraper-demo:latest"
+
+demo_domain_name = "demo.example.com"
+
+# Keep the anonymous demo read-only and tightly bounded.
+demo_allowed_capabilities   = ["rag.search@v1", "demo.echo@v1"]
+demo_max_request_bytes      = 32768
+demo_rate_limit_per_minute  = 30
+demo_rate_limit_burst       = 10
+demo_cache_ttl_seconds      = 45
+cloud_armor_rate_limit_per_minute = 60

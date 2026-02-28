@@ -1,11 +1,8 @@
-data "google_project" "current" {
-  project_id = var.project_id
-}
-
 locals {
   registry_deployer_sa_email = "${var.registry_deployer_service_account_id}@${var.project_id}.iam.gserviceaccount.com"
-  metrics_scraper_sa_email   = "${var.metrics_scraper_service_account_id}@${var.project_id}.iam.gserviceaccount.com"
-  worker_runtime_sa_email    = var.worker_runtime_service_account_email != "" ? var.worker_runtime_service_account_email : "${data.google_project.current.number}-compute@developer.gserviceaccount.com"
+  metrics_scraper_sa_email   = google_service_account.metrics_scraper.email
+  worker_runtime_sa_email    = google_service_account.worker_runtime.email
+  gateway_runtime_sa_email   = google_service_account.gateway.email
 
   metrics_token_secret_ids = toset([
     "projects/${var.project_id}/secrets/${var.gateway_metrics_secret_name}",
@@ -15,7 +12,19 @@ locals {
 }
 
 resource "google_service_account_iam_member" "metrics_scraper_runtime_sa_user" {
-  service_account_id = "projects/${var.project_id}/serviceAccounts/${local.metrics_scraper_sa_email}"
+  service_account_id = google_service_account.metrics_scraper.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${local.registry_deployer_sa_email}"
+}
+
+resource "google_service_account_iam_member" "registry_runtime_sa_user" {
+  service_account_id = google_service_account.registry.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${local.registry_deployer_sa_email}"
+}
+
+resource "google_service_account_iam_member" "worker_runtime_sa_user" {
+  service_account_id = google_service_account.worker_runtime.name
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${local.registry_deployer_sa_email}"
 }

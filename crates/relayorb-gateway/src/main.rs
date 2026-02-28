@@ -1,13 +1,18 @@
 use std::{
-    cmp::max, collections::BTreeSet, net::SocketAddr, str::FromStr, sync::Arc, time::Instant,
+    cmp::max,
+    collections::{BTreeSet, HashMap},
+    net::SocketAddr,
+    str::FromStr,
+    sync::Arc,
+    time::Instant,
 };
 
 use anyhow::Context;
 use axum::{
     body::Bytes,
-    extract::{Path, State},
-    http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    extract::{DefaultBodyLimit, Path, State},
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -20,10 +25,10 @@ use jsonwebtoken::{
 use metrics::{counter, gauge, histogram};
 use once_cell::sync::{Lazy, OnceCell};
 use relayorb_core::{
-    canonicalize_json, init_metrics_exporter, init_tracing, load_base_settings,
-    render_prometheus_metrics, trace_id_from_traceparent, traceparent_from_trace_id,
-    validate_json_with_schema, ApiError, CapabilityManifest, ErrorCode, ErrorEnvelope,
-    ProviderView, RelayOrbError, RequestMeta, SuccessEnvelope,
+    add_cloud_run_iam_headers, canonicalize_json, init_metrics_exporter, init_tracing,
+    load_base_settings, render_prometheus_metrics, trace_id_from_traceparent,
+    traceparent_from_trace_id, validate_json_with_schema, ApiError, CapabilityManifest, ErrorCode,
+    ErrorEnvelope, ProviderView, RelayOrbError, RequestMeta, SuccessEnvelope,
 };
 use relayorb_policy::{PolicyEngine, SqliteBudgetStore};
 use serde::{Deserialize, Serialize};
@@ -31,7 +36,10 @@ use serde_json::{json, Value};
 use sha2::Sha256;
 use sqlx::SqlitePool;
 use time::OffsetDateTime;
-use tokio::{sync::RwLock, time::Duration};
+use tokio::{
+    sync::{Mutex, RwLock},
+    time::Duration,
+};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, info_span};
 use uuid::Uuid;
@@ -107,6 +115,8 @@ struct AppState {
     version: String,
     region: String,
     metrics_auth: MetricsAuthConfig,
+    internal_iam_auth: bool,
+    demo: Option<DemoConfig>,
     registry_url: String,
     auth: AuthConfig,
     client: reqwest::Client,
@@ -127,8 +137,50 @@ static METRIC_CONTEXT: OnceCell<MetricContext> = OnceCell::new();
 
 #[derive(Clone)]
 enum AuthConfig {
+    None,
     Hmac { secret: String },
     Oidc(OidcAuthState),
+}
+
+#[derive(Clone)]
+struct DemoConfig {
+    allowed_capabilities: BTreeSet<String>,
+    max_request_bytes: usize,
+    max_timeout_ms: u64,
+    rag_max_query_length: usize,
+    rag_max_top_k: u64,
+    rate_limiter: DemoRateLimiter,
+    cache: DemoCache,
+}
+
+#[derive(Clone)]
+struct DemoRateLimiter {
+    tokens_per_minute: f64,
+    burst: f64,
+    max_keys: usize,
+    buckets: Arc<Mutex<HashMap<String, DemoRateBucket>>>,
+}
+
+#[derive(Clone)]
+struct DemoRateBucket {
+    tokens: f64,
+    last_refill_unix: i64,
+    last_seen_unix: i64,
+}
+
+#[derive(Clone)]
+struct DemoCache {
+    ttl_seconds: i64,
+    max_entries: usize,
+    entries: Arc<RwLock<HashMap<String, DemoCachedEntry>>>,
+}
+
+#[derive(Clone)]
+struct DemoCachedEntry {
+    data: Value,
+    routed_to: String,
+    retries: u32,
+    expires_at_unix: i64,
 }
 
 #[derive(Clone)]
@@ -240,6 +292,7 @@ struct WorkerExecutionResult {
     routed_to: String,
     response_data: Value,
     retries: u32,
+    demo_cache_hit: bool,
 }
 
 struct WorkerCallData {
@@ -329,6 +382,12 @@ async fn main() -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let auth = build_auth_config(&base, client.clone()).await?;
     let metrics_auth = build_metrics_auth_config(&base.relayorb_env)?;
+    let internal_iam_auth = build_internal_iam_auth_config(&base.relayorb_env)?;
+    let demo = build_demo_config(&base.relayorb_env)?;
+    let max_request_bytes = demo
+        .as_ref()
+        .map(|cfg| cfg.max_request_bytes)
+        .unwrap_or(1_048_576);
 
     if let AuthConfig::Oidc(oidc) = auth.clone() {
         spawn_jwks_refresh(oidc, base.jwks_refresh_interval_seconds);
@@ -351,6 +410,8 @@ async fn main() -> anyhow::Result<()> {
         version,
         region,
         metrics_auth,
+        internal_iam_auth,
+        demo,
         registry_url: base.registry_url,
         auth,
         client,
@@ -358,16 +419,25 @@ async fn main() -> anyhow::Result<()> {
         policy,
         budgets,
     });
-    spawn_job_runner(state.clone());
+    if state.demo.is_none() {
+        spawn_job_runner(state.clone());
+    }
 
-    let router = Router::new()
+    let mut router = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
-        .route("/v1/invoke", post(invoke))
-        .route("/v1/submit", post(submit))
-        .route("/v1/batchInvoke", post(batch_invoke))
-        .route("/v1/jobs/:job_id", get(get_job))
-        .route("/v1/replay/:request_id", get(replay))
+        .route("/v1/invoke", post(invoke));
+
+    if state.demo.is_none() {
+        router = router
+            .route("/v1/submit", post(submit))
+            .route("/v1/batchInvoke", post(batch_invoke))
+            .route("/v1/jobs/:job_id", get(get_job))
+            .route("/v1/replay/:request_id", get(replay));
+    }
+
+    let router = router
+        .layer(DefaultBodyLimit::max(max_request_bytes))
         .with_state(state.clone())
         .layer(TraceLayer::new_for_http());
 
@@ -408,8 +478,60 @@ async fn invoke(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<Response, ApiError> {
     let fallback_meta = request_meta(&headers, None, None);
+
+    if let Some(demo) = state.demo.as_ref() {
+        if request_content_length(&headers).is_some_and(|value| value > demo.max_request_bytes) {
+            record_demo_request_outcome("too_large");
+            let envelope = ErrorEnvelope {
+                request_id: fallback_meta.request_id.clone(),
+                trace_id: fallback_meta.trace_id.clone(),
+                status: "error".to_string(),
+                error: relayorb_core::ErrorBody {
+                    code: ErrorCode::SchemaValidationFailed,
+                    message: "request payload too large for public demo".to_string(),
+                    details: json!({
+                        "maxRequestBytes": demo.max_request_bytes
+                    }),
+                },
+            };
+            return Ok((StatusCode::PAYLOAD_TOO_LARGE, Json(envelope)).into_response());
+        }
+
+        let client_ip = client_ip_from_headers(&headers);
+        if let Some(retry_after_seconds) = demo.rate_limiter.check(&client_ip).await {
+            record_demo_request_outcome("rate_limited");
+            counter!(
+                "relayorb_demo_rate_limited_total",
+                "env" => state.env.clone(),
+                "service_name" => state.service_name.clone(),
+                "version" => state.version.clone(),
+                "region" => state.region.clone()
+            )
+            .increment(1);
+            let envelope = ErrorEnvelope {
+                request_id: fallback_meta.request_id.clone(),
+                trace_id: fallback_meta.trace_id.clone(),
+                status: "error".to_string(),
+                error: relayorb_core::ErrorBody {
+                    code: ErrorCode::BudgetExceeded,
+                    message: "public demo rate limit exceeded".to_string(),
+                    details: json!({
+                        "retryAfterSeconds": retry_after_seconds
+                    }),
+                },
+            };
+            let mut response = (StatusCode::TOO_MANY_REQUESTS, Json(envelope)).into_response();
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                header::HeaderValue::from_str(&retry_after_seconds.to_string())
+                    .unwrap_or_else(|_| header::HeaderValue::from_static("1")),
+            );
+            return Ok(response);
+        }
+    }
+
     verify_auth(&state, &headers, &body, &fallback_meta).await?;
 
     let payload: Value = serde_json::from_slice(&body).map_err(|err| {
@@ -428,7 +550,7 @@ async fn invoke(
         )
     })?;
 
-    let request: InvokeRequest = serde_json::from_value(payload).map_err(|err| {
+    let mut request: InvokeRequest = serde_json::from_value(payload).map_err(|err| {
         api_error(
             &fallback_meta,
             RelayOrbError::new(
@@ -439,8 +561,12 @@ async fn invoke(
         )
     })?;
 
+    if state.demo.is_some() {
+        normalize_demo_caller(&mut request, &headers);
+    }
+
     let response = process_invoke(state, &headers, request).await?;
-    Ok((response.status, Json(response.envelope)))
+    Ok((response.status, Json(response.envelope)).into_response())
 }
 
 async fn submit(
@@ -944,6 +1070,9 @@ async fn process_invoke(
         Err(err) => {
             let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
             record_invoke_error(&request.capability, err.inner.code, latency_ms);
+            if state.demo.is_some() {
+                record_demo_request_outcome(demo_outcome_from_error_code(err.inner.code));
+            }
             return Err(err);
         }
     };
@@ -987,6 +1116,9 @@ async fn process_invoke(
             )
             .increment(1);
             record_invoke_error(&request.capability, err.inner.code, latency_ms);
+            if state.demo.is_some() {
+                record_demo_request_outcome(demo_outcome_from_error_code(err.inner.code));
+            }
             return Err(err);
         }
         InvocationClaim::InProgress(stored) => {
@@ -1026,6 +1158,9 @@ async fn process_invoke(
         Ok(execution) => {
             let elapsed_ms = started.elapsed().as_millis() as i64;
             record_invoke_success(&request.capability, "ok", elapsed_ms as f64);
+            if state.demo.is_some() {
+                record_demo_request_outcome("ok");
+            }
             complete_invocation_success(
                 &state,
                 &meta,
@@ -1048,7 +1183,8 @@ async fn process_invoke(
                     "routedTo": execution.routed_to,
                     "latencyMs": elapsed_ms,
                     "retries": execution.retries,
-                    "traceId": meta.trace_id
+                    "traceId": meta.trace_id,
+                    "demoCacheHit": execution.demo_cache_hit
                 }));
             Ok(InvokeHttpResult {
                 status: StatusCode::OK,
@@ -1058,6 +1194,9 @@ async fn process_invoke(
         Err(err) => {
             let elapsed_ms = started.elapsed().as_millis() as i64;
             record_invoke_error(&request.capability, err.inner.code, elapsed_ms as f64);
+            if state.demo.is_some() {
+                record_demo_request_outcome(demo_outcome_from_error_code(err.inner.code));
+            }
             if let Err(record_err) = complete_invocation_failure(
                 &state,
                 &meta,
@@ -1103,6 +1242,27 @@ fn error_result_label(code: ErrorCode) -> &'static str {
         ErrorCode::NoHealthyProviders => "unavailable",
         _ => "error",
     }
+}
+
+fn demo_outcome_from_error_code(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::Forbidden => "forbidden",
+        ErrorCode::BudgetExceeded => "rate_limited",
+        _ => "error",
+    }
+}
+
+fn record_demo_request_outcome(result: &'static str) {
+    let labels = metric_context();
+    counter!(
+        "relayorb_demo_requests_total",
+        "env" => labels.env,
+        "service_name" => labels.service_name,
+        "version" => labels.version,
+        "region" => labels.region,
+        "result" => result
+    )
+    .increment(1);
 }
 
 fn record_invoke_success(capability: &str, result: &'static str, latency_ms: f64) {
@@ -1163,22 +1323,61 @@ async fn execute_new_invocation(
     request: &InvokeRequest,
     budget_key: &str,
 ) -> Result<WorkerExecutionResult, ApiError> {
+    if let Some(demo) = state.demo.as_ref() {
+        if !demo.allowed_capabilities.contains(&request.capability) {
+            return Err(api_error(
+                meta,
+                RelayOrbError::new(
+                    ErrorCode::Forbidden,
+                    format!(
+                        "capability '{}' is not available in the public demo",
+                        request.capability
+                    ),
+                )
+                .with_details(json!({
+                    "capability": request.capability,
+                    "allowedCapabilities": demo.allowed_capabilities.iter().cloned().collect::<Vec<_>>()
+                })),
+            ));
+        }
+
+        enforce_demo_payload_limits(meta, demo, request)?;
+    }
+
     let registry = fetch_registry_capability(state, meta, &request.capability).await?;
 
-    state
-        .policy
-        .authorize(
-            &request.caller.role,
-            &request.capability,
-            &registry.manifest.side_effects,
-        )
-        .map_err(|err| api_error(meta, err))?;
+    if state.demo.is_some()
+        && registry.manifest.side_effects != relayorb_core::CapabilitySideEffects::ReadOnly
+    {
+        return Err(api_error(
+            meta,
+            RelayOrbError::new(
+                ErrorCode::Forbidden,
+                "public demo only supports read_only capabilities",
+            )
+            .with_details(json!({
+                "capability": request.capability,
+                "sideEffects": registry.manifest.side_effects
+            })),
+        ));
+    }
 
-    state
-        .budgets
-        .enforce(budget_key)
-        .await
-        .map_err(|err| api_error(meta, err))?;
+    if state.demo.is_none() {
+        state
+            .policy
+            .authorize(
+                &request.caller.role,
+                &request.capability,
+                &registry.manifest.side_effects,
+            )
+            .map_err(|err| api_error(meta, err))?;
+
+        state
+            .budgets
+            .enforce(budget_key)
+            .await
+            .map_err(|err| api_error(meta, err))?;
+    }
 
     validate_json_with_schema(&registry.manifest.input_schema, &request.payload).map_err(
         |errors| {
@@ -1192,6 +1391,31 @@ async fn execute_new_invocation(
             )
         },
     )?;
+
+    let demo_cache_key = if state.demo.is_some() {
+        Some(demo_cache_key(meta, request)?)
+    } else {
+        None
+    };
+
+    if let (Some(demo), Some(cache_key)) = (state.demo.as_ref(), demo_cache_key.as_ref()) {
+        if let Some(cached) = demo.cache.get(cache_key).await {
+            counter!(
+                "relayorb_demo_cache_hits_total",
+                "env" => state.env.clone(),
+                "service_name" => state.service_name.clone(),
+                "version" => state.version.clone(),
+                "region" => state.region.clone()
+            )
+            .increment(1);
+            return Ok(WorkerExecutionResult {
+                routed_to: cached.routed_to,
+                response_data: cached.data,
+                retries: cached.retries,
+                demo_cache_hit: true,
+            });
+        }
+    }
 
     let provider = select_provider(&registry.providers).ok_or_else(|| {
         api_error(
@@ -1214,8 +1438,16 @@ async fn execute_new_invocation(
         "payload": request.payload
     });
 
-    let timeout_ms = registry.manifest.limits.timeout_ms;
-    let max_retries = registry.manifest.limits.max_retries;
+    let timeout_ms = state
+        .demo
+        .as_ref()
+        .map(|demo| registry.manifest.limits.timeout_ms.min(demo.max_timeout_ms))
+        .unwrap_or(registry.manifest.limits.timeout_ms);
+    let max_retries = if state.demo.is_some() {
+        0
+    } else {
+        registry.manifest.limits.max_retries
+    };
     let worker_data = call_worker_with_retries(
         state,
         meta,
@@ -1240,10 +1472,26 @@ async fn execute_new_invocation(
         },
     )?;
 
+    if let (Some(demo), Some(cache_key)) = (state.demo.as_ref(), demo_cache_key.as_ref()) {
+        demo.cache
+            .put(
+                cache_key.clone(),
+                DemoCachedEntry {
+                    data: worker_data.data.clone(),
+                    routed_to: routed_to.clone(),
+                    retries: worker_data.retries,
+                    expires_at_unix: OffsetDateTime::now_utc().unix_timestamp()
+                        + demo.cache.ttl_seconds,
+                },
+            )
+            .await;
+    }
+
     Ok(WorkerExecutionResult {
         routed_to,
         response_data: worker_data.data,
         retries: worker_data.retries,
+        demo_cache_hit: false,
     })
 }
 
@@ -1267,6 +1515,24 @@ async fn fetch_registry_capability(
     if let Some(traceparent) = traceparent_from_trace_id(&meta.trace_id) {
         request_builder = request_builder.header("traceparent", traceparent);
     }
+    if state.internal_iam_auth {
+        request_builder = add_cloud_run_iam_headers(
+            request_builder,
+            &state.client,
+            state.registry_url.trim_end_matches('/'),
+        )
+        .await
+        .map_err(|err| {
+            api_error(
+                meta,
+                RelayOrbError::new(
+                    ErrorCode::Internal,
+                    "failed preparing Cloud Run IAM auth for registry call",
+                )
+                .with_details(json!({"error": err.to_string()})),
+            )
+        })?;
+    }
 
     let response = request_builder.send().await.map_err(|err| {
         api_error(
@@ -1283,6 +1549,21 @@ async fn fetch_registry_capability(
                 ErrorCode::CapabilityNotFound,
                 format!("capability '{}' not found in registry", capability),
             ),
+        ));
+    }
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_else(|_| "".to_string());
+        return Err(api_error(
+            meta,
+            RelayOrbError::new(
+                ErrorCode::Internal,
+                "registry returned a non-success status",
+            )
+            .with_details(json!({
+                "statusCode": status.as_u16(),
+                "body": body
+            })),
         ));
     }
 
@@ -1676,7 +1957,16 @@ async fn call_worker_with_retries(
     let mut backoff_ms = 100_u64;
 
     for attempt in 0..=max_retries {
-        match call_worker_once(state, meta, &worker_url, worker_payload, timeout_ms).await {
+        match call_worker_once(
+            state,
+            meta,
+            &worker_url,
+            worker_payload,
+            timeout_ms,
+            worker_base_url,
+        )
+        .await
+        {
             Ok(data) => {
                 return Ok(WorkerCallData {
                     data,
@@ -1728,6 +2018,7 @@ async fn call_worker_once(
     worker_url: &str,
     worker_payload: &Value,
     timeout_ms: u64,
+    worker_audience: &str,
 ) -> Result<Value, (ApiError, bool)> {
     let mut request_builder = state
         .client
@@ -1736,6 +2027,27 @@ async fn call_worker_once(
         .header("x-trace-id", &meta.trace_id);
     if let Some(traceparent) = traceparent_from_trace_id(&meta.trace_id) {
         request_builder = request_builder.header("traceparent", traceparent);
+    }
+    if state.internal_iam_auth {
+        request_builder = add_cloud_run_iam_headers(
+            request_builder,
+            &state.client,
+            worker_audience.trim_end_matches('/'),
+        )
+        .await
+        .map_err(|err| {
+            (
+                api_error(
+                    meta,
+                    RelayOrbError::new(
+                        ErrorCode::Internal,
+                        "failed preparing Cloud Run IAM auth for worker call",
+                    )
+                    .with_details(json!({"error": err.to_string()})),
+                ),
+                false,
+            )
+        })?;
     }
 
     let worker_response = tokio::time::timeout(
@@ -2194,11 +2506,18 @@ async fn build_auth_config(
     client: reqwest::Client,
 ) -> anyhow::Result<AuthConfig> {
     let resolved_mode = resolve_auth_mode(base);
-    if base.relayorb_env == "prod" && resolved_mode == "hmac" && !base.allow_hmac_in_prod {
+    if base.relayorb_env.eq_ignore_ascii_case("prod") && resolved_mode != "oidc" {
+        anyhow::bail!("RELAYORB_ENV=prod requires AUTH_MODE=oidc");
+    }
+    if resolved_mode == "hmac" && base.relayorb_env == "prod" && !base.allow_hmac_in_prod {
         anyhow::bail!("AUTH_MODE resolved to hmac in prod, but ALLOW_HMAC_IN_PROD is not enabled");
+    }
+    if resolved_mode == "none" && !base.relayorb_env.eq_ignore_ascii_case("demo") {
+        anyhow::bail!("AUTH_MODE=none is only supported when RELAYORB_ENV=demo");
     }
 
     match resolved_mode.as_str() {
+        "none" => Ok(AuthConfig::None),
         "hmac" => {
             let secret = base.secret_auth_hmac.clone().ok_or_else(|| {
                 anyhow::anyhow!("AUTH_MODE=hmac requires SECRET_AUTH_HMAC to be configured")
@@ -2233,7 +2552,7 @@ async fn build_auth_config(
 
 fn build_metrics_auth_config(env: &str) -> anyhow::Result<MetricsAuthConfig> {
     let raw_mode = std::env::var("METRICS_AUTH_MODE").unwrap_or_else(|_| {
-        if env.eq_ignore_ascii_case("prod") {
+        if env.eq_ignore_ascii_case("prod") || env.eq_ignore_ascii_case("demo") {
             "bearer".to_string()
         } else {
             "public".to_string()
@@ -2253,11 +2572,93 @@ fn build_metrics_auth_config(env: &str) -> anyhow::Result<MetricsAuthConfig> {
     }
 }
 
+fn build_internal_iam_auth_config(env: &str) -> anyhow::Result<bool> {
+    let raw_mode = std::env::var("INTERNAL_IAM_AUTH").unwrap_or_else(|_| "auto".to_string());
+    match raw_mode.trim().to_ascii_lowercase().as_str() {
+        "on" | "true" | "1" => Ok(true),
+        "off" | "false" | "0" => Ok(false),
+        "auto" => Ok(env.eq_ignore_ascii_case("prod")),
+        other => anyhow::bail!("unsupported INTERNAL_IAM_AUTH '{other}'"),
+    }
+}
+
+fn build_demo_config(env: &str) -> anyhow::Result<Option<DemoConfig>> {
+    let enabled = std::env::var("PUBLIC_DEMO_MODE")
+        .ok()
+        .map(|value| parse_bool_env(&value))
+        .transpose()?
+        .unwrap_or_else(|| env.eq_ignore_ascii_case("demo"));
+
+    if !enabled {
+        return Ok(None);
+    }
+    if !env.eq_ignore_ascii_case("demo") {
+        anyhow::bail!("PUBLIC_DEMO_MODE=true is only supported when RELAYORB_ENV=demo");
+    }
+
+    let allowed_capabilities = std::env::var("DEMO_ALLOWED_CAPABILITIES")
+        .unwrap_or_else(|_| "rag.search@v1,demo.echo@v1".to_string())
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>();
+
+    if allowed_capabilities.is_empty() {
+        anyhow::bail!("PUBLIC_DEMO_MODE requires at least one allowed capability");
+    }
+
+    let max_request_bytes = std::env::var("DEMO_MAX_REQUEST_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(32 * 1024);
+    let max_timeout_ms = std::env::var("DEMO_MAX_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(8_000);
+    let rag_max_query_length = std::env::var("DEMO_RAG_MAX_QUERY_LENGTH")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(512);
+    let rag_max_top_k = std::env::var("DEMO_RAG_MAX_TOP_K")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(5);
+    let rate_limit_per_minute = std::env::var("DEMO_RATE_LIMIT_PER_MINUTE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(30);
+    let rate_limit_burst = std::env::var("DEMO_RATE_LIMIT_BURST")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(10);
+    let cache_ttl_seconds = std::env::var("DEMO_CACHE_TTL_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(45);
+    let cache_max_entries = std::env::var("DEMO_CACHE_MAX_ENTRIES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(512);
+
+    Ok(Some(DemoConfig {
+        allowed_capabilities,
+        max_request_bytes,
+        max_timeout_ms,
+        rag_max_query_length,
+        rag_max_top_k,
+        rate_limiter: DemoRateLimiter::new(rate_limit_per_minute, rate_limit_burst, 10_000),
+        cache: DemoCache::new(cache_ttl_seconds, cache_max_entries),
+    }))
+}
+
 fn resolve_auth_mode(base: &relayorb_core::BaseSettings) -> String {
     let mode = base.auth_mode.trim().to_ascii_lowercase();
     if mode.is_empty() || mode == "auto" {
         if base.relayorb_env == "prod" {
             "oidc".to_string()
+        } else if base.relayorb_env == "demo" {
+            "none".to_string()
         } else {
             "hmac".to_string()
         }
@@ -2266,6 +2667,247 @@ fn resolve_auth_mode(base: &relayorb_core::BaseSettings) -> String {
     } else {
         mode
     }
+}
+
+fn parse_bool_env(value: &str) -> anyhow::Result<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        other => anyhow::bail!("unsupported boolean value '{other}'"),
+    }
+}
+
+impl DemoRateLimiter {
+    fn new(rate_limit_per_minute: u32, burst: u32, max_keys: usize) -> Self {
+        Self {
+            tokens_per_minute: rate_limit_per_minute as f64,
+            burst: burst as f64,
+            max_keys,
+            buckets: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    async fn check(&self, key: &str) -> Option<u64> {
+        let now = now_ts();
+        let mut buckets = self.buckets.lock().await;
+
+        if buckets.len() > self.max_keys {
+            let cutoff = now - 600;
+            buckets.retain(|_, bucket| bucket.last_seen_unix >= cutoff);
+        }
+
+        let bucket = buckets
+            .entry(key.to_string())
+            .or_insert_with(|| DemoRateBucket {
+                tokens: self.burst,
+                last_refill_unix: now,
+                last_seen_unix: now,
+            });
+        let elapsed_seconds = (now - bucket.last_refill_unix).max(0) as f64;
+        if elapsed_seconds > 0.0 {
+            let refill = elapsed_seconds * (self.tokens_per_minute / 60.0);
+            bucket.tokens = (bucket.tokens + refill).min(self.burst);
+            bucket.last_refill_unix = now;
+        }
+        bucket.last_seen_unix = now;
+
+        if bucket.tokens >= 1.0 {
+            bucket.tokens -= 1.0;
+            return None;
+        }
+
+        let seconds_to_next = (60.0 / self.tokens_per_minute).ceil().max(1.0) as u64;
+        Some(seconds_to_next)
+    }
+}
+
+impl DemoCache {
+    fn new(ttl_seconds: i64, max_entries: usize) -> Self {
+        Self {
+            ttl_seconds,
+            max_entries,
+            entries: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    async fn get(&self, key: &str) -> Option<DemoCachedEntry> {
+        let now = now_ts();
+        let mut entries = self.entries.write().await;
+        let entry = entries.get(key).cloned();
+        if let Some(value) = &entry {
+            if value.expires_at_unix > now {
+                return entry;
+            }
+        }
+        entries.remove(key);
+        None
+    }
+
+    async fn put(&self, key: String, entry: DemoCachedEntry) {
+        let now = now_ts();
+        let mut entries = self.entries.write().await;
+        entries.retain(|_, value| value.expires_at_unix > now);
+        if entries.len() >= self.max_entries {
+            let mut oldest_key: Option<String> = None;
+            let mut oldest_expiry = i64::MAX;
+            for (entry_key, value) in entries.iter() {
+                if value.expires_at_unix < oldest_expiry {
+                    oldest_expiry = value.expires_at_unix;
+                    oldest_key = Some(entry_key.clone());
+                }
+            }
+            if let Some(oldest_key) = oldest_key {
+                entries.remove(&oldest_key);
+            }
+        }
+        entries.insert(key, entry);
+    }
+}
+
+fn request_content_length(headers: &HeaderMap) -> Option<usize> {
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+}
+
+fn client_ip_from_headers(headers: &HeaderMap) -> String {
+    // In demo mode ingress is locked to the external load balancer, so
+    // forwarded headers are the right source of end-user client IP.
+    if let Some(ip) = parse_forwarded_for(headers) {
+        return ip;
+    }
+
+    let forwarded = headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(ip) = forwarded {
+        return ip.to_string();
+    }
+
+    headers
+        .get("x-real-ip")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn parse_forwarded_for(headers: &HeaderMap) -> Option<String> {
+    let forwarded = headers.get("forwarded")?.to_str().ok()?;
+    let first_entry = forwarded.split(',').next()?.trim();
+
+    for segment in first_entry.split(';') {
+        let segment = segment.trim();
+        let Some((key, value)) = segment.split_once('=') else {
+            continue;
+        };
+        if !key.trim().eq_ignore_ascii_case("for") {
+            continue;
+        }
+
+        let raw_value = value.trim().trim_matches('"');
+        if raw_value.is_empty() || raw_value.eq_ignore_ascii_case("unknown") {
+            continue;
+        }
+
+        let normalized = if raw_value.starts_with('[') {
+            raw_value
+                .find(']')
+                .map(|idx| raw_value[1..idx].to_string())
+                .unwrap_or_else(|| raw_value.trim_start_matches('[').to_string())
+        } else if raw_value.matches(':').count() == 1 && raw_value.contains('.') {
+            raw_value
+                .split_once(':')
+                .map(|(host, _)| host.to_string())
+                .unwrap_or_else(|| raw_value.to_string())
+        } else {
+            raw_value.to_string()
+        };
+
+        if !normalized.is_empty() {
+            return Some(normalized);
+        }
+    }
+
+    None
+}
+
+fn normalize_demo_caller(request: &mut InvokeRequest, headers: &HeaderMap) {
+    let client_ip = client_ip_from_headers(headers);
+    request.caller.agent_id = format!("demo-anon:{client_ip}");
+    request.caller.role = "demo-public".to_string();
+    request.caller.budget_key = Some(client_ip);
+}
+
+fn enforce_demo_payload_limits(
+    meta: &RequestMeta,
+    demo: &DemoConfig,
+    request: &InvokeRequest,
+) -> Result<(), ApiError> {
+    if request.capability == "rag.search@v1" {
+        let query = request
+            .payload
+            .get("query")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                api_error(
+                    meta,
+                    RelayOrbError::new(
+                        ErrorCode::SchemaValidationFailed,
+                        "public demo rag.search@v1 requires 'query' as a string",
+                    ),
+                )
+            })?;
+        if query.len() > demo.rag_max_query_length {
+            return Err(api_error(
+                meta,
+                RelayOrbError::new(
+                    ErrorCode::SchemaValidationFailed,
+                    "public demo query exceeds allowed length",
+                )
+                .with_details(json!({
+                    "maxQueryLength": demo.rag_max_query_length
+                })),
+            ));
+        }
+
+        if let Some(top_k) = request.payload.get("topK").and_then(Value::as_u64) {
+            if top_k > demo.rag_max_top_k {
+                return Err(api_error(
+                    meta,
+                    RelayOrbError::new(
+                        ErrorCode::SchemaValidationFailed,
+                        "public demo topK exceeds allowed limit",
+                    )
+                    .with_details(json!({
+                        "maxTopK": demo.rag_max_top_k
+                    })),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn demo_cache_key(meta: &RequestMeta, request: &InvokeRequest) -> Result<String, ApiError> {
+    let canonical = canonicalize_json(&json!({
+        "capability": request.capability,
+        "payload": request.payload
+    }))
+    .map_err(|err| {
+        api_error(
+            meta,
+            RelayOrbError::new(ErrorCode::Internal, "failed canonicalizing demo cache key")
+                .with_details(json!({"error": err.to_string()})),
+        )
+    })?;
+    Ok(canonical.sha256)
 }
 
 fn spawn_jwks_refresh(oidc: OidcAuthState, refresh_seconds: u64) {
@@ -2397,6 +3039,11 @@ async fn authenticate_request(
     meta: &RequestMeta,
 ) -> Result<AuthPrincipal, ApiError> {
     match &state.auth {
+        AuthConfig::None => Ok(AuthPrincipal {
+            subject: None,
+            agent_id: header_value(headers, "x-forwarded-for"),
+            roles: vec!["demo-public".to_string()],
+        }),
         AuthConfig::Hmac { secret } => {
             verify_hmac(headers, body, meta, secret)?;
             Ok(AuthPrincipal::from_hmac_headers(headers))

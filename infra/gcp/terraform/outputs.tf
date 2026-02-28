@@ -10,6 +10,10 @@ output "metrics_scraper_service_account" {
   value = google_service_account.metrics_scraper.email
 }
 
+output "worker_runtime_service_account" {
+  value = google_service_account.worker_runtime.email
+}
+
 output "artifact_repo" {
   value = google_artifact_registry_repository.relayorb.id
 }

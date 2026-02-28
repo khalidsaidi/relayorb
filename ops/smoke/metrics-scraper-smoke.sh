@@ -69,7 +69,7 @@ assert_no_recent_export_errors() {
   log "no recent scraper export errors on revision ${revision}"
 }
 
-metric_count_for_job() {
+metric_latest_up_for_job() {
   local job="$1"
   local token end start filter response
   token="$(gcloud auth print-access-token)"
@@ -81,25 +81,35 @@ metric_count_for_job() {
     --data-urlencode "filter=${filter}" \
     --data-urlencode "interval.startTime=${start}" \
     --data-urlencode "interval.endTime=${end}" \
-    --data-urlencode "view=HEADERS" \
+    --data-urlencode "view=FULL" \
     --data-urlencode "pageSize=1")"
-  echo "${response}" | jq '.timeSeries | length'
+  echo "${response}" | jq -r '
+    if (.timeSeries | length) == 0 then
+      "MISSING"
+    else
+      (.timeSeries[0].points[0].value.doubleValue // .timeSeries[0].points[0].value.int64Value // "MISSING")
+    end
+  '
 }
 
 wait_for_job_series() {
   local job="$1"
   for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
-    local count
-    count="$(metric_count_for_job "${job}")"
-    if [ "${count}" -gt 0 ]; then
-      log "metrics series present for job=${job} (attempt ${attempt})"
+    local up
+    up="$(metric_latest_up_for_job "${job}")"
+    if [ "${up}" = "1" ] || [ "${up}" = "1.0" ]; then
+      log "job=${job} is healthy in Cloud Monitoring up metric (attempt ${attempt})"
       return 0
     fi
-    log "waiting for metrics series job=${job} (attempt ${attempt}/${MAX_ATTEMPTS})"
+    if [ "${up}" = "MISSING" ]; then
+      log "waiting for metrics series job=${job} (attempt ${attempt}/${MAX_ATTEMPTS})"
+    else
+      log "waiting for up=1 job=${job} (current up=${up}, attempt ${attempt}/${MAX_ATTEMPTS})"
+    fi
     sleep "${SLEEP_SECONDS}"
   done
 
-  log "metrics series not found for job=${job}"
+  log "up metric did not reach 1 for job=${job}"
   return 1
 }
 

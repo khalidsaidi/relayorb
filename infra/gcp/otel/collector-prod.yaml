@@ -6,33 +6,24 @@ receivers:
         scrape_timeout: 10s
       scrape_configs:
         - job_name: relayorb-gateway-prod
-          scheme: https
-          metrics_path: /metrics
-          authorization:
-            type: Bearer
-            credentials: ${env:GATEWAY_METRICS_TOKEN}
+          scheme: http
+          metrics_path: /gateway
           static_configs:
-            - targets: ["${env:GATEWAY_METRICS_TARGET}"]
+            - targets: ["127.0.0.1:19090"]
               labels:
                 relayorb_component: gateway
         - job_name: relayorb-registry-prod
-          scheme: https
-          metrics_path: /metrics
-          authorization:
-            type: Bearer
-            credentials: ${env:REGISTRY_METRICS_TOKEN}
+          scheme: http
+          metrics_path: /registry
           static_configs:
-            - targets: ["${env:REGISTRY_METRICS_TARGET}"]
+            - targets: ["127.0.0.1:19090"]
               labels:
                 relayorb_component: registry
         - job_name: relayorb-rag-prod
-          scheme: https
-          metrics_path: /metrics
-          authorization:
-            type: Bearer
-            credentials: ${env:WORKER_METRICS_TOKEN}
+          scheme: http
+          metrics_path: /worker
           static_configs:
-            - targets: ["${env:WORKER_METRICS_TARGET}"]
+            - targets: ["127.0.0.1:19090"]
               labels:
                 relayorb_component: worker
 
