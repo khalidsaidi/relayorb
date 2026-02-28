@@ -61,7 +61,7 @@ jobs:
             --ingress all \
             --allow-unauthenticated \
             --set-env-vars RELAYORB_ENV=prod,RELAYORB_SERVICE_NAME=${{ env.SERVICE_NAME }},REGISTRY_BIND_ADDR=0.0.0.0:8080,REGISTRY_OWNERSHIP_POLICY_PATH=config/registry-ownership.toml,REGISTRY_WORKER_AUTH_MODE=oidc,REGISTRY_WORKER_OIDC_ISSUER=https://accounts.google.com,REGISTRY_WORKER_OIDC_AUDIENCE=$REGISTRY_URL,REGISTRY_WORKER_JWKS_URL=https://www.googleapis.com/oauth2/v3/certs \
-            --set-secrets DATABASE_URL=database-url:latest
+            --set-secrets DATABASE_URL=relayorb-prod-registry-db:latest
 
       - name: Refresh Owner Worker Registration
         shell: bash
