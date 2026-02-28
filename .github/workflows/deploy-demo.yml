@@ -27,8 +27,8 @@ jobs:
       - name: Authenticate to GCP (OIDC)
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.GCP_DEMO_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_DEMO_DEPLOYER_SA }}
+          workload_identity_provider: ${{ secrets.GCP_DEMO_WORKLOAD_IDENTITY_PROVIDER || secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEMO_DEPLOYER_SA || secrets.GCP_REGISTRY_DEPLOYER_SA }}
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
