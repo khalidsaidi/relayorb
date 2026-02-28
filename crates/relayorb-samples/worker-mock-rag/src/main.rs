@@ -9,6 +9,7 @@ use relayorb_core::{
 use relayorb_worker_sdk::{CapabilityHandler, CapabilityRegistration, WorkerConfig, WorkerRuntime};
 use serde_json::{json, Value};
 use tracing::info;
+use uuid::Uuid;
 
 struct MockRagHandler;
 
@@ -38,7 +39,7 @@ impl CapabilityHandler for MockRagHandler {
 
         Ok(json!({
             "results": results,
-            "provider": "worker-mock-rag"
+            "provider": "relayorb-rag"
         }))
     }
 }
@@ -53,10 +54,14 @@ async fn main() -> anyhow::Result<()> {
 
     let bind_addr =
         std::env::var("WORKER_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".to_string());
-    let base_url =
-        std::env::var("WORKER_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8090".to_string());
-    let instance_id =
-        std::env::var("WORKER_INSTANCE_ID").unwrap_or_else(|_| "mock-rag-worker-1".to_string());
+    let env = std::env::var("RELAYORB_ENV").unwrap_or_else(|_| base.relayorb_env.clone());
+    let service_name =
+        std::env::var("RELAYORB_SERVICE_NAME").unwrap_or_else(|_| format!("relayorb-rag-{env}"));
+    let base_url = std::env::var("RELAYORB_PUBLIC_BASE_URL")
+        .or_else(|_| std::env::var("WORKER_BASE_URL"))
+        .unwrap_or_else(|_| "http://127.0.0.1:8090".to_string());
+    let instance_id = std::env::var("WORKER_INSTANCE_ID")
+        .unwrap_or_else(|_| format!("{service_name}:{}", Uuid::new_v4()));
     let region = std::env::var("RELAYORB_REGION")
         .ok()
         .or(base.relayorb_region.clone());
@@ -65,6 +70,8 @@ async fn main() -> anyhow::Result<()> {
     let config = WorkerConfig {
         bind_addr,
         instance_id,
+        service_name,
+        env,
         base_url,
         region,
         registry_url,

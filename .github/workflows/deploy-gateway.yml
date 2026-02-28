@@ -18,7 +18,8 @@ env:
   PROJECT_ID: relayorb-prod
   REGION: us-central1
   REPOSITORY: relayorb
-  SERVICE_NAME: relayorb-gateway
+  SERVICE_NAME: relayorb-gateway-prod
+  REGISTRY_SERVICE_NAME: relayorb-registry-prod
 
 jobs:
   deploy:
@@ -48,11 +49,12 @@ jobs:
 
       - name: Deploy Cloud Run
         run: |
+          REGISTRY_URL="$(gcloud run services describe "${{ env.REGISTRY_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
           gcloud run deploy "${{ env.SERVICE_NAME }}" \
             --project "${{ env.PROJECT_ID }}" \
             --region "${{ env.REGION }}" \
             --image "$IMAGE" \
             --service-account relayorb-gateway-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
             --allow-unauthenticated \
-            --set-env-vars RELAYORB_ENV=prod,REGISTRY_URL=https://relayorb-registry-PLACEHOLDER.run.app,POLICY_PATH=config/policy.toml \
-            --set-secrets SECRET_AUTH_HMAC=relayorb-auth-hmac:latest,DATABASE_URL=database-url:latest,JWT_PUBLIC_KEYS_URL=relayorb-jwt-public-keys-url:latest
+            --set-env-vars RELAYORB_ENV=prod,RELAYORB_SERVICE_NAME=${{ env.SERVICE_NAME }},REGISTRY_URL=${REGISTRY_URL},POLICY_PATH=config/policy.toml,AUTH_MODE=oidc,OIDC_ISSUER=${{ secrets.RELAYORB_PROD_OIDC_ISSUER }},OIDC_AUDIENCE=${{ secrets.RELAYORB_PROD_OIDC_AUDIENCE }},JWKS_URL=${{ secrets.RELAYORB_PROD_JWKS_URL }},AUTH_CLOCK_SKEW_SECONDS=120 \
+            --set-secrets DATABASE_URL=relayorb-prod-gateway-db:latest

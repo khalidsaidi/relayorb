@@ -28,7 +28,9 @@ static REGISTER_SCHEMA: Lazy<Value> = Lazy::new(|| {
       "required": ["instanceId", "baseUrl", "capabilities"],
       "properties": {
         "instanceId": {"type": "string", "minLength": 1},
+        "serviceName": {"type": ["string", "null"], "minLength": 1},
         "baseUrl": {"type": "string", "format": "uri"},
+        "env": {"type": ["string", "null"], "minLength": 1},
         "region": {"type": ["string", "null"]},
         "ttlSeconds": {"type": ["integer", "null"], "minimum": 5, "maximum": 600},
         "capabilities": {
@@ -67,13 +69,16 @@ static HEARTBEAT_SCHEMA: Lazy<Value> = Lazy::new(|| {
 struct AppState {
     pool: SqlitePool,
     default_ttl_seconds: i64,
+    env: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RegisterRequest {
     instance_id: String,
+    service_name: Option<String>,
     base_url: String,
+    env: Option<String>,
     region: Option<String>,
     ttl_seconds: Option<i64>,
     capabilities: Vec<CapabilityManifest>,
@@ -118,6 +123,7 @@ struct DiscoverResponse {
 #[serde(rename_all = "camelCase")]
 struct IncludeUnhealthyQuery {
     include_unhealthy: Option<u8>,
+    env: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,6 +157,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         pool,
         default_ttl_seconds: ttl_seconds,
+        env: base.relayorb_env,
     });
 
     let router = Router::new()
@@ -158,11 +165,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/heartbeat", post(heartbeat))
         .route("/v1/capabilities/:capability_id", get(get_capability))
         .route("/v1/discover", get(discover))
-        .with_state(state)
+        .with_state(state.clone())
         .layer(TraceLayer::new_for_http());
 
     let addr = SocketAddr::from_str(&bind_addr)?;
-    info!(%addr, "registry listening");
+    info!(%addr, env = %state.env, "registry listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, router).await?;
 
@@ -215,12 +222,14 @@ async fn register(
         requestId = %meta.request_id,
         traceId = %meta.trace_id,
         instanceId = %request.instance_id,
+        env = %request.env.clone().unwrap_or_else(|| state.env.clone()),
         capabilityCount = request.capabilities.len()
     );
     let _guard = span.enter();
 
     let now = OffsetDateTime::now_utc().unix_timestamp();
     let ttl = request.ttl_seconds.unwrap_or(state.default_ttl_seconds);
+    let registration_env = request.env.clone().unwrap_or_else(|| state.env.clone());
     let mut tx = state.pool.begin().await.map_err(|err| {
         api_error(
             &meta,
@@ -231,17 +240,21 @@ async fn register(
 
     sqlx::query(
         r#"
-        INSERT INTO instances (instance_id, base_url, region, last_heartbeat, ttl_seconds, stats_json)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        INSERT INTO instances (instance_id, service_name, base_url, env, region, last_heartbeat, ttl_seconds, stats_json)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         ON CONFLICT(instance_id)
-        DO UPDATE SET base_url = excluded.base_url,
+        DO UPDATE SET service_name = excluded.service_name,
+                      base_url = excluded.base_url,
+                      env = excluded.env,
                       region = excluded.region,
                       last_heartbeat = excluded.last_heartbeat,
                       ttl_seconds = excluded.ttl_seconds
         "#,
     )
     .bind(&request.instance_id)
+    .bind(&request.service_name)
     .bind(&request.base_url)
+    .bind(&registration_env)
     .bind(&request.region)
     .bind(now)
     .bind(ttl)
@@ -455,6 +468,7 @@ async fn get_capability(
     }
 
     let include_unhealthy = query.include_unhealthy.unwrap_or(0) == 1;
+    let env = query.env.clone().unwrap_or_else(|| state.env.clone());
     let manifest_json: Option<String> =
         sqlx::query_scalar("SELECT manifest_json FROM capabilities WHERE capability_id = ?1")
             .bind(&capability_id)
@@ -486,15 +500,29 @@ async fn get_capability(
         )
     })?;
 
-    let rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, String)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            i64,
+            i64,
+            String,
+        ),
+    >(
         r#"
-        SELECT i.instance_id, i.base_url, i.region, i.last_heartbeat, i.ttl_seconds, i.stats_json
+        SELECT i.instance_id, i.base_url, i.service_name, i.env, i.region, i.last_heartbeat, i.ttl_seconds, i.stats_json
         FROM instances i
         JOIN instance_capabilities ic ON ic.instance_id = i.instance_id
         WHERE ic.capability_id = ?1
+          AND i.env = ?2
         "#,
     )
     .bind(&capability_id)
+    .bind(&env)
     .fetch_all(&state.pool)
     .await
     .map_err(|err| {
@@ -509,7 +537,16 @@ async fn get_capability(
     let providers = rows
         .into_iter()
         .filter_map(
-            |(instance_id, base_url, region, last_heartbeat, ttl_seconds, stats_json)| {
+            |(
+                instance_id,
+                base_url,
+                service_name,
+                provider_env,
+                region,
+                last_heartbeat,
+                ttl_seconds,
+                stats_json,
+            )| {
                 let healthy = now - last_heartbeat <= ttl_seconds;
                 if healthy || include_unhealthy {
                     let stats: ProviderStats =
@@ -517,6 +554,8 @@ async fn get_capability(
                     Some(ProviderView {
                         instance_id,
                         base_url,
+                        service_name,
+                        env: Some(provider_env),
                         region,
                         last_heartbeat,
                         ttl_seconds,

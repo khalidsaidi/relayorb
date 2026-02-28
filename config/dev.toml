@@ -1,8 +1,16 @@
 relayorb_env = "dev"
 relayorb_region = "us-central1"
+relayorb_service_name = "relayorb-gateway-dev"
 registry_url = "http://127.0.0.1:8081"
 database_url = "sqlite://./data/relayorb-dev.db?mode=rwc"
+auth_mode = "hmac"
+allow_hmac_in_prod = false
 secret_auth_hmac = "relayorb-dev-secret"
+oidc_issuer = ""
+oidc_audience = ""
+jwks_url = ""
 jwt_public_keys_url = ""
+auth_clock_skew_seconds = 120
+jwks_refresh_interval_seconds = 300
 otel_exporter_otlp_endpoint = ""
 policy_path = "config/policy.toml"

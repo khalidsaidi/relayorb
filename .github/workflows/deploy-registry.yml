@@ -17,7 +17,7 @@ env:
   PROJECT_ID: relayorb-prod
   REGION: us-central1
   REPOSITORY: relayorb
-  SERVICE_NAME: relayorb-registry
+  SERVICE_NAME: relayorb-registry-prod
 
 jobs:
   deploy:
@@ -45,14 +45,14 @@ jobs:
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
-      - name: Deploy Cloud Run (internal)
+      - name: Deploy Cloud Run
         run: |
           gcloud run deploy "${{ env.SERVICE_NAME }}" \
             --project "${{ env.PROJECT_ID }}" \
             --region "${{ env.REGION }}" \
             --image "$IMAGE" \
             --service-account relayorb-registry-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
-            --ingress internal \
-            --no-allow-unauthenticated \
-            --set-env-vars RELAYORB_ENV=prod \
-            --set-secrets DATABASE_URL=database-url:latest
+            --ingress all \
+            --allow-unauthenticated \
+            --set-env-vars RELAYORB_ENV=prod,RELAYORB_SERVICE_NAME=${{ env.SERVICE_NAME }} \
+            --set-secrets DATABASE_URL=relayorb-prod-registry-db:latest

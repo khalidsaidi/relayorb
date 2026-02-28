@@ -1,6 +1,8 @@
 # RelayOrb
 
-RelayOrb is a capability gateway for AI agents. It enforces auth and policy, routes to healthy workers via a registry, validates schemas end-to-end, and records deterministic invocation artifacts.
+RelayOrb is a capability gateway for AI agents. It enforces auth and policy, routes to healthy workers via a registry, validates schemas end-to-end, and records deterministic invocation artifacts with request-id idempotency and replay.
+
+Gateway also supports asynchronous execution via `POST /v1/submit` and `GET /v1/jobs/:jobId`.
 
 ## Components
 
@@ -42,14 +44,35 @@ curl http://127.0.0.1:8080/v1/replay/<request-id>
 Base config is `config/dev.toml`, overridden by env vars:
 - `RELAYORB_ENV`
 - `RELAYORB_REGION`
+- `RELAYORB_SERVICE_NAME`
 - `REGISTRY_URL`
 - `DATABASE_URL`
-- `SECRET_AUTH_HMAC` (dev)
-- `JWT_PUBLIC_KEYS_URL` (prod)
+- `AUTH_MODE` (`hmac` or `oidc`)
+- `ALLOW_HMAC_IN_PROD` (`true` required to permit HMAC when `RELAYORB_ENV=prod`)
+- `SECRET_AUTH_HMAC` (dev / explicit hmac mode)
+- `OIDC_ISSUER` (prod oidc mode)
+- `OIDC_AUDIENCE` (prod oidc mode)
+- `JWKS_URL` (prod oidc mode)
+- `AUTH_CLOCK_SKEW_SECONDS` (optional, default `120`)
+- `JWKS_REFRESH_INTERVAL_SECONDS` (optional, default `300`)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (optional)
+
+## Service naming model
+
+Cloud Run services follow `relayorb-<component>-<env>`, for example:
+- `relayorb-gateway-prod`
+- `relayorb-registry-prod`
+- `relayorb-rag-prod`
+
+Workers should set:
+- `RELAYORB_ENV`
+- `RELAYORB_SERVICE_NAME`
+- `REGISTRY_URL`
+- `RELAYORB_PUBLIC_BASE_URL` (or `WORKER_BASE_URL` alias)
 
 ## Security
 
 - No secrets are committed.
 - Use Secret Manager for credentials.
 - Every response includes `requestId` and `traceId`.
+- Async job status reads are creator-or-admin (`GET /v1/jobs/:jobId`).

@@ -47,6 +47,8 @@ static INVOKE_SCHEMA: Lazy<Value> = Lazy::new(|| {
 pub struct WorkerConfig {
     pub bind_addr: String,
     pub instance_id: String,
+    pub service_name: String,
+    pub env: String,
     pub base_url: String,
     pub region: Option<String>,
     pub registry_url: String,
@@ -59,6 +61,8 @@ impl Default for WorkerConfig {
         Self {
             bind_addr: "0.0.0.0:8090".to_string(),
             instance_id: format!("worker-{}", Uuid::new_v4()),
+            service_name: "relayorb-worker-dev".to_string(),
+            env: "dev".to_string(),
             base_url: "http://127.0.0.1:8090".to_string(),
             region: Some("local".to_string()),
             registry_url: "http://127.0.0.1:8081".to_string(),
@@ -93,7 +97,9 @@ struct WorkerInvokeRequest {
 #[serde(rename_all = "camelCase")]
 struct RegisterPayload {
     instance_id: String,
+    service_name: String,
     base_url: String,
+    env: String,
     region: Option<String>,
     ttl_seconds: i64,
     capabilities: Vec<CapabilityManifest>,
@@ -166,7 +172,9 @@ impl WorkerRuntime {
     async fn register_with_registry(&self) -> anyhow::Result<()> {
         let payload = RegisterPayload {
             instance_id: self.config.instance_id.clone(),
+            service_name: self.config.service_name.clone(),
             base_url: self.config.base_url.clone(),
+            env: self.config.env.clone(),
             region: self.config.region.clone(),
             ttl_seconds: self.config.ttl_seconds,
             capabilities: self.manifests.values().cloned().collect(),

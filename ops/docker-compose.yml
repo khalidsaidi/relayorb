@@ -5,6 +5,7 @@ services:
       dockerfile: crates/relayorb-registry/Dockerfile
     environment:
       RELAYORB_ENV: dev
+      RELAYORB_SERVICE_NAME: relayorb-registry-dev
       REGISTRY_BIND_ADDR: 0.0.0.0:8081
       DATABASE_URL: sqlite:///data/registry.db?mode=rwc
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
@@ -21,9 +22,11 @@ services:
       dockerfile: crates/relayorb-gateway/Dockerfile
     environment:
       RELAYORB_ENV: dev
+      RELAYORB_SERVICE_NAME: relayorb-gateway-dev
       GATEWAY_BIND_ADDR: 0.0.0.0:8080
       REGISTRY_URL: http://registry:8081
       DATABASE_URL: sqlite:///data/gateway.db?mode=rwc
+      AUTH_MODE: hmac
       SECRET_AUTH_HMAC: relayorb-dev-secret
       POLICY_PATH: config/policy.toml
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
@@ -41,9 +44,11 @@ services:
       dockerfile: crates/relayorb-samples/worker-mock-rag/Dockerfile
     environment:
       RELAYORB_ENV: dev
+      RELAYORB_SERVICE_NAME: relayorb-rag-dev
       REGISTRY_URL: http://registry:8081
       WORKER_BIND_ADDR: 0.0.0.0:8090
       WORKER_BASE_URL: http://worker:8090
+      RELAYORB_PUBLIC_BASE_URL: http://worker:8090
       WORKER_INSTANCE_ID: worker-mock-rag-1
       RELAYORB_REGION: us-central1
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317

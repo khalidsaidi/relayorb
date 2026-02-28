@@ -130,6 +130,10 @@ pub struct ProviderView {
     pub instance_id: String,
     pub base_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
     pub last_heartbeat: i64,
     pub ttl_seconds: i64,
