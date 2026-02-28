@@ -19,6 +19,9 @@ This folder contains Terraform scaffolding, deployment scripts, and DNS automati
    - `relayorb-prod-gateway-error-rate`
    - `relayorb-prod-registry-healthy-providers-zero`
    - `relayorb-prod-gateway-jobs-queued-high`
+6. Deploy the metrics scraper (Cloud Run OTEL collector):
+   - `bash infra/gcp/scripts/deploy_metrics_scraper.sh`
+   - This service scrapes gateway/registry `/metrics` with bearer tokens and exports series to Cloud Monitoring.
 
 ## Secrets
 
@@ -43,4 +46,5 @@ The script reads GoDaddy credentials from Secret Manager at runtime.
 - Attach notification channels by setting `notification_channels` Terraform variable.
 - Gateway error-rate alert uses Cloud Run native request metrics.
 - Provider health and queued job alerts use RelayOrb Prometheus metrics (`relayorb_registry_providers_healthy`, `relayorb_gateway_jobs_queued`).
-- Ensure those Prometheus series are exported into Cloud Monitoring before applying alerts that depend on them.
+- Prometheus series are exported by `relayorb-metrics-scraper-prod` (OTEL collector with `googlemanagedprometheus` exporter).
+- If alert creation fails with metric-not-found, wait for fresh samples after scraper deployment and retry `terraform apply`.

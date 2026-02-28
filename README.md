@@ -111,6 +111,7 @@ Workers should set:
     - registry: `GET /metrics` on port `8081`
     - worker: `GET /metrics` on port `8090`
   - In prod, `/metrics` is bearer-protected (`METRICS_AUTH_MODE=bearer`).
+  - `relayorb-metrics-scraper-prod` (OTEL collector) scrapes gateway/registry metrics and exports them to Cloud Monitoring as `prometheus.googleapis.com/*`.
   - All service metrics include the base labels:
     - `env`, `service_name`, `version`, `region`
   - Capability/request series also include controlled labels:

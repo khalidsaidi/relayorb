@@ -1,0 +1,50 @@
+name: Deploy Metrics Scraper
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "infra/gcp/otel/**"
+      - "infra/gcp/scripts/deploy_metrics_scraper.sh"
+      - ".github/workflows/deploy-metrics-scraper.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: relayorb-prod
+  REGION: us-central1
+  REPOSITORY: relayorb
+  SERVICE_NAME: relayorb-metrics-scraper-prod
+  GATEWAY_SERVICE_NAME: relayorb-gateway-prod
+  REGISTRY_SERVICE_NAME: relayorb-registry-prod
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (OIDC)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_REGISTRY_DEPLOYER_SA }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy metrics scraper
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT_ID="${{ env.PROJECT_ID }}" \
+          REGION="${{ env.REGION }}" \
+          REPOSITORY="${{ env.REPOSITORY }}" \
+          SERVICE_NAME="${{ env.SERVICE_NAME }}" \
+          GATEWAY_SERVICE_NAME="${{ env.GATEWAY_SERVICE_NAME }}" \
+          REGISTRY_SERVICE_NAME="${{ env.REGISTRY_SERVICE_NAME }}" \
+          bash infra/gcp/scripts/deploy_metrics_scraper.sh

@@ -48,7 +48,9 @@
 6. Push to `main` or run deploy workflows manually:
    - `.github/workflows/deploy-registry.yml`
    - `.github/workflows/deploy-gateway.yml`
+   - `.github/workflows/deploy-metrics-scraper.yml`
    - Registry deploy workflow runs `ops/smoke/registry-governance-smoke.sh` post-deploy and fails if governance checks regress.
+   - Metrics scraper workflow deploys `relayorb-metrics-scraper-prod` and keeps one instance scraping metrics continuously.
    - Gateway and registry deploy workflows run `ops/smoke/metrics-auth-smoke.sh` post-deploy and fail if `/metrics` auth regresses.
 7. Confirm services:
    - `gcloud run services list --region us-central1`
@@ -56,7 +58,8 @@
    - `cd infra/gcp/terraform`
    - `terraform init`
    - `terraform apply`
-   - Note: provider-health and jobs-queued alerts depend on Prometheus metric ingestion into Cloud Monitoring (`prometheus.googleapis.com/...`).
+   - Ensure scraper is live first: `gcloud run services describe relayorb-metrics-scraper-prod --region us-central1 --format='value(status.url)'`
+   - Provider-health and jobs-queued alerts depend on Prometheus ingestion (`prometheus.googleapis.com/...`) from that scraper.
    - Confirm policies exist:
      - `relayorb-prod-gateway-error-rate`
      - `relayorb-prod-registry-healthy-providers-zero`
