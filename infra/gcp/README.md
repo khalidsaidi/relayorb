@@ -21,7 +21,8 @@ This folder contains Terraform scaffolding, deployment scripts, and DNS automati
    - `relayorb-prod-gateway-jobs-queued-high`
 6. Deploy the metrics scraper (Cloud Run OTEL collector):
    - `bash infra/gcp/scripts/deploy_metrics_scraper.sh`
-   - This service scrapes gateway/registry `/metrics` with bearer tokens and exports series to Cloud Monitoring.
+   - This service scrapes gateway/registry/worker `/metrics` with bearer tokens and exports series to Cloud Monitoring.
+   - CI workflow: `.github/workflows/deploy-metrics-scraper.yml` (includes scraper smoke checks).
 
 ## Secrets
 
@@ -30,6 +31,7 @@ Store all runtime secrets in Secret Manager:
 - `relayorb-prod-registry-db`
 - `relayorb-prod-gateway-metrics-token`
 - `relayorb-prod-registry-metrics-token`
+- `relayorb-prod-worker-metrics-token`
 - `relayorb-prod-jwt-config` (optional bundle if you centralize auth config)
 - `relayorb-prod-hmac-key` (dev/fallback only)
 - `godaddy-api-key`

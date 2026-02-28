@@ -81,7 +81,16 @@ jobs:
           gcloud run services update "${{ env.OWNER_SERVICE_NAME }}" \
             --project "${{ env.PROJECT_ID }}" \
             --region "${{ env.REGION }}" \
-            --update-env-vars "REGISTRY_SMOKE_NONCE=$NONCE,REGISTRY_IDENTITY_AUDIENCE=$REGISTRY_URL"
+            --update-env-vars "REGISTRY_SMOKE_NONCE=$NONCE,REGISTRY_IDENTITY_AUDIENCE=$REGISTRY_URL,RELAYORB_REGION=${{ env.REGION }},RELAYORB_VERSION=${{ github.sha }},METRICS_AUTH_MODE=bearer" \
+            --update-secrets "METRICS_BEARER_TOKEN=relayorb-prod-worker-metrics-token:latest"
+
+      - name: Worker Metrics Auth Smoke (post-refresh)
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORKER_URL="$(gcloud run services describe "${{ env.OWNER_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
+          WORKER_METRICS_TOKEN="$(gcloud secrets versions access latest --project "${{ env.PROJECT_ID }}" --secret relayorb-prod-worker-metrics-token)"
+          bash ops/smoke/metrics-auth-smoke.sh "$WORKER_URL" "$WORKER_METRICS_TOKEN"
 
       - name: Governance Smoke (post-deploy)
         shell: bash

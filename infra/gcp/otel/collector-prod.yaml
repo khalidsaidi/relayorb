@@ -25,6 +25,16 @@ receivers:
             - targets: ["${env:REGISTRY_METRICS_TARGET}"]
               labels:
                 relayorb_component: registry
+        - job_name: relayorb-rag-prod
+          scheme: https
+          metrics_path: /metrics
+          authorization:
+            type: Bearer
+            credentials: ${env:WORKER_METRICS_TOKEN}
+          static_configs:
+            - targets: ["${env:WORKER_METRICS_TARGET}"]
+              labels:
+                relayorb_component: worker
 
 processors:
   resource:

@@ -31,6 +31,7 @@
    - `relayorb-prod-registry-db`
    - `relayorb-prod-gateway-metrics-token`
    - `relayorb-prod-registry-metrics-token`
+   - `relayorb-prod-worker-metrics-token`
    - `godaddy-api-key`
    - `godaddy-api-secret`
 4. For gateway OIDC auth, configure:
@@ -50,7 +51,9 @@
    - `.github/workflows/deploy-gateway.yml`
    - `.github/workflows/deploy-metrics-scraper.yml`
    - Registry deploy workflow runs `ops/smoke/registry-governance-smoke.sh` post-deploy and fails if governance checks regress.
+   - Registry deploy workflow refreshes `relayorb-rag-prod` with bearer metrics auth and runs worker metrics smoke.
    - Metrics scraper workflow deploys `relayorb-metrics-scraper-prod` and keeps one instance scraping metrics continuously.
+   - Metrics scraper workflow runs `ops/smoke/metrics-scraper-smoke.sh` (service ready + no recent exporter errors + key series present).
    - Gateway and registry deploy workflows run `ops/smoke/metrics-auth-smoke.sh` post-deploy and fail if `/metrics` auth regresses.
 7. Confirm services:
    - `gcloud run services list --region us-central1`

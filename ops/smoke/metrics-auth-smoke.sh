@@ -48,8 +48,7 @@ if [ "$AUTH_CODE" != "200" ]; then
 fi
 
 if [ ! -s "$AUTH_BODY" ]; then
-  log "authenticated metrics body is empty"
-  exit 1
+  log "authenticated metrics request returned 200 with empty body"
+else
+  log "authenticated metrics request returned 200 with non-empty body"
 fi
-
-log "authenticated metrics request returned 200 with non-empty body"

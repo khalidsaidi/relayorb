@@ -7,6 +7,7 @@ on:
     paths:
       - "infra/gcp/otel/**"
       - "infra/gcp/scripts/deploy_metrics_scraper.sh"
+      - "ops/smoke/metrics-scraper-smoke.sh"
       - ".github/workflows/deploy-metrics-scraper.yml"
 
 permissions:
@@ -20,6 +21,7 @@ env:
   SERVICE_NAME: relayorb-metrics-scraper-prod
   GATEWAY_SERVICE_NAME: relayorb-gateway-prod
   REGISTRY_SERVICE_NAME: relayorb-registry-prod
+  WORKER_SERVICE_NAME: relayorb-rag-prod
 
 jobs:
   deploy:
@@ -47,4 +49,11 @@ jobs:
           SERVICE_NAME="${{ env.SERVICE_NAME }}" \
           GATEWAY_SERVICE_NAME="${{ env.GATEWAY_SERVICE_NAME }}" \
           REGISTRY_SERVICE_NAME="${{ env.REGISTRY_SERVICE_NAME }}" \
+          WORKER_SERVICE_NAME="${{ env.WORKER_SERVICE_NAME }}" \
           bash infra/gcp/scripts/deploy_metrics_scraper.sh
+
+      - name: Scraper Smoke (post-deploy)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ops/smoke/metrics-scraper-smoke.sh "${{ env.PROJECT_ID }}" "${{ env.REGION }}" "${{ env.SERVICE_NAME }}" "${{ env.GATEWAY_SERVICE_NAME }}" "${{ env.REGISTRY_SERVICE_NAME }}" "${{ env.WORKER_SERVICE_NAME }}"
