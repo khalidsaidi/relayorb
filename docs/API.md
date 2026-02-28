@@ -117,6 +117,9 @@ Returns canonical request artifact and stored invocation state (`in_progress|com
 
 ## Registry
 
+### GET `/health`
+Service health/readiness envelope with `requestId` and `traceId`.
+
 ### POST `/v1/register`
 Worker self-registers instance + manifests with TTL.
 Registration includes `env` and `serviceName`.

@@ -7,6 +7,8 @@ on:
     paths:
       - "crates/relayorb-registry/**"
       - "crates/relayorb-core/**"
+      - "config/registry-ownership.toml"
+      - "ops/smoke/registry-governance-smoke.sh"
       - ".github/workflows/deploy-registry.yml"
 
 permissions:
@@ -18,6 +20,7 @@ env:
   REGION: us-central1
   REPOSITORY: relayorb
   SERVICE_NAME: relayorb-registry-prod
+  OWNER_SERVICE_NAME: relayorb-rag-prod
 
 jobs:
   deploy:
@@ -54,5 +57,23 @@ jobs:
             --service-account relayorb-registry-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
             --ingress all \
             --allow-unauthenticated \
-            --set-env-vars RELAYORB_ENV=prod,RELAYORB_SERVICE_NAME=${{ env.SERVICE_NAME }} \
-            --set-secrets DATABASE_URL=relayorb-prod-registry-db:latest
+            --set-env-vars RELAYORB_ENV=prod,RELAYORB_SERVICE_NAME=${{ env.SERVICE_NAME }},REGISTRY_BIND_ADDR=0.0.0.0:8080,REGISTRY_OWNERSHIP_POLICY_PATH=config/registry-ownership.toml \
+            --set-secrets DATABASE_URL=database-url:latest
+
+      - name: Refresh Owner Worker Registration
+        shell: bash
+        run: |
+          set -euo pipefail
+          NONCE="$(date +%s)"
+          gcloud run services update "${{ env.OWNER_SERVICE_NAME }}" \
+            --project "${{ env.PROJECT_ID }}" \
+            --region "${{ env.REGION }}" \
+            --update-env-vars "REGISTRY_SMOKE_NONCE=$NONCE"
+
+      - name: Governance Smoke (post-deploy)
+        shell: bash
+        run: |
+          set -euo pipefail
+          REGISTRY_URL="$(gcloud run services describe "${{ env.SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
+          echo "Running governance smoke: $REGISTRY_URL"
+          bash ops/smoke/registry-governance-smoke.sh "$REGISTRY_URL"

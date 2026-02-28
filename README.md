@@ -95,3 +95,5 @@ Workers should set:
 - Use Secret Manager for credentials.
 - Every response includes `requestId` and `traceId`.
 - Async job status reads are creator-or-admin (`GET /v1/jobs/:jobId`).
+- Registry governance smoke can be run manually:
+  - `bash ops/smoke/registry-governance-smoke.sh <registry-url>`

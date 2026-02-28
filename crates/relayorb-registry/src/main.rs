@@ -120,6 +120,15 @@ struct DiscoverResponse {
     capabilities: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HealthResponse {
+    ok: bool,
+    service: String,
+    env: String,
+    unix_time: i64,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct IncludeUnhealthyQuery {
@@ -289,6 +298,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let router = Router::new()
+        .route("/health", get(health))
         .route("/v1/register", post(register))
         .route("/v1/heartbeat", post(heartbeat))
         .route("/v1/capabilities/:capability_id", get(get_capability))
@@ -763,6 +773,22 @@ async fn discover(
         DiscoverResponse {
             prefix,
             capabilities: rows,
+        },
+    )))
+}
+
+async fn health(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    let meta = request_meta(&headers, None);
+    Ok(Json(SuccessEnvelope::ok(
+        &meta,
+        HealthResponse {
+            ok: true,
+            service: "relayorb-registry".to_string(),
+            env: state.env.clone(),
+            unix_time: OffsetDateTime::now_utc().unix_timestamp(),
         },
     )))
 }

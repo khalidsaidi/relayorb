@@ -36,6 +36,7 @@
 5. Push to `main` or run deploy workflows manually:
    - `.github/workflows/deploy-registry.yml`
    - `.github/workflows/deploy-gateway.yml`
+   - Registry deploy workflow runs `ops/smoke/registry-governance-smoke.sh` post-deploy and fails if governance checks regress.
 6. Confirm services:
    - `gcloud run services list --region us-central1`
 
