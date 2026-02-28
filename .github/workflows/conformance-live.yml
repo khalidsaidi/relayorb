@@ -1,0 +1,88 @@
+name: Conformance Live (Prod Gateway)
+
+on:
+  schedule:
+    - cron: "20 3 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  conformance-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+
+    env:
+      GATEWAY_URL: ${{ secrets.RELAYORB_CONFORMANCE_GATEWAY_URL_PROD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build conformance CLI
+        run: cargo build -p relayorb-conformance --release
+
+      - name: Run live conformance (gateway target) for all manifests
+        shell: bash
+        env:
+          RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD: ${{ secrets.RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GATEWAY_URL:-}" ]; then
+            echo "GATEWAY_URL is empty. Set secret RELAYORB_CONFORMANCE_GATEWAY_URL_PROD or hardcode env.GATEWAY_URL."
+            exit 2
+          fi
+
+          if [ -z "${RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD:-}" ]; then
+            echo "Missing secret RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD"
+            exit 2
+          fi
+
+          MANIFEST_DIR="conformance/manifests"
+          VECTOR_DIR="conformance/vectors"
+          REPORT_DIR="conformance/reports"
+
+          mkdir -p "$REPORT_DIR"
+
+          shopt -s nullglob
+          manifests=("$MANIFEST_DIR"/*.json)
+
+          if [ ${#manifests[@]} -eq 0 ]; then
+            echo "No manifests found in $MANIFEST_DIR"
+            exit 2
+          fi
+
+          for manifest in "${manifests[@]}"; do
+            base="$(basename "$manifest" .json)"
+            vectors="$VECTOR_DIR/$base.json"
+
+            if [ ! -f "$vectors" ]; then
+              echo "Missing vectors for manifest: $manifest"
+              echo "Expected: $vectors"
+              exit 2
+            fi
+
+            echo "Live run (gateway) $base"
+            cargo run -p relayorb-conformance --release -- run \
+              --target gateway \
+              --base-url "$GATEWAY_URL" \
+              --manifest "$manifest" \
+              --vectors "$vectors" \
+              --bearer-token-env RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD
+          done
+
+      - name: Upload conformance reports (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-reports-prod-gateway
+          path: conformance/reports/*.json
+          if-no-files-found: error
+          retention-days: 14

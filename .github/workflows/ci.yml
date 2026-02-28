@@ -28,11 +28,35 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-      - name: Conformance Validate
+      - name: Conformance (offline validate all manifests)
+        shell: bash
         run: |
-          cargo run -p relayorb-conformance -- validate \
-            --manifest conformance/manifests/rag.search@v1.json \
-            --vectors conformance/vectors/rag.search@v1.json
+          set -euo pipefail
+
+          MANIFEST_DIR="conformance/manifests"
+          VECTOR_DIR="conformance/vectors"
+
+          shopt -s nullglob
+          manifests=("$MANIFEST_DIR"/*.json)
+
+          if [ ${#manifests[@]} -eq 0 ]; then
+            echo "No manifests found in $MANIFEST_DIR"
+            exit 2
+          fi
+
+          for manifest in "${manifests[@]}"; do
+            base="$(basename "$manifest" .json)"
+            vectors="$VECTOR_DIR/$base.json"
+
+            if [ ! -f "$vectors" ]; then
+              echo "Missing vectors for manifest: $manifest"
+              echo "Expected: $vectors"
+              exit 2
+            fi
+
+            echo "Validating $base"
+            cargo run -p relayorb-conformance -- validate --manifest "$manifest" --vectors "$vectors"
+          done
 
       - name: Build Release
         run: cargo build --workspace --release
