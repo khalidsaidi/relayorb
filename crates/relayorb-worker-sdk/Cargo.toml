@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
+metrics.workspace = true
 once_cell.workspace = true
 relayorb-core = { path = "../relayorb-core" }
 reqwest.workspace = true

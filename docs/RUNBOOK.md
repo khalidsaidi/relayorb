@@ -13,6 +13,10 @@
    - Submit job as creator, then read `GET /v1/jobs/<job-id>` as creator (expect success).
    - Read the same job as non-creator/non-admin (expect `FORBIDDEN`).
    - Read as admin role (`admin|ops|platform-admin`) (expect success).
+5. Observability smoke:
+   - `curl http://127.0.0.1:8080/metrics | head`
+   - `curl http://127.0.0.1:8081/metrics | head`
+   - `curl http://127.0.0.1:8090/metrics | head`
 
 ## Deploy (Cloud Run)
 
@@ -44,6 +48,22 @@
    - Registry deploy workflow runs `ops/smoke/registry-governance-smoke.sh` post-deploy and fails if governance checks regress.
 7. Confirm services:
    - `gcloud run services list --region us-central1`
+
+## Observability in prod
+
+1. Enable OTEL export by setting `OTEL_EXPORTER_OTLP_ENDPOINT` on gateway/registry/worker.
+2. Keep `RELAYORB_METRICS_EXPORTER=prometheus` (default) for `/metrics`.
+3. Build dashboard charts from:
+   - `relayorb_gateway_invoke_latency_ms` (p95 by `capability`)
+   - `relayorb_gateway_invoke_requests_total` (error rate by `status`/`code`)
+   - `relayorb_gateway_idempotency_replays_total`
+   - `relayorb_gateway_jobs_queued`
+   - `relayorb_registry_governance_denials_total`
+   - `relayorb_worker_invoke_latency_ms`
+4. Alert recommendations:
+   - rising `relayorb_gateway_jobs_queued`
+   - rising `relayorb_gateway_request_errors_total{code=\"NO_HEALTHY_PROVIDERS\"}`
+   - rising `relayorb_registry_governance_denials_total` in prod.
 
 ## Domain setup (GoDaddy)
 

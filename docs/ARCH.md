@@ -44,9 +44,10 @@ Agent Client
 6. Gateway validates input payload against manifest `inputSchema`.
 7. Gateway selects provider using latency EWMA then in-flight count.
 8. Gateway forwards invoke request to Worker with transient-only retries (exponential backoff).
-9. Gateway validates worker response against `outputSchema`.
-10. Gateway records final invocation state (`completed|failed`) plus canonical request and response/error artifact.
-11. Gateway returns response with `requestId` and `traceId`.
+9. Gateway propagates `x-trace-id` and W3C `traceparent` to downstream Registry/Worker calls.
+10. Gateway validates worker response against `outputSchema`.
+11. Gateway records final invocation state (`completed|failed`) plus canonical request and response/error artifact.
+12. Gateway returns response with `requestId` and `traceId`.
 
 ## Async flow
 
@@ -57,6 +58,18 @@ Agent Client
 5. On transient failure (`WORKER_TIMEOUT`, `WORKER_ERROR`, `NO_HEALTHY_PROVIDERS`, `INTERNAL`) and remaining attempts, job is re-queued with exponential backoff.
 6. Job transitions to `succeeded` or `failed` with stored `result_json`/`error_json`.
 7. Client polls `GET /v1/jobs/:jobId`.
+
+## Observability
+
+- Traces:
+  - JSON logs everywhere with `requestId` + `traceId`.
+  - Optional OTLP export (`OTEL_EXPORTER_OTLP_ENDPOINT`) in gateway, registry, and workers.
+  - `traceparent` propagation for cross-service trace continuity.
+- Metrics:
+  - `GET /metrics` exposed by gateway, registry, and worker services.
+  - Gateway tracks invoke latency/error, idempotency replay rate, worker retries, and queued job depth.
+  - Registry tracks registration/heartbeat volume, lookup volume, governance denials, and healthy provider counts.
+  - Worker tracks invoke latency/error, in-flight requests, and registry registration/heartbeat outcomes.
 
 ## Failure modes
 

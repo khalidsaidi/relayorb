@@ -9,8 +9,9 @@ anyhow.workspace = true
 axum.workspace = true
 config.workspace = true
 jsonwebtoken.workspace = true
+metrics.workspace = true
 once_cell.workspace = true
-relayorb-core = { path = "../relayorb-core" }
+relayorb-core = { path = "../relayorb-core", features = ["otel"] }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

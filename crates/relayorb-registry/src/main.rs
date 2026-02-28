@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, net::SocketAddr, path::Path as FsPath, str::Fro
 use anyhow::Context;
 use axum::{
     extract::{Path, Query, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -13,9 +13,11 @@ use jsonwebtoken::{
     jwk::{Jwk, JwkSet},
     Algorithm, DecodingKey, Validation,
 };
+use metrics::{counter, gauge};
 use once_cell::sync::Lazy;
 use relayorb_core::{
-    canonicalize_json, init_tracing, is_valid_capability_id, load_base_settings,
+    canonicalize_json, init_metrics_exporter, init_tracing, is_valid_capability_id,
+    load_base_settings, render_prometheus_metrics, trace_id_from_traceparent,
     validate_json_with_schema, ApiError, CapabilityManifest, CapabilitySchemaHashes, ErrorCode,
     ProviderStats, ProviderView, RelayOrbError, RequestMeta, SuccessEnvelope,
 };
@@ -588,6 +590,7 @@ async fn main() -> anyhow::Result<()> {
         "relayorb-registry",
         base.otel_exporter_otlp_endpoint.as_deref(),
     )?;
+    init_metrics_exporter()?;
 
     let bind_addr =
         std::env::var("REGISTRY_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
@@ -627,6 +630,7 @@ async fn main() -> anyhow::Result<()> {
 
     let router = Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(metrics))
         .route("/v1/register", post(register))
         .route("/v1/heartbeat", post(heartbeat))
         .route("/v1/capabilities/:capability_id", get(get_capability))
@@ -729,7 +733,17 @@ async fn register(
                 worker_identity.as_ref(),
                 &capability.capability_id,
             )
-            .map_err(|err| api_error(&meta, err))?;
+            .map_err(|err| {
+                if matches!(err.code, ErrorCode::Forbidden) {
+                    counter!(
+                        "relayorb_registry_governance_denials_total",
+                        "env" => registration_env.clone(),
+                        "capability" => capability.capability_id.clone()
+                    )
+                    .increment(1);
+                }
+                api_error(&meta, err)
+            })?;
     }
 
     let mut tx = state.pool.begin().await.map_err(|err| {
@@ -865,6 +879,13 @@ async fn register(
         )
     })?;
 
+    counter!(
+        "relayorb_registry_register_requests_total",
+        "status" => "ok",
+        "env" => registration_env
+    )
+    .increment(1);
+
     let response = SuccessEnvelope::ok(
         &meta,
         RegisterAck {
@@ -947,6 +968,13 @@ async fn heartbeat(
             ),
         ));
     }
+
+    counter!(
+        "relayorb_registry_heartbeat_requests_total",
+        "status" => "ok",
+        "env" => state.env.clone()
+    )
+    .increment(1);
 
     Ok(Json(SuccessEnvelope::ok(&meta, HeartbeatAck { ok: true })))
 }
@@ -1079,6 +1107,21 @@ async fn get_capability(
         )
         .collect::<Vec<_>>();
 
+    let healthy_count = providers.iter().filter(|provider| provider.healthy).count();
+    gauge!(
+        "relayorb_registry_providers_healthy",
+        "env" => env.clone(),
+        "capability" => capability_id.clone()
+    )
+    .set(healthy_count as f64);
+    counter!(
+        "relayorb_registry_capability_lookups_total",
+        "status" => "ok",
+        "env" => env.clone(),
+        "capability" => capability_id.clone()
+    )
+    .increment(1);
+
     let response = SuccessEnvelope::ok(
         &meta,
         CapabilityLookupResponse {
@@ -1113,6 +1156,13 @@ async fn discover(
         )
     })?;
 
+    counter!(
+        "relayorb_registry_discover_requests_total",
+        "status" => "ok",
+        "env" => state.env.clone()
+    )
+    .increment(1);
+
     Ok(Json(SuccessEnvelope::ok(
         &meta,
         DiscoverResponse {
@@ -1138,14 +1188,28 @@ async fn health(
     )))
 }
 
+async fn metrics() -> impl IntoResponse {
+    match render_prometheus_metrics() {
+        Some(body) => (StatusCode::OK, body).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            "metrics exporter disabled (set RELAYORB_METRICS_EXPORTER=prometheus)",
+        )
+            .into_response(),
+    }
+}
+
 fn request_meta(headers: &HeaderMap, body_request_id: Option<&str>) -> RequestMeta {
     let request_id = body_request_id
         .map(ToString::to_string)
         .or_else(|| header_value(headers, "x-request-id"))
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    let trace_id =
-        header_value(headers, "x-trace-id").unwrap_or_else(|| Uuid::new_v4().to_string());
+    let trace_id = header_value(headers, "x-trace-id")
+        .or_else(|| {
+            header_value(headers, "traceparent").and_then(|value| trace_id_from_traceparent(&value))
+        })
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     RequestMeta {
         request_id,
@@ -1161,6 +1225,11 @@ fn header_value(headers: &HeaderMap, key: &str) -> Option<String> {
 }
 
 fn api_error(meta: &RequestMeta, err: RelayOrbError) -> ApiError {
+    counter!(
+        "relayorb_registry_request_errors_total",
+        "code" => format!("{:?}", err.code)
+    )
+    .increment(1);
     error!(
         requestId = %meta.request_id,
         traceId = %meta.trace_id,

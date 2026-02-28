@@ -13,15 +13,17 @@ use anyhow::Context;
 use async_trait::async_trait;
 use axum::{
     extract::{Path, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
+use metrics::{counter, gauge, histogram};
 use once_cell::sync::Lazy;
 use relayorb_core::{
-    validate_json_with_schema, ApiError, CapabilityManifest, ErrorCode, ProviderStats,
-    RelayOrbError, RequestMeta, SuccessEnvelope,
+    init_metrics_exporter, render_prometheus_metrics, trace_id_from_traceparent,
+    traceparent_from_trace_id, validate_json_with_schema, ApiError, CapabilityManifest, ErrorCode,
+    ProviderStats, RelayOrbError, RequestMeta, SuccessEnvelope,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -147,6 +149,7 @@ impl WorkerRuntime {
     }
 
     pub async fn serve(self) -> anyhow::Result<()> {
+        init_metrics_exporter()?;
         self.register_with_registry().await?;
 
         let state = Arc::new(self.clone());
@@ -159,6 +162,7 @@ impl WorkerRuntime {
 
         let router = Router::new()
             .route("/health", get(health))
+            .route("/metrics", get(metrics))
             .route("/capabilities", get(capabilities))
             .route("/invoke/:capability_id", post(invoke))
             .with_state(state)
@@ -184,10 +188,15 @@ impl WorkerRuntime {
 
         let client = reqwest::Client::new();
         let url = format!("{}/v1/register", self.config.registry_url);
+        let request_id = Uuid::new_v4().to_string();
+        let trace_id = Uuid::new_v4().to_string();
 
         let response = client
             .post(url)
-            .headers(self.registry_auth_headers(&client).await?)
+            .headers(
+                self.registry_headers(&client, &request_id, &trace_id)
+                    .await?,
+            )
             .json(&payload)
             .send()
             .await
@@ -196,8 +205,19 @@ impl WorkerRuntime {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
+            counter!(
+                "relayorb_worker_registry_register_total",
+                "status" => "error"
+            )
+            .increment(1);
             anyhow::bail!("worker registration failed: status={status}, body={body}");
         }
+
+        counter!(
+            "relayorb_worker_registry_register_total",
+            "status" => "ok"
+        )
+        .increment(1);
 
         Ok(())
     }
@@ -216,36 +236,79 @@ impl WorkerRuntime {
             };
 
             let url = format!("{}/v1/heartbeat", self.config.registry_url);
-            let auth_headers = match self.registry_auth_headers(&client).await {
+            let request_id = Uuid::new_v4().to_string();
+            let trace_id = Uuid::new_v4().to_string();
+            let headers = match self.registry_headers(&client, &request_id, &trace_id).await {
                 Ok(headers) => headers,
                 Err(err) => {
                     warn!(error = %err, "worker failed to prepare registry auth headers");
+                    counter!(
+                        "relayorb_worker_registry_heartbeat_total",
+                        "status" => "error"
+                    )
+                    .increment(1);
                     continue;
                 }
             };
             let response = client
                 .post(&url)
-                .headers(auth_headers)
+                .headers(headers)
                 .json(&payload)
                 .send()
                 .await;
             match response {
-                Ok(res) if res.status().is_success() => {}
+                Ok(res) if res.status().is_success() => {
+                    counter!(
+                        "relayorb_worker_registry_heartbeat_total",
+                        "status" => "ok"
+                    )
+                    .increment(1);
+                }
                 Ok(res) => {
                     warn!(status = %res.status(), "worker heartbeat rejected by registry");
+                    counter!(
+                        "relayorb_worker_registry_heartbeat_total",
+                        "status" => "error"
+                    )
+                    .increment(1);
                 }
                 Err(err) => {
                     warn!(error = %err, "worker heartbeat failed");
+                    counter!(
+                        "relayorb_worker_registry_heartbeat_total",
+                        "status" => "error"
+                    )
+                    .increment(1);
                 }
             }
         }
     }
 
-    async fn registry_auth_headers(
+    async fn registry_headers(
         &self,
         client: &reqwest::Client,
+        request_id: &str,
+        trace_id: &str,
     ) -> anyhow::Result<reqwest::header::HeaderMap> {
         let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "x-request-id",
+            reqwest::header::HeaderValue::from_str(request_id)
+                .context("failed to encode x-request-id header for registry")?,
+        );
+        headers.insert(
+            "x-trace-id",
+            reqwest::header::HeaderValue::from_str(trace_id)
+                .context("failed to encode x-trace-id header for registry")?,
+        );
+        if let Some(traceparent) = traceparent_from_trace_id(trace_id) {
+            headers.insert(
+                "traceparent",
+                reqwest::header::HeaderValue::from_str(&traceparent)
+                    .context("failed to encode traceparent header for registry")?,
+            );
+        }
+
         let Some(audience) = self.config.registry_identity_audience.as_deref() else {
             return Ok(headers);
         };
@@ -348,6 +411,17 @@ async fn health(headers: HeaderMap) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(SuccessEnvelope::ok(&meta, json!({"healthy": true}))))
 }
 
+async fn metrics() -> impl IntoResponse {
+    match render_prometheus_metrics() {
+        Some(body) => (StatusCode::OK, body).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            "metrics exporter disabled (set RELAYORB_METRICS_EXPORTER=prometheus)",
+        )
+            .into_response(),
+    }
+}
+
 async fn capabilities(
     State(state): State<Arc<WorkerRuntime>>,
     headers: HeaderMap,
@@ -438,6 +512,12 @@ async fn invoke(
     let _guard = span.enter();
 
     state.stats.on_start();
+    gauge!(
+        "relayorb_worker_in_flight",
+        "capability" => capability_id.clone(),
+        "service" => state.config.service_name.clone()
+    )
+    .set(state.stats.snapshot().in_flight.unwrap_or(0) as f64);
     let started = Instant::now();
     let result = handler.handle(request.payload).await;
     let elapsed = started.elapsed().as_secs_f64() * 1000.0;
@@ -445,10 +525,34 @@ async fn invoke(
     let response_payload = match result {
         Ok(payload) => {
             state.stats.on_finish(elapsed, false);
+            gauge!(
+                "relayorb_worker_in_flight",
+                "capability" => capability_id.clone(),
+                "service" => state.config.service_name.clone()
+            )
+            .set(state.stats.snapshot().in_flight.unwrap_or(0) as f64);
             payload
         }
         Err(err) => {
             state.stats.on_finish(elapsed, true);
+            gauge!(
+                "relayorb_worker_in_flight",
+                "capability" => capability_id.clone(),
+                "service" => state.config.service_name.clone()
+            )
+            .set(state.stats.snapshot().in_flight.unwrap_or(0) as f64);
+            counter!(
+                "relayorb_worker_invoke_requests_total",
+                "capability" => capability_id.clone(),
+                "status" => "error"
+            )
+            .increment(1);
+            histogram!(
+                "relayorb_worker_invoke_latency_ms",
+                "capability" => capability_id.clone(),
+                "status" => "error"
+            )
+            .record(elapsed);
             return Err(api_error(&meta, err));
         }
     };
@@ -464,6 +568,18 @@ async fn invoke(
         )
     })?;
 
+    counter!(
+        "relayorb_worker_invoke_requests_total",
+        "capability" => capability_id.clone(),
+        "status" => "ok"
+    )
+    .increment(1);
+    histogram!(
+        "relayorb_worker_invoke_latency_ms",
+        "capability" => capability_id.clone(),
+        "status" => "ok"
+    )
+    .record(elapsed);
     info!(latencyMs = elapsed, "worker invocation completed");
     Ok(Json(SuccessEnvelope::ok(&meta, response_payload)))
 }
@@ -481,6 +597,9 @@ fn request_meta(
     let trace_id = body_trace_id
         .map(ToString::to_string)
         .or_else(|| header_value(headers, "x-trace-id"))
+        .or_else(|| {
+            header_value(headers, "traceparent").and_then(|value| trace_id_from_traceparent(&value))
+        })
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     RequestMeta {
@@ -497,5 +616,10 @@ fn header_value(headers: &HeaderMap, key: &str) -> Option<String> {
 }
 
 fn api_error(meta: &RequestMeta, err: RelayOrbError) -> ApiError {
+    counter!(
+        "relayorb_worker_request_errors_total",
+        "code" => format!("{:?}", err.code)
+    )
+    .increment(1);
     ApiError::from_inner(meta.request_id.clone(), meta.trace_id.clone(), err)
 }

@@ -74,6 +74,7 @@ Base config is `config/dev.toml`, overridden by env vars:
 - `AUTH_CLOCK_SKEW_SECONDS` (optional, default `120`)
 - `JWKS_REFRESH_INTERVAL_SECONDS` (optional, default `300`)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (optional)
+- `RELAYORB_METRICS_EXPORTER` (`prometheus` by default; set `none` to disable `/metrics`)
 - `REGISTRY_OWNERSHIP_POLICY_PATH` (optional, default `config/registry-ownership.toml`)
 - `REGISTRY_WORKER_AUTH_MODE` (`disabled` or `oidc`; optional for registry)
 - `REGISTRY_WORKER_OIDC_ISSUER` (registry worker auth, default `https://accounts.google.com`)
@@ -95,6 +96,26 @@ Workers should set:
 - `REGISTRY_URL`
 - `RELAYORB_PUBLIC_BASE_URL` (or `WORKER_BASE_URL` alias)
 - `REGISTRY_IDENTITY_AUDIENCE` (required when registry enforces worker OIDC identity)
+
+## Observability
+
+- Tracing:
+  - JSON structured logs on all services.
+  - Optional OTEL export when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+  - Trace propagation headers: `x-trace-id` and `traceparent`.
+- Metrics:
+  - Prometheus endpoint on each service:
+    - gateway: `GET /metrics` on port `8080`
+    - registry: `GET /metrics` on port `8081`
+    - worker: `GET /metrics` on port `8090`
+  - Core operational series:
+    - `relayorb_gateway_invoke_latency_ms`
+    - `relayorb_gateway_invoke_requests_total`
+    - `relayorb_gateway_idempotency_replays_total`
+    - `relayorb_gateway_jobs_queued`
+    - `relayorb_registry_register_requests_total`
+    - `relayorb_registry_heartbeat_requests_total`
+    - `relayorb_worker_invoke_latency_ms`
 
 ## Security
 

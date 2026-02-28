@@ -17,11 +17,13 @@ use jsonwebtoken::{
     jwk::{Jwk, JwkSet},
     Algorithm, DecodingKey, Validation,
 };
+use metrics::{counter, gauge, histogram};
 use once_cell::sync::Lazy;
 use relayorb_core::{
-    canonicalize_json, init_tracing, load_base_settings, validate_json_with_schema, ApiError,
-    CapabilityManifest, ErrorCode, ErrorEnvelope, ProviderView, RelayOrbError, RequestMeta,
-    SuccessEnvelope,
+    canonicalize_json, init_metrics_exporter, init_tracing, load_base_settings,
+    render_prometheus_metrics, trace_id_from_traceparent, traceparent_from_trace_id,
+    validate_json_with_schema, ApiError, CapabilityManifest, ErrorCode, ErrorEnvelope,
+    ProviderView, RelayOrbError, RequestMeta, SuccessEnvelope,
 };
 use relayorb_policy::{PolicyEngine, SqliteBudgetStore};
 use serde::{Deserialize, Serialize};
@@ -279,6 +281,7 @@ struct JobStatusResponse {
 struct LeasedJob {
     job_id: String,
     request_id: String,
+    trace_id: Option<String>,
     capability_id: String,
     caller_agent_id: String,
     caller_role: String,
@@ -295,6 +298,7 @@ async fn main() -> anyhow::Result<()> {
         "relayorb-gateway",
         base.otel_exporter_otlp_endpoint.as_deref(),
     )?;
+    init_metrics_exporter()?;
 
     let bind_addr =
         std::env::var("GATEWAY_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
@@ -323,6 +327,8 @@ async fn main() -> anyhow::Result<()> {
     spawn_job_runner(state.clone());
 
     let router = Router::new()
+        .route("/health", get(health))
+        .route("/metrics", get(metrics))
         .route("/v1/invoke", post(invoke))
         .route("/v1/submit", post(submit))
         .route("/v1/batchInvoke", post(batch_invoke))
@@ -336,6 +342,29 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+async fn health(headers: HeaderMap) -> Result<impl IntoResponse, ApiError> {
+    let meta = request_meta(&headers, None, None);
+    Ok(Json(SuccessEnvelope::ok(
+        &meta,
+        json!({
+            "ok": true,
+            "service": "relayorb-gateway",
+            "env": std::env::var("RELAYORB_ENV").unwrap_or_else(|_| "dev".to_string())
+        }),
+    )))
+}
+
+async fn metrics() -> impl IntoResponse {
+    match render_prometheus_metrics() {
+        Some(body) => (StatusCode::OK, body).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            "metrics exporter disabled (set RELAYORB_METRICS_EXPORTER=prometheus)",
+        )
+            .into_response(),
+    }
 }
 
 async fn invoke(
@@ -873,8 +902,24 @@ async fn process_invoke(
     );
     let _guard = span.enter();
 
-    match claim_invocation(&state, &meta, &request, &request_canonical).await? {
+    let claim = match claim_invocation(&state, &meta, &request, &request_canonical).await {
+        Ok(claim) => claim,
+        Err(err) => {
+            let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+            record_invoke_error(&request.capability, err.inner.code, latency_ms);
+            return Err(err);
+        }
+    };
+
+    match claim {
         InvocationClaim::Completed(stored) => {
+            let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+            counter!(
+                "relayorb_gateway_idempotency_replays_total",
+                "state" => "completed"
+            )
+            .increment(1);
+            record_invoke_success(&request.capability, "replayed_completed", latency_ms);
             let envelope = SuccessEnvelope::ok(&meta, stored.response_data).with_meta(json!({
                 "routedTo": stored.routed_to,
                 "latencyMs": stored.latency_ms,
@@ -887,8 +932,24 @@ async fn process_invoke(
                 envelope,
             });
         }
-        InvocationClaim::Failed(err) => return Err(err),
+        InvocationClaim::Failed(err) => {
+            let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+            counter!(
+                "relayorb_gateway_idempotency_replays_total",
+                "state" => "failed"
+            )
+            .increment(1);
+            record_invoke_error(&request.capability, err.inner.code, latency_ms);
+            return Err(err);
+        }
         InvocationClaim::InProgress(stored) => {
+            let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+            counter!(
+                "relayorb_gateway_idempotency_replays_total",
+                "state" => "in_progress"
+            )
+            .increment(1);
+            record_invoke_success(&request.capability, "replayed_in_progress", latency_ms);
             let envelope = SuccessEnvelope::ok(
                 &meta,
                 json!({
@@ -912,6 +973,7 @@ async fn process_invoke(
     match execution {
         Ok(execution) => {
             let elapsed_ms = started.elapsed().as_millis() as i64;
+            record_invoke_success(&request.capability, "ok", elapsed_ms as f64);
             complete_invocation_success(
                 &state,
                 &meta,
@@ -943,6 +1005,7 @@ async fn process_invoke(
         }
         Err(err) => {
             let elapsed_ms = started.elapsed().as_millis() as i64;
+            record_invoke_error(&request.capability, err.inner.code, elapsed_ms as f64);
             if let Err(record_err) = complete_invocation_failure(
                 &state,
                 &meta,
@@ -964,6 +1027,53 @@ async fn process_invoke(
             Err(err)
         }
     }
+}
+
+fn error_code_label(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::Unauthorized => "UNAUTHORIZED",
+        ErrorCode::Forbidden => "FORBIDDEN",
+        ErrorCode::BudgetExceeded => "BUDGET_EXCEEDED",
+        ErrorCode::CapabilityNotFound => "CAPABILITY_NOT_FOUND",
+        ErrorCode::NoHealthyProviders => "NO_HEALTHY_PROVIDERS",
+        ErrorCode::SchemaValidationFailed => "SCHEMA_VALIDATION_FAILED",
+        ErrorCode::WorkerTimeout => "WORKER_TIMEOUT",
+        ErrorCode::WorkerError => "WORKER_ERROR",
+        ErrorCode::Internal => "INTERNAL",
+    }
+}
+
+fn record_invoke_success(capability: &str, status: &'static str, latency_ms: f64) {
+    counter!(
+        "relayorb_gateway_invoke_requests_total",
+        "capability" => capability.to_string(),
+        "status" => status
+    )
+    .increment(1);
+    histogram!(
+        "relayorb_gateway_invoke_latency_ms",
+        "capability" => capability.to_string(),
+        "status" => status
+    )
+    .record(latency_ms);
+}
+
+fn record_invoke_error(capability: &str, code: ErrorCode, latency_ms: f64) {
+    let code_label = error_code_label(code);
+    counter!(
+        "relayorb_gateway_invoke_requests_total",
+        "capability" => capability.to_string(),
+        "status" => "error",
+        "code" => code_label
+    )
+    .increment(1);
+    histogram!(
+        "relayorb_gateway_invoke_latency_ms",
+        "capability" => capability.to_string(),
+        "status" => "error",
+        "code" => code_label
+    )
+    .record(latency_ms);
 }
 
 async fn execute_new_invocation(
@@ -1068,7 +1178,16 @@ async fn fetch_registry_capability(
         state.env
     );
 
-    let response = state.client.get(url).send().await.map_err(|err| {
+    let mut request_builder = state
+        .client
+        .get(url)
+        .header("x-request-id", &meta.request_id)
+        .header("x-trace-id", &meta.trace_id);
+    if let Some(traceparent) = traceparent_from_trace_id(&meta.trace_id) {
+        request_builder = request_builder.header("traceparent", traceparent);
+    }
+
+    let response = request_builder.send().await.map_err(|err| {
         api_error(
             meta,
             RelayOrbError::new(ErrorCode::Internal, "failed calling registry")
@@ -1486,6 +1605,12 @@ async fn call_worker_with_retries(
             Err((err, transient)) => {
                 if transient && attempt < max_retries {
                     retries_used += 1;
+                    counter!(
+                        "relayorb_gateway_worker_retries_total",
+                        "capability" => capability.to_string(),
+                        "worker_base_url" => worker_base_url.to_string()
+                    )
+                    .increment(1);
                     info!(
                         requestId = %meta.request_id,
                         traceId = %meta.trace_id,
@@ -1520,15 +1645,18 @@ async fn call_worker_once(
     worker_payload: &Value,
     timeout_ms: u64,
 ) -> Result<Value, (ApiError, bool)> {
+    let mut request_builder = state
+        .client
+        .post(worker_url)
+        .header("x-request-id", &meta.request_id)
+        .header("x-trace-id", &meta.trace_id);
+    if let Some(traceparent) = traceparent_from_trace_id(&meta.trace_id) {
+        request_builder = request_builder.header("traceparent", traceparent);
+    }
+
     let worker_response = tokio::time::timeout(
         Duration::from_millis(timeout_ms),
-        state
-            .client
-            .post(worker_url)
-            .header("x-request-id", &meta.request_id)
-            .header("x-trace-id", &meta.trace_id)
-            .json(worker_payload)
-            .send(),
+        request_builder.json(worker_payload).send(),
     )
     .await
     .map_err(|_| {
@@ -1629,6 +1757,8 @@ fn spawn_job_runner(state: Arc<AppState>) {
 }
 
 async fn run_job_runner_tick(state: &AppState, runner_id: &str) -> Result<(), ApiError> {
+    update_queued_jobs_metric(state).await;
+
     let Some(job) = lease_next_job(state, runner_id).await? else {
         return Ok(());
     };
@@ -1657,7 +1787,12 @@ async fn run_job_runner_tick(state: &AppState, runner_id: &str) -> Result<(), Ap
         trace: None,
     };
 
-    let headers = HeaderMap::new();
+    let mut headers = HeaderMap::new();
+    if let Some(trace_id) = &job.trace_id {
+        if let Ok(value) = trace_id.parse() {
+            headers.insert("x-trace-id", value);
+        }
+    }
     match process_invoke(Arc::new(state.clone()), &headers, invoke_request).await {
         Ok(result) if result.status == StatusCode::OK => {
             let result_json = serde_json::to_string(&result.envelope.data).map_err(|err| {
@@ -1708,6 +1843,7 @@ async fn run_job_runner_tick(state: &AppState, runner_id: &str) -> Result<(), Ap
         }
     }
 
+    update_queued_jobs_metric(state).await;
     Ok(())
 }
 
@@ -1718,6 +1854,7 @@ async fn lease_next_job(state: &AppState, runner_id: &str) -> Result<Option<Leas
         (
             String,
             String,
+            Option<String>,
             String,
             String,
             String,
@@ -1728,7 +1865,7 @@ async fn lease_next_job(state: &AppState, runner_id: &str) -> Result<Option<Leas
         ),
     >(
         r#"
-        SELECT job_id, request_id, capability_id, caller_agent_id, caller_role, budget_key, payload_json, attempts, max_attempts
+        SELECT job_id, request_id, trace_id, capability_id, caller_agent_id, caller_role, budget_key, payload_json, attempts, max_attempts
         FROM jobs
         WHERE env = ?1 AND state = 'queued' AND available_at <= ?2
         ORDER BY created_at
@@ -1782,16 +1919,24 @@ async fn lease_next_job(state: &AppState, runner_id: &str) -> Result<Option<Leas
         return Ok(None);
     }
 
+    counter!(
+        "relayorb_gateway_job_transitions_total",
+        "state" => "running",
+        "env" => state.env.clone()
+    )
+    .increment(1);
+
     Ok(Some(LeasedJob {
         job_id: row.0,
         request_id: row.1,
-        capability_id: row.2,
-        caller_agent_id: row.3,
-        caller_role: row.4,
-        budget_key: row.5,
-        payload_json: row.6,
-        attempts: row.7 + 1,
-        max_attempts: row.8,
+        trace_id: row.2,
+        capability_id: row.3,
+        caller_agent_id: row.4,
+        caller_role: row.5,
+        budget_key: row.6,
+        payload_json: row.7,
+        attempts: row.8 + 1,
+        max_attempts: row.9,
     }))
 }
 
@@ -1842,6 +1987,13 @@ async fn handle_job_failure(
                 format!("failed requeueing transient job error: {update_err}"),
             )
         })?;
+        counter!(
+            "relayorb_gateway_job_transitions_total",
+            "state" => "requeued",
+            "env" => state.env.clone()
+        )
+        .increment(1);
+        update_queued_jobs_metric(state).await;
         return Ok(());
     }
 
@@ -1896,7 +2048,31 @@ async fn mark_job_completed(
             format!("failed finalizing async job: {update_err}"),
         )
     })?;
+    counter!(
+        "relayorb_gateway_job_transitions_total",
+        "state" => state_value.to_string(),
+        "env" => state.env.clone()
+    )
+    .increment(1);
+    update_queued_jobs_metric(state).await;
     Ok(())
+}
+
+async fn update_queued_jobs_metric(state: &AppState) {
+    let queued = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM jobs
+        WHERE env = ?1 AND state = 'queued'
+        "#,
+    )
+    .bind(&state.env)
+    .fetch_one(&state.pool)
+    .await;
+
+    if let Ok(queued) = queued {
+        gauge!("relayorb_gateway_jobs_queued", "env" => state.env.clone()).set(queued as f64);
+    }
 }
 
 fn is_transient_error_code(code: ErrorCode) -> bool {
@@ -2278,6 +2454,9 @@ fn request_meta(
     let trace_id = body_trace_id
         .map(ToString::to_string)
         .or_else(|| header_value(headers, "x-trace-id"))
+        .or_else(|| {
+            header_value(headers, "traceparent").and_then(|value| trace_id_from_traceparent(&value))
+        })
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     RequestMeta {
@@ -2294,6 +2473,11 @@ fn header_value(headers: &HeaderMap, key: &str) -> Option<String> {
 }
 
 fn api_error(meta: &RequestMeta, err: RelayOrbError) -> ApiError {
+    counter!(
+        "relayorb_gateway_request_errors_total",
+        "code" => error_code_label(err.code)
+    )
+    .increment(1);
     error!(
         requestId = %meta.request_id,
         traceId = %meta.trace_id,

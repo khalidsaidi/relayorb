@@ -3,6 +3,21 @@ receivers:
     protocols:
       grpc:
       http:
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: relayorb-gateway
+          metrics_path: /metrics
+          static_configs:
+            - targets: ["gateway:8080"]
+        - job_name: relayorb-registry
+          metrics_path: /metrics
+          static_configs:
+            - targets: ["registry:8081"]
+        - job_name: relayorb-worker
+          metrics_path: /metrics
+          static_configs:
+            - targets: ["worker:8090"]
 
 processors:
   batch:
@@ -15,5 +30,9 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+    metrics:
+      receivers: [prometheus]
       processors: [batch]
       exporters: [debug]

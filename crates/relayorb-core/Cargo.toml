@@ -6,7 +6,12 @@ license.workspace = true
 
 [features]
 default = []
-otel = ["dep:opentelemetry", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry_sdk",
+    "dep:tracing-opentelemetry",
+]
 
 [dependencies]
 anyhow.workspace = true
@@ -15,9 +20,12 @@ config.workspace = true
 hex.workspace = true
 http.workspace = true
 jsonschema.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 once_cell.workspace = true
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

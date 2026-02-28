@@ -9,6 +9,7 @@ services:
       REGISTRY_BIND_ADDR: 0.0.0.0:8081
       DATABASE_URL: sqlite:///data/registry.db?mode=rwc
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      RELAYORB_METRICS_EXPORTER: prometheus
     ports:
       - "8081:8081"
     volumes:
@@ -30,6 +31,7 @@ services:
       SECRET_AUTH_HMAC: relayorb-dev-secret
       POLICY_PATH: config/policy.toml
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      RELAYORB_METRICS_EXPORTER: prometheus
     ports:
       - "8080:8080"
     volumes:
@@ -52,6 +54,7 @@ services:
       WORKER_INSTANCE_ID: worker-mock-rag-1
       RELAYORB_REGION: us-central1
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      RELAYORB_METRICS_EXPORTER: prometheus
     ports:
       - "8090:8090"
     depends_on:

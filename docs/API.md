@@ -2,6 +2,12 @@
 
 ## Gateway
 
+### GET `/health`
+Service health envelope with `requestId` + `traceId`.
+
+### GET `/metrics`
+Prometheus metrics endpoint (enabled unless `RELAYORB_METRICS_EXPORTER=none`).
+
 ### POST `/v1/invoke`
 
 Request:
@@ -120,6 +126,9 @@ Returns canonical request artifact and stored invocation state (`in_progress|com
 ### GET `/health`
 Service health/readiness envelope with `requestId` and `traceId`.
 
+### GET `/metrics`
+Prometheus metrics endpoint.
+
 ### POST `/v1/register`
 Worker self-registers instance + manifests with TTL.
 Registration includes `env` and `serviceName`.
@@ -141,6 +150,26 @@ Registry env behavior:
 
 ### GET `/v1/discover?prefix=rag.`
 Returns matching capability IDs.
+
+## Worker (SDK)
+
+### GET `/health`
+Worker health envelope with `requestId` and `traceId`.
+
+### GET `/capabilities`
+Returns worker capability manifests.
+
+### POST `/invoke/:capabilityId`
+Invokes a capability handler. Input and output are validated against manifest schemas.
+
+### GET `/metrics`
+Prometheus metrics endpoint.
+
+## Trace propagation
+
+RelayOrb services propagate both:
+- `x-trace-id`
+- `traceparent` (W3C Trace Context)
 
 ## Error shape
 
