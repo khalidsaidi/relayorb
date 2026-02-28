@@ -67,11 +67,13 @@ async fn main() -> anyhow::Result<()> {
         .or(base.relayorb_region.clone());
     let registry_url = std::env::var("REGISTRY_URL").unwrap_or(base.registry_url);
     let registry_identity_audience = std::env::var("REGISTRY_IDENTITY_AUDIENCE").ok();
+    let version = std::env::var("RELAYORB_VERSION").unwrap_or_else(|_| "dev".to_string());
 
     let config = WorkerConfig {
         bind_addr,
         instance_id,
         service_name,
+        version,
         env,
         base_url,
         region,

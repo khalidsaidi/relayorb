@@ -18,7 +18,7 @@ use jsonwebtoken::{
     Algorithm, DecodingKey, Validation,
 };
 use metrics::{counter, gauge, histogram};
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use relayorb_core::{
     canonicalize_json, init_metrics_exporter, init_tracing, load_base_settings,
     render_prometheus_metrics, trace_id_from_traceparent, traceparent_from_trace_id,
@@ -104,6 +104,8 @@ static SUBMIT_SCHEMA: Lazy<Value> = Lazy::new(|| {
 struct AppState {
     env: String,
     service_name: String,
+    version: String,
+    region: String,
     registry_url: String,
     auth: AuthConfig,
     client: reqwest::Client,
@@ -111,6 +113,16 @@ struct AppState {
     policy: Arc<PolicyEngine>,
     budgets: SqliteBudgetStore,
 }
+
+#[derive(Debug, Clone)]
+struct MetricContext {
+    env: String,
+    service_name: String,
+    version: String,
+    region: String,
+}
+
+static METRIC_CONTEXT: OnceCell<MetricContext> = OnceCell::new();
 
 #[derive(Clone)]
 enum AuthConfig {
@@ -314,9 +326,22 @@ async fn main() -> anyhow::Result<()> {
         spawn_jwks_refresh(oidc, base.jwks_refresh_interval_seconds);
     }
 
+    let env = base.relayorb_env;
+    let service_name = base.relayorb_service_name;
+    let region = base.relayorb_region.unwrap_or_else(|| "global".to_string());
+    let version = std::env::var("RELAYORB_VERSION").unwrap_or_else(|_| "dev".to_string());
+    init_metric_context(
+        env.clone(),
+        service_name.clone(),
+        version.clone(),
+        region.clone(),
+    );
+
     let state = Arc::new(AppState {
-        env: base.relayorb_env,
-        service_name: base.relayorb_service_name,
+        env,
+        service_name,
+        version,
+        region,
         registry_url: base.registry_url,
         auth,
         client,
@@ -914,12 +939,17 @@ async fn process_invoke(
     match claim {
         InvocationClaim::Completed(stored) => {
             let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let labels = metric_context();
             counter!(
                 "relayorb_gateway_idempotency_replays_total",
-                "state" => "completed"
+                "state" => "completed",
+                "env" => labels.env,
+                "service_name" => labels.service_name,
+                "version" => labels.version,
+                "region" => labels.region
             )
             .increment(1);
-            record_invoke_success(&request.capability, "replayed_completed", latency_ms);
+            record_invoke_success(&request.capability, "replayed", latency_ms);
             let envelope = SuccessEnvelope::ok(&meta, stored.response_data).with_meta(json!({
                 "routedTo": stored.routed_to,
                 "latencyMs": stored.latency_ms,
@@ -934,9 +964,14 @@ async fn process_invoke(
         }
         InvocationClaim::Failed(err) => {
             let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let labels = metric_context();
             counter!(
                 "relayorb_gateway_idempotency_replays_total",
-                "state" => "failed"
+                "state" => "failed",
+                "env" => labels.env,
+                "service_name" => labels.service_name,
+                "version" => labels.version,
+                "region" => labels.region
             )
             .increment(1);
             record_invoke_error(&request.capability, err.inner.code, latency_ms);
@@ -944,12 +979,17 @@ async fn process_invoke(
         }
         InvocationClaim::InProgress(stored) => {
             let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let labels = metric_context();
             counter!(
                 "relayorb_gateway_idempotency_replays_total",
-                "state" => "in_progress"
+                "state" => "in_progress",
+                "env" => labels.env,
+                "service_name" => labels.service_name,
+                "version" => labels.version,
+                "region" => labels.region
             )
             .increment(1);
-            record_invoke_success(&request.capability, "replayed_in_progress", latency_ms);
+            record_invoke_success(&request.capability, "replayed", latency_ms);
             let envelope = SuccessEnvelope::ok(
                 &meta,
                 json!({
@@ -1043,35 +1083,64 @@ fn error_code_label(code: ErrorCode) -> &'static str {
     }
 }
 
-fn record_invoke_success(capability: &str, status: &'static str, latency_ms: f64) {
+fn error_result_label(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::Forbidden => "forbidden",
+        ErrorCode::SchemaValidationFailed => "schema_failed",
+        ErrorCode::WorkerTimeout => "timeout",
+        ErrorCode::NoHealthyProviders => "unavailable",
+        _ => "error",
+    }
+}
+
+fn record_invoke_success(capability: &str, result: &'static str, latency_ms: f64) {
+    let labels = metric_context();
     counter!(
         "relayorb_gateway_invoke_requests_total",
-        "capability" => capability.to_string(),
-        "status" => status
+        "env" => labels.env.clone(),
+        "service_name" => labels.service_name.clone(),
+        "version" => labels.version.clone(),
+        "region" => labels.region.clone(),
+        "capability_id" => capability.to_string(),
+        "result" => result
     )
     .increment(1);
     histogram!(
         "relayorb_gateway_invoke_latency_ms",
-        "capability" => capability.to_string(),
-        "status" => status
+        "env" => labels.env,
+        "service_name" => labels.service_name,
+        "version" => labels.version,
+        "region" => labels.region,
+        "capability_id" => capability.to_string(),
+        "result" => result
     )
     .record(latency_ms);
 }
 
 fn record_invoke_error(capability: &str, code: ErrorCode, latency_ms: f64) {
+    let labels = metric_context();
+    let result = error_result_label(code);
     let code_label = error_code_label(code);
     counter!(
         "relayorb_gateway_invoke_requests_total",
-        "capability" => capability.to_string(),
-        "status" => "error",
-        "code" => code_label
+        "env" => labels.env.clone(),
+        "service_name" => labels.service_name.clone(),
+        "version" => labels.version.clone(),
+        "region" => labels.region.clone(),
+        "capability_id" => capability.to_string(),
+        "result" => result,
+        "error_code" => code_label
     )
     .increment(1);
     histogram!(
         "relayorb_gateway_invoke_latency_ms",
-        "capability" => capability.to_string(),
-        "status" => "error",
-        "code" => code_label
+        "env" => labels.env,
+        "service_name" => labels.service_name,
+        "version" => labels.version,
+        "region" => labels.region,
+        "capability_id" => capability.to_string(),
+        "result" => result,
+        "error_code" => code_label
     )
     .record(latency_ms);
 }
@@ -1607,8 +1676,11 @@ async fn call_worker_with_retries(
                     retries_used += 1;
                     counter!(
                         "relayorb_gateway_worker_retries_total",
-                        "capability" => capability.to_string(),
-                        "worker_base_url" => worker_base_url.to_string()
+                        "env" => state.env.clone(),
+                        "service_name" => state.service_name.clone(),
+                        "version" => state.version.clone(),
+                        "region" => state.region.clone(),
+                        "capability_id" => capability.to_string()
                     )
                     .increment(1);
                     info!(
@@ -1922,7 +1994,10 @@ async fn lease_next_job(state: &AppState, runner_id: &str) -> Result<Option<Leas
     counter!(
         "relayorb_gateway_job_transitions_total",
         "state" => "running",
-        "env" => state.env.clone()
+        "env" => state.env.clone(),
+        "service_name" => state.service_name.clone(),
+        "version" => state.version.clone(),
+        "region" => state.region.clone()
     )
     .increment(1);
 
@@ -1990,7 +2065,10 @@ async fn handle_job_failure(
         counter!(
             "relayorb_gateway_job_transitions_total",
             "state" => "requeued",
-            "env" => state.env.clone()
+            "env" => state.env.clone(),
+            "service_name" => state.service_name.clone(),
+            "version" => state.version.clone(),
+            "region" => state.region.clone()
         )
         .increment(1);
         update_queued_jobs_metric(state).await;
@@ -2051,7 +2129,10 @@ async fn mark_job_completed(
     counter!(
         "relayorb_gateway_job_transitions_total",
         "state" => state_value.to_string(),
-        "env" => state.env.clone()
+        "env" => state.env.clone(),
+        "service_name" => state.service_name.clone(),
+        "version" => state.version.clone(),
+        "region" => state.region.clone()
     )
     .increment(1);
     update_queued_jobs_metric(state).await;
@@ -2071,7 +2152,14 @@ async fn update_queued_jobs_metric(state: &AppState) {
     .await;
 
     if let Ok(queued) = queued {
-        gauge!("relayorb_gateway_jobs_queued", "env" => state.env.clone()).set(queued as f64);
+        gauge!(
+            "relayorb_gateway_jobs_queued",
+            "env" => state.env.clone(),
+            "service_name" => state.service_name.clone(),
+            "version" => state.version.clone(),
+            "region" => state.region.clone()
+        )
+        .set(queued as f64);
     }
 }
 
@@ -2473,9 +2561,16 @@ fn header_value(headers: &HeaderMap, key: &str) -> Option<String> {
 }
 
 fn api_error(meta: &RequestMeta, err: RelayOrbError) -> ApiError {
+    let labels = metric_context();
+    let result = error_result_label(err.code);
     counter!(
         "relayorb_gateway_request_errors_total",
-        "code" => error_code_label(err.code)
+        "env" => labels.env,
+        "service_name" => labels.service_name,
+        "version" => labels.version,
+        "region" => labels.region,
+        "result" => result,
+        "error_code" => error_code_label(err.code)
     )
     .increment(1);
     error!(
@@ -2486,4 +2581,26 @@ fn api_error(meta: &RequestMeta, err: RelayOrbError) -> ApiError {
         "gateway request failed"
     );
     ApiError::from_inner(meta.request_id.clone(), meta.trace_id.clone(), err)
+}
+
+fn init_metric_context(env: String, service_name: String, version: String, region: String) {
+    let _ = METRIC_CONTEXT.set(MetricContext {
+        env,
+        service_name,
+        version,
+        region,
+    });
+}
+
+fn metric_context() -> MetricContext {
+    METRIC_CONTEXT
+        .get()
+        .cloned()
+        .unwrap_or_else(|| MetricContext {
+            env: std::env::var("RELAYORB_ENV").unwrap_or_else(|_| "dev".to_string()),
+            service_name: std::env::var("RELAYORB_SERVICE_NAME")
+                .unwrap_or_else(|_| "relayorb-gateway".to_string()),
+            version: std::env::var("RELAYORB_VERSION").unwrap_or_else(|_| "dev".to_string()),
+            region: std::env::var("RELAYORB_REGION").unwrap_or_else(|_| "global".to_string()),
+        })
 }

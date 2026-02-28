@@ -19,7 +19,7 @@ use axum::{
     Json, Router,
 };
 use metrics::{counter, gauge, histogram};
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use relayorb_core::{
     init_metrics_exporter, render_prometheus_metrics, trace_id_from_traceparent,
     traceparent_from_trace_id, validate_json_with_schema, ApiError, CapabilityManifest, ErrorCode,
@@ -50,6 +50,7 @@ pub struct WorkerConfig {
     pub bind_addr: String,
     pub instance_id: String,
     pub service_name: String,
+    pub version: String,
     pub env: String,
     pub base_url: String,
     pub region: Option<String>,
@@ -65,6 +66,7 @@ impl Default for WorkerConfig {
             bind_addr: "0.0.0.0:8090".to_string(),
             instance_id: format!("worker-{}", Uuid::new_v4()),
             service_name: "relayorb-worker-dev".to_string(),
+            version: "dev".to_string(),
             env: "dev".to_string(),
             base_url: "http://127.0.0.1:8090".to_string(),
             region: Some("local".to_string()),
@@ -117,6 +119,16 @@ struct HeartbeatPayload {
     stats: ProviderStats,
 }
 
+#[derive(Debug, Clone)]
+struct MetricContext {
+    env: String,
+    service_name: String,
+    version: String,
+    region: String,
+}
+
+static METRIC_CONTEXT: OnceCell<MetricContext> = OnceCell::new();
+
 #[async_trait]
 pub trait CapabilityHandler: Send + Sync {
     async fn handle(&self, payload: Value) -> Result<Value, RelayOrbError>;
@@ -150,6 +162,7 @@ impl WorkerRuntime {
 
     pub async fn serve(self) -> anyhow::Result<()> {
         init_metrics_exporter()?;
+        init_metric_context(&self.config);
         self.register_with_registry().await?;
 
         let state = Arc::new(self.clone());
@@ -207,7 +220,15 @@ impl WorkerRuntime {
             let body = response.text().await.unwrap_or_default();
             counter!(
                 "relayorb_worker_registry_register_total",
-                "status" => "error"
+                "env" => self.config.env.clone(),
+                "service_name" => self.config.service_name.clone(),
+                "version" => self.config.version.clone(),
+                "region" => self
+                    .config
+                    .region
+                    .clone()
+                    .unwrap_or_else(|| "global".to_string()),
+                "result" => "error"
             )
             .increment(1);
             anyhow::bail!("worker registration failed: status={status}, body={body}");
@@ -215,7 +236,15 @@ impl WorkerRuntime {
 
         counter!(
             "relayorb_worker_registry_register_total",
-            "status" => "ok"
+            "env" => self.config.env.clone(),
+            "service_name" => self.config.service_name.clone(),
+            "version" => self.config.version.clone(),
+            "region" => self
+                .config
+                .region
+                .clone()
+                .unwrap_or_else(|| "global".to_string()),
+            "result" => "ok"
         )
         .increment(1);
 
@@ -244,7 +273,15 @@ impl WorkerRuntime {
                     warn!(error = %err, "worker failed to prepare registry auth headers");
                     counter!(
                         "relayorb_worker_registry_heartbeat_total",
-                        "status" => "error"
+                        "env" => self.config.env.clone(),
+                        "service_name" => self.config.service_name.clone(),
+                        "version" => self.config.version.clone(),
+                        "region" => self
+                            .config
+                            .region
+                            .clone()
+                            .unwrap_or_else(|| "global".to_string()),
+                        "result" => "error"
                     )
                     .increment(1);
                     continue;
@@ -260,7 +297,15 @@ impl WorkerRuntime {
                 Ok(res) if res.status().is_success() => {
                     counter!(
                         "relayorb_worker_registry_heartbeat_total",
-                        "status" => "ok"
+                        "env" => self.config.env.clone(),
+                        "service_name" => self.config.service_name.clone(),
+                        "version" => self.config.version.clone(),
+                        "region" => self
+                            .config
+                            .region
+                            .clone()
+                            .unwrap_or_else(|| "global".to_string()),
+                        "result" => "ok"
                     )
                     .increment(1);
                 }
@@ -268,7 +313,15 @@ impl WorkerRuntime {
                     warn!(status = %res.status(), "worker heartbeat rejected by registry");
                     counter!(
                         "relayorb_worker_registry_heartbeat_total",
-                        "status" => "error"
+                        "env" => self.config.env.clone(),
+                        "service_name" => self.config.service_name.clone(),
+                        "version" => self.config.version.clone(),
+                        "region" => self
+                            .config
+                            .region
+                            .clone()
+                            .unwrap_or_else(|| "global".to_string()),
+                        "result" => "error"
                     )
                     .increment(1);
                     if res.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE
@@ -288,7 +341,15 @@ impl WorkerRuntime {
                     warn!(error = %err, "worker heartbeat failed");
                     counter!(
                         "relayorb_worker_registry_heartbeat_total",
-                        "status" => "error"
+                        "env" => self.config.env.clone(),
+                        "service_name" => self.config.service_name.clone(),
+                        "version" => self.config.version.clone(),
+                        "region" => self
+                            .config
+                            .region
+                            .clone()
+                            .unwrap_or_else(|| "global".to_string()),
+                        "result" => "error"
                     )
                     .increment(1);
                 }
@@ -526,8 +587,15 @@ async fn invoke(
     state.stats.on_start();
     gauge!(
         "relayorb_worker_in_flight",
-        "capability" => capability_id.clone(),
-        "service" => state.config.service_name.clone()
+        "env" => state.config.env.clone(),
+        "service_name" => state.config.service_name.clone(),
+        "version" => state.config.version.clone(),
+        "region" => state
+            .config
+            .region
+            .clone()
+            .unwrap_or_else(|| "global".to_string()),
+        "capability_id" => capability_id.clone()
     )
     .set(state.stats.snapshot().in_flight.unwrap_or(0) as f64);
     let started = Instant::now();
@@ -539,8 +607,15 @@ async fn invoke(
             state.stats.on_finish(elapsed, false);
             gauge!(
                 "relayorb_worker_in_flight",
-                "capability" => capability_id.clone(),
-                "service" => state.config.service_name.clone()
+                "env" => state.config.env.clone(),
+                "service_name" => state.config.service_name.clone(),
+                "version" => state.config.version.clone(),
+                "region" => state
+                    .config
+                    .region
+                    .clone()
+                    .unwrap_or_else(|| "global".to_string()),
+                "capability_id" => capability_id.clone()
             )
             .set(state.stats.snapshot().in_flight.unwrap_or(0) as f64);
             payload
@@ -549,20 +624,45 @@ async fn invoke(
             state.stats.on_finish(elapsed, true);
             gauge!(
                 "relayorb_worker_in_flight",
-                "capability" => capability_id.clone(),
-                "service" => state.config.service_name.clone()
+                "env" => state.config.env.clone(),
+                "service_name" => state.config.service_name.clone(),
+                "version" => state.config.version.clone(),
+                "region" => state
+                    .config
+                    .region
+                    .clone()
+                    .unwrap_or_else(|| "global".to_string()),
+                "capability_id" => capability_id.clone()
             )
             .set(state.stats.snapshot().in_flight.unwrap_or(0) as f64);
             counter!(
                 "relayorb_worker_invoke_requests_total",
-                "capability" => capability_id.clone(),
-                "status" => "error"
+                "env" => state.config.env.clone(),
+                "service_name" => state.config.service_name.clone(),
+                "version" => state.config.version.clone(),
+                "region" => state
+                    .config
+                    .region
+                    .clone()
+                    .unwrap_or_else(|| "global".to_string()),
+                "capability_id" => capability_id.clone(),
+                "result" => error_result_label(err.code),
+                "error_code" => error_code_label(err.code)
             )
             .increment(1);
             histogram!(
                 "relayorb_worker_invoke_latency_ms",
-                "capability" => capability_id.clone(),
-                "status" => "error"
+                "env" => state.config.env.clone(),
+                "service_name" => state.config.service_name.clone(),
+                "version" => state.config.version.clone(),
+                "region" => state
+                    .config
+                    .region
+                    .clone()
+                    .unwrap_or_else(|| "global".to_string()),
+                "capability_id" => capability_id.clone(),
+                "result" => error_result_label(err.code),
+                "error_code" => error_code_label(err.code)
             )
             .record(elapsed);
             return Err(api_error(&meta, err));
@@ -582,14 +682,30 @@ async fn invoke(
 
     counter!(
         "relayorb_worker_invoke_requests_total",
-        "capability" => capability_id.clone(),
-        "status" => "ok"
+        "env" => state.config.env.clone(),
+        "service_name" => state.config.service_name.clone(),
+        "version" => state.config.version.clone(),
+        "region" => state
+            .config
+            .region
+            .clone()
+            .unwrap_or_else(|| "global".to_string()),
+        "capability_id" => capability_id.clone(),
+        "result" => "ok"
     )
     .increment(1);
     histogram!(
         "relayorb_worker_invoke_latency_ms",
-        "capability" => capability_id.clone(),
-        "status" => "ok"
+        "env" => state.config.env.clone(),
+        "service_name" => state.config.service_name.clone(),
+        "version" => state.config.version.clone(),
+        "region" => state
+            .config
+            .region
+            .clone()
+            .unwrap_or_else(|| "global".to_string()),
+        "capability_id" => capability_id.clone(),
+        "result" => "ok"
     )
     .record(elapsed);
     info!(latencyMs = elapsed, "worker invocation completed");
@@ -628,10 +744,65 @@ fn header_value(headers: &HeaderMap, key: &str) -> Option<String> {
 }
 
 fn api_error(meta: &RequestMeta, err: RelayOrbError) -> ApiError {
+    let labels = metric_context();
     counter!(
         "relayorb_worker_request_errors_total",
-        "code" => format!("{:?}", err.code)
+        "env" => labels.env,
+        "service_name" => labels.service_name,
+        "version" => labels.version,
+        "region" => labels.region,
+        "result" => error_result_label(err.code),
+        "error_code" => error_code_label(err.code)
     )
     .increment(1);
     ApiError::from_inner(meta.request_id.clone(), meta.trace_id.clone(), err)
+}
+
+fn error_code_label(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::Unauthorized => "UNAUTHORIZED",
+        ErrorCode::Forbidden => "FORBIDDEN",
+        ErrorCode::BudgetExceeded => "BUDGET_EXCEEDED",
+        ErrorCode::CapabilityNotFound => "CAPABILITY_NOT_FOUND",
+        ErrorCode::NoHealthyProviders => "NO_HEALTHY_PROVIDERS",
+        ErrorCode::SchemaValidationFailed => "SCHEMA_VALIDATION_FAILED",
+        ErrorCode::WorkerTimeout => "WORKER_TIMEOUT",
+        ErrorCode::WorkerError => "WORKER_ERROR",
+        ErrorCode::Internal => "INTERNAL",
+    }
+}
+
+fn error_result_label(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::Forbidden => "forbidden",
+        ErrorCode::SchemaValidationFailed => "schema_failed",
+        ErrorCode::WorkerTimeout => "timeout",
+        ErrorCode::NoHealthyProviders => "unavailable",
+        _ => "error",
+    }
+}
+
+fn init_metric_context(config: &WorkerConfig) {
+    let _ = METRIC_CONTEXT.set(MetricContext {
+        env: config.env.clone(),
+        service_name: config.service_name.clone(),
+        version: config.version.clone(),
+        region: config
+            .region
+            .clone()
+            .unwrap_or_else(|| "global".to_string()),
+    });
+}
+
+fn metric_context() -> MetricContext {
+    METRIC_CONTEXT
+        .get()
+        .cloned()
+        .unwrap_or_else(|| MetricContext {
+            env: std::env::var("RELAYORB_ENV").unwrap_or_else(|_| "dev".to_string()),
+            service_name: std::env::var("RELAYORB_SERVICE_NAME")
+                .unwrap_or_else(|_| "relayorb-worker".to_string()),
+            version: std::env::var("RELAYORB_VERSION").unwrap_or_else(|_| "dev".to_string()),
+            region: std::env::var("RELAYORB_REGION").unwrap_or_else(|_| "global".to_string()),
+        })
 }

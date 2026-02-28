@@ -14,7 +14,7 @@ use jsonwebtoken::{
     Algorithm, DecodingKey, Validation,
 };
 use metrics::{counter, gauge};
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use relayorb_core::{
     canonicalize_json, init_metrics_exporter, init_tracing, is_valid_capability_id,
     load_base_settings, render_prometheus_metrics, trace_id_from_traceparent,
@@ -80,9 +80,22 @@ struct AppState {
     pool: SqlitePool,
     default_ttl_seconds: i64,
     env: String,
+    service_name: String,
+    version: String,
+    region: String,
     ownership_policy: OwnershipPolicy,
     worker_auth: WorkerAuthConfig,
 }
+
+#[derive(Debug, Clone)]
+struct MetricContext {
+    env: String,
+    service_name: String,
+    version: String,
+    region: String,
+}
+
+static METRIC_CONTEXT: OnceCell<MetricContext> = OnceCell::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -620,10 +633,24 @@ async fn main() -> anyhow::Result<()> {
         .await
         .ok();
 
+    let env = base.relayorb_env;
+    let service_name = base.relayorb_service_name;
+    let region = base.relayorb_region.unwrap_or_else(|| "global".to_string());
+    let version = std::env::var("RELAYORB_VERSION").unwrap_or_else(|_| "dev".to_string());
+    init_metric_context(
+        env.clone(),
+        service_name.clone(),
+        version.clone(),
+        region.clone(),
+    );
+
     let state = Arc::new(AppState {
         pool,
         default_ttl_seconds: ttl_seconds,
-        env: base.relayorb_env,
+        env,
+        service_name,
+        version,
+        region,
         ownership_policy,
         worker_auth,
     });
@@ -738,7 +765,11 @@ async fn register(
                     counter!(
                         "relayorb_registry_governance_denials_total",
                         "env" => registration_env.clone(),
-                        "capability" => capability.capability_id.clone()
+                        "service_name" => state.service_name.clone(),
+                        "version" => state.version.clone(),
+                        "region" => state.region.clone(),
+                        "capability_id" => capability.capability_id.clone(),
+                        "result" => "forbidden"
                     )
                     .increment(1);
                 }
@@ -881,8 +912,11 @@ async fn register(
 
     counter!(
         "relayorb_registry_register_requests_total",
-        "status" => "ok",
-        "env" => registration_env
+        "env" => registration_env,
+        "service_name" => state.service_name.clone(),
+        "version" => state.version.clone(),
+        "region" => state.region.clone(),
+        "result" => "ok"
     )
     .increment(1);
 
@@ -971,8 +1005,11 @@ async fn heartbeat(
 
     counter!(
         "relayorb_registry_heartbeat_requests_total",
-        "status" => "ok",
-        "env" => state.env.clone()
+        "env" => state.env.clone(),
+        "service_name" => state.service_name.clone(),
+        "version" => state.version.clone(),
+        "region" => state.region.clone(),
+        "result" => "ok"
     )
     .increment(1);
 
@@ -1111,14 +1148,20 @@ async fn get_capability(
     gauge!(
         "relayorb_registry_providers_healthy",
         "env" => env.clone(),
-        "capability" => capability_id.clone()
+        "service_name" => state.service_name.clone(),
+        "version" => state.version.clone(),
+        "region" => state.region.clone(),
+        "capability_id" => capability_id.clone()
     )
     .set(healthy_count as f64);
     counter!(
         "relayorb_registry_capability_lookups_total",
-        "status" => "ok",
         "env" => env.clone(),
-        "capability" => capability_id.clone()
+        "service_name" => state.service_name.clone(),
+        "version" => state.version.clone(),
+        "region" => state.region.clone(),
+        "capability_id" => capability_id.clone(),
+        "result" => "ok"
     )
     .increment(1);
 
@@ -1158,8 +1201,11 @@ async fn discover(
 
     counter!(
         "relayorb_registry_discover_requests_total",
-        "status" => "ok",
-        "env" => state.env.clone()
+        "env" => state.env.clone(),
+        "service_name" => state.service_name.clone(),
+        "version" => state.version.clone(),
+        "region" => state.region.clone(),
+        "result" => "ok"
     )
     .increment(1);
 
@@ -1225,9 +1271,15 @@ fn header_value(headers: &HeaderMap, key: &str) -> Option<String> {
 }
 
 fn api_error(meta: &RequestMeta, err: RelayOrbError) -> ApiError {
+    let labels = metric_context();
     counter!(
         "relayorb_registry_request_errors_total",
-        "code" => format!("{:?}", err.code)
+        "env" => labels.env,
+        "service_name" => labels.service_name,
+        "version" => labels.version,
+        "region" => labels.region,
+        "result" => error_result_label(err.code),
+        "error_code" => error_code_label(err.code)
     )
     .increment(1);
     error!(
@@ -1238,6 +1290,52 @@ fn api_error(meta: &RequestMeta, err: RelayOrbError) -> ApiError {
         "request failed"
     );
     ApiError::from_inner(meta.request_id.clone(), meta.trace_id.clone(), err)
+}
+
+fn error_code_label(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::Unauthorized => "UNAUTHORIZED",
+        ErrorCode::Forbidden => "FORBIDDEN",
+        ErrorCode::BudgetExceeded => "BUDGET_EXCEEDED",
+        ErrorCode::CapabilityNotFound => "CAPABILITY_NOT_FOUND",
+        ErrorCode::NoHealthyProviders => "NO_HEALTHY_PROVIDERS",
+        ErrorCode::SchemaValidationFailed => "SCHEMA_VALIDATION_FAILED",
+        ErrorCode::WorkerTimeout => "WORKER_TIMEOUT",
+        ErrorCode::WorkerError => "WORKER_ERROR",
+        ErrorCode::Internal => "INTERNAL",
+    }
+}
+
+fn error_result_label(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::Forbidden => "forbidden",
+        ErrorCode::SchemaValidationFailed => "schema_failed",
+        ErrorCode::WorkerTimeout => "timeout",
+        ErrorCode::NoHealthyProviders => "unavailable",
+        _ => "error",
+    }
+}
+
+fn init_metric_context(env: String, service_name: String, version: String, region: String) {
+    let _ = METRIC_CONTEXT.set(MetricContext {
+        env,
+        service_name,
+        version,
+        region,
+    });
+}
+
+fn metric_context() -> MetricContext {
+    METRIC_CONTEXT
+        .get()
+        .cloned()
+        .unwrap_or_else(|| MetricContext {
+            env: std::env::var("RELAYORB_ENV").unwrap_or_else(|_| "dev".to_string()),
+            service_name: std::env::var("RELAYORB_SERVICE_NAME")
+                .unwrap_or_else(|_| "relayorb-registry".to_string()),
+            version: std::env::var("RELAYORB_VERSION").unwrap_or_else(|_| "dev".to_string()),
+            region: std::env::var("RELAYORB_REGION").unwrap_or_else(|_| "global".to_string()),
+        })
 }
 
 fn schema_hashes(
