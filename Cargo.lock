@@ -2118,6 +2118,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "config",
  "once_cell",
  "relayorb-core",
  "serde",

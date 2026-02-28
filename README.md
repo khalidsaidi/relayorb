@@ -74,6 +74,7 @@ Base config is `config/dev.toml`, overridden by env vars:
 - `AUTH_CLOCK_SKEW_SECONDS` (optional, default `120`)
 - `JWKS_REFRESH_INTERVAL_SECONDS` (optional, default `300`)
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (optional)
+- `REGISTRY_OWNERSHIP_POLICY_PATH` (optional, default `config/registry-ownership.toml`)
 
 ## Service naming model
 

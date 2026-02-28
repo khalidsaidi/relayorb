@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, str::FromStr, sync::Arc};
+use std::{collections::BTreeSet, net::SocketAddr, path::Path as FsPath, str::FromStr, sync::Arc};
 
 use axum::{
     extract::{Path, Query, State},
@@ -70,6 +70,7 @@ struct AppState {
     pool: SqlitePool,
     default_ttl_seconds: i64,
     env: String,
+    ownership_policy: OwnershipPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +132,125 @@ struct DiscoverQuery {
     prefix: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct OwnershipPolicy {
+    #[serde(default)]
+    enforce_in_prod: bool,
+    #[serde(default)]
+    rules: Vec<OwnershipRule>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnershipRule {
+    capability_prefix: String,
+    env: Option<String>,
+    allowed_service_names: Vec<String>,
+}
+
+impl OwnershipPolicy {
+    fn from_path(path: &str) -> anyhow::Result<Self> {
+        if !FsPath::new(path).exists() {
+            return Ok(Self::default());
+        }
+
+        let cfg = config::Config::builder()
+            .add_source(config::File::from(FsPath::new(path)))
+            .build()?;
+
+        Ok(cfg.try_deserialize()?)
+    }
+
+    fn enforce_for_env(&self, env: &str) -> bool {
+        self.enforce_in_prod && env.eq_ignore_ascii_case("prod")
+    }
+
+    fn assert_registration_allowed(
+        &self,
+        registration_env: &str,
+        service_name: Option<&str>,
+        capability_id: &str,
+    ) -> Result<(), RelayOrbError> {
+        if !self.enforce_for_env(registration_env) {
+            return Ok(());
+        }
+
+        let matching_rules = self
+            .rules
+            .iter()
+            .filter(|rule| rule.matches(registration_env, capability_id))
+            .collect::<Vec<_>>();
+
+        if matching_rules.is_empty() {
+            return Ok(());
+        }
+
+        let normalized_service_name = service_name
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                RelayOrbError::new(
+                    ErrorCode::Forbidden,
+                    "serviceName is required for governed capability registration in prod",
+                )
+                .with_details(json!({
+                    "env": registration_env,
+                    "capabilityId": capability_id,
+                    "matchedPrefixes": matching_rules.iter().map(|rule| rule.capability_prefix.clone()).collect::<Vec<_>>()
+                }))
+            })?;
+
+        let mut allowed_service_names = BTreeSet::new();
+        let mut matched_prefixes = BTreeSet::new();
+
+        for rule in &matching_rules {
+            matched_prefixes.insert(rule.capability_prefix.clone());
+            for name in &rule.allowed_service_names {
+                let trimmed = name.trim();
+                if !trimmed.is_empty() {
+                    allowed_service_names.insert(trimmed.to_string());
+                }
+            }
+        }
+
+        if allowed_service_names.contains(normalized_service_name) {
+            return Ok(());
+        }
+
+        Err(RelayOrbError::new(
+            ErrorCode::Forbidden,
+            format!(
+                "service '{}' is not allowed to register capability '{}' in env '{}'",
+                normalized_service_name, capability_id, registration_env
+            ),
+        )
+        .with_details(json!({
+            "env": registration_env,
+            "capabilityId": capability_id,
+            "serviceName": normalized_service_name,
+            "allowedServiceNames": allowed_service_names,
+            "matchedPrefixes": matched_prefixes,
+        })))
+    }
+}
+
+impl OwnershipRule {
+    fn matches(&self, env: &str, capability_id: &str) -> bool {
+        if self.capability_prefix.is_empty() {
+            return false;
+        }
+
+        let env_matches = self
+            .env
+            .as_deref()
+            .map(|candidate| candidate == env)
+            .unwrap_or(true);
+
+        env_matches && capability_id.starts_with(&self.capability_prefix)
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let base = load_base_settings()?;
@@ -146,6 +266,9 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(60);
+    let ownership_policy_path = std::env::var("REGISTRY_OWNERSHIP_POLICY_PATH")
+        .unwrap_or_else(|_| "config/registry-ownership.toml".to_string());
+    let ownership_policy = OwnershipPolicy::from_path(&ownership_policy_path)?;
 
     let pool = SqlitePool::connect(&database_url).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
@@ -158,6 +281,7 @@ async fn main() -> anyhow::Result<()> {
         pool,
         default_ttl_seconds: ttl_seconds,
         env: base.relayorb_env,
+        ownership_policy,
     });
 
     let router = Router::new()
@@ -169,7 +293,14 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http());
 
     let addr = SocketAddr::from_str(&bind_addr)?;
-    info!(%addr, env = %state.env, "registry listening");
+    info!(
+        %addr,
+        env = %state.env,
+        ownershipPolicyPath = %ownership_policy_path,
+        ownershipRules = state.ownership_policy.rules.len(),
+        ownershipEnforceInProd = state.ownership_policy.enforce_in_prod,
+        "registry listening"
+    );
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, router).await?;
 
@@ -230,6 +361,18 @@ async fn register(
     let now = OffsetDateTime::now_utc().unix_timestamp();
     let ttl = request.ttl_seconds.unwrap_or(state.default_ttl_seconds);
     let registration_env = request.env.clone().unwrap_or_else(|| state.env.clone());
+
+    for capability in &request.capabilities {
+        state
+            .ownership_policy
+            .assert_registration_allowed(
+                &registration_env,
+                request.service_name.as_deref(),
+                &capability.capability_id,
+            )
+            .map_err(|err| api_error(&meta, err))?;
+    }
+
     let mut tx = state.pool.begin().await.map_err(|err| {
         api_error(
             &meta,
@@ -468,7 +611,15 @@ async fn get_capability(
     }
 
     let include_unhealthy = query.include_unhealthy.unwrap_or(0) == 1;
-    let env = query.env.clone().unwrap_or_else(|| state.env.clone());
+    let env = resolve_lookup_env(&state.env, query.env.as_deref()).map_err(|err| {
+        api_error(
+            &meta,
+            err.with_details(json!({
+                "registryEnv": state.env,
+                "requestedEnv": query.env,
+            })),
+        )
+    })?;
     let manifest_json: Option<String> =
         sqlx::query_scalar("SELECT manifest_json FROM capabilities WHERE capability_id = ?1")
             .bind(&capability_id)
@@ -657,4 +808,91 @@ fn schema_hashes(
         output_sha256: output.sha256,
         error_sha256: error.sha256,
     })
+}
+
+fn resolve_lookup_env(
+    registry_env: &str,
+    requested_env: Option<&str>,
+) -> Result<String, RelayOrbError> {
+    let requested = requested_env
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    if registry_env.eq_ignore_ascii_case("prod") {
+        if let Some(candidate) = requested {
+            if candidate != registry_env {
+                return Err(RelayOrbError::new(
+                    ErrorCode::Forbidden,
+                    "env override is not allowed when registry env is prod",
+                ));
+            }
+        }
+        return Ok(registry_env.to_string());
+    }
+
+    Ok(requested.unwrap_or(registry_env).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_lookup_env, OwnershipPolicy, OwnershipRule};
+
+    fn prod_policy() -> OwnershipPolicy {
+        OwnershipPolicy {
+            enforce_in_prod: true,
+            rules: vec![OwnershipRule {
+                capability_prefix: "rag.".to_string(),
+                env: Some("prod".to_string()),
+                allowed_service_names: vec!["relayorb-rag-prod".to_string()],
+            }],
+        }
+    }
+
+    #[test]
+    fn ownership_allows_matching_service_in_prod() {
+        let policy = prod_policy();
+        let result =
+            policy.assert_registration_allowed("prod", Some("relayorb-rag-prod"), "rag.search@v1");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn ownership_rejects_non_matching_service_in_prod() {
+        let policy = prod_policy();
+        let err = policy
+            .assert_registration_allowed("prod", Some("relayorb-rogue-prod"), "rag.search@v1")
+            .expect_err("expected forbidden error");
+        assert!(err.message.contains("not allowed"));
+    }
+
+    #[test]
+    fn ownership_allows_ungoverned_capability() {
+        let policy = prod_policy();
+        let result =
+            policy.assert_registration_allowed("prod", Some("relayorb-other-prod"), "doc.patch@v1");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn ownership_not_enforced_outside_prod() {
+        let policy = prod_policy();
+        let result = policy.assert_registration_allowed(
+            "staging",
+            Some("relayorb-rogue-staging"),
+            "rag.search@v1",
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn lookup_env_blocks_cross_env_override_in_prod() {
+        let err = resolve_lookup_env("prod", Some("dev")).expect_err("expected forbidden");
+        assert!(err.message.contains("not allowed"));
+    }
+
+    #[test]
+    fn lookup_env_allows_override_in_non_prod() {
+        let env = resolve_lookup_env("staging", Some("dev")).expect("expected env to resolve");
+        assert_eq!(env, "dev");
+    }
 }

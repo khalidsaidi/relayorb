@@ -1,0 +1,16 @@
+enforce_in_prod = true
+
+[[rules]]
+env = "prod"
+capability_prefix = "rag."
+allowed_service_names = ["relayorb-rag-prod"]
+
+[[rules]]
+env = "prod"
+capability_prefix = "sql."
+allowed_service_names = ["relayorb-sql-prod"]
+
+[[rules]]
+env = "prod"
+capability_prefix = "doc."
+allowed_service_names = ["relayorb-doc-prod"]

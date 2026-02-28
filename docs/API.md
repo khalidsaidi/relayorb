@@ -120,6 +120,7 @@ Returns canonical request artifact and stored invocation state (`in_progress|com
 ### POST `/v1/register`
 Worker self-registers instance + manifests with TTL.
 Registration includes `env` and `serviceName`.
+In `prod`, capability ownership rules may restrict registration by `serviceName` for specific capability prefixes.
 
 ### POST `/v1/heartbeat`
 Worker refreshes TTL and uploads load stats.
@@ -129,6 +130,10 @@ Returns manifest and provider list.
 Query params:
 - `includeUnhealthy=1` (optional)
 - `env=<dev|staging|prod>` (optional, defaults to registry env)
+
+Registry env behavior:
+- Non-prod registries may use `env` override for diagnostics.
+- Prod registries do not allow cross-env override. When `RELAYORB_ENV=prod`, `env` must be absent or `prod`.
 
 ### GET `/v1/discover?prefix=rag.`
 Returns matching capability IDs.
