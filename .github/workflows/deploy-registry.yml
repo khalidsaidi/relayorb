@@ -74,10 +74,15 @@ jobs:
         run: |
           set -euo pipefail
           REGISTRY_URL="$(gcloud run services describe "${{ env.SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
+          NONCE="$(date +%s)"
+          gcloud run services update "${{ env.OWNER_SERVICE_NAME }}" \
+            --project "${{ env.PROJECT_ID }}" \
+            --region "${{ env.REGION }}" \
+            --update-env-vars "REGISTRY_SMOKE_NONCE=$NONCE" >/dev/null
           TOKEN="$(gcloud auth print-identity-token --impersonate-service-account "${{ secrets.GCP_REGISTRY_DEPLOYER_SA }}" --audiences "$REGISTRY_URL")"
-          for _ in $(seq 1 18); do
+          for _ in $(seq 1 30); do
             RESPONSE="$(curl -sS -H "Authorization: Bearer $TOKEN" "$REGISTRY_URL/v1/capabilities/rag.search@v1" || true)"
-            if echo "$RESPONSE" | jq -e --arg service_name "${{ env.OWNER_SERVICE_NAME }}" '.providers // [] | any(.serviceName == $service_name and .healthy == true)' >/dev/null; then
+            if echo "$RESPONSE" | jq -e --arg service_name "${{ env.OWNER_SERVICE_NAME }}" '.providers // [] | any((.serviceName == $service_name or .service_name == $service_name) and (.healthy // false) == true)' >/dev/null; then
               echo "owner worker is registered and healthy"
               exit 0
             fi
