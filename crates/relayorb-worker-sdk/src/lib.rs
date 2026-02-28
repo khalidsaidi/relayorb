@@ -271,6 +271,18 @@ impl WorkerRuntime {
                         "status" => "error"
                     )
                     .increment(1);
+                    if res.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                        || res.status() == reqwest::StatusCode::NOT_FOUND
+                    {
+                        match self.register_with_registry().await {
+                            Ok(()) => {
+                                info!("worker auto re-registered after heartbeat rejection");
+                            }
+                            Err(err) => {
+                                warn!(error = %err, "worker auto re-registration failed");
+                            }
+                        }
+                    }
                 }
                 Err(err) => {
                     warn!(error = %err, "worker heartbeat failed");
