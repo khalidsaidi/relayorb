@@ -43,3 +43,4 @@ The script reads GoDaddy credentials from Secret Manager at runtime.
 - Attach notification channels by setting `notification_channels` Terraform variable.
 - Gateway error-rate alert uses Cloud Run native request metrics.
 - Provider health and queued job alerts use RelayOrb Prometheus metrics (`relayorb_registry_providers_healthy`, `relayorb_gateway_jobs_queued`).
+- Ensure those Prometheus series are exported into Cloud Monitoring before applying alerts that depend on them.

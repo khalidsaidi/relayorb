@@ -113,7 +113,7 @@ resource "google_monitoring_alert_policy" "registry_healthy_providers_zero" {
     display_name = "Healthy providers for key capability < 1"
 
     condition_threshold {
-      filter          = "metric.type=\"prometheus.googleapis.com/relayorb_registry_providers_healthy/gauge\" metric.label.\"env\"=\"${var.relayorb_env}\" metric.label.\"service_name\"=\"${var.registry_service_name}\" metric.label.\"capability_id\"=\"${var.key_capability_id}\""
+      filter          = "metric.type=\"prometheus.googleapis.com/relayorb_registry_providers_healthy/gauge\" resource.type=\"prometheus_target\" metric.label.\"env\"=\"${var.relayorb_env}\" metric.label.\"service_name\"=\"${var.registry_service_name}\" metric.label.\"capability_id\"=\"${var.key_capability_id}\""
       comparison      = "COMPARISON_LT"
       threshold_value = 1
       duration        = "300s"
@@ -146,7 +146,7 @@ resource "google_monitoring_alert_policy" "gateway_jobs_queued_high" {
     display_name = "Gateway queued jobs above threshold"
 
     condition_threshold {
-      filter          = "metric.type=\"prometheus.googleapis.com/relayorb_gateway_jobs_queued/gauge\" metric.label.\"env\"=\"${var.relayorb_env}\" metric.label.\"service_name\"=\"${var.gateway_service_name}\""
+      filter          = "metric.type=\"prometheus.googleapis.com/relayorb_gateway_jobs_queued/gauge\" resource.type=\"prometheus_target\" metric.label.\"env\"=\"${var.relayorb_env}\" metric.label.\"service_name\"=\"${var.gateway_service_name}\""
       comparison      = "COMPARISON_GT"
       threshold_value = var.gateway_jobs_queued_threshold
       duration        = "600s"

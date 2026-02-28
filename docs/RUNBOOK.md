@@ -56,6 +56,7 @@
    - `cd infra/gcp/terraform`
    - `terraform init`
    - `terraform apply`
+   - Note: provider-health and jobs-queued alerts depend on Prometheus metric ingestion into Cloud Monitoring (`prometheus.googleapis.com/...`).
    - Confirm policies exist:
      - `relayorb-prod-gateway-error-rate`
      - `relayorb-prod-registry-healthy-providers-zero`
