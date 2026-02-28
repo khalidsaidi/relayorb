@@ -25,8 +25,8 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 2
 fi
 
-if ! gcloud iam service-accounts describe "${SCRAPER_SA}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
-  if [ "${BOOTSTRAP_IAM}" = "1" ]; then
+if [ "${BOOTSTRAP_IAM}" = "1" ]; then
+  if ! gcloud iam service-accounts describe "${SCRAPER_SA}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
     gcloud iam service-accounts create "${SCRAPER_SA_ID}" \
       --project "${PROJECT_ID}" \
       --display-name "RelayOrb OTEL Scraper"
@@ -36,9 +36,6 @@ if ! gcloud iam service-accounts describe "${SCRAPER_SA}" --project "${PROJECT_I
         --role "${role}" \
         --quiet >/dev/null
     done
-  else
-    echo "missing service account ${SCRAPER_SA}; bootstrap with Terraform or rerun with BOOTSTRAP_IAM=1" >&2
-    exit 2
   fi
 fi
 
