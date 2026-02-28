@@ -52,6 +52,14 @@
    - Gateway and registry deploy workflows run `ops/smoke/metrics-auth-smoke.sh` post-deploy and fail if `/metrics` auth regresses.
 7. Confirm services:
    - `gcloud run services list --region us-central1`
+8. Apply/refresh alert policies:
+   - `cd infra/gcp/terraform`
+   - `terraform init`
+   - `terraform apply`
+   - Confirm policies exist:
+     - `relayorb-prod-gateway-error-rate`
+     - `relayorb-prod-registry-healthy-providers-zero`
+     - `relayorb-prod-gateway-jobs-queued-high`
 
 ## Observability in prod
 

@@ -55,3 +55,111 @@ resource "google_project_iam_member" "registry_secret_accessor" {
   role    = "roles/secretmanager.secretAccessor"
   member  = "serviceAccount:${google_service_account.registry.email}"
 }
+
+resource "google_monitoring_alert_policy" "gateway_error_rate" {
+  display_name          = "relayorb-prod-gateway-error-rate"
+  combiner              = "OR"
+  enabled               = true
+  notification_channels = var.notification_channels
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "Gateway server error ratio exceeded threshold for 10 minutes."
+  }
+
+  conditions {
+    display_name = "Gateway 5xx ratio > threshold"
+
+    condition_threshold {
+      filter             = "metric.type=\"run.googleapis.com/request_count\" resource.type=\"cloud_run_revision\" resource.label.\"service_name\"=\"${var.gateway_service_name}\" metric.label.\"response_code_class\"=\"5xx\""
+      denominator_filter = "metric.type=\"run.googleapis.com/request_count\" resource.type=\"cloud_run_revision\" resource.label.\"service_name\"=\"${var.gateway_service_name}\""
+      comparison         = "COMPARISON_GT"
+      threshold_value    = var.gateway_error_rate_threshold
+      duration           = "600s"
+
+      aggregations {
+        alignment_period     = "60s"
+        per_series_aligner   = "ALIGN_RATE"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["resource.label.service_name"]
+      }
+
+      denominator_aggregations {
+        alignment_period     = "60s"
+        per_series_aligner   = "ALIGN_RATE"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["resource.label.service_name"]
+      }
+
+      trigger {
+        count = 1
+      }
+    }
+  }
+}
+
+resource "google_monitoring_alert_policy" "registry_healthy_providers_zero" {
+  display_name          = "relayorb-prod-registry-healthy-providers-zero"
+  combiner              = "OR"
+  enabled               = true
+  notification_channels = var.notification_channels
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "No healthy providers are available for the critical capability."
+  }
+
+  conditions {
+    display_name = "Healthy providers for key capability < 1"
+
+    condition_threshold {
+      filter          = "metric.type=\"prometheus.googleapis.com/relayorb_registry_providers_healthy/gauge\" metric.label.\"env\"=\"${var.relayorb_env}\" metric.label.\"service_name\"=\"${var.registry_service_name}\" metric.label.\"capability_id\"=\"${var.key_capability_id}\""
+      comparison      = "COMPARISON_LT"
+      threshold_value = 1
+      duration        = "300s"
+
+      aggregations {
+        alignment_period     = "60s"
+        per_series_aligner   = "ALIGN_MIN"
+        cross_series_reducer = "REDUCE_MIN"
+      }
+
+      trigger {
+        count = 1
+      }
+    }
+  }
+}
+
+resource "google_monitoring_alert_policy" "gateway_jobs_queued_high" {
+  display_name          = "relayorb-prod-gateway-jobs-queued-high"
+  combiner              = "OR"
+  enabled               = true
+  notification_channels = var.notification_channels
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "Queued async jobs remained above threshold for 10 minutes."
+  }
+
+  conditions {
+    display_name = "Gateway queued jobs above threshold"
+
+    condition_threshold {
+      filter          = "metric.type=\"prometheus.googleapis.com/relayorb_gateway_jobs_queued/gauge\" metric.label.\"env\"=\"${var.relayorb_env}\" metric.label.\"service_name\"=\"${var.gateway_service_name}\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = var.gateway_jobs_queued_threshold
+      duration        = "600s"
+
+      aggregations {
+        alignment_period     = "60s"
+        per_series_aligner   = "ALIGN_MAX"
+        cross_series_reducer = "REDUCE_MAX"
+      }
+
+      trigger {
+        count = 1
+      }
+    }
+  }
+}
