@@ -136,6 +136,7 @@ struct DiscoverQuery {
 #[serde(rename_all = "camelCase")]
 struct OwnershipPolicy {
     #[serde(default)]
+    #[serde(alias = "enforce_in_prod")]
     enforce_in_prod: bool,
     #[serde(default)]
     rules: Vec<OwnershipRule>,
@@ -144,8 +145,11 @@ struct OwnershipPolicy {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OwnershipRule {
+    #[serde(alias = "capability_prefix")]
     capability_prefix: String,
+    #[serde(default)]
     env: Option<String>,
+    #[serde(alias = "allowed_service_names")]
     allowed_service_names: Vec<String>,
 }
 
