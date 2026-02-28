@@ -14,3 +14,6 @@ coverage/
 .ai/artifacts/**
 .ai/notes/private/**
 conformance/reports/**
+infra/gcp/terraform/.terraform/
+infra/gcp/terraform/terraform.tfstate
+infra/gcp/terraform/terraform.tfstate.backup

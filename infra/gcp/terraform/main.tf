@@ -45,7 +45,7 @@ resource "google_service_account" "registry" {
 }
 
 resource "google_service_account" "metrics_scraper" {
-  account_id   = "relayorb-otel-scraper-sa"
+  account_id   = var.metrics_scraper_service_account_id
   display_name = "RelayOrb Metrics Scraper SA"
 }
 
@@ -59,12 +59,6 @@ resource "google_project_iam_member" "registry_secret_accessor" {
   project = var.project_id
   role    = "roles/secretmanager.secretAccessor"
   member  = "serviceAccount:${google_service_account.registry.email}"
-}
-
-resource "google_project_iam_member" "metrics_scraper_secret_accessor" {
-  project = var.project_id
-  role    = "roles/secretmanager.secretAccessor"
-  member  = "serviceAccount:${google_service_account.metrics_scraper.email}"
 }
 
 resource "google_project_iam_member" "metrics_scraper_metric_writer" {

@@ -16,6 +16,42 @@ variable "artifact_repo" {
   default     = "relayorb"
 }
 
+variable "metrics_scraper_service_account_id" {
+  type        = string
+  description = "Service account ID used by the metrics scraper runtime"
+  default     = "relayorb-otel-scraper-sa"
+}
+
+variable "registry_deployer_service_account_id" {
+  type        = string
+  description = "Service account ID used by deploy workflows (OIDC impersonation)"
+  default     = "relayorb-registry-deployer-sa"
+}
+
+variable "worker_runtime_service_account_email" {
+  type        = string
+  description = "Worker runtime service account email; defaults to the project default compute SA when empty"
+  default     = ""
+}
+
+variable "gateway_metrics_secret_name" {
+  type        = string
+  description = "Secret name containing the gateway metrics bearer token"
+  default     = "relayorb-prod-gateway-metrics-token"
+}
+
+variable "registry_metrics_secret_name" {
+  type        = string
+  description = "Secret name containing the registry metrics bearer token"
+  default     = "relayorb-prod-registry-metrics-token"
+}
+
+variable "worker_metrics_secret_name" {
+  type        = string
+  description = "Secret name containing the worker metrics bearer token"
+  default     = "relayorb-prod-worker-metrics-token"
+}
+
 variable "relayorb_env" {
   type        = string
   description = "RelayOrb environment label used in metrics filters"

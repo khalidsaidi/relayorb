@@ -67,6 +67,16 @@
      - `relayorb-prod-gateway-error-rate`
      - `relayorb-prod-registry-healthy-providers-zero`
      - `relayorb-prod-gateway-jobs-queued-high`
+9. IAM drift-proofing:
+   - Keep deploy/runtime IAM grants in `infra/gcp/terraform` (`iam.tf`).
+   - Run:
+     - `cd infra/gcp/terraform`
+     - `terraform plan`
+     - `terraform apply`
+   - No manual `gcloud ... add-iam-policy-binding` steps should be needed for:
+     - metrics scraper deploy workflow
+     - worker metrics secret access
+     - scraper smoke queries to Logging/Monitoring APIs
 
 ## Observability in prod
 
