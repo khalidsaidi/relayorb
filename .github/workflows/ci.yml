@@ -28,5 +28,11 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      - name: Conformance Validate
+        run: |
+          cargo run -p relayorb-conformance -- validate \
+            --manifest conformance/manifests/rag.search@v1.json \
+            --vectors conformance/vectors/rag.search@v1.json
+
       - name: Build Release
         run: cargo build --workspace --release

@@ -39,6 +39,24 @@ curl http://127.0.0.1:8080/v1/replay/<request-id>
 3. Register worker capabilities on startup and send heartbeats.
 4. Add policy rule allowing target role/capability/sideEffects.
 
+## Capability Conformance Harness
+
+Offline validation:
+```bash
+cargo run -p relayorb-conformance -- validate \
+  --manifest conformance/manifests/rag.search@v1.json \
+  --vectors conformance/vectors/rag.search@v1.json
+```
+
+Live runtime validation (worker target):
+```bash
+cargo run -p relayorb-conformance -- run \
+  --target worker \
+  --base-url http://127.0.0.1:8090 \
+  --manifest conformance/manifests/rag.search@v1.json \
+  --vectors conformance/vectors/rag.search@v1.json
+```
+
 ## Configuration
 
 Base config is `config/dev.toml`, overridden by env vars:

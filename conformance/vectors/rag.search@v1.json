@@ -1,0 +1,21 @@
+{
+  "capability": "rag.search@v1",
+  "cases": [
+    {
+      "name": "happy path minimal",
+      "input": { "query": "hello", "topK": 3 },
+      "expect": {
+        "status": "ok",
+        "outputSchema": "default"
+      }
+    },
+    {
+      "name": "schema reject topK too high",
+      "input": { "query": "hello", "topK": 999 },
+      "expect": {
+        "status": "error",
+        "errorCode": "SCHEMA_VALIDATION_FAILED"
+      }
+    }
+  ]
+}

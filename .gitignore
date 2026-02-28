@@ -13,3 +13,4 @@ coverage/
 .ai/logs/**
 .ai/artifacts/**
 .ai/notes/private/**
+conformance/reports/**

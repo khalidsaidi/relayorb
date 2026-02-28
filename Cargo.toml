@@ -5,6 +5,7 @@ members = [
   "crates/relayorb-registry",
   "crates/relayorb-gateway",
   "crates/relayorb-worker-sdk",
+  "crates/relayorb-conformance",
   "crates/relayorb-samples/worker-mock-rag",
   "crates/relayorb-samples/agent-client",
 ]
