@@ -5,8 +5,7 @@ COPY crates ./crates
 RUN cargo build --release -p relayorb-metrics-proxy
 
 FROM otel/opentelemetry-collector-contrib:0.109.0
-COPY collector-prod.yaml /etc/otelcol-contrib/config.yaml
-COPY entrypoint.sh /usr/local/bin/relayorb-otel-entrypoint.sh
-COPY --from=metrics-proxy-builder /app/target/release/relayorb-metrics-proxy /usr/local/bin/relayorb-metrics-proxy
-RUN chmod +x /usr/local/bin/relayorb-otel-entrypoint.sh /usr/local/bin/relayorb-metrics-proxy
+COPY infra/gcp/otel/collector-prod.yaml /etc/otelcol-contrib/config.yaml
+COPY --chmod=0555 infra/gcp/otel/entrypoint.sh /usr/local/bin/relayorb-otel-entrypoint.sh
+COPY --from=metrics-proxy-builder --chmod=0555 /app/target/release/relayorb-metrics-proxy /usr/local/bin/relayorb-metrics-proxy
 ENTRYPOINT ["/usr/local/bin/relayorb-otel-entrypoint.sh"]
