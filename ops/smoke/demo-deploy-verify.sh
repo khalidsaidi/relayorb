@@ -35,7 +35,7 @@ require_cmd() {
   fi
 }
 
-for cmd in gcloud terraform curl jq rg python3; do
+for cmd in gcloud terraform curl jq; do
   require_cmd "$cmd"
 done
 
@@ -88,8 +88,13 @@ terraform -chdir="${TF_DIR}" validate >/dev/null
 pass "terraform init/validate"
 
 echo "== Pre-flight: demo guardrails in gateway code =="
-rg -n "AUTH_MODE=none|PUBLIC_DEMO_MODE|RELAYORB_ENV=demo|RELAYORB_ENV=prod requires AUTH_MODE=oidc" \
-  crates/relayorb-gateway/src/main.rs >/dev/null || true
+if command -v rg >/dev/null 2>&1; then
+  rg -n "AUTH_MODE=none|PUBLIC_DEMO_MODE|RELAYORB_ENV=demo|RELAYORB_ENV=prod requires AUTH_MODE=oidc" \
+    crates/relayorb-gateway/src/main.rs >/dev/null || true
+else
+  grep -En "AUTH_MODE=none|PUBLIC_DEMO_MODE|RELAYORB_ENV=demo|RELAYORB_ENV=prod requires AUTH_MODE=oidc" \
+    crates/relayorb-gateway/src/main.rs >/dev/null || true
+fi
 pass "gateway demo guardrails present"
 
 if [[ "${APPLY_TERRAFORM}" == "1" ]]; then
