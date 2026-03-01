@@ -101,6 +101,12 @@ Registry-module usage:
 module "relayorb_demo" {
   source  = "khalidsaidi/relayorb-demo/google"
   version = "0.1.0"
+
+  project_id     = "relayorb-demo"
+  gateway_image  = "ghcr.io/khalidsaidi/relayorb-gateway:v0.1.1"
+  registry_image = "ghcr.io/khalidsaidi/relayorb-registry:v0.1.1"
+  worker_image   = "ghcr.io/khalidsaidi/relayorb-rag:v0.1.1"
+  scraper_image  = "ghcr.io/khalidsaidi/relayorb-metrics-scraper:v0.1.1"
 }
 ```
 
