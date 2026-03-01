@@ -1,0 +1,35 @@
+name: Terraform Registry Modules Smoke
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Weekly (UTC). Adjust as desired.
+    - cron: "0 9 * * 1" # Monday 09:00 UTC
+
+concurrency:
+  group: terraform-registry-modules-smoke
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        # Optional: pin for stability; otherwise it uses the action default.
+        # with:
+        #   terraform_version: "1.7.5"
+
+      - name: Run Terraform Registry module init+validate smokes
+        env:
+          TF_IN_AUTOMATION: "1"
+        run: |
+          bash ops/smoke/terraform-registry-modules-smoke.sh
