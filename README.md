@@ -76,26 +76,29 @@ cargo run -p agent-client -- rag.search@v1 '{"query":"earnings guidance","topK":
 curl http://127.0.0.1:8080/v1/replay/<request-id>
 ```
 
-## Deploy To GCP
+## Deploy with Terraform (reference configs)
 
+RelayOrb includes **reference Terraform** for GCP under `infra/gcp/terraform/` (including the anonymous demo environment).
+
+**Note:** RelayOrb does **not** have a published Terraform Registry module yet.  
+Planned Registry modules (separate repos) are:
+- `terraform-google-relayorb` (prod-oriented, OIDC-first)
+- `terraform-google-relayorb-demo` (anonymous demo posture)
+
+Until those are published, deploy by cloning this repo and applying the Terraform environments under `infra/gcp/terraform/envs/*` (pin to a Git tag/commit for reproducibility).
+
+Current in-repo deployment paths:
 - Core prod Terraform: `infra/gcp/terraform/`
 - Anonymous demo Terraform stack: `infra/gcp/terraform/envs/demo/`
 - Demo deploy workflow: `.github/workflows/deploy-demo.yml`
-- Terraform module source: `khalidsaidi/relayorb/google`
-- Terraform Registry (module): `https://registry.terraform.io/modules/khalidsaidi/relayorb/google/latest`
 
-Example module image pinning to GHCR release tags:
-
-```hcl
-module "relayorb" {
-  source  = "khalidsaidi/relayorb/google"
-  version = "0.1.0"
-
-  gateway_image = "ghcr.io/khalidsaidi/relayorb-gateway:v0.1.0"
-  registry_image = "ghcr.io/khalidsaidi/relayorb-registry:v0.1.0"
-  worker_image = "ghcr.io/khalidsaidi/relayorb-rag:v0.1.0"
-}
-```
+> **Planned (not yet published):** Once Terraform Registry modules exist, usage will look like:
+> ```hcl
+> module "relayorb" {
+>   source  = "<namespace>/relayorb/google"
+>   version = "0.x.y"
+> }
+> ```
 
 ## Write a Capability Worker
 
