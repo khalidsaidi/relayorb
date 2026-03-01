@@ -1,5 +1,7 @@
 # RelayOrb
 
+[![Terraform Registry Modules Smoke](https://github.com/khalidsaidi/relayorb/actions/workflows/terraform-registry-modules-smoke.yml/badge.svg)](https://github.com/khalidsaidi/relayorb/actions/workflows/terraform-registry-modules-smoke.yml)
+
 RelayOrb is a capability gateway for AI agents. It enforces auth and policy, routes to healthy workers via a registry, validates schemas end-to-end, and records deterministic invocation artifacts with request-id idempotency and replay.
 
 Gateway also supports asynchronous execution via `POST /v1/submit` and `GET /v1/jobs/:jobId`.
