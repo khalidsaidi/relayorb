@@ -167,3 +167,31 @@ Deployment paths:
 4. If hardening breaks internal traffic, temporarily restore `allUsers` only long enough to recover and re-run:
    - fix service-to-service IAM audience/invoker bindings,
    - re-apply Terraform to return registry/worker to private posture.
+
+## Module Release Process
+
+RelayOrb publishes two Terraform Registry modules (these module repositories are the **source of truth** for module behavior):
+
+- **Prod (OIDC-first):** `khalidsaidi/relayorb/google`
+- **Anonymous demo (LB-only public edge, private internals):** `khalidsaidi/relayorb-demo/google`
+
+The Terraform under `infra/gcp/terraform/` in this repo remains as a **reference/fallback** deployment path (pin to a Git tag/commit for reproducibility).
+
+### Releasing a new module version
+
+1. Make changes in the appropriate module repository (`terraform-google-relayorb` or `terraform-google-relayorb-demo`).
+2. Run `terraform fmt` + `terraform validate`, and run `terraform init` under `examples/` to ensure the module still installs cleanly.
+3. Release by creating and pushing a **SemVer Git tag** (`x.y.z` or `vX.Y.Z`) in the module repo.
+4. Terraform Registry auto-detects new versions from tags via its GitHub integration webhook.
+5. Verify the new version appears on the module page and that `terraform init` can install it.
+6. (Recommended) Bump the version pins in this repo’s docs **after** you’ve tested the new module version (keeps copy/paste snippets “known good”).
+
+> Avoid retagging or deleting published versions unless there’s a critical flaw; prefer shipping a new patch version.
+
+### Tagging commands
+
+```bash
+# Run in the module repo you’re releasing
+git tag -a v0.1.2 -m "v0.1.2"
+git push origin v0.1.2
+```
