@@ -13,6 +13,8 @@ set -euo pipefail
 #   - Links billing
 #   - Enables APIs needed for Cloud Run + Artifact Registry + LB/Cloud Armor
 #   - Ensures Artifact Registry repo exists
+#   - Optionally creates a Terraform remote state bucket for demo deployments
+#   - Grants deploy-demo SA object access to the Terraform state bucket
 #   - Grants the deploy-demo SA repo-scoped roles/artifactregistry.writer (fixes uploadArtifacts)
 #
 # Requirements:
@@ -32,6 +34,12 @@ DESIRED_PROJECT_ID="${DESIRED_PROJECT_ID:-relayorb-demo}"
 DEMO_REGION="${DEMO_REGION:-us-central1}"
 AR_LOCATION="${AR_LOCATION:-us-central1}"   # must match your docker host, e.g. us-central1-docker.pkg.dev
 AR_REPO="${AR_REPO:-relayorb}"
+
+# Terraform state settings for deploy-demo.yml.
+# If DEMO_TFSTATE_BUCKET is empty and CREATE_TFSTATE_BUCKET=1, this script auto-derives a bucket name.
+CREATE_TFSTATE_BUCKET="${CREATE_TFSTATE_BUCKET:-1}"
+DEMO_TFSTATE_BUCKET="${DEMO_TFSTATE_BUCKET:-}"
+TFSTATE_PREFIX="${TFSTATE_PREFIX:-relayorb/demo}"
 
 # The SA impersonated by deploy-demo.yml (google-github-actions/auth -> service_account:)
 # This can be in relayorb-prod OR in the demo project; either is fine.
@@ -91,6 +99,9 @@ echo "DEMO_PROJECT_ID=${DEMO_PROJECT_ID}"
 echo "DEMO_REGION=${DEMO_REGION}"
 echo "AR_LOCATION=${AR_LOCATION}"
 echo "AR_REPO=${AR_REPO}"
+echo "CREATE_TFSTATE_BUCKET=${CREATE_TFSTATE_BUCKET}"
+echo "DEMO_TFSTATE_BUCKET=${DEMO_TFSTATE_BUCKET:-<auto>}"
+echo "TFSTATE_PREFIX=${TFSTATE_PREFIX}"
 echo "DEMO_GH_DEPLOYER_SA_EMAIL=${DEMO_GH_DEPLOYER_SA_EMAIL}"
 
 echo
@@ -118,6 +129,7 @@ gcloud services enable \
   run.googleapis.com \
   artifactregistry.googleapis.com \
   compute.googleapis.com \
+  storage.googleapis.com \
   iamcredentials.googleapis.com \
   cloudresourcemanager.googleapis.com \
   secretmanager.googleapis.com \
@@ -146,7 +158,39 @@ else
 fi
 
 echo
-echo "== Step 5: Grant repo-scoped Artifact Registry writer to the deploy-demo SA =="
+echo "== Step 5: Ensure Terraform remote state bucket exists (optional) =="
+
+if [[ "${CREATE_TFSTATE_BUCKET}" == "1" ]]; then
+  if [[ -z "${DEMO_TFSTATE_BUCKET}" ]]; then
+    # Bucket names are global. Appending project id makes collisions unlikely.
+    SANITIZED_PROJECT_ID="$(echo "${DEMO_PROJECT_ID}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')"
+    DEMO_TFSTATE_BUCKET="${SANITIZED_PROJECT_ID}-tfstate"
+  fi
+
+  if ! gcloud storage buckets describe "gs://${DEMO_TFSTATE_BUCKET}" --project "${DEMO_PROJECT_ID}" >/dev/null 2>&1; then
+    gcloud storage buckets create "gs://${DEMO_TFSTATE_BUCKET}" \
+      --project "${DEMO_PROJECT_ID}" \
+      --location "US" \
+      --uniform-bucket-level-access \
+      --quiet || fail "Failed to create Terraform state bucket gs://${DEMO_TFSTATE_BUCKET}"
+    echo "Created Terraform state bucket gs://${DEMO_TFSTATE_BUCKET}"
+  else
+    echo "Terraform state bucket gs://${DEMO_TFSTATE_BUCKET} already exists"
+  fi
+
+  gcloud storage buckets update "gs://${DEMO_TFSTATE_BUCKET}" --versioning --quiet
+
+  gcloud storage buckets add-iam-policy-binding "gs://${DEMO_TFSTATE_BUCKET}" \
+    --member "serviceAccount:${DEMO_GH_DEPLOYER_SA_EMAIL}" \
+    --role "roles/storage.objectAdmin" \
+    --quiet
+  echo "Granted roles/storage.objectAdmin on gs://${DEMO_TFSTATE_BUCKET} to ${DEMO_GH_DEPLOYER_SA_EMAIL}"
+else
+  echo "Skipping Terraform state bucket setup (CREATE_TFSTATE_BUCKET=0)."
+fi
+
+echo
+echo "== Step 6: Grant repo-scoped Artifact Registry writer to the deploy-demo SA =="
 
 gcloud artifacts repositories add-iam-policy-binding "${AR_REPO}" \
   --project "${DEMO_PROJECT_ID}" \
@@ -158,7 +202,7 @@ gcloud artifacts repositories add-iam-policy-binding "${AR_REPO}" \
 echo "Granted roles/artifactregistry.writer on ${AR_REPO} to ${DEMO_GH_DEPLOYER_SA_EMAIL}"
 
 echo
-echo "== Optional: grant Editor to GH deployer SA (only if your deploy-demo workflow applies Terraform / creates infra) =="
+echo "== Step 7 (optional): grant Editor to GH deployer SA (only if your deploy-demo workflow applies Terraform / creates infra) =="
 if [[ "${GRANT_EDITOR_TO_GH_SA}" == "1" ]]; then
   gcloud projects add-iam-policy-binding "${DEMO_PROJECT_ID}" \
     --member "serviceAccount:${DEMO_GH_DEPLOYER_SA_EMAIL}" \
@@ -172,7 +216,7 @@ else
 fi
 
 echo
-echo "== Step 6: IMPORTANT — update your repo config if project id changed =="
+echo "== Step 8: IMPORTANT — update your repo config if project id changed =="
 
 if [[ "${DEMO_PROJECT_ID}" != "${DESIRED_PROJECT_ID}" ]]; then
   echo "You could NOT use ${DESIRED_PROJECT_ID}; created ${DEMO_PROJECT_ID} instead."
@@ -187,7 +231,14 @@ if [[ "${DEMO_PROJECT_ID}" != "${DESIRED_PROJECT_ID}" ]]; then
 fi
 
 echo
-echo "== Step 7: Run your existing push-fix + deploy =="
+echo "== Step 9: Configure workflow secret and deploy =="
+if [[ -n "${DEMO_TFSTATE_BUCKET}" ]]; then
+  echo "Set this GitHub Actions repository secret before running deploy-demo.yml:"
+  echo "  GCP_DEMO_TF_STATE_BUCKET=${DEMO_TFSTATE_BUCKET}"
+  echo "The workflow uses Terraform state prefix: ${TFSTATE_PREFIX}"
+  echo
+fi
+
 echo "Now you should be able to run:"
 echo
 echo "  DEMO_PROJECT_ID=${DEMO_PROJECT_ID} \\"
