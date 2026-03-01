@@ -21,6 +21,14 @@
 
 ## Deploy (Cloud Run)
 
+Deployment paths:
+- Terraform Registry modules:
+  - Prod module: `khalidsaidi/relayorb/google` (`https://registry.terraform.io/modules/khalidsaidi/relayorb/google/latest`)
+  - Demo module: `khalidsaidi/relayorb-demo/google` (`https://registry.terraform.io/modules/khalidsaidi/relayorb-demo/google/latest`)
+- In-repo reference Terraform:
+  - `infra/gcp/terraform/`
+  - `infra/gcp/terraform/envs/demo/`
+
 1. Ensure project/services exist (`relayorb-prod`, Artifact Registry, service accounts).
 2. Use service names in format `relayorb-<component>-<env>`:
    - `relayorb-gateway-prod`

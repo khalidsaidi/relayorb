@@ -85,12 +85,26 @@ The anonymous demo is intentionally constrained:
 
 ## Deploy
 
+- Terraform Registry demo module:
+  - `khalidsaidi/relayorb-demo/google`
+  - https://registry.terraform.io/modules/khalidsaidi/relayorb-demo/google/latest
 - Terraform stack: `infra/gcp/terraform/envs/demo/`
 - GitHub Actions workflow: `.github/workflows/deploy-demo.yml`
 - Required GitHub secret for remote state: `GCP_DEMO_TF_STATE_BUCKET` (bucket name only, no `gs://`)
 - The deploy SA used by `deploy-demo.yml` must have `roles/storage.objectAdmin` on that bucket.
 - Smoke script: `ops/smoke/demo-anon-smoke.sh`
 - Full deploy+posture verifier: `ops/smoke/demo-deploy-verify.sh`
+
+Registry-module usage:
+
+```hcl
+module "relayorb_demo" {
+  source  = "khalidsaidi/relayorb-demo/google"
+  version = "0.1.0"
+}
+```
+
+If you need to customize internals, use the in-repo Terraform under `infra/gcp/terraform/envs/demo/` and pin to a Git tag/commit.
 
 ## Panic button
 

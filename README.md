@@ -76,29 +76,39 @@ cargo run -p agent-client -- rag.search@v1 '{"query":"earnings guidance","topK":
 curl http://127.0.0.1:8080/v1/replay/<request-id>
 ```
 
-## Deploy with Terraform (reference configs)
+## Deploy with Terraform
 
-RelayOrb includes **reference Terraform** for GCP under `infra/gcp/terraform/` (including the anonymous demo environment).
+RelayOrb publishes two Terraform Registry modules:
 
-**Note:** RelayOrb does **not** have a published Terraform Registry module yet.  
-Planned Registry modules (separate repos) are:
-- `terraform-google-relayorb` (prod-oriented, OIDC-first)
-- `terraform-google-relayorb-demo` (anonymous demo posture)
+- Prod-oriented module (OIDC-first): `khalidsaidi/relayorb/google`  
+  https://registry.terraform.io/modules/khalidsaidi/relayorb/google/latest
+- Anonymous demo module (LB-only gateway posture): `khalidsaidi/relayorb-demo/google`  
+  https://registry.terraform.io/modules/khalidsaidi/relayorb-demo/google/latest
 
-Until those are published, deploy by cloning this repo and applying the Terraform environments under `infra/gcp/terraform/envs/*` (pin to a Git tag/commit for reproducibility).
+Example (prod):
 
-Current in-repo deployment paths:
-- Core prod Terraform: `infra/gcp/terraform/`
-- Anonymous demo Terraform stack: `infra/gcp/terraform/envs/demo/`
+```hcl
+module "relayorb" {
+  source  = "khalidsaidi/relayorb/google"
+  version = "0.1.1"
+}
+```
+
+Example (demo):
+
+```hcl
+module "relayorb_demo" {
+  source  = "khalidsaidi/relayorb-demo/google"
+  version = "0.1.0"
+}
+```
+
+Reference Terraform configs also remain in this repo for direct use/customization:
+- Core Terraform: `infra/gcp/terraform/`
+- Anonymous demo env: `infra/gcp/terraform/envs/demo/`
 - Demo deploy workflow: `.github/workflows/deploy-demo.yml`
 
-> **Planned (not yet published):** Once Terraform Registry modules exist, usage will look like:
-> ```hcl
-> module "relayorb" {
->   source  = "<namespace>/relayorb/google"
->   version = "0.x.y"
-> }
-> ```
+For reproducibility with in-repo Terraform, pin to a Git tag/commit before applying.
 
 ## Write a Capability Worker
 
