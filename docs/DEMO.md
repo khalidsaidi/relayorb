@@ -4,10 +4,17 @@ RelayOrb provides an anonymous public demo endpoint so anyone can try invoke flo
 
 ## Try it now
 
-Use the demo load balancer URL (set by deployment output):
+Current live endpoint (as of 2026-03-01):
 
 ```bash
-export RELAYORB_DEMO_URL="https://<demo-lb-domain-or-ip>"
+export RELAYORB_DEMO_URL="http://34.8.48.11"
+```
+
+If the demo URL changes, fetch the latest from Terraform output:
+
+```bash
+terraform -chdir=infra/gcp/terraform/envs/demo output -raw demo_http_url
+terraform -chdir=infra/gcp/terraform/envs/demo output -raw demo_https_url 2>/dev/null || true
 ```
 
 Anonymous invoke (no token, no API key):

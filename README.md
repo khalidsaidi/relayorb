@@ -14,8 +14,15 @@ Gateway also supports asynchronous execution via `POST /v1/submit` and `GET /v1/
 
 RelayOrb includes an anonymous public demo mode (no login/API key) with strict safety limits.
 
+Current live endpoint (as of 2026-03-01):
+
 ```bash
-export RELAYORB_DEMO_URL="https://<demo-lb-domain-or-ip>"
+export RELAYORB_DEMO_URL="http://34.8.48.11"
+```
+
+Invoke `rag.search@v1`:
+
+```bash
 curl -sS -X POST "$RELAYORB_DEMO_URL/v1/invoke" \
   -H "content-type: application/json" \
   -d '{
