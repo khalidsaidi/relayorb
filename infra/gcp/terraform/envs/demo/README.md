@@ -9,19 +9,27 @@ This stack provisions an anonymous public demo environment with strict blast-rad
 
 ## Deploy
 
-1. Prepare secrets in Secret Manager (no secrets in git):
+1. Create a remote Terraform state bucket (one-time):
+   - `gcloud storage buckets create gs://<demo-tfstate-bucket> --project <PROJECT_ID> --location US --uniform-bucket-level-access`
+   - `gcloud storage buckets update gs://<demo-tfstate-bucket> --versioning`
+   - `gcloud storage buckets add-iam-policy-binding gs://<demo-tfstate-bucket> --member serviceAccount:<DEPLOY_SA_EMAIL> --role roles/storage.objectAdmin`
+2. Prepare secrets in Secret Manager (no secrets in git):
    - `relayorb-demo-gateway-metrics-token`
    - `relayorb-demo-registry-metrics-token`
    - `relayorb-demo-worker-metrics-token`
-2. Build and push container images, then set image refs in `terraform.tfvars`.
-3. Apply:
+3. Build and push container images, then set image refs in `terraform.tfvars`.
+4. Apply:
 
 ```bash
 cd infra/gcp/terraform/envs/demo
 cp terraform.tfvars.example terraform.tfvars
-terraform init
+terraform init -input=false \
+  -backend-config="bucket=<demo-tfstate-bucket>" \
+  -backend-config="prefix=relayorb/demo"
 terraform apply
 ```
+
+For GitHub Actions, set repository secret `GCP_DEMO_TF_STATE_BUCKET=<demo-tfstate-bucket>`.
 
 ## Outputs
 

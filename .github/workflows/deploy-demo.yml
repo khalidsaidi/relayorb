@@ -3,6 +3,10 @@ name: Deploy Anonymous Demo
 on:
   workflow_dispatch:
 
+concurrency:
+  group: deploy-demo
+  cancel-in-progress: false
+
 permissions:
   contents: read
   id-token: write
@@ -71,9 +75,19 @@ jobs:
 
       - name: Terraform apply (demo stack)
         shell: bash
+        env:
+          TF_STATE_BUCKET: ${{ secrets.GCP_DEMO_TF_STATE_BUCKET }}
+          TF_STATE_PREFIX: relayorb/demo
         run: |
           set -euo pipefail
-          terraform -chdir=infra/gcp/terraform/envs/demo init -input=false
+          if [ -z "${TF_STATE_BUCKET:-}" ]; then
+            echo "GCP_DEMO_TF_STATE_BUCKET secret is required for demo Terraform remote state." >&2
+            exit 1
+          fi
+
+          terraform -chdir=infra/gcp/terraform/envs/demo init -input=false -reconfigure \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=${TF_STATE_PREFIX}"
           terraform -chdir=infra/gcp/terraform/envs/demo apply -auto-approve -input=false \
             -var="project_id=${{ env.PROJECT_ID }}" \
             -var="region=${{ env.REGION }}" \

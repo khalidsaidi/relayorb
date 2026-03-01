@@ -131,18 +131,22 @@
 
 ## Anonymous demo operations
 
-1. Deploy demo stack:
+1. Ensure remote Terraform state is configured for demo:
+   - create a GCS bucket for state (versioning on, uniform bucket-level access on)
+   - grant the deploy-demo SA `roles/storage.objectAdmin` on that bucket
+   - set GitHub secret `GCP_DEMO_TF_STATE_BUCKET=<bucket-name>`
+2. Deploy demo stack:
    - run `.github/workflows/deploy-demo.yml`
-2. Verify posture and behavior:
+3. Verify posture and behavior:
    - `bash ops/smoke/demo-deploy-verify.sh`
    - optional strict rate-limit assertion:
      - `CHECK_RATE_LIMIT=1 bash ops/smoke/demo-deploy-verify.sh`
-3. Keep demo cost bounded:
+4. Keep demo cost bounded:
    - configure Cloud Billing budget alerts in `relayorb-demo`
    - keep Cloud Run max instances capped
-4. Emergency traffic stop (panic button):
+5. Emergency traffic stop (panic button):
    - `gcloud compute security-policies rules update 2147483647 --project relayorb-demo --security-policy relayorb-demo-armor --action deny-403`
-5. Restore traffic:
+6. Restore traffic:
    - `gcloud compute security-policies rules update 2147483647 --project relayorb-demo --security-policy relayorb-demo-armor --action allow`
 
 ## Rollback
