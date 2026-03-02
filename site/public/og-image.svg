@@ -1,0 +1,18 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#050812"/>
+      <stop offset="1" stop-color="#101B34"/>
+    </linearGradient>
+    <radialGradient id="orb" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(360 210) rotate(30) scale(500 420)">
+      <stop stop-color="#4DD8FF" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#4DD8FF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#orb)"/>
+  <circle cx="930" cy="430" r="210" stroke="#7EC8FF" stroke-opacity="0.24" stroke-width="2"/>
+  <circle cx="930" cy="430" r="150" stroke="#7EC8FF" stroke-opacity="0.18" stroke-width="2"/>
+  <text x="80" y="270" fill="#EAF2FF" font-size="64" font-family="Inter, Arial, sans-serif" font-weight="700">RelayOrb</text>
+  <text x="80" y="335" fill="#A7BCD8" font-size="34" font-family="Inter, Arial, sans-serif">Tool Control Plane for AI Agents</text>
+</svg>

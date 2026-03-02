@@ -13,6 +13,7 @@ coverage/
 .ai/logs/**
 .ai/artifacts/**
 .ai/notes/private/**
+.ai/.secret
 conformance/reports/**
 infra/gcp/terraform/.terraform/
 infra/gcp/terraform/terraform.tfstate

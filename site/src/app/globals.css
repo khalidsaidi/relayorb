@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+:root {
+  --background: #050812;
+  --foreground: #e5efff;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+}
+
+code,
+pre,
+kbd {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+pre {
+  margin: 0;
+}
+
+.orb-dot-a {
+  animation: orb-dot-a 2.8s linear infinite;
+}
+
+.orb-dot-b {
+  animation: orb-dot-b 2.8s linear infinite;
+}
+
+@keyframes orb-dot-a {
+  0% {
+    cx: 155;
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  100% {
+    cx: 380;
+    opacity: 0;
+  }
+}
+
+@keyframes orb-dot-b {
+  0% {
+    cx: 395;
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  100% {
+    cx: 625;
+    opacity: 0;
+  }
+}
+
+/* Keep focus states obvious for accessibility and keyboard nav. */
+:where(a, button, summary):focus-visible {
+  outline: 2px solid rgba(92, 218, 255, 0.95);
+  outline-offset: 2px;
+}
