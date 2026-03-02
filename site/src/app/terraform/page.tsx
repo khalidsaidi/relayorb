@@ -24,8 +24,8 @@ export default function TerraformPage() {
               href={links.prodModule}
               variant="secondary"
               className="text-xs"
-              eventName="cta_deploy_prod_module"
-              eventParams={{ label: "terraform_page", location: "prod" }}
+              eventName="cta_click"
+              eventParams={{ cta: "open_module_prod", location: "terraform_prod" }}
             >
               Open module
             </TrackedLink>
@@ -33,8 +33,7 @@ export default function TerraformPage() {
           <CodeBlock
             title="khalidsaidi/relayorb/google"
             code={terraformProdSnippet}
-            eventName="copy_terraform_snippet"
-            eventLabel="terraform_page_prod"
+            snippetId="copy_tf_prod"
           />
         </article>
 
@@ -45,8 +44,8 @@ export default function TerraformPage() {
               href={links.demoModule}
               variant="secondary"
               className="text-xs"
-              eventName="cta_deploy_demo_module"
-              eventParams={{ label: "terraform_page", location: "demo" }}
+              eventName="cta_click"
+              eventParams={{ cta: "open_module_demo", location: "terraform_demo" }}
             >
               Open module
             </TrackedLink>
@@ -54,8 +53,7 @@ export default function TerraformPage() {
           <CodeBlock
             title="khalidsaidi/relayorb-demo/google"
             code={terraformDemoSnippet}
-            eventName="copy_terraform_snippet"
-            eventLabel="terraform_page_demo"
+            snippetId="copy_tf_demo"
           />
         </article>
       </div>

@@ -78,23 +78,32 @@ export default function HomePage() {
               <TrackedLink
                 href="/demo"
                 variant="primary"
-                eventName="cta_try_demo"
-                eventParams={{ label: "hero", location: "hero" }}
+                eventName="cta_click"
+                eventParams={{ cta: "try_demo", location: "hero" }}
               >
                 Try the Anonymous Demo
               </TrackedLink>
-              <TrackedLink href="#deploy" variant="secondary">
+              <TrackedLink
+                href="#deploy"
+                variant="secondary"
+                eventName="cta_click"
+                eventParams={{ cta: "deploy_terraform", location: "hero" }}
+              >
                 Deploy with Terraform
               </TrackedLink>
               <TrackedLink
                 href={links.github}
                 variant="ghost"
-                eventName="outbound_github"
-                eventParams={{ label: "hero", location: "hero" }}
+                eventName="cta_click"
+                eventParams={{ cta: "view_github", location: "hero" }}
               >
                 View on GitHub
               </TrackedLink>
             </div>
+            <p className="mt-4 text-sm text-slate-400">
+              Open Source · Anonymous demo (read-only, rate-limited) · Terraform
+              modules · Weekly module smoke CI
+            </p>
           </Reveal>
 
           <div className="mt-10">
@@ -158,9 +167,12 @@ export default function HomePage() {
             <CodeBlock
               title="Demo invoke (rag.search@v1)"
               code={demoCurl}
-              eventName="copy_demo_curl"
-              eventLabel="landing_demo_curl"
+              snippetId="copy_demo_curl"
             />
+            <p className="mt-3 text-sm text-slate-400">
+              Demo endpoint may change; canonical URL and examples stay in
+              GitHub docs.
+            </p>
           </div>
         </section>
 
@@ -182,8 +194,8 @@ export default function HomePage() {
                     href={links.prodModule}
                     variant="secondary"
                     className="text-xs"
-                    eventName="cta_deploy_prod_module"
-                    eventParams={{ label: "landing", location: "deploy_prod" }}
+                    eventName="cta_click"
+                    eventParams={{ cta: "open_module_prod", location: "deploy_prod" }}
                   >
                     Open module
                   </TrackedLink>
@@ -191,8 +203,7 @@ export default function HomePage() {
                 <CodeBlock
                   title="khalidsaidi/relayorb/google"
                   code={terraformProdSnippet}
-                  eventName="copy_terraform_snippet"
-                  eventLabel="landing_prod_module"
+                  snippetId="copy_tf_prod"
                 />
               </article>
             </Reveal>
@@ -205,8 +216,8 @@ export default function HomePage() {
                     href={links.demoModule}
                     variant="secondary"
                     className="text-xs"
-                    eventName="cta_deploy_demo_module"
-                    eventParams={{ label: "landing", location: "deploy_demo" }}
+                    eventName="cta_click"
+                    eventParams={{ cta: "open_module_demo", location: "deploy_demo" }}
                   >
                     Open module
                   </TrackedLink>
@@ -214,8 +225,7 @@ export default function HomePage() {
                 <CodeBlock
                   title="khalidsaidi/relayorb-demo/google"
                   code={terraformDemoSnippet}
-                  eventName="copy_terraform_snippet"
-                  eventLabel="landing_demo_module"
+                  snippetId="copy_tf_demo"
                 />
               </article>
             </Reveal>

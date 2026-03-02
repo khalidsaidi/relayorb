@@ -1,5 +1,7 @@
 # RelayOrb Runbook
 
+Website: https://relayorb.com (overview + getting started). This runbook remains the operational source of truth.
+
 ## Local development
 
 1. Build and run stack:

@@ -10,8 +10,8 @@ export function Footer() {
         <TrackedLink
           href={links.github}
           variant="link"
-          eventName="outbound_github"
-          eventParams={{ label: "footer", location: "footer" }}
+          eventName="outbound_click"
+          eventParams={{ destination: "github.com/khalidsaidi/relayorb", location: "footer" }}
         >
           GitHub
         </TrackedLink>

@@ -73,6 +73,12 @@ function hasAnalyticsRuntime() {
   return Boolean(GA_MEASUREMENT_ID && canUseBrowser() && window.gtag);
 }
 
+function sanitizePath(path: string) {
+  const [withoutHash] = path.split("#");
+  const [withoutQuery] = withoutHash.split("?");
+  return withoutQuery || "/";
+}
+
 function sanitizeParamValue(value: unknown): string | number | boolean | undefined {
   if (
     typeof value === "string" ||
@@ -107,6 +113,6 @@ export function trackPageView(pathWithSearch: string) {
   }
 
   window.gtag?.("config", GA_MEASUREMENT_ID, {
-    page_path: pathWithSearch,
+    page_path: sanitizePath(pathWithSearch),
   });
 }

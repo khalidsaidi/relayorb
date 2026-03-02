@@ -27,12 +27,7 @@ export default function DemoPage() {
       </p>
 
       <section className="mt-8">
-        <CodeBlock
-          title="Demo curl"
-          code={demoCurl}
-          eventName="copy_demo_curl"
-          eventLabel="demo_page_curl"
-        />
+        <CodeBlock title="Demo curl" code={demoCurl} snippetId="copy_demo_curl" />
       </section>
 
       <section className="mt-8 rounded-2xl border border-slate-700/70 bg-slate-950/70 p-6">
@@ -49,8 +44,8 @@ export default function DemoPage() {
         <TrackedLink
           href={links.github}
           variant="ghost"
-          eventName="outbound_github"
-          eventParams={{ label: "demo_page", location: "demo" }}
+          eventName="cta_click"
+          eventParams={{ cta: "view_github", location: "demo_page" }}
         >
           View GitHub repo
         </TrackedLink>

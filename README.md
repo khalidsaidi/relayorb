@@ -2,6 +2,21 @@
 
 [![Terraform Registry Modules Smoke](https://github.com/khalidsaidi/relayorb/actions/workflows/terraform-registry-modules-smoke.yml/badge.svg)](https://github.com/khalidsaidi/relayorb/actions/workflows/terraform-registry-modules-smoke.yml)
 
+## Website
+
+- Website: https://relayorb.com
+- Try demo: https://relayorb.com/demo
+- Docs: https://relayorb.com (primary overview) + GitHub docs (canonical runbooks/implementation)
+- Terraform modules:
+  - https://registry.terraform.io/modules/khalidsaidi/relayorb/google/latest
+  - https://registry.terraform.io/modules/khalidsaidi/relayorb-demo/google/latest
+
+relayorb.com is the front door; GitHub remains the canonical source of truth for implementation details and runbooks.
+
+GitHub metadata status:
+- Homepage URL and discovery topics are configured.
+- Social preview image should be managed in GitHub repo settings (use the site OG artwork).
+
 RelayOrb is a capability gateway for AI agents. It enforces auth and policy, routes to healthy workers via a registry, validates schemas end-to-end, and records deterministic invocation artifacts with request-id idempotency and replay.
 
 Gateway also supports asynchronous execution via `POST /v1/submit` and `GET /v1/jobs/:jobId`.

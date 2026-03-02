@@ -86,8 +86,8 @@ export default function RootLayout({
                 href={links.github}
                 variant="ghost"
                 className="px-3 py-1.5"
-                eventName="outbound_github"
-                eventParams={{ label: "header", location: "header" }}
+                eventName="cta_click"
+                eventParams={{ cta: "view_github", location: "header" }}
               >
                 GitHub
               </TrackedLink>
