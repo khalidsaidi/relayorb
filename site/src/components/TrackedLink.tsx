@@ -3,12 +3,12 @@
 import type { AnchorHTMLAttributes, ReactNode } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
-import { trackEvent } from "@/lib/analytics";
+import { sanitizePath, trackEvent } from "@/lib/analytics";
 
 type Props = AnchorHTMLAttributes<HTMLAnchorElement> & {
   children: ReactNode;
   eventName?: string;
-  eventParams?: Record<string, string>;
+  eventParams?: Record<string, unknown>;
   variant?: "primary" | "secondary" | "ghost" | "link";
 };
 
@@ -34,25 +34,46 @@ export function TrackedLink({
   ...rest
 }: Props) {
   const isExternal = typeof href === "string" && href.startsWith("http");
-  const isGithubLink = isExternal && href.includes("github.com");
-
   const resolvedEventName =
-    eventName ?? (isGithubLink ? "outbound_github" : undefined);
-
-  const resolvedEventParams =
-    eventParams ??
-    (isGithubLink
-      ? {
-          label: "github_link",
-          location: "site",
-        }
-      : undefined);
+    eventName === "outbound_github" ? "outbound_click" : eventName;
+  const resolvedEventParams = eventParams;
 
   const anchorClass = clsx(variantClass[variant], className);
+  const location =
+    (resolvedEventParams?.location as string | undefined) ?? "site";
+
+  const destination =
+    isExternal && typeof href === "string"
+      ? (() => {
+          try {
+            const parsed = new URL(href);
+            return `${parsed.hostname}${parsed.pathname}`;
+          } catch {
+            return href;
+          }
+        })()
+      : typeof href === "string"
+        ? sanitizePath(href)
+      : undefined;
 
   const handleClick = () => {
     if (resolvedEventName) {
       trackEvent(resolvedEventName, resolvedEventParams ?? {});
+    }
+
+    if (isExternal && resolvedEventName !== "outbound_click") {
+      trackEvent("outbound_click", {
+        destination: destination ?? "external",
+        location,
+      });
+      return;
+    }
+
+    if (!isExternal && !resolvedEventName) {
+      trackEvent("nav_click", {
+        destination: destination ?? "internal",
+        location,
+      });
     }
   };
 

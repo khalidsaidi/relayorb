@@ -50,14 +50,25 @@ If `NEXT_PUBLIC_GA_MEASUREMENT_ID` is empty, GA scripts are not loaded.
   - `relayorb_analytics_consent = granted|denied`
 - Events are sent only when consent is granted.
 - Tracked events:
-  - `cta_try_demo`
-  - `cta_deploy_prod_module`
-  - `cta_deploy_demo_module`
-  - `outbound_github`
-  - `copy_demo_curl`
-  - `copy_terraform_snippet`
+  - `page_view`
+  - `cta_click` (e.g. `try_demo`, `deploy_terraform`, `view_github`)
+  - `copy_code` (e.g. `copy_demo_curl`, `copy_tf_prod`, `copy_tf_demo`)
+  - `outbound_click`
 
 No PII is intentionally sent in events.
+
+## GA verification (prod)
+
+Use GA4 Realtime and DebugView (not the GA Home summary tile):
+
+1. Open `https://relayorb.com` in an incognito session.
+2. Click **Accept analytics** in the consent banner.
+3. In GA Realtime, confirm:
+   - `page_view`
+   - `cta_click`
+   - `copy_code`
+   - `outbound_click`
+4. Optional local debug: use GA DebugView in a development session only; do not ship permanent debug flags in production.
 
 ## Deploy (Vercel)
 

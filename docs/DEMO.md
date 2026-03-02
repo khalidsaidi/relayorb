@@ -1,6 +1,10 @@
 # RelayOrb Public Demo
 
+Primary entry: https://relayorb.com/demo
+
 RelayOrb provides an anonymous public demo endpoint so anyone can try invoke flows with plain `curl`.
+
+The demo endpoint may change over time. Keep GitHub docs and Terraform outputs as canonical for the latest endpoint values.
 
 ## Try it now
 

@@ -10,13 +10,15 @@ export const metadata = {
 export default function TerraformPage() {
   return (
     <main className="mx-auto min-h-screen w-full max-w-5xl px-6 py-20 sm:px-8">
-      <h1 className="text-4xl font-semibold">Deploy with Terraform</h1>
-      <p className="mt-3 max-w-3xl text-slate-300">
-        Two Terraform Registry modules are available: production posture and
-        anonymous demo posture.
-      </p>
+      <section data-analytics-section="terraform_intro">
+        <h1 className="text-4xl font-semibold">Deploy with Terraform</h1>
+        <p className="mt-3 max-w-3xl text-slate-300">
+          Two Terraform Registry modules are available: production posture and
+          anonymous demo posture.
+        </p>
+      </section>
 
-      <div className="mt-8 grid gap-6 lg:grid-cols-2">
+      <div className="mt-8 grid gap-6 lg:grid-cols-2" data-analytics-section="terraform_modules">
         <article className="rounded-2xl border border-indigo-400/30 bg-slate-950/70 p-5">
           <div className="mb-3 flex items-center justify-between gap-3">
             <h2 className="text-xl font-medium">Prod module</h2>
@@ -24,8 +26,8 @@ export default function TerraformPage() {
               href={links.prodModule}
               variant="secondary"
               className="text-xs"
-              eventName="cta_deploy_prod_module"
-              eventParams={{ label: "terraform_page", location: "prod" }}
+              eventName="cta_click"
+              eventParams={{ cta: "open_module_prod", location: "terraform_prod" }}
             >
               Open module
             </TrackedLink>
@@ -33,8 +35,7 @@ export default function TerraformPage() {
           <CodeBlock
             title="khalidsaidi/relayorb/google"
             code={terraformProdSnippet}
-            eventName="copy_terraform_snippet"
-            eventLabel="terraform_page_prod"
+            snippetId="copy_tf_prod"
           />
         </article>
 
@@ -45,8 +46,8 @@ export default function TerraformPage() {
               href={links.demoModule}
               variant="secondary"
               className="text-xs"
-              eventName="cta_deploy_demo_module"
-              eventParams={{ label: "terraform_page", location: "demo" }}
+              eventName="cta_click"
+              eventParams={{ cta: "open_module_demo", location: "terraform_demo" }}
             >
               Open module
             </TrackedLink>
@@ -54,8 +55,7 @@ export default function TerraformPage() {
           <CodeBlock
             title="khalidsaidi/relayorb-demo/google"
             code={terraformDemoSnippet}
-            eventName="copy_terraform_snippet"
-            eventLabel="terraform_page_demo"
+            snippetId="copy_tf_demo"
           />
         </article>
       </div>

@@ -12,19 +12,19 @@ export function ArchitectureDiagram() {
           </linearGradient>
         </defs>
 
-        <line x1="145" y1="85" x2="380" y2="85" stroke="url(#flow)" strokeWidth="2.5" />
-        <line x1="390" y1="85" x2="625" y2="85" stroke="url(#flow)" strokeWidth="2.5" />
+        <line x1="145" y1="64" x2="380" y2="64" stroke="url(#flow)" strokeWidth="2.5" />
+        <line x1="390" y1="64" x2="625" y2="64" stroke="url(#flow)" strokeWidth="2.5" />
 
-        <circle cx="110" cy="85" r="34" fill="#101a31" stroke="#6cc6ff" strokeWidth="2" />
-        <circle cx="385" cy="85" r="34" fill="#101a31" stroke="#6cc6ff" strokeWidth="2" />
-        <circle cx="660" cy="85" r="34" fill="#101a31" stroke="#6cc6ff" strokeWidth="2" />
+        <circle cx="110" cy="88" r="34" fill="#101a31" stroke="#6cc6ff" strokeWidth="2" />
+        <circle cx="385" cy="88" r="34" fill="#101a31" stroke="#6cc6ff" strokeWidth="2" />
+        <circle cx="660" cy="88" r="34" fill="#101a31" stroke="#6cc6ff" strokeWidth="2" />
 
-        <text x="110" y="91" textAnchor="middle" fill="#dbe9ff" fontSize="13">Gateway</text>
-        <text x="385" y="91" textAnchor="middle" fill="#dbe9ff" fontSize="13">Registry</text>
-        <text x="660" y="91" textAnchor="middle" fill="#dbe9ff" fontSize="13">Worker</text>
+        <text x="110" y="94" textAnchor="middle" fill="#dbe9ff" fontSize="13">Gateway</text>
+        <text x="385" y="94" textAnchor="middle" fill="#dbe9ff" fontSize="13">Registry</text>
+        <text x="660" y="94" textAnchor="middle" fill="#dbe9ff" fontSize="13">Worker</text>
 
-        <circle cx="155" cy="85" r="5" fill="#b0fbff" className="orb-dot-a" />
-        <circle cx="395" cy="85" r="5" fill="#99f6e4" className="orb-dot-b" />
+        <circle cx="155" cy="64" r="5" fill="#b0fbff" className="orb-dot-a" />
+        <circle cx="395" cy="64" r="5" fill="#99f6e4" className="orb-dot-b" />
       </svg>
     </div>
   );

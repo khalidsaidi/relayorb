@@ -73,12 +73,40 @@ function hasAnalyticsRuntime() {
   return Boolean(GA_MEASUREMENT_ID && canUseBrowser() && window.gtag);
 }
 
+export function sanitizePath(path: string) {
+  const [withoutHash] = path.split("#");
+  const [withoutQuery] = withoutHash.split("?");
+  return withoutQuery || "/";
+}
+
+function sanitizeString(value: string) {
+  const trimmed = value.trim().slice(0, 140);
+  if (!trimmed) {
+    return trimmed;
+  }
+
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    try {
+      const parsed = new URL(trimmed);
+      return `${parsed.hostname}${sanitizePath(parsed.pathname)}`;
+    } catch {
+      return trimmed;
+    }
+  }
+
+  if (trimmed.startsWith("/")) {
+    return sanitizePath(trimmed);
+  }
+
+  return trimmed;
+}
+
 function sanitizeParamValue(value: unknown): string | number | boolean | undefined {
-  if (
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
+  if (typeof value === "string") {
+    return sanitizeString(value);
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
     return value;
   }
 
@@ -107,6 +135,6 @@ export function trackPageView(pathWithSearch: string) {
   }
 
   window.gtag?.("config", GA_MEASUREMENT_ID, {
-    page_path: pathWithSearch,
+    page_path: sanitizePath(pathWithSearch),
   });
 }

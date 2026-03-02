@@ -10,21 +10,36 @@ export function Footer() {
         <TrackedLink
           href={links.github}
           variant="link"
-          eventName="outbound_github"
-          eventParams={{ label: "footer", location: "footer" }}
+          eventName="outbound_click"
+          eventParams={{ destination: "github.com/khalidsaidi/relayorb", location: "footer" }}
         >
           GitHub
         </TrackedLink>
         <span className="opacity-50">|</span>
-        <TrackedLink href={links.prodModule} variant="link">
+        <TrackedLink
+          href={links.prodModule}
+          variant="link"
+          eventName="cta_click"
+          eventParams={{ cta: "footer_prod_module", location: "footer" }}
+        >
           Terraform prod
         </TrackedLink>
         <span className="opacity-50">|</span>
-        <TrackedLink href={links.demoModule} variant="link">
+        <TrackedLink
+          href={links.demoModule}
+          variant="link"
+          eventName="cta_click"
+          eventParams={{ cta: "footer_demo_module", location: "footer" }}
+        >
           Terraform demo
         </TrackedLink>
         <span className="opacity-50">|</span>
-        <TrackedLink href="/privacy" variant="link">
+        <TrackedLink
+          href="/privacy"
+          variant="link"
+          eventName="cta_click"
+          eventParams={{ cta: "footer_privacy", location: "footer" }}
+        >
           Privacy
         </TrackedLink>
       </div>
