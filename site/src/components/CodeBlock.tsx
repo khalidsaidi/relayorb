@@ -14,13 +14,20 @@ export function CodeBlock({ title, code, snippetId }: Props) {
   const [copied, setCopied] = useState(false);
 
   const onCopy = async () => {
-    await navigator.clipboard.writeText(code);
-    setCopied(true);
-    trackEvent("copy_code", {
-      snippet: snippetId,
-      location: "code_block",
-    });
-    setTimeout(() => setCopied(false), 1400);
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      trackEvent("copy_code", {
+        snippet: snippetId,
+        location: "code_block",
+      });
+      setTimeout(() => setCopied(false), 1400);
+    } catch {
+      trackEvent("copy_code_failed", {
+        snippet: snippetId,
+        location: "code_block",
+      });
+    }
   };
 
   return (

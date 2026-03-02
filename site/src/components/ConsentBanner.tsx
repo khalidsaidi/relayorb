@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { readConsent, updateConsent } from "@/lib/analytics";
+import { readConsent, trackEvent, updateConsent } from "@/lib/analytics";
 
 export function ConsentBanner() {
   const [dismissed, setDismissed] = useState(false);
@@ -37,6 +37,10 @@ export function ConsentBanner() {
             type="button"
             onClick={() => {
               updateConsent("granted");
+              trackEvent("consent_choice", {
+                choice: "accepted",
+                location: "banner",
+              });
               setDismissed(true);
             }}
             className="rounded-lg border border-cyan-300/60 bg-cyan-400/20 px-3 py-2 text-sm font-medium text-cyan-100 transition hover:bg-cyan-300/30"

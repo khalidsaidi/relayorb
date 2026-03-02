@@ -1,18 +1,84 @@
 <svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#050812"/>
-      <stop offset="1" stop-color="#101B34"/>
+      <stop stop-color="#02040B"/>
+      <stop offset="0.56" stop-color="#080F20"/>
+      <stop offset="1" stop-color="#0C1730"/>
     </linearGradient>
-    <radialGradient id="orb" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(360 210) rotate(30) scale(500 420)">
-      <stop stop-color="#4DD8FF" stop-opacity="0.42"/>
-      <stop offset="1" stop-color="#4DD8FF" stop-opacity="0"/>
+    <radialGradient id="bgGlowA" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(260 88) rotate(35) scale(660 420)">
+      <stop stop-color="#3ACFFF" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#3ACFFF" stop-opacity="0"/>
     </radialGradient>
+    <radialGradient id="bgGlowB" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(954 366) rotate(22) scale(440 370)">
+      <stop stop-color="#86A1FF" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#86A1FF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="orbCore" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(936 300) rotate(90) scale(230 230)">
+      <stop stop-color="#A7E8FF" stop-opacity="0.52"/>
+      <stop offset="0.42" stop-color="#60C6F5" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#60C6F5" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ringStroke" x1="740" y1="116" x2="1140" y2="510" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#80E0FF" stop-opacity="0.84"/>
+      <stop offset="1" stop-color="#8AA2FF" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="chipStroke" x1="70" y1="80" x2="280" y2="134" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#48D6FF" stop-opacity="0.74"/>
+      <stop offset="1" stop-color="#84A0FF" stop-opacity="0.44"/>
+    </linearGradient>
+    <pattern id="dotPattern" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="1.3" cy="1.3" r="1.3" fill="#A3B6D8" fill-opacity="0.06"/>
+    </pattern>
+    <filter id="softBlur" x="-50%" y="-50%" width="200%" height="200%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="20"/>
+    </filter>
   </defs>
+
   <rect width="1200" height="630" fill="url(#bg)"/>
-  <rect width="1200" height="630" fill="url(#orb)"/>
-  <circle cx="930" cy="430" r="210" stroke="#7EC8FF" stroke-opacity="0.24" stroke-width="2"/>
-  <circle cx="930" cy="430" r="150" stroke="#7EC8FF" stroke-opacity="0.18" stroke-width="2"/>
-  <text x="80" y="270" fill="#EAF2FF" font-size="64" font-family="Inter, Arial, sans-serif" font-weight="700">RelayOrb</text>
-  <text x="80" y="335" fill="#A7BCD8" font-size="34" font-family="Inter, Arial, sans-serif">Tool Control Plane for AI Agents</text>
+  <rect width="1200" height="630" fill="url(#bgGlowA)"/>
+  <rect width="1200" height="630" fill="url(#bgGlowB)"/>
+  <rect width="1200" height="630" fill="url(#dotPattern)" opacity="0.22"/>
+  <rect width="1200" height="630" fill="#040912" fill-opacity="0.34"/>
+
+  <g opacity="0.26">
+    <path d="M0 108H1200" stroke="#5D6D95"/>
+    <path d="M0 216H1200" stroke="#5D6D95" stroke-opacity="0.82"/>
+    <path d="M0 324H1200" stroke="#5D6D95" stroke-opacity="0.68"/>
+    <path d="M0 432H1200" stroke="#5D6D95" stroke-opacity="0.54"/>
+    <path d="M0 540H1200" stroke="#5D6D95" stroke-opacity="0.42"/>
+    <path d="M132 0V630" stroke="#5D6D95" stroke-opacity="0.72"/>
+    <path d="M288 0V630" stroke="#5D6D95" stroke-opacity="0.58"/>
+    <path d="M444 0V630" stroke="#5D6D95" stroke-opacity="0.44"/>
+    <path d="M600 0V630" stroke="#5D6D95" stroke-opacity="0.32"/>
+  </g>
+
+  <g>
+    <circle cx="936" cy="300" r="212" fill="url(#orbCore)" filter="url(#softBlur)" opacity="0.48"/>
+    <circle cx="936" cy="300" r="196" stroke="url(#ringStroke)" stroke-width="2.5" stroke-opacity="0.64"/>
+    <circle cx="936" cy="300" r="146" stroke="#7ECEFB" stroke-opacity="0.42" stroke-width="2"/>
+    <circle cx="936" cy="300" r="98" stroke="#7ECEFB" stroke-opacity="0.29" stroke-width="2"/>
+    <circle cx="936" cy="300" r="14" fill="#D9F4FF"/>
+    <circle cx="778" cy="300" r="6.5" fill="#A9EBFF"/>
+    <circle cx="1010" cy="170" r="6.5" fill="#C0C8FF"/>
+    <circle cx="1062" cy="404" r="6.5" fill="#9CEFD4"/>
+    <path d="M778 300L936 300L1010 170M936 300L1062 404" stroke="#9FD9FC" stroke-opacity="0.44" stroke-width="1.6"/>
+  </g>
+
+  <rect x="74" y="78" width="202" height="44" rx="22" fill="#101A33" fill-opacity="0.84" stroke="url(#chipStroke)" stroke-width="1.4"/>
+  <text x="175" y="106" text-anchor="middle" fill="#DAEEFF" font-size="18" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="600" letter-spacing="0.04em">OPEN SOURCE</text>
+
+  <text x="74" y="214" fill="#F1F7FF" font-size="76" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="700">RelayOrb</text>
+  <text x="74" y="272" fill="#BBD2EF" font-size="34" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="500">Tool Control Plane for AI Agents</text>
+  <text x="74" y="332" fill="#D2E3FA" font-size="25" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="500">Route calls to versioned capabilities with contracts, governance, and observability.</text>
+
+  <g>
+    <rect x="74" y="378" width="272" height="46" rx="12" fill="#101A31" fill-opacity="0.92" stroke="#47D1FF" stroke-opacity="0.58"/>
+    <text x="210" y="407" text-anchor="middle" fill="#D6F4FF" font-size="20" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="600">Anonymous Demo</text>
+
+    <rect x="360" y="378" width="290" height="46" rx="12" fill="#101A31" fill-opacity="0.92" stroke="#8298FF" stroke-opacity="0.55"/>
+    <text x="505" y="407" text-anchor="middle" fill="#E5EAFF" font-size="20" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="600">Deploy with Terraform</text>
+  </g>
+
+  <text x="74" y="484" fill="#9BB3D2" font-size="22" font-family="Inter, Segoe UI, Arial, sans-serif">Open Source · Read-only demo · Weekly module smoke CI</text>
+  <text x="74" y="548" fill="#8CA8CC" font-size="22" font-family="Inter, Segoe UI, Arial, sans-serif">relayorb.com</text>
 </svg>

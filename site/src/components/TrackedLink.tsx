@@ -3,7 +3,7 @@
 import type { AnchorHTMLAttributes, ReactNode } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
-import { trackEvent } from "@/lib/analytics";
+import { sanitizePath, trackEvent } from "@/lib/analytics";
 
 type Props = AnchorHTMLAttributes<HTMLAnchorElement> & {
   children: ReactNode;
@@ -39,6 +39,8 @@ export function TrackedLink({
   const resolvedEventParams = eventParams;
 
   const anchorClass = clsx(variantClass[variant], className);
+  const location =
+    (resolvedEventParams?.location as string | undefined) ?? "site";
 
   const destination =
     isExternal && typeof href === "string"
@@ -50,6 +52,8 @@ export function TrackedLink({
             return href;
           }
         })()
+      : typeof href === "string"
+        ? sanitizePath(href)
       : undefined;
 
   const handleClick = () => {
@@ -60,8 +64,15 @@ export function TrackedLink({
     if (isExternal && resolvedEventName !== "outbound_click") {
       trackEvent("outbound_click", {
         destination: destination ?? "external",
-        location:
-          (resolvedEventParams?.location as string | undefined) ?? "site",
+        location,
+      });
+      return;
+    }
+
+    if (!isExternal && !resolvedEventName) {
+      trackEvent("nav_click", {
+        destination: destination ?? "internal",
+        location,
       });
     }
   };

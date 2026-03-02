@@ -62,7 +62,7 @@ export default function HomePage() {
   return (
     <div className="relative min-h-screen text-slate-100">
       <main className="mx-auto w-full max-w-6xl px-6 pb-16 sm:px-8">
-        <section className="pt-24 pb-10">
+        <section className="pt-24 pb-10" data-analytics-section="home_hero">
           <Reveal>
             <p className="mb-4 text-xs uppercase tracking-[0.22em] text-cyan-300">
               RelayOrb - production-grade tool infrastructure
@@ -111,7 +111,7 @@ export default function HomePage() {
           </div>
         </section>
 
-        <section className="py-8">
+        <section className="py-8" data-analytics-section="home_why">
           <Reveal>
             <h2 className="text-2xl font-semibold sm:text-3xl">Why RelayOrb</h2>
             <p className="mt-3 max-w-3xl text-slate-300">
@@ -134,7 +134,7 @@ export default function HomePage() {
           </div>
         </section>
 
-        <section className="py-8">
+        <section className="py-8" data-analytics-section="home_how">
           <Reveal>
             <h2 className="text-2xl font-semibold sm:text-3xl">How it works</h2>
             <ol className="mt-5 grid gap-3 sm:grid-cols-2">
@@ -150,13 +150,19 @@ export default function HomePage() {
           </Reveal>
         </section>
 
-        <section className="py-8">
+        <section className="py-8" data-analytics-section="home_try">
           <Reveal>
             <h2 className="text-2xl font-semibold sm:text-3xl">Try it in 30 seconds</h2>
             <p className="mt-2 text-slate-300">
               The anonymous demo is intentionally constrained: read-only,
               allowlisted, and rate-limited. Canonical demo guidance stays in
-              <TrackedLink href={links.demoDocs} variant="link" className="ml-1">
+              <TrackedLink
+                href={links.demoDocs}
+                variant="link"
+                className="ml-1"
+                eventName="cta_click"
+                eventParams={{ cta: "open_demo_docs", location: "home_try" }}
+              >
                 docs/DEMO.md
               </TrackedLink>
               .
@@ -176,7 +182,11 @@ export default function HomePage() {
           </div>
         </section>
 
-        <section id="deploy" className="py-8">
+        <section
+          id="deploy"
+          className="py-8"
+          data-analytics-section="home_deploy"
+        >
           <Reveal>
             <h2 className="text-2xl font-semibold sm:text-3xl">Deploy with Terraform</h2>
             <p className="mt-2 text-slate-300">
@@ -232,7 +242,7 @@ export default function HomePage() {
           </div>
         </section>
 
-        <section className="py-8">
+        <section className="py-8" data-analytics-section="home_trust">
           <Reveal>
             <h2 className="text-2xl font-semibold sm:text-3xl">
               Open source, production-shaped

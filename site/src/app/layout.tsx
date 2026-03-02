@@ -3,6 +3,7 @@ import { Inter, JetBrains_Mono } from "next/font/google";
 import { Suspense } from "react";
 import { AnalyticsScripts } from "@/components/AnalyticsScripts";
 import { ConsentBanner } from "@/components/ConsentBanner";
+import { EngagementAnalytics } from "@/components/EngagementAnalytics";
 import { Footer } from "@/components/Footer";
 import { OrbBackdrop } from "@/components/OrbBackdrop";
 import { RouteAnalytics } from "@/components/RouteAnalytics";
@@ -38,7 +39,7 @@ export const metadata: Metadata = {
     siteName: "RelayOrb",
     images: [
       {
-        url: "/og-image.svg",
+        url: "/og-image.png",
         width: 1200,
         height: 630,
         alt: "RelayOrb",
@@ -51,7 +52,7 @@ export const metadata: Metadata = {
     title: "RelayOrb - Tool Control Plane for AI Agents",
     description:
       "Route agent calls to versioned capabilities with contracts, governance, and observability.",
-    images: ["/og-image.svg"],
+    images: ["/og-image.png"],
   },
 };
 
@@ -64,22 +65,44 @@ export default function RootLayout({
         <AnalyticsScripts />
         <Suspense fallback={null}>
           <RouteAnalytics />
+          <EngagementAnalytics />
         </Suspense>
         <OrbBackdrop />
 
         <header className="sticky top-0 z-40 border-b border-slate-800/70 bg-slate-950/65 backdrop-blur">
           <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-4 sm:px-8">
-            <TrackedLink href="/" variant="link" className="font-semibold text-slate-100">
+            <TrackedLink
+              href="/"
+              variant="link"
+              className="font-semibold text-slate-100"
+              eventName="cta_click"
+              eventParams={{ cta: "nav_home", location: "header" }}
+            >
               RelayOrb
             </TrackedLink>
             <nav className="hidden items-center gap-4 text-sm text-slate-300 sm:flex">
-              <TrackedLink href="/demo" variant="link">
+              <TrackedLink
+                href="/demo"
+                variant="link"
+                eventName="cta_click"
+                eventParams={{ cta: "nav_demo", location: "header" }}
+              >
                 Demo
               </TrackedLink>
-              <TrackedLink href="/terraform" variant="link">
+              <TrackedLink
+                href="/terraform"
+                variant="link"
+                eventName="cta_click"
+                eventParams={{ cta: "nav_terraform", location: "header" }}
+              >
                 Terraform
               </TrackedLink>
-              <TrackedLink href="/privacy" variant="link">
+              <TrackedLink
+                href="/privacy"
+                variant="link"
+                eventName="cta_click"
+                eventParams={{ cta: "nav_privacy", location: "header" }}
+              >
                 Privacy
               </TrackedLink>
               <TrackedLink
