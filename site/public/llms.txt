@@ -1,0 +1,12 @@
+# RelayOrb
+
+RelayOrb is a tool control plane for AI agents.
+
+- Website: https://relayorb.com
+- API docs: https://github.com/khalidsaidi/relayorb/blob/main/docs/API.md
+- Architecture: https://github.com/khalidsaidi/relayorb/blob/main/docs/ARCH.md
+- Demo docs: https://github.com/khalidsaidi/relayorb/blob/main/docs/DEMO.md
+- Runbook: https://github.com/khalidsaidi/relayorb/blob/main/docs/RUNBOOK.md
+- Security: https://github.com/khalidsaidi/relayorb/blob/main/docs/SECURITY.md
+- OpenAPI: https://relayorb.com/.well-known/openapi.json
+- MCP endpoint: https://relayorb.com/mcp
