@@ -128,7 +128,7 @@ resource "google_cloud_run_v2_service" "registry" {
     max_instance_request_concurrency = var.registry_concurrency
 
     scaling {
-      min_instance_count = 0
+      min_instance_count = 1
       max_instance_count = var.registry_max_instances
     }
 
@@ -208,7 +208,7 @@ resource "google_cloud_run_v2_service" "worker" {
     max_instance_request_concurrency = var.worker_concurrency
 
     scaling {
-      min_instance_count = 0
+      min_instance_count = 1
       max_instance_count = var.worker_max_instances
     }
 
@@ -293,7 +293,7 @@ resource "google_cloud_run_v2_service" "gateway" {
     max_instance_request_concurrency = var.gateway_concurrency
 
     scaling {
-      min_instance_count = 0
+      min_instance_count = 1
       max_instance_count = var.gateway_max_instances
     }
 
