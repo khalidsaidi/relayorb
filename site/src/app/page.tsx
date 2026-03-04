@@ -1,3 +1,4 @@
+import Script from "next/script";
 import {
   Activity,
   FileCheck2,
@@ -266,6 +267,22 @@ export default function HomePage() {
               </div>
             </div>
           </Reveal>
+        </section>
+
+        <section className="py-8" data-analytics-section="home_agentability">
+          <Reveal>
+            <h2 className="text-2xl font-semibold sm:text-3xl">Agentability Report</h2>
+            <p className="mt-2 max-w-3xl text-slate-300">
+              Public machine-readiness report for relayorb.com.
+            </p>
+            <div className="mt-5">
+              <div
+                data-agentability-domain="relayorb.com"
+                data-agentability-style="card"
+              />
+            </div>
+          </Reveal>
+          <Script src="https://agentability.org/embed/widget.js" async />
         </section>
       </main>
     </div>

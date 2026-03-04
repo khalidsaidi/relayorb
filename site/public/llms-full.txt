@@ -1,0 +1,26 @@
+# RelayOrb - LLM Full Context
+
+RelayOrb provides production-shaped routing for AI agent tool calls.
+
+Core properties:
+- Contract-first JSON schema validation for input/output.
+- Policy-aware gateway and governance boundaries.
+- Registry-driven provider discovery and health routing.
+- Idempotent request handling and async jobs.
+- Replay artifacts, metrics, and trace propagation.
+
+Primary entrypoints:
+- Home: https://relayorb.com
+- Demo page: https://relayorb.com/demo
+- Terraform page: https://relayorb.com/terraform
+- Privacy: https://relayorb.com/privacy
+- OpenAPI: https://relayorb.com/.well-known/openapi.json
+- MCP: https://relayorb.com/mcp
+
+Canonical implementation/docs:
+- Repository: https://github.com/khalidsaidi/relayorb
+- API docs: https://github.com/khalidsaidi/relayorb/blob/main/docs/API.md
+- DEMO docs: https://github.com/khalidsaidi/relayorb/blob/main/docs/DEMO.md
+- ARCH docs: https://github.com/khalidsaidi/relayorb/blob/main/docs/ARCH.md
+- RUNBOOK docs: https://github.com/khalidsaidi/relayorb/blob/main/docs/RUNBOOK.md
+- SECURITY docs: https://github.com/khalidsaidi/relayorb/blob/main/docs/SECURITY.md

@@ -1,0 +1,886 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "RelayOrb Gateway API",
+    "version": "0.1.2",
+    "description": "Public RelayOrb gateway surface used by the anonymous demo and production deployments. Response examples are based on the repository docs and current gateway envelopes."
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "servers": [
+    {
+      "url": "http://34.8.48.11",
+      "description": "Current anonymous demo endpoint (can change; canonical updates are in docs/DEMO.md)."
+    },
+    {
+      "url": "https://relayorb.com",
+      "description": "RelayOrb documentation and discovery host."
+    }
+  ],
+  "externalDocs": {
+    "description": "Canonical API documentation",
+    "url": "https://github.com/khalidsaidi/relayorb/blob/main/docs/API.md"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "getHealth",
+        "summary": "Gateway health envelope",
+        "responses": {
+          "200": {
+            "description": "Healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                },
+                "examples": {
+                  "ok": {
+                    "value": {
+                      "requestId": "b2551f84-d0da-4f24-b589-d77e06af1ad3",
+                      "traceId": "eb7e5654-2adf-4f2b-aa95-4e6b95bf4c58",
+                      "status": "ok",
+                      "data": {
+                        "service": "relayorb-gateway",
+                        "status": "ok"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/invoke": {
+      "post": {
+        "operationId": "invokeCapability",
+        "summary": "Synchronous capability invocation",
+        "description": "Idempotent by requestId. Replays completed requests and can return 202 for in-progress duplicates.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvokeRequest"
+              },
+              "examples": {
+                "ragSearch": {
+                  "value": {
+                    "requestId": "8f5b5b6a-8d10-4a45-89b6-89fb67235d50",
+                    "caller": {
+                      "agentId": "agent-123",
+                      "role": "researcher",
+                      "budgetKey": "team-a"
+                    },
+                    "capability": "rag.search@v1",
+                    "payload": {
+                      "query": "market risk",
+                      "topK": 3
+                    },
+                    "trace": {
+                      "parentSpanId": "optional"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Invocation completed or replayed completion",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvokeSuccessResponse"
+                },
+                "examples": {
+                  "completed": {
+                    "value": {
+                      "requestId": "8f5b5b6a-8d10-4a45-89b6-89fb67235d50",
+                      "traceId": "2c3fcf67-2fa1-44f1-9ff9-d7ba88ab8dc2",
+                      "status": "ok",
+                      "data": {
+                        "results": [
+                          {
+                            "id": "doc-1",
+                            "text": "RelayOrb routes capability invocations through a policy-aware gateway.",
+                            "score": 0.95
+                          }
+                        ],
+                        "provider": "relayorb-rag"
+                      },
+                      "meta": {
+                        "routedTo": "http://worker:8090",
+                        "latencyMs": 42,
+                        "retries": 0,
+                        "traceId": "2c3fcf67-2fa1-44f1-9ff9-d7ba88ab8dc2"
+                      }
+                    }
+                  },
+                  "replayed": {
+                    "value": {
+                      "requestId": "8f5b5b6a-8d10-4a45-89b6-89fb67235d50",
+                      "traceId": "f86533c0-b858-4f6d-bf7f-8f4121655dcb",
+                      "status": "ok",
+                      "data": {
+                        "results": [
+                          {
+                            "id": "doc-1",
+                            "text": "RelayOrb routes capability invocations through a policy-aware gateway.",
+                            "score": 0.95
+                          }
+                        ],
+                        "provider": "relayorb-rag"
+                      },
+                      "meta": {
+                        "routedTo": "http://worker:8090",
+                        "latencyMs": 40,
+                        "retries": 0,
+                        "traceId": "2c3fcf67-2fa1-44f1-9ff9-d7ba88ab8dc2",
+                        "replayed": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Duplicate request accepted while original invocation is still in progress",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvokeInProgressResponse"
+                },
+                "example": {
+                  "requestId": "8f5b5b6a-8d10-4a45-89b6-89fb67235d50",
+                  "traceId": "new-request-trace",
+                  "status": "ok",
+                  "data": {
+                    "state": "in_progress"
+                  },
+                  "meta": {
+                    "replayed": true,
+                    "retryAfterMs": 500,
+                    "traceId": "original-request-trace"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid JSON or schema validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "requestId": "demo-bad-request",
+                  "traceId": "14a846e2-3576-40f7-9f66-41d8de62b510",
+                  "status": "error",
+                  "error": {
+                    "code": "SCHEMA_VALIDATION_FAILED",
+                    "message": "invalid invoke request",
+                    "details": {
+                      "errors": [
+                        "$.payload.query: expected string"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or budget guardrail exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "requestId": "demo-rate-limit",
+                  "traceId": "6f241b40-c40c-4f7d-a6c6-ea5a7305f0ff",
+                  "status": "error",
+                  "error": {
+                    "code": "BUDGET_EXCEEDED",
+                    "message": "demo rate limit exceeded",
+                    "details": {
+                      "retryAfterSeconds": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No healthy provider available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "requestId": "demo-unavailable",
+                  "traceId": "128f877f-0d6f-4f2c-b9f3-af1a4f37dce4",
+                  "status": "error",
+                  "error": {
+                    "code": "NO_HEALTHY_PROVIDERS",
+                    "message": "no healthy providers for 'rag.search@v1'",
+                    "details": {
+                      "capability": "rag.search@v1"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/submit": {
+      "post": {
+        "operationId": "submitCapabilityJob",
+        "summary": "Asynchronous capability submission",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitResponseEnvelope"
+                },
+                "example": {
+                  "requestId": "8f5b5b6a-8d10-4a45-89b6-89fb67235d50",
+                  "traceId": "2c3fcf67-2fa1-44f1-9ff9-d7ba88ab8dc2",
+                  "status": "ok",
+                  "data": {
+                    "jobId": "b10d5a2c-7f98-4117-9ac8-18f5f3ce29d4",
+                    "requestId": "8f5b5b6a-8d10-4a45-89b6-89fb67235d50",
+                    "state": "queued",
+                    "statusUrl": "/v1/jobs/b10d5a2c-7f98-4117-9ac8-18f5f3ce29d4",
+                    "attempts": 0,
+                    "maxAttempts": 3
+                  },
+                  "meta": {
+                    "traceId": "2c3fcf67-2fa1-44f1-9ff9-d7ba88ab8dc2"
+                  }
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Idempotent replay of existing async job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitResponseEnvelope"
+                },
+                "example": {
+                  "requestId": "8f5b5b6a-8d10-4a45-89b6-89fb67235d50",
+                  "traceId": "2c3fcf67-2fa1-44f1-9ff9-d7ba88ab8dc2",
+                  "status": "ok",
+                  "data": {
+                    "jobId": "b10d5a2c-7f98-4117-9ac8-18f5f3ce29d4",
+                    "requestId": "8f5b5b6a-8d10-4a45-89b6-89fb67235d50",
+                    "state": "queued",
+                    "statusUrl": "/v1/jobs/b10d5a2c-7f98-4117-9ac8-18f5f3ce29d4",
+                    "attempts": 0,
+                    "maxAttempts": 3
+                  },
+                  "meta": {
+                    "traceId": "2c3fcf67-2fa1-44f1-9ff9-d7ba88ab8dc2",
+                    "replayed": true
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/{jobId}": {
+      "get": {
+        "operationId": "getJobStatus",
+        "summary": "Get asynchronous job status",
+        "parameters": [
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStatusEnvelope"
+                },
+                "example": {
+                  "requestId": "b10d5a2c-7f98-4117-9ac8-18f5f3ce29d4",
+                  "traceId": "2c3fcf67-2fa1-44f1-9ff9-d7ba88ab8dc2",
+                  "status": "ok",
+                  "data": {
+                    "jobId": "b10d5a2c-7f98-4117-9ac8-18f5f3ce29d4",
+                    "requestId": "8f5b5b6a-8d10-4a45-89b6-89fb67235d50",
+                    "capabilityId": "rag.search@v1",
+                    "callerAgentId": "agent-123",
+                    "state": "succeeded",
+                    "attempts": 1,
+                    "maxAttempts": 3,
+                    "traceId": "2c3fcf67-2fa1-44f1-9ff9-d7ba88ab8dc2",
+                    "createdAt": 1738880000,
+                    "startedAt": 1738880001,
+                    "finishedAt": 1738880002,
+                    "result": {
+                      "results": [
+                        {
+                          "id": "doc-1",
+                          "text": "RelayOrb routes capability invocations through a policy-aware gateway.",
+                          "score": 0.95
+                        }
+                      ],
+                      "provider": "relayorb-rag"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "requestId": "b10d5a2c-7f98-4117-9ac8-18f5f3ce29d4",
+                  "traceId": "2c3fcf67-2fa1-44f1-9ff9-d7ba88ab8dc2",
+                  "status": "error",
+                  "error": {
+                    "code": "FORBIDDEN",
+                    "message": "caller is not authorized to read this job",
+                    "details": {}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/replay/{requestId}": {
+      "get": {
+        "operationId": "getReplayRecord",
+        "summary": "Get canonical invocation replay artifact",
+        "parameters": [
+          {
+            "name": "requestId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stored replay artifact",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayEnvelope"
+                },
+                "example": {
+                  "requestId": "8f5b5b6a-8d10-4a45-89b6-89fb67235d50",
+                  "traceId": "2c3fcf67-2fa1-44f1-9ff9-d7ba88ab8dc2",
+                  "status": "ok",
+                  "data": {
+                    "env": "demo",
+                    "requestId": "8f5b5b6a-8d10-4a45-89b6-89fb67235d50",
+                    "requestHash": "fdbecf0425f79039e4b58f95db95f37dbf5e6136f857f3e71ab6f4d6e93f33d9",
+                    "state": "completed",
+                    "traceId": "2c3fcf67-2fa1-44f1-9ff9-d7ba88ab8dc2",
+                    "capabilityId": "rag.search@v1",
+                    "reqCanonJson": "{\"caller\":{\"agentId\":\"agent-123\",\"role\":\"researcher\"},\"capability\":\"rag.search@v1\",\"payload\":{\"query\":\"market risk\",\"topK\":3}}",
+                    "reqSha256": "fdbecf0425f79039e4b58f95db95f37dbf5e6136f857f3e71ab6f4d6e93f33d9",
+                    "responseJson": {
+                      "results": [
+                        {
+                          "id": "doc-1",
+                          "text": "RelayOrb routes capability invocations through a policy-aware gateway.",
+                          "score": 0.95
+                        }
+                      ],
+                      "provider": "relayorb-rag"
+                    },
+                    "status": "ok",
+                    "retries": 0,
+                    "latencyMs": 42,
+                    "createdAt": 1738880000,
+                    "updatedAt": 1738880002
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Caller": {
+        "type": "object",
+        "required": [
+          "agentId",
+          "role"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "role": {
+            "type": "string",
+            "minLength": 1
+          },
+          "budgetKey": {
+            "type": "string"
+          }
+        }
+      },
+      "TraceContext": {
+        "type": "object",
+        "properties": {
+          "parentSpanId": {
+            "type": "string"
+          }
+        }
+      },
+      "InvokeRequest": {
+        "type": "object",
+        "required": [
+          "requestId",
+          "caller",
+          "capability",
+          "payload"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "caller": {
+            "$ref": "#/components/schemas/Caller"
+          },
+          "capability": {
+            "type": "string",
+            "minLength": 1
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "trace": {
+            "$ref": "#/components/schemas/TraceContext"
+          }
+        }
+      },
+      "SubmitRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/InvokeRequest"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "callbackUrl": {
+                "type": "string",
+                "format": "uri"
+              },
+              "maxRunMs": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "maxAttempts": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10
+              }
+            }
+          }
+        ]
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": [
+          "requestId",
+          "traceId",
+          "status",
+          "data"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "const": "ok"
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "service",
+              "status"
+            ],
+            "properties": {
+              "service": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "InvokeSuccessResponse": {
+        "type": "object",
+        "required": [
+          "requestId",
+          "traceId",
+          "status",
+          "data"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "const": "ok"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "InvokeInProgressResponse": {
+        "type": "object",
+        "required": [
+          "requestId",
+          "traceId",
+          "status",
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "const": "ok"
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "const": "in_progress"
+              }
+            }
+          },
+          "meta": {
+            "type": "object",
+            "required": [
+              "replayed",
+              "retryAfterMs",
+              "traceId"
+            ],
+            "properties": {
+              "replayed": {
+                "type": "boolean"
+              },
+              "retryAfterMs": {
+                "type": "integer"
+              },
+              "traceId": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "SubmitResponseEnvelope": {
+        "type": "object",
+        "required": [
+          "requestId",
+          "traceId",
+          "status",
+          "data"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "const": "ok"
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "jobId",
+              "requestId",
+              "state",
+              "statusUrl",
+              "attempts",
+              "maxAttempts"
+            ],
+            "properties": {
+              "jobId": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "statusUrl": {
+                "type": "string"
+              },
+              "attempts": {
+                "type": "integer"
+              },
+              "maxAttempts": {
+                "type": "integer"
+              }
+            }
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "JobStatusEnvelope": {
+        "type": "object",
+        "required": [
+          "requestId",
+          "traceId",
+          "status",
+          "data"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "const": "ok"
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "jobId",
+              "requestId",
+              "capabilityId",
+              "callerAgentId",
+              "state",
+              "attempts",
+              "maxAttempts",
+              "createdAt"
+            ],
+            "properties": {
+              "jobId": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "capabilityId": {
+                "type": "string"
+              },
+              "callerAgentId": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "running",
+                  "succeeded",
+                  "failed"
+                ]
+              },
+              "attempts": {
+                "type": "integer"
+              },
+              "maxAttempts": {
+                "type": "integer"
+              },
+              "traceId": {
+                "type": "string"
+              },
+              "callbackUrl": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "integer"
+              },
+              "startedAt": {
+                "type": "integer"
+              },
+              "finishedAt": {
+                "type": "integer"
+              },
+              "result": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "error": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      },
+      "ReplayEnvelope": {
+        "type": "object",
+        "required": [
+          "requestId",
+          "traceId",
+          "status",
+          "data"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "const": "ok"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": [
+          "requestId",
+          "traceId",
+          "status",
+          "error"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "const": "error"
+          },
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message",
+              "details"
+            ],
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/ErrorCode"
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      },
+      "ErrorCode": {
+        "type": "string",
+        "enum": [
+          "UNAUTHORIZED",
+          "FORBIDDEN",
+          "BUDGET_EXCEEDED",
+          "CAPABILITY_NOT_FOUND",
+          "NO_HEALTHY_PROVIDERS",
+          "SCHEMA_VALIDATION_FAILED",
+          "WORKER_TIMEOUT",
+          "WORKER_ERROR",
+          "INTERNAL"
+        ]
+      }
+    }
+  }
+}

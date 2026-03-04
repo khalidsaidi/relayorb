@@ -1,0 +1,40 @@
+{
+  "spec_version": "1.2",
+  "canonical_base_url": "https://relayorb.com",
+  "product": {
+    "name": "RelayOrb",
+    "description": "Tool control plane for AI agents with contract-first validation, governance, routing, and observability.",
+    "home_url": "https://relayorb.com"
+  },
+  "contact": {
+    "email": "support@relayorb.com"
+  },
+  "legal": {
+    "privacy_url": "https://relayorb.com/privacy",
+    "terms_url": "https://github.com/khalidsaidi/relayorb/blob/main/LICENSE"
+  },
+  "entrypoints": {
+    "web_app": "https://relayorb.com",
+    "api_base": "http://34.8.48.11/v1"
+  },
+  "callable_surface": {
+    "openapi": "https://relayorb.com/.well-known/openapi.json",
+    "mcp_endpoint": "https://relayorb.com/mcp"
+  },
+  "llm_entrypoints": {
+    "llms_txt": "https://relayorb.com/llms.txt",
+    "llms_full_txt": "https://relayorb.com/llms-full.txt"
+  },
+  "verification": {
+    "discovery_audit_json": "https://agentability.org/v1/evaluations/relayorb.com/latest.json",
+    "discovery_audit_html": "https://agentability.org/reports/relayorb.com"
+  },
+  "docs": {
+    "overview": "https://relayorb.com",
+    "api": "https://github.com/khalidsaidi/relayorb/blob/main/docs/API.md",
+    "demo": "https://github.com/khalidsaidi/relayorb/blob/main/docs/DEMO.md",
+    "architecture": "https://github.com/khalidsaidi/relayorb/blob/main/docs/ARCH.md",
+    "runbook": "https://github.com/khalidsaidi/relayorb/blob/main/docs/RUNBOOK.md",
+    "security": "https://github.com/khalidsaidi/relayorb/blob/main/docs/SECURITY.md"
+  }
+}
