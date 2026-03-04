@@ -17,7 +17,7 @@ export const demoCurl = `curl -sS -X POST "http://34.8.48.11/v1/invoke" \\
   -H "Content-Type: application/json" \\
   -d '{
     "requestId": "demo-001",
-    "caller": { "agentId": "anon" },
+    "caller": { "agentId": "anon", "role": "demo" },
     "capability": "rag.search@v1",
     "payload": { "query": "What is RelayOrb?" }
   }'`;
