@@ -1,0 +1,19 @@
+{
+  "schema_version": "v1",
+  "name_for_human": "RelayOrb",
+  "name_for_model": "relayorb",
+  "description_for_human": "Tool control plane for AI agents with contract-first capability routing.",
+  "description_for_model": "Use RelayOrb to invoke capability endpoints, inspect async job status, and replay deterministic invocation artifacts.",
+  "auth": {
+    "type": "none"
+  },
+  "api": {
+    "type": "openapi",
+    "url": "https://relayorb.com/.well-known/openapi.json",
+    "is_user_authenticated": false
+  },
+  "logo_url": "https://relayorb.com/icon.svg",
+  "contact_email": "support@relayorb.com",
+  "legal_url": "https://relayorb.com/privacy",
+  "legal_info_url": "https://relayorb.com/privacy"
+}
