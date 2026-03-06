@@ -8,6 +8,7 @@ import {
   Route,
 } from "lucide-react";
 import { ArchitectureDiagram } from "@/components/ArchitectureDiagram";
+import { Capabilities3DShowcase } from "@/components/Capabilities3DShowcase";
 import { CodeBlock } from "@/components/CodeBlock";
 import { Reveal } from "@/components/Reveal";
 import { TrackedLink } from "@/components/TrackedLink";
@@ -149,6 +150,20 @@ export default function HomePage() {
               ))}
             </ol>
           </Reveal>
+        </section>
+
+        <section className="py-8" data-analytics-section="home_3d_showcase">
+          <Reveal>
+            <h2 className="text-2xl font-semibold sm:text-3xl">See RelayOrb in 3D</h2>
+            <p className="mt-2 max-w-3xl text-slate-300">
+              Interactive control-plane simulation of all six platform
+              capabilities: contracts, governance, routing, replay safety,
+              async jobs, and observability.
+            </p>
+          </Reveal>
+          <div className="mt-5">
+            <Capabilities3DShowcase />
+          </div>
         </section>
 
         <section className="py-8" data-analytics-section="home_try">

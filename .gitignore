@@ -23,3 +23,5 @@ infra/gcp/terraform/terraform.tfstate.backup
 .terraform/
 *.tfstate
 *.tfstate.*
+node_modules
+node_modules
