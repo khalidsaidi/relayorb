@@ -2,12 +2,12 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::{bail, Context};
 use async_trait::async_trait;
-use reqwest::Client;
 use relayorb_core::{
     init_tracing, load_base_settings, CapabilityManifest, CapabilityRoutingHints,
     CapabilitySideEffects, CapabilityTimeouts, ErrorCode, RelayOrbError,
 };
 use relayorb_worker_sdk::{CapabilityHandler, CapabilityRegistration, WorkerConfig, WorkerRuntime};
+use reqwest::Client;
 use serde_json::{json, Value};
 use tracing::info;
 use uuid::Uuid;
@@ -99,7 +99,11 @@ impl MockRagHandler {
         }))
     }
 
-    async fn search_wikipedia(&self, query: &str, top_k: usize) -> Result<Vec<Value>, RelayOrbError> {
+    async fn search_wikipedia(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<Value>, RelayOrbError> {
         let url = format!(
             "{}/w/api.php",
             self.wikipedia_api_base.trim_end_matches('/')
@@ -126,10 +130,11 @@ impl MockRagHandler {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(
-                RelayOrbError::new(ErrorCode::WorkerError, "wikipedia search returned non-200 status")
-                    .with_details(json!({ "backend": "wikipedia", "status": status.as_u16() })),
-            );
+            return Err(RelayOrbError::new(
+                ErrorCode::WorkerError,
+                "wikipedia search returned non-200 status",
+            )
+            .with_details(json!({ "backend": "wikipedia", "status": status.as_u16() })));
         }
 
         let payload: Value = response.json().await.map_err(|err| {
@@ -157,7 +162,10 @@ impl MockRagHandler {
                     .and_then(Value::as_i64)
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| format!("wiki-{}", idx + 1));
-                let title = row.get("title").and_then(Value::as_str).unwrap_or("Untitled");
+                let title = row
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Untitled");
                 let snippet = row.get("snippet").and_then(Value::as_str).unwrap_or("");
 
                 json!({
@@ -197,10 +205,11 @@ impl MockRagHandler {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(
-                RelayOrbError::new(ErrorCode::WorkerError, "hackernews search returned non-200 status")
-                    .with_details(json!({ "backend": "hackernews", "status": status.as_u16() })),
-            );
+            return Err(RelayOrbError::new(
+                ErrorCode::WorkerError,
+                "hackernews search returned non-200 status",
+            )
+            .with_details(json!({ "backend": "hackernews", "status": status.as_u16() })));
         }
 
         let payload: Value = response.json().await.map_err(|err| {
@@ -277,10 +286,11 @@ impl MockRagHandler {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(
-                RelayOrbError::new(ErrorCode::WorkerError, "openlibrary search returned non-200 status")
-                    .with_details(json!({ "backend": "openlibrary", "status": status.as_u16() })),
-            );
+            return Err(RelayOrbError::new(
+                ErrorCode::WorkerError,
+                "openlibrary search returned non-200 status",
+            )
+            .with_details(json!({ "backend": "openlibrary", "status": status.as_u16() })));
         }
 
         let payload: Value = response.json().await.map_err(|err| {
@@ -307,7 +317,10 @@ impl MockRagHandler {
                     .and_then(Value::as_str)
                     .unwrap_or("openlibrary-unknown")
                     .to_string();
-                let title = row.get("title").and_then(Value::as_str).unwrap_or("Untitled");
+                let title = row
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Untitled");
                 let author = row
                     .get("author_name")
                     .and_then(Value::as_array)
