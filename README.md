@@ -82,6 +82,12 @@ cd ops
 docker compose up --build
 ```
 
+Optional: enable zero-cost live search results instead of mock responses:
+```bash
+cd ops
+RAG_LIVE_SEARCH=1 docker compose up --build
+```
+
 2. Invoke sample capability:
 ```bash
 cd ..
@@ -91,6 +97,23 @@ cargo run -p agent-client -- rag.search@v1 '{"query":"earnings guidance","topK":
 3. Replay stored invocation:
 ```bash
 curl http://127.0.0.1:8080/v1/replay/<request-id>
+```
+
+4. Run one-command local full-surface proof (invoke/replay/submit/jobs/authz/metrics):
+```bash
+bash ops/smoke/local-full-surface-proof.sh
+```
+
+5. Run a business-readable real-world showcase (batch research, async job, RBAC, replay):
+```bash
+bash ops/smoke/real-world-showcase.sh
+```
+
+6. Optional ephemeral cloud demo proof with automatic destroy:
+```bash
+TF_BACKEND_BUCKET=<demo-tfstate-bucket> \
+TF_VARS_FILE=infra/gcp/terraform/envs/demo/terraform.tfvars \
+bash ops/smoke/ephemeral-demo-proof.sh
 ```
 
 ## Deploy with Terraform

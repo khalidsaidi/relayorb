@@ -60,6 +60,14 @@ services:
       RELAYORB_PUBLIC_BASE_URL: http://worker:8090
       WORKER_INSTANCE_ID: worker-mock-rag-1
       RELAYORB_REGION: us-central1
+      RAG_LIVE_SEARCH: ${RAG_LIVE_SEARCH:-0}
+      RAG_LIVE_BACKEND: ${RAG_LIVE_BACKEND:-wikipedia}
+      RAG_WIKI_BASE_URL: ${RAG_WIKI_BASE_URL:-https://en.wikipedia.org}
+      RAG_HTTP_USER_AGENT: ${RAG_HTTP_USER_AGENT:-relayorb-worker-mock-rag/0.1}
+      RAG_PROVIDER_NAME: ${RAG_PROVIDER_NAME:-}
+      RAG_RESPONSE_DELAY_MS: ${RAG_RESPONSE_DELAY_MS:-0}
+      WORKER_TTL_SECONDS: ${WORKER_TTL_SECONDS:-60}
+      WORKER_HEARTBEAT_INTERVAL_SECONDS: ${WORKER_HEARTBEAT_INTERVAL_SECONDS:-20}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       RELAYORB_METRICS_EXPORTER: prometheus
       METRICS_AUTH_MODE: public
@@ -74,8 +82,6 @@ services:
       POSTGRES_USER: relayorb
       POSTGRES_PASSWORD: relayorb
       POSTGRES_DB: relayorb
-    ports:
-      - "5432:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
 
