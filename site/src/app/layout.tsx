@@ -106,6 +106,14 @@ export default function RootLayout({
                 Privacy
               </TrackedLink>
               <TrackedLink
+                href="/stats"
+                variant="link"
+                eventName="cta_click"
+                eventParams={{ cta: "nav_stats", location: "header" }}
+              >
+                Stats
+              </TrackedLink>
+              <TrackedLink
                 href={links.github}
                 variant="ghost"
                 className="px-3 py-1.5"
