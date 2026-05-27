@@ -172,13 +172,11 @@ impl WorkerRuntime {
     pub async fn serve(self) -> anyhow::Result<()> {
         init_metrics_exporter()?;
         init_metric_context(&self.config);
-        self.register_with_registry().await?;
-
         let state = Arc::new(self.clone());
-        let heartbeater = state.clone();
+        let registrar = state.clone();
         tokio::spawn(async move {
-            if let Err(err) = heartbeater.heartbeat_loop().await {
-                error!(error = %err, "heartbeat loop exited");
+            if let Err(err) = registrar.registration_and_heartbeat_loop().await {
+                error!(error = %err, "registration/heartbeat loop exited");
             }
         });
 
@@ -195,6 +193,23 @@ impl WorkerRuntime {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, router).await?;
         Ok(())
+    }
+
+    async fn registration_and_heartbeat_loop(&self) -> anyhow::Result<()> {
+        loop {
+            match self.register_with_registry().await {
+                Ok(()) => {
+                    info!("worker registered with registry");
+                    break;
+                }
+                Err(err) => {
+                    warn!(error = %err, "worker registration failed; retrying");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            }
+        }
+
+        self.heartbeat_loop().await
     }
 
     async fn register_with_registry(&self) -> anyhow::Result<()> {
