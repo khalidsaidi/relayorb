@@ -93,8 +93,9 @@ jobs:
           set -euo pipefail
           OWNER_RUNTIME_SA="$(gcloud run services describe "${{ env.OWNER_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(spec.template.spec.serviceAccountName)')"
           GATEWAY_RUNTIME_SA="$(gcloud run services describe "${{ env.GATEWAY_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(spec.template.spec.serviceAccountName)')"
-          if [ -z "${OWNER_RUNTIME_SA}" ] || [ -z "${GATEWAY_RUNTIME_SA}" ]; then
-            echo "failed to resolve runtime service accounts for owner/gateway"
+          SCRAPER_RUNTIME_SA="$(gcloud run services describe "${{ env.SCRAPER_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(spec.template.spec.serviceAccountName)')"
+          if [ -z "${OWNER_RUNTIME_SA}" ] || [ -z "${GATEWAY_RUNTIME_SA}" ] || [ -z "${SCRAPER_RUNTIME_SA}" ]; then
+            echo "failed to resolve runtime service accounts for owner/gateway/scraper"
             exit 1
           fi
           gcloud run services add-iam-policy-binding "${{ env.SERVICE_NAME }}" \
@@ -102,10 +103,20 @@ jobs:
             --region "${{ env.REGION }}" \
             --member "serviceAccount:${OWNER_RUNTIME_SA}" \
             --role roles/run.invoker >/dev/null
+          gcloud run services add-iam-policy-binding "${{ env.SERVICE_NAME }}" \
+            --project "${{ env.PROJECT_ID }}" \
+            --region "${{ env.REGION }}" \
+            --member "serviceAccount:${SCRAPER_RUNTIME_SA}" \
+            --role roles/run.invoker >/dev/null
           gcloud run services add-iam-policy-binding "${{ env.OWNER_SERVICE_NAME }}" \
             --project "${{ env.PROJECT_ID }}" \
             --region "${{ env.REGION }}" \
             --member "serviceAccount:${GATEWAY_RUNTIME_SA}" \
+            --role roles/run.invoker >/dev/null
+          gcloud run services add-iam-policy-binding "${{ env.OWNER_SERVICE_NAME }}" \
+            --project "${{ env.PROJECT_ID }}" \
+            --region "${{ env.REGION }}" \
+            --member "serviceAccount:${SCRAPER_RUNTIME_SA}" \
             --role roles/run.invoker >/dev/null
 
       - name: Wait for Owner Worker Registration
