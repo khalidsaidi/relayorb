@@ -95,15 +95,26 @@ jobs:
             fi
 
             echo "Live run (gateway) $base"
+            set +e
             cargo run -p relayorb-conformance --release -- run \
               --target gateway \
               --base-url "$GATEWAY_URL" \
               --manifest "$manifest" \
               --vectors "$vectors" \
               --bearer-token-env RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              echo "::group::conformance-report-debug"
+              ls -la "$REPORT_DIR" || true
+              cat "$REPORT_DIR"/*.json || true
+              echo "::endgroup::"
+              exit "$rc"
+            fi
           done
 
       - name: Upload conformance reports (artifact)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: conformance-reports-prod-gateway
