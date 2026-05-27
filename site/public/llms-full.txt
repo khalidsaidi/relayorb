@@ -30,3 +30,4 @@ Canonical implementation/docs:
 - Ragmap: https://ragmap-api.web.app — MCP search and RAG-focused server discovery.
 - Rootfetch: https://rootfetch.com — DNS delegation intelligence with MCP telemetry.
 - Agentability: https://agentability.org — Agent-readiness audit and evidence-backed report publishing.
+- AIStatusDashboard: https://aistatusdashboard.com — Real-time AI provider status monitoring with evidence-backed metrics.

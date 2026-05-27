@@ -97,22 +97,15 @@ export async function Footer() {
       </div>
       <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-center gap-2 px-6 pb-4 text-xs text-slate-300">
         <span className="font-medium">Cross-project:</span>
-        <a href={relatedProjects[0].statsUrl} className="text-cyan-300 hover:text-cyan-200">
-          A2ABench
-        </a>
-        <span>·</span>
-        <a href={relatedProjects[1].statsUrl} className="text-cyan-300 hover:text-cyan-200">
-          Ragmap
-        </a>
-        <span>·</span>
-        <a href={relatedProjects[2].statsUrl} className="text-cyan-300 hover:text-cyan-200">
-          Rootfetch
-        </a>
-        <span>·</span>
-        <a href={relatedProjects[3].statsUrl} className="text-cyan-300 hover:text-cyan-200">
-          Agentability
-        </a>
-        <span>— benchmark · MCP search · DNS delegation · agent-readiness audit</span>
+        {relatedProjects.map((project, index) => (
+          <span key={project.key}>
+            <a href={project.statsUrl} className="text-cyan-300 hover:text-cyan-200">
+              {project.name}
+            </a>
+            {index < relatedProjects.length - 1 ? <span> · </span> : <span> </span>}
+          </span>
+        ))}
+        <span>— benchmark · MCP search · DNS delegation · agent-readiness audit · status monitoring</span>
       </div>
       <div className="mx-auto flex w-full max-w-6xl items-center justify-center px-6 pb-8 text-xs text-slate-300">
         <a

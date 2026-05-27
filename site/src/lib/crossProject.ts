@@ -1,5 +1,5 @@
 export type RelatedProject = {
-  key: "a2abench" | "ragmap" | "rootfetch" | "agentability";
+  key: "a2abench" | "ragmap" | "rootfetch" | "agentability" | "aistatusdashboard";
   name: string;
   url: string;
   description: string;
@@ -45,6 +45,15 @@ export const relatedProjects: RelatedProject[] = [
     statsJsonUrl: "https://agentability.org/stats.json",
     agentCardUrl: "https://agentability.org/.well-known/agent.json",
   },
+  {
+    key: "aistatusdashboard",
+    name: "AIStatusDashboard",
+    url: "https://aistatusdashboard.com",
+    description: "Real-time AI provider status monitoring with evidence-backed metrics.",
+    statsUrl: "https://aistatusdashboard.com/stats",
+    statsJsonUrl: "https://aistatusdashboard.com/stats.json",
+    agentCardUrl: "https://aistatusdashboard.com/.well-known/agent.json",
+  },
 ];
 
 export function siblingsForManifest() {
@@ -76,6 +85,13 @@ export function siblingsForManifest() {
       stats_url: "https://agentability.org/stats",
       stats_json_url: "https://agentability.org/stats.json",
       agent_card_url: "https://agentability.org/.well-known/agent.json",
+    },
+    aistatusdashboard: {
+      name: "AIStatusDashboard",
+      url: "https://aistatusdashboard.com",
+      stats_url: "https://aistatusdashboard.com/stats",
+      stats_json_url: "https://aistatusdashboard.com/stats.json",
+      agent_card_url: "https://aistatusdashboard.com/.well-known/agent.json",
     },
   };
 }
