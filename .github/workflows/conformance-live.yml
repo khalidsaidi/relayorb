@@ -18,6 +18,7 @@ jobs:
       GATEWAY_URL: ${{ secrets.RELAYORB_CONFORMANCE_GATEWAY_URL_PROD }}
       OIDC_AUDIENCE: ${{ secrets.RELAYORB_PROD_OIDC_AUDIENCE }}
       RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD: ${{ secrets.RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD }}
+      GCP_GATEWAY_DEPLOYER_SA: ${{ secrets.GCP_GATEWAY_DEPLOYER_SA }}
 
     steps:
       - name: Checkout
@@ -56,7 +57,11 @@ jobs:
           if [ -z "${RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD:-}" ]; then
             AUD="${OIDC_AUDIENCE:-$GATEWAY_URL}"
             echo "RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD missing; minting OIDC token for audience: ${AUD}"
-            RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD="$(gcloud auth print-identity-token --audiences "${AUD}")"
+            if [ -n "${GCP_GATEWAY_DEPLOYER_SA:-}" ]; then
+              RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD="$(gcloud auth print-identity-token --impersonate-service-account "${GCP_GATEWAY_DEPLOYER_SA}" --audiences "${AUD}")"
+            else
+              RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD="$(gcloud auth print-identity-token --audiences "${AUD}")"
+            fi
             export RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD
           fi
 
