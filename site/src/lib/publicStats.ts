@@ -88,6 +88,16 @@ function quantileMetric(samples: Sample[], metric: string, quantile: string) {
   return found ? found.value : 0;
 }
 
+function sumMetricWhere(
+  samples: Sample[],
+  metric: string,
+  predicate: (sample: Sample) => boolean,
+) {
+  return samples
+    .filter(sample => sample.metric === metric && predicate(sample))
+    .reduce((acc, sample) => acc + sample.value, 0);
+}
+
 async function fetchTerraformDownloads() {
   const urls = {
     prod_module:
@@ -148,12 +158,24 @@ export async function getRelayOrbPublicStats(): Promise<RelayOrbPublicStats> {
   const invokesTotal =
     sumMetric(samples, "relayorb_gateway_invoke_requests_total") ||
     sumMetric(samples, "relayorb_gateway_invoke_total");
+  const invokeErrorsFromRequests = sumMetricWhere(
+    samples,
+    "relayorb_gateway_invoke_requests_total",
+    sample => (sample.labels.result || "ok") !== "ok",
+  );
+  const invokeSuccessFromRequests = sumMetricWhere(
+    samples,
+    "relayorb_gateway_invoke_requests_total",
+    sample => (sample.labels.result || "") === "ok",
+  );
   const invokeSuccess =
     sumMetric(samples, "relayorb_gateway_invoke_success_total") ||
-    sumMetric(samples, "relayorb_gateway_invoke_ok_total");
+    sumMetric(samples, "relayorb_gateway_invoke_ok_total") ||
+    invokeSuccessFromRequests;
   const invokeErrors =
     sumMetric(samples, "relayorb_gateway_invoke_error_total") ||
-    sumMetric(samples, "relayorb_gateway_invoke_fail_total");
+    sumMetric(samples, "relayorb_gateway_invoke_fail_total") ||
+    invokeErrorsFromRequests;
   const invokeBase = Math.max(invokesTotal, invokeSuccess + invokeErrors);
 
   const successPct =
@@ -212,6 +234,7 @@ export async function getRelayOrbPublicStats(): Promise<RelayOrbPublicStats> {
     workers_healthy: Math.round(
       Math.max(
         0,
+        maxMetric(samples, "relayorb_registry_providers_healthy") ||
         maxMetric(samples, "relayorb_registry_workers_healthy") ||
           maxMetric(samples, "relayorb_registry_healthy_workers"),
       ),

@@ -17,18 +17,21 @@ jobs:
     env:
       GATEWAY_URL: ${{ secrets.RELAYORB_CONFORMANCE_GATEWAY_URL_PROD }}
       OIDC_AUDIENCE: ${{ secrets.RELAYORB_PROD_OIDC_AUDIENCE }}
+      RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD: ${{ secrets.RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Authenticate to GCP (OIDC)
+        if: ${{ env.RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD == '' }}
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_GATEWAY_DEPLOYER_SA }}
 
       - name: Setup gcloud
+        if: ${{ env.RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD == '' }}
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Set up Rust
@@ -42,8 +45,6 @@ jobs:
 
       - name: Run live conformance (gateway target) for all manifests
         shell: bash
-        env:
-          RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD: ${{ secrets.RELAYORB_CONFORMANCE_GATEWAY_BEARER_TOKEN_PROD }}
         run: |
           set -euo pipefail
 
