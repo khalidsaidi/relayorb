@@ -4,9 +4,6 @@ enforce_in_prod = true
 env = "prod"
 capability_prefix = "rag."
 allowed_service_names = ["relayorb-rag-prod"]
-allowed_service_accounts = [
-  "relayorb-rag-sa@relayorb-prod.iam.gserviceaccount.com",
-]
 
 [[rules]]
 env = "prod"
