@@ -69,13 +69,18 @@ jobs:
             --set-env-vars RELAYORB_ENV=prod,RELAYORB_REGION=${{ env.REGION }},RELAYORB_SERVICE_NAME=${{ env.SERVICE_NAME }},RELAYORB_VERSION=${{ github.sha }},REGISTRY_BIND_ADDR=0.0.0.0:8080,REGISTRY_OWNERSHIP_POLICY_PATH=config/registry-ownership.toml,REGISTRY_WORKER_AUTH_MODE=oidc,REGISTRY_WORKER_OIDC_ISSUER=https://accounts.google.com,REGISTRY_WORKER_OIDC_AUDIENCE=$REGISTRY_URL,REGISTRY_WORKER_JWKS_URL=https://www.googleapis.com/oauth2/v3/certs,METRICS_AUTH_MODE=bearer \
             --set-secrets DATABASE_URL=relayorb-prod-registry-db:latest,METRICS_BEARER_TOKEN=relayorb-prod-registry-metrics-token:latest
 
-      - name: Warm Registry Cache (best effort)
+      - name: Wait for Owner Worker Registration
         shell: bash
         run: |
           set -euo pipefail
           REGISTRY_URL="$(gcloud run services describe "${{ env.SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
+          NONCE="$(date +%s)"
+          gcloud run services update "${{ env.OWNER_SERVICE_NAME }}" \
+            --project "${{ env.PROJECT_ID }}" \
+            --region "${{ env.REGION }}" \
+            --update-env-vars "REGISTRY_SMOKE_NONCE=$NONCE" >/dev/null
           TOKEN="$(gcloud auth print-identity-token --impersonate-service-account "${{ secrets.GCP_REGISTRY_DEPLOYER_SA }}" --audiences "$REGISTRY_URL")"
-          for _ in $(seq 1 24); do
+          for _ in $(seq 1 30); do
             RESPONSE="$(curl -sS -H "Authorization: Bearer $TOKEN" "$REGISTRY_URL/v1/capabilities/rag.search@v1" || true)"
             if echo "$RESPONSE" | jq -e --arg service_name "${{ env.OWNER_SERVICE_NAME }}" '.providers // [] | any((.serviceName == $service_name or .service_name == $service_name) and (.healthy // false) == true)' >/dev/null; then
               echo "owner worker is registered and healthy"
@@ -83,8 +88,9 @@ jobs:
             fi
             sleep 5
           done
-          echo "owner worker was not yet visible in registry; continuing to downstream smoke checks"
+          echo "owner worker did not appear as healthy in registry"
           echo "$RESPONSE" | head -c 1000
+          exit 1
 
       - name: Verify runtime service accounts
         shell: bash
