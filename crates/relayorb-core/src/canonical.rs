@@ -21,7 +21,7 @@ fn normalize(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
             let mut entries: Vec<_> = map.iter().collect();
-            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+            entries.sort_by_key(|(key, _)| *key);
 
             let mut normalized = Map::with_capacity(entries.len());
             for (key, value) in entries {
