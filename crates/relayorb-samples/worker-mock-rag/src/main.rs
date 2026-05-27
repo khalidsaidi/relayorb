@@ -507,8 +507,8 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let runtime = WorkerRuntime::new(config, registrations)
-    .context("failed to initialize worker runtime")?;
+    let runtime =
+        WorkerRuntime::new(config, registrations).context("failed to initialize worker runtime")?;
 
     info!(
         live_search_enabled,
