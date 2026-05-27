@@ -63,6 +63,14 @@ struct MockRagHandler {
 
 struct DemoEchoHandler;
 
+fn parse_bool_env(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 impl MockRagHandler {
     fn new(
         live_search_enabled: bool,
@@ -462,6 +470,10 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(20);
+    let enable_demo_echo = std::env::var("ENABLE_DEMO_ECHO")
+        .ok()
+        .and_then(|value| parse_bool_env(&value))
+        .unwrap_or_else(|| !env.eq_ignore_ascii_case("prod"));
 
     let config = WorkerConfig {
         bind_addr,
@@ -477,33 +489,33 @@ async fn main() -> anyhow::Result<()> {
         heartbeat_interval_seconds,
     };
 
-    let runtime = WorkerRuntime::new(
-        config,
-        vec![
-            CapabilityRegistration {
-                manifest: mock_rag_manifest(),
-                handler: Arc::new(MockRagHandler::new(
-                    live_search_enabled,
-                    live_backend,
-                    wikipedia_api_base,
-                    http_user_agent,
-                    provider_name.clone(),
-                    response_delay_ms,
-                )),
-            },
-            CapabilityRegistration {
-                manifest: demo_echo_manifest(),
-                handler: Arc::new(DemoEchoHandler),
-            },
-        ],
-    )
-    .context("failed to initialize worker runtime")?;
+    let mut registrations = vec![CapabilityRegistration {
+        manifest: mock_rag_manifest(),
+        handler: Arc::new(MockRagHandler::new(
+            live_search_enabled,
+            live_backend,
+            wikipedia_api_base,
+            http_user_agent,
+            provider_name.clone(),
+            response_delay_ms,
+        )),
+    }];
+    if enable_demo_echo {
+        registrations.push(CapabilityRegistration {
+            manifest: demo_echo_manifest(),
+            handler: Arc::new(DemoEchoHandler),
+        });
+    }
+
+    let runtime =
+        WorkerRuntime::new(config, registrations).context("failed to initialize worker runtime")?;
 
     info!(
         live_search_enabled,
         live_backend = live_backend.as_str(),
         provider_name,
         response_delay_ms,
+        enable_demo_echo,
         "starting rag worker"
     );
     runtime.serve().await
