@@ -24,3 +24,9 @@ Canonical implementation/docs:
 - ARCH docs: https://github.com/khalidsaidi/relayorb/blob/main/docs/ARCH.md
 - RUNBOOK docs: https://github.com/khalidsaidi/relayorb/blob/main/docs/RUNBOOK.md
 - SECURITY docs: https://github.com/khalidsaidi/relayorb/blob/main/docs/SECURITY.md
+
+## Related projects
+- A2ABench: https://a2abench-api.web.app — Public benchmark for agent Q&A performance.
+- Ragmap: https://ragmap-api.web.app — MCP search and RAG-focused server discovery.
+- Rootfetch: https://rootfetch.com — DNS delegation intelligence with MCP telemetry.
+- Agentability: https://agentability.org — Agent-readiness audit and evidence-backed report publishing.

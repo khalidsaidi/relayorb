@@ -101,6 +101,14 @@ export default function HomePage() {
               >
                 View on GitHub
               </TrackedLink>
+              <TrackedLink
+                href="/stats"
+                variant="ghost"
+                eventName="cta_click"
+                eventParams={{ cta: "view_stats", location: "hero" }}
+              >
+                View public stats
+              </TrackedLink>
             </div>
             <p className="mt-4 text-sm text-slate-400">
               Open Source · Anonymous demo (read-only, rate-limited) · Terraform

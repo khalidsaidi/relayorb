@@ -10,3 +10,9 @@ RelayOrb is a tool control plane for AI agents.
 - Security: https://github.com/khalidsaidi/relayorb/blob/main/docs/SECURITY.md
 - OpenAPI: https://relayorb.com/.well-known/openapi.json
 - MCP endpoint: https://relayorb.com/mcp
+
+## Related projects
+- A2ABench: https://a2abench-api.web.app — Public benchmark for agent Q&A performance.
+- Ragmap: https://ragmap-api.web.app — MCP search and RAG-focused server discovery.
+- Rootfetch: https://rootfetch.com — DNS delegation intelligence with MCP telemetry.
+- Agentability: https://agentability.org — Agent-readiness audit and evidence-backed report publishing.

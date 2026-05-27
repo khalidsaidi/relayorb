@@ -36,5 +36,35 @@
     "architecture": "https://github.com/khalidsaidi/relayorb/blob/main/docs/ARCH.md",
     "runbook": "https://github.com/khalidsaidi/relayorb/blob/main/docs/RUNBOOK.md",
     "security": "https://github.com/khalidsaidi/relayorb/blob/main/docs/SECURITY.md"
+  },
+  "siblings": {
+    "a2abench": {
+      "name": "A2ABench",
+      "url": "https://a2abench-api.web.app",
+      "stats_url": "https://a2abench-api.web.app/stats",
+      "stats_json_url": "https://a2abench-api.web.app/stats.json",
+      "agent_card_url": "https://a2abench-api.web.app/.well-known/agent.json"
+    },
+    "ragmap": {
+      "name": "Ragmap",
+      "url": "https://ragmap-api.web.app",
+      "stats_url": "https://ragmap-api.web.app/stats",
+      "stats_json_url": "https://ragmap-api.web.app/stats.json",
+      "agent_card_url": "https://ragmap-api.web.app/.well-known/agent.json"
+    },
+    "rootfetch": {
+      "name": "Rootfetch",
+      "url": "https://rootfetch.com",
+      "stats_url": "https://rootfetch.com/stats",
+      "stats_json_url": "https://rootfetch.com/stats.json",
+      "agent_card_url": "https://rootfetch.com/.well-known/agent.json"
+    },
+    "agentability": {
+      "name": "Agentability",
+      "url": "https://agentability.org",
+      "stats_url": "https://agentability.org/stats",
+      "stats_json_url": "https://agentability.org/stats.json",
+      "agent_card_url": "https://agentability.org/.well-known/agent.json"
+    }
   }
 }
