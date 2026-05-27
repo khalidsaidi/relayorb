@@ -76,19 +76,16 @@ jobs:
             --set-env-vars RELAYORB_ENV=prod,RELAYORB_REGION=${{ env.REGION }},RELAYORB_SERVICE_NAME=${{ env.SERVICE_NAME }},RELAYORB_VERSION=${{ github.sha }},REGISTRY_BIND_ADDR=0.0.0.0:8080,REGISTRY_OWNERSHIP_POLICY_PATH=config/registry-ownership.toml,REGISTRY_WORKER_AUTH_MODE=oidc,REGISTRY_WORKER_OIDC_ISSUER=https://accounts.google.com,REGISTRY_WORKER_OIDC_AUDIENCE=$REGISTRY_URL,REGISTRY_WORKER_JWKS_URL=https://www.googleapis.com/oauth2/v3/certs,METRICS_AUTH_MODE=bearer \
             --set-secrets DATABASE_URL=relayorb-prod-registry-db:latest,METRICS_BEARER_TOKEN=relayorb-prod-registry-metrics-token:latest
 
-      - name: Deploy owner worker Cloud Run
+      - name: Refresh owner worker revision
         run: |
           REGISTRY_URL="$(gcloud run services describe "${{ env.SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
           WORKER_URL="$(gcloud run services describe "${{ env.OWNER_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(status.url)')"
-          gcloud run deploy "${{ env.OWNER_SERVICE_NAME }}" \
+          gcloud run services update "${{ env.OWNER_SERVICE_NAME }}" \
             --project "${{ env.PROJECT_ID }}" \
             --region "${{ env.REGION }}" \
             --image "$OWNER_IMAGE" \
-            --service-account relayorb-rag-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
-            --ingress all \
-            --invoker-iam-check \
-            --set-env-vars RELAYORB_ENV=prod,RELAYORB_REGION=${{ env.REGION }},RELAYORB_SERVICE_NAME=${{ env.OWNER_SERVICE_NAME }},RELAYORB_VERSION=${{ github.sha }},WORKER_BIND_ADDR=0.0.0.0:8080,WORKER_BASE_URL=$WORKER_URL,REGISTRY_URL=$REGISTRY_URL,REGISTRY_IDENTITY_AUDIENCE=$REGISTRY_URL,METRICS_AUTH_MODE=bearer \
-            --set-secrets METRICS_BEARER_TOKEN=relayorb-prod-worker-metrics-token:latest
+            --update-env-vars RELAYORB_ENV=prod,RELAYORB_REGION=${{ env.REGION }},RELAYORB_SERVICE_NAME=${{ env.OWNER_SERVICE_NAME }},RELAYORB_VERSION=${{ github.sha }},WORKER_BIND_ADDR=0.0.0.0:8080,WORKER_BASE_URL=$WORKER_URL,REGISTRY_URL=$REGISTRY_URL,REGISTRY_IDENTITY_AUDIENCE=$REGISTRY_URL,METRICS_AUTH_MODE=bearer \
+            --update-secrets METRICS_BEARER_TOKEN=relayorb-prod-worker-metrics-token:latest
 
       - name: Wait for Owner Worker Registration
         shell: bash
