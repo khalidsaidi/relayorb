@@ -1,5 +1,9 @@
 terraform {
   required_version = ">= 1.6.0"
+  backend "gcs" {
+    bucket = "relayorb-prod-tfstate"
+    prefix = "relayorb-prod"
+  }
   required_providers {
     google = {
       source  = "hashicorp/google"

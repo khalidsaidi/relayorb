@@ -1,0 +1,56 @@
+name: Terraform Plan
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    env:
+      TF_IN_AUTOMATION: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (OIDC)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_REGISTRY_DEPLOYER_SA }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
+      - name: Terraform fmt
+        run: terraform -chdir=infra/gcp/terraform fmt -check
+
+      - name: Terraform init
+        run: terraform -chdir=infra/gcp/terraform init -input=false
+
+      - name: Terraform plan must be clean
+        shell: bash
+        run: |
+          set +e
+          terraform -chdir=infra/gcp/terraform plan -detailed-exitcode -no-color -input=false
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            exit 0
+          fi
+          if [ "$rc" -eq 2 ]; then
+            echo "Terraform drift or unapplied changes detected."
+            exit 1
+          fi
+          exit "$rc"
