@@ -15,6 +15,16 @@ export const metadata: Metadata = {
   title: "Reliability",
   description:
     "Thirty-day RelayOrb production reliability and cost data from internal monitoring traffic.",
+  openGraph: {
+    title: "Reliability | RelayOrb",
+    description:
+      "Thirty-day RelayOrb production reliability and cost data from internal monitoring traffic.",
+  },
+  twitter: {
+    title: "Reliability | RelayOrb",
+    description:
+      "Thirty-day RelayOrb production reliability and cost data from internal monitoring traffic.",
+  },
 };
 
 function formatNumber(value: number) {

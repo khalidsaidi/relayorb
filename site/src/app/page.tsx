@@ -1,4 +1,5 @@
 import Script from "next/script";
+import type { Metadata } from "next";
 import {
   Activity,
   FileCheck2,
@@ -18,6 +19,19 @@ import {
   terraformDemoSnippet,
   terraformProdSnippet,
 } from "@/lib/site";
+
+export const metadata: Metadata = {
+  openGraph: {
+    title: "RelayOrb — Tool Control Plane for AI Agents",
+    description:
+      "Route agent calls to versioned capabilities with contracts, governance, and observability.",
+  },
+  twitter: {
+    title: "RelayOrb — Tool Control Plane for AI Agents",
+    description:
+      "Route agent calls to versioned capabilities with contracts, governance, and observability.",
+  },
+};
 
 const features = [
   {

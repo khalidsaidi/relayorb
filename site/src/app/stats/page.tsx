@@ -1,7 +1,21 @@
 import Link from "next/link";
+import type { Metadata } from "next";
 import { getRelayOrbPublicStats } from "@/lib/publicStats";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = {
+  title: "Public stats",
+  description: "Real-time control-plane counters: invokes, callers, latency, capabilities.",
+  openGraph: {
+    title: "Public stats | RelayOrb",
+    description: "Real-time control-plane counters: invokes, callers, latency, capabilities.",
+  },
+  twitter: {
+    title: "Public stats | RelayOrb",
+    description: "Real-time control-plane counters: invokes, callers, latency, capabilities.",
+  },
+};
 
 export default async function RelayOrbStatsPage() {
   const stats = await getRelayOrbPublicStats();

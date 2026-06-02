@@ -1,9 +1,18 @@
+import type { Metadata } from "next";
 import { TrackedLink } from "@/components/TrackedLink";
 import { links } from "@/lib/site";
 
-export const metadata = {
-  title: "RelayOrb Privacy",
-  description: "Analytics and consent disclosure for relayorb.com.",
+export const metadata: Metadata = {
+  title: "Privacy",
+  description: "RelayOrb privacy policy and data handling practices.",
+  openGraph: {
+    title: "Privacy | RelayOrb",
+    description: "RelayOrb privacy policy and data handling practices.",
+  },
+  twitter: {
+    title: "Privacy | RelayOrb",
+    description: "RelayOrb privacy policy and data handling practices.",
+  },
 };
 
 export default function PrivacyPage() {
