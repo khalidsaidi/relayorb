@@ -25,9 +25,12 @@ export type RelayOrbPublicStats = {
   tool_call_success_pct: number;
   last_invoke_ts: string;
   operational_since: string;
-  uptime_30d_pct: number;
   total_internal_requests_30d: number;
-  p95_latency_ms_30d: number;
+  core_services_uptime_30d_pct: number;
+  gateway_uptime_30d_pct: number;
+  registry_uptime_30d_pct: number;
+  rag_uptime_30d_pct: number;
+  gateway_p95_latency_ms_30d: number;
   reliability_report_url: string;
   generated_at: string;
   terraform_downloads: {
@@ -159,6 +162,25 @@ function lastInvokeTimestamp(samples: Sample[]) {
 
 export async function getRelayOrbPublicStats(): Promise<RelayOrbPublicStats> {
   const reliability = getRelayOrbReliabilitySnapshot();
+  const gateway =
+    reliability.prodReliability.services.find(service => service.name === "relayorb-gateway-prod") ??
+    null;
+  const registry =
+    reliability.prodReliability.services.find(
+      service => service.name === "relayorb-registry-prod",
+    ) ?? null;
+  const rag =
+    reliability.prodReliability.services.find(service => service.name === "relayorb-rag-prod") ??
+    null;
+  const coreTotal = [gateway, registry].reduce(
+    (sum, service) => sum + (service?.totalRequests30d ?? 0),
+    0,
+  );
+  const coreSuccess = [gateway, registry].reduce(
+    (sum, service) => sum + (service?.successfulRequests30d ?? 0),
+    0,
+  );
+  const coreUptime = coreTotal > 0 ? (coreSuccess / coreTotal) * 100 : 100;
   const [downloads, samples] = await Promise.all([
     fetchTerraformDownloads(),
     fetchMetricsSamples(),
@@ -254,9 +276,12 @@ export async function getRelayOrbPublicStats(): Promise<RelayOrbPublicStats> {
     tool_call_success_pct: successPct,
     last_invoke_ts: lastInvokeTimestamp(samples),
     operational_since: reliability.operationalSince,
-    uptime_30d_pct: reliability.prodReliability.uptime30dPct,
     total_internal_requests_30d: reliability.prodReliability.totalInternalRequests30d,
-    p95_latency_ms_30d: reliability.prodReliability.gatewayP95LatencyMs30d,
+    core_services_uptime_30d_pct: Number(coreUptime.toFixed(4)),
+    gateway_uptime_30d_pct: gateway?.uptime30dPct ?? 100,
+    registry_uptime_30d_pct: registry?.uptime30dPct ?? 100,
+    rag_uptime_30d_pct: rag?.uptime30dPct ?? 100,
+    gateway_p95_latency_ms_30d: reliability.prodReliability.gatewayP95LatencyMs30d,
     reliability_report_url: "https://relayorb.com/reliability",
     generated_at: generatedAt,
     terraform_downloads: downloads,
