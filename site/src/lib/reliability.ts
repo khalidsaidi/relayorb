@@ -37,13 +37,15 @@ export function getRelayOrbCoreReliability() {
 
 export function getRelayOrbWorkerDiagnosis() {
   return {
-    status: "Configuration regression under synthetic monitoring",
+    status: "Resolved configuration regression",
     summary:
       "Most relayorb-rag-prod 5xx responses came from internal GET /metrics scrapes, not public invoke traffic.",
     rootCause:
       "The worker repeatedly failed startup because capability registration returned 403 Forbidden for the default compute identity instead of the allowed relayorb-rag-sa service account.",
     evidence:
       "Cloud Run startup logs show failed readiness probes and worker registration errors for capability rag.search@v1 before later scrape retries succeeded.",
+    resolution:
+      "Resolved 2026-06-02: relayorb-rag-prod now runs as relayorb-rag-sa@relayorb-prod.iam.gserviceaccount.com. The 30-day window on this page still reflects the pre-fix synthetic-monitoring period.",
   };
 }
 

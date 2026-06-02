@@ -135,9 +135,9 @@ export default function ReliabilityPage() {
         </div>
         <p className="mt-5 text-sm leading-7 text-slate-300">
           The headline numbers on this page focus on gateway and registry because those are the
-          production-grade control-plane components. The worker remained deployed, but its
-          30-day error rate was dominated by synthetic monitoring requests hitting a startup
-          configuration regression rather than real invoke traffic.
+          production-grade control-plane components. The worker remained deployed, but this
+          30-day snapshot still includes the pre-fix synthetic monitoring period when a startup
+          identity regression inflated worker errors without representing public invoke traffic.
         </p>
       </section>
 
@@ -228,6 +228,7 @@ export default function ReliabilityPage() {
         <p className="mt-3 text-sm leading-7 text-slate-200">{workerDiagnosis.summary}</p>
         <p className="mt-3 text-sm leading-7 text-slate-300">{workerDiagnosis.rootCause}</p>
         <p className="mt-3 text-sm leading-7 text-slate-300">{workerDiagnosis.evidence}</p>
+        <p className="mt-3 text-sm leading-7 text-emerald-200">{workerDiagnosis.resolution}</p>
         <p className="mt-3 text-sm leading-7 text-slate-300">
           Result: the worker issue is real, but the 30-day 5xx volume mostly measures synthetic
           monitoring noise on the worker path, not public control-plane reliability.
