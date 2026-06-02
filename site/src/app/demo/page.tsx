@@ -3,9 +3,9 @@ import { TrackedLink } from "@/components/TrackedLink";
 import { demoCurl, links } from "@/lib/site";
 
 export const metadata = {
-  title: "RelayOrb Demo",
+  title: "RelayOrb Demo Module",
   description:
-    "Anonymous RelayOrb demo usage, guardrails, and canonical demo docs.",
+    "Self-hosted RelayOrb demo posture, guardrails, and canonical demo docs.",
 };
 
 export default function DemoPage() {
@@ -13,14 +13,16 @@ export default function DemoPage() {
     <main className="mx-auto min-h-screen w-full max-w-4xl px-6 py-20 sm:px-8">
       <section data-analytics-section="demo_intro">
         <p className="text-xs uppercase tracking-[0.18em] text-cyan-300">
-          Anonymous public demo
+          Self-hosted demo posture
         </p>
-        <h1 className="mt-2 text-4xl font-semibold">Try RelayOrb now</h1>
+        <h1 className="mt-2 text-4xl font-semibold">Run the RelayOrb demo yourself</h1>
         <p className="mt-4 text-slate-300">
-          Demo endpoint (current): <code>{links.demoCurrent}</code>
+          The hosted anonymous demo has been retired. The Terraform demo module
+          remains available if you want the same read-only posture in your own
+          project.
         </p>
         <p className="mt-2 text-slate-300">
-          Endpoint can change over time. Canonical source of truth is
+          Canonical setup guidance stays in
           <TrackedLink
             href={links.demoDocs}
             variant="link"
@@ -30,12 +32,16 @@ export default function DemoPage() {
           >
             docs/DEMO.md on main
           </TrackedLink>
-          .
+          , including guardrails and the module inputs.
         </p>
       </section>
 
       <section className="mt-8" data-analytics-section="demo_curl">
-        <CodeBlock title="Demo curl" code={demoCurl} snippetId="copy_demo_curl" />
+        <CodeBlock
+          title="Self-hosted demo curl"
+          code={demoCurl}
+          snippetId="copy_demo_curl"
+        />
       </section>
 
       <section

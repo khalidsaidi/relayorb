@@ -81,9 +81,9 @@ export default function HomePage() {
                 href="/demo"
                 variant="primary"
                 eventName="cta_click"
-                eventParams={{ cta: "try_demo", location: "hero" }}
+                eventParams={{ cta: "open_demo_module", location: "hero" }}
               >
-                Try the Anonymous Demo
+                Demo Module Guide
               </TrackedLink>
               <TrackedLink
                 href="#deploy"
@@ -111,8 +111,8 @@ export default function HomePage() {
               </TrackedLink>
             </div>
             <p className="mt-4 text-sm text-slate-400">
-              Open Source · Anonymous demo (read-only, rate-limited) · Terraform
-              modules · Weekly module smoke CI
+              Open Source · Hosted demo retired · Terraform modules · Weekly
+              module smoke CI
             </p>
           </Reveal>
 
@@ -176,10 +176,11 @@ export default function HomePage() {
 
         <section className="py-8" data-analytics-section="home_try">
           <Reveal>
-            <h2 className="text-2xl font-semibold sm:text-3xl">Try it in 30 seconds</h2>
+            <h2 className="text-2xl font-semibold sm:text-3xl">Self-host the demo posture</h2>
             <p className="mt-2 text-slate-300">
-              The anonymous demo is intentionally constrained: read-only,
-              allowlisted, and rate-limited. Canonical demo guidance stays in
+              The hosted anonymous demo has been retired. The demo module still
+              gives you the same read-only, allowlisted, rate-limited posture
+              in your own project. Canonical guidance stays in
               <TrackedLink
                 href={links.demoDocs}
                 variant="link"
@@ -195,13 +196,13 @@ export default function HomePage() {
 
           <div className="mt-5">
             <CodeBlock
-              title="Demo invoke (rag.search@v1)"
+              title="Self-hosted demo invoke (rag.search@v1)"
               code={demoCurl}
               snippetId="copy_demo_curl"
             />
             <p className="mt-3 text-sm text-slate-400">
-              Demo endpoint may change; canonical URL and examples stay in
-              GitHub docs.
+              Replace <code>YOUR-DEMO-URL</code> with the endpoint from your own
+              demo deployment.
             </p>
           </div>
         </section>
