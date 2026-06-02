@@ -1,11 +1,19 @@
+import type { Metadata } from "next";
 import { CodeBlock } from "@/components/CodeBlock";
 import { TrackedLink } from "@/components/TrackedLink";
 import { demoCurl, links } from "@/lib/site";
 
-export const metadata = {
-  title: "RelayOrb Demo Module",
-  description:
-    "Self-hosted RelayOrb demo posture, guardrails, and canonical demo docs.",
+export const metadata: Metadata = {
+  title: "Demo module guide",
+  description: "Self-host the RelayOrb demo. The hosted anonymous demo has been retired.",
+  openGraph: {
+    title: "Demo module guide | RelayOrb",
+    description: "Self-host the RelayOrb demo. The hosted anonymous demo has been retired.",
+  },
+  twitter: {
+    title: "Demo module guide | RelayOrb",
+    description: "Self-host the RelayOrb demo. The hosted anonymous demo has been retired.",
+  },
 };
 
 export default function DemoPage() {

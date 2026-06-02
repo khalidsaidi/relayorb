@@ -1,10 +1,22 @@
+import type { Metadata } from "next";
 import { CodeBlock } from "@/components/CodeBlock";
 import { TrackedLink } from "@/components/TrackedLink";
 import { links, terraformDemoSnippet, terraformProdSnippet } from "@/lib/site";
 
-export const metadata = {
-  title: "RelayOrb Terraform",
-  description: "RelayOrb Terraform module usage for prod and demo.",
+export const metadata: Metadata = {
+  title: "Deploy with Terraform",
+  description:
+    "Deploy RelayOrb to your own GCP project with the published Terraform modules.",
+  openGraph: {
+    title: "Deploy with Terraform | RelayOrb",
+    description:
+      "Deploy RelayOrb to your own GCP project with the published Terraform modules.",
+  },
+  twitter: {
+    title: "Deploy with Terraform | RelayOrb",
+    description:
+      "Deploy RelayOrb to your own GCP project with the published Terraform modules.",
+  },
 };
 
 export default function TerraformPage() {

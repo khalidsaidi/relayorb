@@ -26,7 +26,7 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL("https://relayorb.com"),
   title: {
-    default: "RelayOrb - Tool Control Plane for AI Agents",
+    default: "RelayOrb — Tool Control Plane for AI Agents",
     template: "%s | RelayOrb",
   },
   description:

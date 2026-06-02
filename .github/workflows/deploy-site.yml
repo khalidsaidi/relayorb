@@ -52,3 +52,6 @@ jobs:
       - name: Deploy to production
         working-directory: site
         run: vercel deploy --prebuilt --prod --token="${{ secrets.VERCEL_TOKEN }}"
+
+      - name: Verify route metadata in production
+        run: node scripts/verify-route-metadata.mjs
