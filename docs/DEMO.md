@@ -1,20 +1,20 @@
-# RelayOrb Public Demo
+# RelayOrb Demo Posture
 
 Primary entry: https://relayorb.com/demo
 
-RelayOrb provides an anonymous public demo endpoint so anyone can try invoke flows with plain `curl`.
+RelayOrb provides a demo posture you can self-host if you want plain-`curl` invoke flows without login or API keys.
 
-The demo endpoint may change over time. Keep GitHub docs and Terraform outputs as canonical for the latest endpoint values.
+The hosted anonymous demo has been retired. Keep GitHub docs and your Terraform outputs as canonical for the endpoint values in your own deployment.
 
 ## Try it now
 
-Current live endpoint (as of 2026-03-01):
+Set your own deployed demo endpoint:
 
 ```bash
-export RELAYORB_DEMO_URL="http://34.8.48.11"
+export RELAYORB_DEMO_URL="https://YOUR-DEMO-URL"
 ```
 
-If the demo URL changes, fetch the latest from Terraform output:
+Fetch the current endpoint from Terraform output:
 
 ```bash
 terraform -chdir=infra/gcp/terraform/envs/demo output -raw demo_http_url

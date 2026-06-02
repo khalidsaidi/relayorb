@@ -25,16 +25,16 @@ Gateway also supports asynchronous execution via `POST /v1/submit` and `GET /v1/
 
 - Open-source core: runtime, SDK, conformance tooling, and docs in this repository.
 - Reference deployment: Terraform and workflows for GCP rollout.
-- Anonymous public demo: hardened showcase environment with LB-only access and private internals.
+- Demo posture: self-hosted anonymous showcase environment with LB-only access and private internals.
 
-## Try The Public Demo
+## Demo Posture
 
-RelayOrb includes an anonymous public demo mode (no login/API key) with strict safety limits.
+RelayOrb includes a demo posture (no login/API key) with strict safety limits for self-hosted evaluation.
 
-Current live endpoint (as of 2026-03-01):
+The hosted anonymous demo has been retired. To run the same posture yourself:
 
 ```bash
-export RELAYORB_DEMO_URL="http://34.8.48.11"
+export RELAYORB_DEMO_URL="https://YOUR-DEMO-URL"
 ```
 
 Invoke `rag.search@v1`:
