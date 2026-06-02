@@ -1,4 +1,5 @@
 import { relatedProjects } from "@/lib/crossProject";
+import { prodGatewayBaseUrl } from "@/lib/site";
 
 export function relayOrbAgentCard() {
   return {
@@ -12,11 +13,11 @@ export function relayOrbAgentCard() {
       openapi: "https://relayorb.com/.well-known/openapi.json",
       air: "https://relayorb.com/.well-known/air.json",
       plugin: "https://relayorb.com/.well-known/ai-plugin.json",
-      health: "http://34.8.48.11/health",
-      invoke: "http://34.8.48.11/v1/invoke",
-      submit: "http://34.8.48.11/v1/submit",
-      jobs: "http://34.8.48.11/v1/jobs/{jobId}",
-      replay: "http://34.8.48.11/v1/replay/{requestId}",
+      health: `${prodGatewayBaseUrl}/health`,
+      invoke: `${prodGatewayBaseUrl}/v1/invoke`,
+      submit: `${prodGatewayBaseUrl}/v1/submit`,
+      jobs: `${prodGatewayBaseUrl}/v1/jobs/{jobId}`,
+      replay: `${prodGatewayBaseUrl}/v1/replay/{requestId}`,
     },
     related: relatedProjects.map(project => ({
       name: project.name,

@@ -15,7 +15,7 @@
   },
   "entrypoints": {
     "web_app": "https://relayorb.com",
-    "api_base": "http://34.8.48.11/v1"
+    "api_base": "https://relayorb-gateway-prod-q7rroe2exa-uc.a.run.app/v1"
   },
   "callable_surface": {
     "openapi": "https://relayorb.com/.well-known/openapi.json",

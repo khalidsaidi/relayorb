@@ -11,7 +11,7 @@ The demo endpoint may change over time. Keep GitHub docs and Terraform outputs a
 Current live endpoint (as of 2026-03-01):
 
 ```bash
-export RELAYORB_DEMO_URL="http://34.8.48.11"
+export RELAYORB_DEMO_URL="https://relayorb-gateway-prod-q7rroe2exa-uc.a.run.app"
 ```
 
 If the demo URL changes, fetch the latest from Terraform output:

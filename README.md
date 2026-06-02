@@ -31,10 +31,10 @@ Gateway also supports asynchronous execution via `POST /v1/submit` and `GET /v1/
 
 RelayOrb includes an anonymous public demo mode (no login/API key) with strict safety limits.
 
-Current live endpoint (as of 2026-03-01):
+Current live endpoint:
 
 ```bash
-export RELAYORB_DEMO_URL="http://34.8.48.11"
+export RELAYORB_DEMO_URL="https://relayorb-gateway-prod-q7rroe2exa-uc.a.run.app"
 ```
 
 Invoke `rag.search@v1`:

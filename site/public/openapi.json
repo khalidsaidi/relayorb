@@ -8,8 +8,8 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "servers": [
     {
-      "url": "http://34.8.48.11",
-      "description": "Current anonymous demo endpoint (can change; canonical updates are in docs/DEMO.md)."
+      "url": "https://relayorb-gateway-prod-q7rroe2exa-uc.a.run.app",
+      "description": "Current Cloud Run gateway endpoint."
     },
     {
       "url": "https://relayorb.com",

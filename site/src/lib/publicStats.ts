@@ -1,4 +1,5 @@
 import { siblingsForManifest } from "@/lib/crossProject";
+import { prodGatewayBaseUrl } from "@/lib/site";
 
 type Sample = {
   metric: string;
@@ -124,7 +125,8 @@ async function fetchTerraformDownloads() {
 }
 
 async function fetchMetricsSamples() {
-  const metricsUrl = process.env.RELAYORB_METRICS_URL || "http://34.8.48.11/metrics";
+  const metricsUrl =
+    process.env.RELAYORB_METRICS_URL || `${prodGatewayBaseUrl}/metrics`;
   const token = process.env.RELAYORB_METRICS_BEARER_TOKEN || "";
   try {
     const response = await fetch(metricsUrl, {

@@ -1,6 +1,9 @@
+export const prodGatewayBaseUrl =
+  "https://relayorb-gateway-prod-q7rroe2exa-uc.a.run.app";
+
 export const links = {
   github: "https://github.com/khalidsaidi/relayorb",
-  demoCurrent: "http://34.8.48.11",
+  demoCurrent: prodGatewayBaseUrl,
   demoDocs: "https://github.com/khalidsaidi/relayorb/blob/main/docs/DEMO.md",
   prodModule:
     "https://registry.terraform.io/modules/khalidsaidi/relayorb/google/latest",
@@ -13,7 +16,7 @@ export const links = {
   release: "https://github.com/khalidsaidi/relayorb/releases/tag/v0.1.2",
 };
 
-export const demoCurl = `curl -sS -X POST "http://34.8.48.11/v1/invoke" \\
+export const demoCurl = `curl -sS -X POST "${prodGatewayBaseUrl}/v1/invoke" \\
   -H "Content-Type: application/json" \\
   -d '{
     "requestId": "demo-001",
