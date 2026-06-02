@@ -41,6 +41,24 @@ resource "google_project_iam_member" "registry_deployer_logging_viewer" {
   member  = "serviceAccount:${local.registry_deployer_sa_email}"
 }
 
+resource "google_project_iam_member" "registry_deployer_iam_security_reviewer" {
+  project = var.project_id
+  role    = "roles/iam.securityReviewer"
+  member  = "serviceAccount:${local.registry_deployer_sa_email}"
+}
+
+resource "google_project_iam_member" "registry_deployer_service_account_viewer" {
+  project = var.project_id
+  role    = "roles/iam.serviceAccountViewer"
+  member  = "serviceAccount:${local.registry_deployer_sa_email}"
+}
+
+resource "google_project_iam_member" "registry_deployer_service_usage_viewer" {
+  project = var.project_id
+  role    = "roles/serviceusage.serviceUsageViewer"
+  member  = "serviceAccount:${local.registry_deployer_sa_email}"
+}
+
 resource "google_secret_manager_secret_iam_member" "metrics_scraper_metrics_tokens" {
   for_each  = local.metrics_token_secret_ids
   project   = var.project_id
