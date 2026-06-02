@@ -14,6 +14,7 @@ import { Reveal } from "@/components/Reveal";
 import { TrackedLink } from "@/components/TrackedLink";
 import {
   homepagePersonaDescription,
+  whoItIsntForHeadingClass,
   whoItIsntFor,
   whoItsFor,
 } from "@/lib/positioning";
@@ -177,7 +178,7 @@ export default function HomePage() {
 
           <Reveal>
             <div className="mt-8 rounded-2xl border border-slate-800/80 bg-slate-950/60 p-6">
-              <h3 className="text-xl font-semibold text-slate-100">Who this isn&apos;t for</h3>
+              <h3 className={whoItIsntForHeadingClass}>Who this isn&apos;t for</h3>
               <ul className="mt-4 space-y-3 text-sm text-slate-300">
                 {whoItIsntFor.map(item => (
                   <li key={item}>{item}</li>

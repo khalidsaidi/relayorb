@@ -1,6 +1,8 @@
 export const homepagePersonaDescription =
   "Control plane for production AI agents. Versioned tool routing, schema validation, and audit logs for teams operating dozens of agents and tools.";
 
+export const whoItIsntForHeadingClass = "text-xl font-semibold text-slate-400";
+
 export const whoItsFor = [
   {
     title: "SRE / platform engineers running production AI agents",
