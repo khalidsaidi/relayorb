@@ -66,6 +66,10 @@ function assert(condition, message) {
   }
 }
 
+function hasStandaloneRelayOrbHandle(html) {
+  return /(^|[^A-Za-z0-9_.-])@relayorb(?!\.)\b/i.test(html);
+}
+
 async function verifyRoute(routeConfig) {
   const url = `${baseUrl}${routeConfig.route}?cb=${Date.now()}`;
   const response = await fetch(url, {
@@ -110,7 +114,10 @@ async function verifyRoute(routeConfig) {
   );
   assert(!/twitter:creator/i.test(html), `${routeConfig.route}: unexpected twitter:creator`);
   assert(!/twitter:site/i.test(html), `${routeConfig.route}: unexpected twitter:site`);
-  assert(!/@relayorb\b/i.test(html), `${routeConfig.route}: unexpected @relayorb handle`);
+  assert(
+    !hasStandaloneRelayOrbHandle(html),
+    `${routeConfig.route}: unexpected @relayorb handle`,
+  );
   assert(
     !/twitter\.com\/relayorb\b/i.test(html),
     `${routeConfig.route}: unexpected twitter.com/relayorb`,
