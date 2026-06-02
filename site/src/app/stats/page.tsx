@@ -30,12 +30,12 @@ export default async function RelayOrbStatsPage() {
         <StatCard label="Capabilities registered" value={stats.capabilities_registered} />
         <StatCard label="Workers healthy" value={stats.workers_healthy} />
         <StatCard label="Operational since" value={stats.operational_since} />
-        <StatCard label="30d uptime %" value={stats.uptime_30d_pct} />
-        <StatCard
-          label="Internal requests 30d"
-          value={stats.total_internal_requests_30d}
-        />
-        <StatCard label="Gateway p95 latency 30d" value={stats.p95_latency_ms_30d} />
+        <StatCard label="Gateway + registry uptime 30d %" value={stats.core_services_uptime_30d_pct} />
+        <StatCard label="Gateway uptime 30d %" value={stats.gateway_uptime_30d_pct} />
+        <StatCard label="Registry uptime 30d %" value={stats.registry_uptime_30d_pct} />
+        <StatCard label="Rag worker uptime 30d %" value={stats.rag_uptime_30d_pct} />
+        <StatCard label="Internal requests 30d" value={stats.total_internal_requests_30d} />
+        <StatCard label="Gateway p95 latency 30d" value={stats.gateway_p95_latency_ms_30d} />
         <StatCard
           label="Terraform downloads (prod/demo)"
           value={`${stats.terraform_downloads.prod_module}/${stats.terraform_downloads.demo_module}`}
