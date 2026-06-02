@@ -9,7 +9,8 @@ export default async function RelayOrbStatsPage() {
     <main className="mx-auto min-h-screen w-full max-w-6xl px-6 py-16 text-slate-100 sm:px-8">
       <h1 className="text-3xl font-semibold sm:text-4xl">RelayOrb public stats</h1>
       <p className="mt-3 max-w-3xl text-slate-300">
-        Server-rendered counters sourced from gateway/registry telemetry and Terraform Registry.
+        Public counters stay honest about external traffic. Reliability fields link to the
+        separate 30-day internal-monitoring report.
       </p>
       <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard label="Invokes total" value={stats.invokes_total} />
@@ -28,6 +29,13 @@ export default async function RelayOrbStatsPage() {
         <StatCard label="Jobs queued (current)" value={stats.jobs_queued_current} />
         <StatCard label="Capabilities registered" value={stats.capabilities_registered} />
         <StatCard label="Workers healthy" value={stats.workers_healthy} />
+        <StatCard label="Operational since" value={stats.operational_since} />
+        <StatCard label="30d uptime %" value={stats.uptime_30d_pct} />
+        <StatCard
+          label="Internal requests 30d"
+          value={stats.total_internal_requests_30d}
+        />
+        <StatCard label="Gateway p95 latency 30d" value={stats.p95_latency_ms_30d} />
         <StatCard
           label="Terraform downloads (prod/demo)"
           value={`${stats.terraform_downloads.prod_module}/${stats.terraform_downloads.demo_module}`}
@@ -38,6 +46,10 @@ export default async function RelayOrbStatsPage() {
         Generated {stats.generated_at} · JSON:{" "}
         <a href="/stats.json" className="text-cyan-300 hover:text-cyan-200">
           /stats.json
+        </a>
+        {" · "}
+        <a href={stats.reliability_report_url} className="text-cyan-300 hover:text-cyan-200">
+          /reliability
         </a>
       </p>
       <p className="mt-3 text-sm">

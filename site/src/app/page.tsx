@@ -109,6 +109,14 @@ export default function HomePage() {
               >
                 View public stats
               </TrackedLink>
+              <TrackedLink
+                href="/reliability"
+                variant="ghost"
+                eventName="cta_click"
+                eventParams={{ cta: "view_reliability", location: "hero" }}
+              >
+                30-day reliability report
+              </TrackedLink>
             </div>
             <p className="mt-4 text-sm text-slate-400">
               Open Source · Hosted demo retired · Terraform modules · Weekly
@@ -157,6 +165,19 @@ export default function HomePage() {
                 </li>
               ))}
             </ol>
+            <p className="mt-4 max-w-3xl text-sm text-slate-300">
+              Production behavior is published separately in the{" "}
+              <TrackedLink
+                href="/reliability"
+                variant="link"
+                eventName="cta_click"
+                eventParams={{ cta: "open_reliability_report", location: "home_how" }}
+              >
+                30-day reliability report
+              </TrackedLink>
+              . It uses real Cloud Monitoring data and explicitly labels the traffic as
+              synthetic control-plane load rather than public adoption.
+            </p>
           </Reveal>
         </section>
 
