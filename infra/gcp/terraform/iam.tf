@@ -7,8 +7,8 @@ locals {
   metrics_token_secret_ids = toset([
     "projects/${var.project_id}/secrets/${var.gateway_metrics_secret_name}",
     "projects/${var.project_id}/secrets/${var.registry_metrics_secret_name}",
-    "projects/${var.project_id}/secrets/${var.worker_metrics_secret_name}",
   ])
+  worker_metrics_token_secret_id = "projects/${var.project_id}/secrets/${var.worker_metrics_secret_name}"
 }
 
 resource "google_service_account_iam_member" "metrics_scraper_runtime_sa_user" {
@@ -67,9 +67,14 @@ resource "google_secret_manager_secret_iam_member" "metrics_scraper_metrics_toke
   member    = "serviceAccount:${local.metrics_scraper_sa_email}"
 }
 
-resource "google_secret_manager_secret_iam_member" "worker_runtime_worker_metrics_token" {
+# The worker metrics token is authoritative for this role so generic identities
+# like the default compute service account cannot linger as shadow members.
+resource "google_secret_manager_secret_iam_binding" "worker_metrics_token_accessors" {
   project   = var.project_id
-  secret_id = "projects/${var.project_id}/secrets/${var.worker_metrics_secret_name}"
+  secret_id = local.worker_metrics_token_secret_id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${local.worker_runtime_sa_email}"
+  members = [
+    "serviceAccount:${local.metrics_scraper_sa_email}",
+    "serviceAccount:${local.worker_runtime_sa_email}",
+  ]
 }
