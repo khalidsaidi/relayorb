@@ -95,9 +95,16 @@ jobs:
           OWNER_RUNTIME_SA="$(gcloud run services describe "${{ env.OWNER_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(spec.template.spec.serviceAccountName)')"
           GATEWAY_RUNTIME_SA="$(gcloud run services describe "${{ env.GATEWAY_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(spec.template.spec.serviceAccountName)')"
           SCRAPER_RUNTIME_SA=""
-          if gcloud run services describe "${{ env.SCRAPER_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" >/dev/null 2>&1; then
+          SCRAPER_DESCRIBE_OUTPUT="$(mktemp)"
+          if gcloud run services describe "${{ env.SCRAPER_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" >"${SCRAPER_DESCRIBE_OUTPUT}" 2>&1; then
             SCRAPER_RUNTIME_SA="$(gcloud run services describe "${{ env.SCRAPER_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" --format='value(spec.template.spec.serviceAccountName)')"
+          elif grep -q "Cannot find service \[${{ env.SCRAPER_SERVICE_NAME }}\]" "${SCRAPER_DESCRIBE_OUTPUT}"; then
+            echo "scraper service missing; skipping scraper invoker bindings"
+          else
+            cat "${SCRAPER_DESCRIBE_OUTPUT}"
+            exit 1
           fi
+          rm -f "${SCRAPER_DESCRIBE_OUTPUT}"
           if [ -z "${OWNER_RUNTIME_SA}" ] || [ -z "${GATEWAY_RUNTIME_SA}" ]; then
             echo "failed to resolve runtime service accounts for owner/gateway"
             exit 1
@@ -123,8 +130,6 @@ jobs:
               --region "${{ env.REGION }}" \
               --member "serviceAccount:${SCRAPER_RUNTIME_SA}" \
               --role roles/run.invoker >/dev/null
-          else
-            echo "scraper service missing; skipping scraper invoker bindings"
           fi
 
       - name: Wait for Owner Worker Registration
@@ -214,8 +219,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! gcloud run services describe "${{ env.SCRAPER_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" >/dev/null 2>&1; then
+          SCRAPER_DESCRIBE_OUTPUT="$(mktemp)"
+          if gcloud run services describe "${{ env.SCRAPER_SERVICE_NAME }}" --project "${{ env.PROJECT_ID }}" --region "${{ env.REGION }}" >"${SCRAPER_DESCRIBE_OUTPUT}" 2>&1; then
+            rm -f "${SCRAPER_DESCRIBE_OUTPUT}"
+          elif grep -q "Cannot find service \[${{ env.SCRAPER_SERVICE_NAME }}\]" "${SCRAPER_DESCRIBE_OUTPUT}"; then
+            rm -f "${SCRAPER_DESCRIBE_OUTPUT}"
             echo "scraper service missing; skipping metrics scraper smoke"
             exit 0
+          else
+            cat "${SCRAPER_DESCRIBE_OUTPUT}"
+            exit 1
           fi
           bash ops/smoke/metrics-scraper-smoke.sh "${{ env.PROJECT_ID }}" "${{ env.REGION }}" "${{ env.SCRAPER_SERVICE_NAME }}" "${{ env.GATEWAY_SERVICE_NAME }}" "${{ env.SERVICE_NAME }}" "${{ env.OWNER_SERVICE_NAME }}"
