@@ -19,11 +19,21 @@ export const metadata: Metadata = {
     title: "Reliability | RelayOrb",
     description:
       "Thirty-day RelayOrb production reliability and cost data from internal monitoring traffic.",
+    images: [
+      {
+        url: "/og-image.png",
+        width: 1200,
+        height: 630,
+        alt: "RelayOrb",
+      },
+    ],
   },
   twitter: {
+    card: "summary_large_image",
     title: "Reliability | RelayOrb",
     description:
       "Thirty-day RelayOrb production reliability and cost data from internal monitoring traffic.",
+    images: ["/og-image.png"],
   },
 };
 
