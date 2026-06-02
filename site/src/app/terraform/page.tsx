@@ -11,11 +11,21 @@ export const metadata: Metadata = {
     title: "Deploy with Terraform | RelayOrb",
     description:
       "Deploy RelayOrb to your own GCP project with the published Terraform modules.",
+    images: [
+      {
+        url: "/og-image.png",
+        width: 1200,
+        height: 630,
+        alt: "RelayOrb",
+      },
+    ],
   },
   twitter: {
+    card: "summary_large_image",
     title: "Deploy with Terraform | RelayOrb",
     description:
       "Deploy RelayOrb to your own GCP project with the published Terraform modules.",
+    images: ["/og-image.png"],
   },
 };
 

@@ -1,5 +1,4 @@
 import Script from "next/script";
-import type { Metadata } from "next";
 import {
   Activity,
   FileCheck2,
@@ -13,25 +12,7 @@ import { Capabilities3DShowcase } from "@/components/Capabilities3DShowcase";
 import { CodeBlock } from "@/components/CodeBlock";
 import { Reveal } from "@/components/Reveal";
 import { TrackedLink } from "@/components/TrackedLink";
-import {
-  demoCurl,
-  links,
-  terraformDemoSnippet,
-  terraformProdSnippet,
-} from "@/lib/site";
-
-export const metadata: Metadata = {
-  openGraph: {
-    title: "RelayOrb — Tool Control Plane for AI Agents",
-    description:
-      "Route agent calls to versioned capabilities with contracts, governance, and observability.",
-  },
-  twitter: {
-    title: "RelayOrb — Tool Control Plane for AI Agents",
-    description:
-      "Route agent calls to versioned capabilities with contracts, governance, and observability.",
-  },
-};
+import { demoCurl, links, terraformDemoSnippet, terraformProdSnippet } from "@/lib/site";
 
 const features = [
   {
