@@ -1,4 +1,5 @@
 import { siblingsForManifest } from "@/lib/crossProject";
+import { getRelayOrbReliabilitySnapshot } from "@/lib/reliability";
 import { prodGatewayBaseUrl } from "@/lib/site";
 
 type Sample = {
@@ -23,6 +24,11 @@ export type RelayOrbPublicStats = {
   policy_denials_7d: number;
   tool_call_success_pct: number;
   last_invoke_ts: string;
+  operational_since: string;
+  uptime_30d_pct: number;
+  total_internal_requests_30d: number;
+  p95_latency_ms_30d: number;
+  reliability_report_url: string;
   generated_at: string;
   terraform_downloads: {
     prod_module: number;
@@ -152,6 +158,7 @@ function lastInvokeTimestamp(samples: Sample[]) {
 }
 
 export async function getRelayOrbPublicStats(): Promise<RelayOrbPublicStats> {
+  const reliability = getRelayOrbReliabilitySnapshot();
   const [downloads, samples] = await Promise.all([
     fetchTerraformDownloads(),
     fetchMetricsSamples(),
@@ -246,6 +253,11 @@ export async function getRelayOrbPublicStats(): Promise<RelayOrbPublicStats> {
     ),
     tool_call_success_pct: successPct,
     last_invoke_ts: lastInvokeTimestamp(samples),
+    operational_since: reliability.operationalSince,
+    uptime_30d_pct: reliability.prodReliability.uptime30dPct,
+    total_internal_requests_30d: reliability.prodReliability.totalInternalRequests30d,
+    p95_latency_ms_30d: reliability.prodReliability.gatewayP95LatencyMs30d,
+    reliability_report_url: "https://relayorb.com/reliability",
     generated_at: generatedAt,
     terraform_downloads: downloads,
     siblings: siblingsForManifest(),

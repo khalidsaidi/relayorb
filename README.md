@@ -7,6 +7,8 @@
 - Website: https://relayorb.com
 - Try demo: https://relayorb.com/demo
 - Docs: https://relayorb.com (primary overview) + GitHub docs (canonical runbooks/implementation)
+- Production reliability: https://relayorb.com/reliability
+- Real-world cost profile: https://relayorb.com/cost_profile.json
 - Terraform modules:
   - https://registry.terraform.io/modules/khalidsaidi/relayorb/google/latest
   - https://registry.terraform.io/modules/khalidsaidi/relayorb-demo/google/latest
@@ -20,6 +22,23 @@ GitHub metadata status:
 RelayOrb is a capability gateway for AI agents. It enforces auth and policy, routes to healthy workers via a registry, validates schemas end-to-end, and records deterministic invocation artifacts with request-id idempotency and replay.
 
 Gateway also supports asynchronous execution via `POST /v1/submit` and `GET /v1/jobs/:jobId`.
+
+## Production reliability
+
+RelayOrb has been deployed continuously in production since February 2026. The public reliability report publishes 30 days of Cloud Monitoring and Cloud Logging data from the live control plane:
+
+- Reliability report: https://relayorb.com/reliability
+- Stats JSON: https://relayorb.com/stats.json
+
+The traffic in that report is synthetic monitoring and control-plane traffic, not public user adoption. External invoke counters remain honest at zero.
+
+## Real-world cost profile
+
+RelayOrb also publishes the live Cloud Run cost lesson from operating the control plane:
+
+- Cost profile JSON: https://relayorb.com/cost_profile.json
+
+The cost profile is modeled from Cloud Monitoring billable instance time and public Cloud Billing SKU prices for `us-central1`. It shows the difference between the previous always-warm deployment and the current `minScale=0` posture.
 
 ## Project Surfaces
 

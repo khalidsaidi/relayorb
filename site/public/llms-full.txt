@@ -13,9 +13,16 @@ Primary entrypoints:
 - Home: https://relayorb.com
 - Demo page: https://relayorb.com/demo
 - Terraform page: https://relayorb.com/terraform
+- Reliability report: https://relayorb.com/reliability
+- Cost profile JSON: https://relayorb.com/cost_profile.json
 - Privacy: https://relayorb.com/privacy
 - OpenAPI: https://relayorb.com/.well-known/openapi.json
 - MCP: https://relayorb.com/mcp
+
+Production note:
+- RelayOrb has been deployed continuously in production since February 2026.
+- The reliability report is based on synthetic monitoring and control-plane traffic.
+- External user invoke counters remain zero where no public adoption exists.
 
 Canonical implementation/docs:
 - Repository: https://github.com/khalidsaidi/relayorb

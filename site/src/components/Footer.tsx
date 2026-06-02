@@ -78,6 +78,15 @@ export async function Footer() {
         </TrackedLink>
         <span className="opacity-50">|</span>
         <TrackedLink
+          href="/reliability"
+          variant="link"
+          eventName="cta_click"
+          eventParams={{ cta: "footer_reliability", location: "footer" }}
+        >
+          Reliability
+        </TrackedLink>
+        <span className="opacity-50">|</span>
+        <TrackedLink
           href="/stats.json"
           variant="link"
           eventName="cta_click"

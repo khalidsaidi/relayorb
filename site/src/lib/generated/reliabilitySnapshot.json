@@ -1,0 +1,395 @@
+{
+  "generatedAt": "2026-06-02T03:22:29.724Z",
+  "window": {
+    "start": "2026-05-02T00:00:00Z",
+    "end": "2026-06-01T23:59:59Z"
+  },
+  "operationalSince": "2026-02-28T02:15:24.897598Z",
+  "methodology": {
+    "traffic": "Synthetic internal monitoring and control-plane traffic only. Public user invokes remain zero.",
+    "uptimeFormula": "Availability is computed as non-5xx requests divided by total requests over the 30-day window.",
+    "costModel": "Cost is modeled from Cloud Monitoring billable instance time plus public Cloud Billing Catalog SKU prices for us-central1. Billing export was not enabled, so this is a reconstructed Cloud Run cost profile rather than an invoice export.",
+    "requestPricingNote": "Request charges stayed under the free-tier threshold during the 30-day window and do not materially affect the model.",
+    "serviceBillingModeInference": "Services with run.googleapis.com/cpu-throttling=false are treated as instance-based billed services."
+  },
+  "pricingUsd": {
+    "requestBasedCpuPerVcpuSecondUsd": 0.000024,
+    "requestBasedMemoryPerGiBSecondUsd": 0.0000025,
+    "instanceBasedCpuPerVcpuSecondUsd": 0.000018,
+    "instanceBasedMemoryPerGiBSecondUsd": 0.000002,
+    "requestUnitUsd": 4e-7
+  },
+  "prodReliability": {
+    "totalInternalRequests30d": 293864,
+    "successfulInternalRequests30d": 224032,
+    "uptime30dPct": 76.2366,
+    "totalErrorLogs30d": 79090,
+    "gatewayP95LatencyMs30d": 31.57,
+    "services": [
+      {
+        "project": "relayorb-prod",
+        "name": "relayorb-gateway-prod",
+        "role": "Gateway",
+        "createdAt": "2026-02-28T02:15:34.487089Z",
+        "url": "https://relayorb-gateway-prod-q7rroe2exa-uc.a.run.app",
+        "cpu": 1,
+        "memoryGiB": 0.5,
+        "minInstances": 0,
+        "maxInstances": 12,
+        "concurrency": 80,
+        "timeoutSeconds": 300,
+        "billingMode": "request_based",
+        "annotations": {
+          "autoscaling.knative.dev/maxScale": "12",
+          "run.googleapis.com/client-name": "gcloud",
+          "run.googleapis.com/client-version": "568.0.0",
+          "run.googleapis.com/startup-cpu-boost": "true"
+        },
+        "requestCounts30d": {
+          "2xx": 86427,
+          "4xx": 23
+        },
+        "totalRequests30d": 86450,
+        "successfulRequests30d": 86450,
+        "uptime30dPct": 100,
+        "errorRate30dPct": 0,
+        "latencyMs30d": {
+          "p50": 8.51,
+          "p95": 31.57,
+          "p99": 32.37
+        },
+        "cpuUtilizationAvgPct30d": 0.323,
+        "memoryUtilizationAvgPct30d": 3.13,
+        "errorLogEntries30d": 0,
+        "billableInstanceSeconds30d": 8654.368,
+        "estimatedMonthlyCostUsd": 0.22
+      },
+      {
+        "project": "relayorb-prod",
+        "name": "relayorb-registry-prod",
+        "role": "Registry",
+        "createdAt": "2026-02-28T02:15:24.897598Z",
+        "url": "https://relayorb-registry-prod-q7rroe2exa-uc.a.run.app",
+        "cpu": 1,
+        "memoryGiB": 0.5,
+        "minInstances": 0,
+        "maxInstances": 12,
+        "concurrency": 80,
+        "timeoutSeconds": 300,
+        "billingMode": "request_based",
+        "annotations": {
+          "autoscaling.knative.dev/maxScale": "12",
+          "run.googleapis.com/client-name": "gcloud",
+          "run.googleapis.com/client-version": "568.0.0",
+          "run.googleapis.com/startup-cpu-boost": "true"
+        },
+        "requestCounts30d": {
+          "2xx": 110395,
+          "4xx": 10574,
+          "5xx": 9
+        },
+        "totalRequests30d": 120978,
+        "successfulRequests30d": 120969,
+        "uptime30dPct": 99.9926,
+        "errorRate30dPct": 0.0074,
+        "latencyMs30d": {
+          "p50": 7,
+          "p95": 12.85,
+          "p99": 13.97
+        },
+        "cpuUtilizationAvgPct30d": 0.092,
+        "memoryUtilizationAvgPct30d": 3.589,
+        "errorLogEntries30d": 9,
+        "billableInstanceSeconds30d": 12215.071,
+        "estimatedMonthlyCostUsd": 0.31
+      },
+      {
+        "project": "relayorb-prod",
+        "name": "relayorb-rag-prod",
+        "role": "Worker",
+        "createdAt": "2026-02-28T02:15:42.330201Z",
+        "url": "https://relayorb-rag-prod-q7rroe2exa-uc.a.run.app",
+        "cpu": 1,
+        "memoryGiB": 0.5,
+        "minInstances": 0,
+        "maxInstances": 12,
+        "concurrency": 80,
+        "timeoutSeconds": 300,
+        "billingMode": "instance_based",
+        "annotations": {
+          "autoscaling.knative.dev/maxScale": "12",
+          "run.googleapis.com/client-name": "gcloud",
+          "run.googleapis.com/client-version": "555.0.0",
+          "run.googleapis.com/cpu-throttling": "false",
+          "run.googleapis.com/startup-cpu-boost": "true"
+        },
+        "requestCounts30d": {
+          "2xx": 15658,
+          "4xx": 955,
+          "5xx": 69823
+        },
+        "totalRequests30d": 86436,
+        "successfulRequests30d": 16613,
+        "uptime30dPct": 19.22,
+        "errorRate30dPct": 80.78,
+        "latencyMs30d": {
+          "p50": 5.27,
+          "p95": 9.58,
+          "p99": 10.06
+        },
+        "cpuUtilizationAvgPct30d": 3.628,
+        "memoryUtilizationAvgPct30d": 1.262,
+        "errorLogEntries30d": 79081,
+        "billableInstanceSeconds30d": 511308.7,
+        "estimatedMonthlyCostUsd": 9.71
+      }
+    ]
+  },
+  "referenceDeployment": {
+    "estimatedMonthlyCostUsd": 256.62,
+    "services": [
+      {
+        "project": "relayorb-demo",
+        "name": "relayorb-gateway-demo",
+        "role": "Demo gateway",
+        "createdAt": "2026-03-01T05:08:32.814600Z",
+        "url": "https://relayorb-gateway-demo-24t57iwtbq-uc.a.run.app",
+        "cpu": 1,
+        "memoryGiB": 0.5,
+        "minInstances": 1,
+        "maxInstances": 5,
+        "concurrency": 20,
+        "timeoutSeconds": 10,
+        "billingMode": "instance_based",
+        "annotations": {
+          "autoscaling.knative.dev/maxScale": "5",
+          "autoscaling.knative.dev/minScale": "1",
+          "run.googleapis.com/client-name": "gcloud",
+          "run.googleapis.com/client-version": "555.0.0",
+          "run.googleapis.com/cpu-throttling": "false",
+          "run.googleapis.com/sessionAffinity": "false"
+        },
+        "requestCounts30d": {
+          "2xx": 34,
+          "4xx": 13643
+        },
+        "totalRequests30d": 13677,
+        "billableInstanceSeconds30d": 2599229.014,
+        "estimatedMonthlyCostUsd": 49.39
+      },
+      {
+        "project": "relayorb-demo",
+        "name": "relayorb-metrics-scraper-demo",
+        "role": "Demo metrics scraper",
+        "createdAt": "2026-03-01T05:16:20.018829Z",
+        "url": "https://relayorb-metrics-scraper-demo-24t57iwtbq-uc.a.run.app",
+        "cpu": 1,
+        "memoryGiB": 0.5,
+        "minInstances": 1,
+        "maxInstances": 1,
+        "concurrency": 1,
+        "timeoutSeconds": 30,
+        "billingMode": "instance_based",
+        "annotations": {
+          "autoscaling.knative.dev/maxScale": "1",
+          "autoscaling.knative.dev/minScale": "1",
+          "run.googleapis.com/cpu-throttling": "false",
+          "run.googleapis.com/sessionAffinity": "false"
+        },
+        "requestCounts30d": {},
+        "totalRequests30d": 0,
+        "billableInstanceSeconds30d": 2591637.327,
+        "estimatedMonthlyCostUsd": 49.24
+      },
+      {
+        "project": "relayorb-demo",
+        "name": "relayorb-rag-demo",
+        "role": "Demo worker",
+        "createdAt": "2026-03-01T05:08:32.789223Z",
+        "url": "https://relayorb-rag-demo-24t57iwtbq-uc.a.run.app",
+        "cpu": 1,
+        "memoryGiB": 0.5,
+        "minInstances": 1,
+        "maxInstances": 3,
+        "concurrency": 10,
+        "timeoutSeconds": 10,
+        "billingMode": "instance_based",
+        "annotations": {
+          "autoscaling.knative.dev/maxScale": "3",
+          "autoscaling.knative.dev/minScale": "1",
+          "run.googleapis.com/client-name": "gcloud",
+          "run.googleapis.com/client-version": "558.0.0",
+          "run.googleapis.com/cpu-throttling": "false",
+          "run.googleapis.com/sessionAffinity": "false"
+        },
+        "requestCounts30d": {
+          "2xx": 5
+        },
+        "totalRequests30d": 5,
+        "billableInstanceSeconds30d": 2592224.078,
+        "estimatedMonthlyCostUsd": 49.25
+      },
+      {
+        "project": "relayorb-demo",
+        "name": "relayorb-registry-demo",
+        "role": "Demo registry",
+        "createdAt": "2026-03-01T05:08:10.152251Z",
+        "url": "https://relayorb-registry-demo-24t57iwtbq-uc.a.run.app",
+        "cpu": 1,
+        "memoryGiB": 0.5,
+        "minInstances": 1,
+        "maxInstances": 2,
+        "concurrency": 20,
+        "timeoutSeconds": 10,
+        "billingMode": "instance_based",
+        "annotations": {
+          "autoscaling.knative.dev/maxScale": "2",
+          "autoscaling.knative.dev/minScale": "1",
+          "run.googleapis.com/client-name": "gcloud",
+          "run.googleapis.com/client-version": "558.0.0",
+          "run.googleapis.com/cpu-throttling": "false",
+          "run.googleapis.com/sessionAffinity": "false"
+        },
+        "requestCounts30d": {
+          "2xx": 129485,
+          "5xx": 7
+        },
+        "totalRequests30d": 129492,
+        "billableInstanceSeconds30d": 2592581.851,
+        "estimatedMonthlyCostUsd": 49.26
+      },
+      {
+        "project": "relayorb-prod",
+        "name": "relayorb-gateway-prod",
+        "role": "Gateway",
+        "createdAt": "2026-02-28T02:15:34.487089Z",
+        "url": "https://relayorb-gateway-prod-q7rroe2exa-uc.a.run.app",
+        "cpu": 1,
+        "memoryGiB": 0.5,
+        "minInstances": 0,
+        "maxInstances": 12,
+        "concurrency": 80,
+        "timeoutSeconds": 300,
+        "billingMode": "request_based",
+        "annotations": {
+          "autoscaling.knative.dev/maxScale": "12",
+          "run.googleapis.com/client-name": "gcloud",
+          "run.googleapis.com/client-version": "568.0.0",
+          "run.googleapis.com/startup-cpu-boost": "true"
+        },
+        "requestCounts30d": {
+          "2xx": 86427,
+          "4xx": 23
+        },
+        "totalRequests30d": 86450,
+        "billableInstanceSeconds30d": 8654.368,
+        "estimatedMonthlyCostUsd": 0.22
+      },
+      {
+        "project": "relayorb-prod",
+        "name": "relayorb-registry-prod",
+        "role": "Registry",
+        "createdAt": "2026-02-28T02:15:24.897598Z",
+        "url": "https://relayorb-registry-prod-q7rroe2exa-uc.a.run.app",
+        "cpu": 1,
+        "memoryGiB": 0.5,
+        "minInstances": 0,
+        "maxInstances": 12,
+        "concurrency": 80,
+        "timeoutSeconds": 300,
+        "billingMode": "request_based",
+        "annotations": {
+          "autoscaling.knative.dev/maxScale": "12",
+          "run.googleapis.com/client-name": "gcloud",
+          "run.googleapis.com/client-version": "568.0.0",
+          "run.googleapis.com/startup-cpu-boost": "true"
+        },
+        "requestCounts30d": {
+          "2xx": 110395,
+          "4xx": 10574,
+          "5xx": 9
+        },
+        "totalRequests30d": 120978,
+        "billableInstanceSeconds30d": 12215.071,
+        "estimatedMonthlyCostUsd": 0.31
+      },
+      {
+        "project": "relayorb-prod",
+        "name": "relayorb-rag-prod",
+        "role": "Worker",
+        "createdAt": "2026-02-28T02:15:42.330201Z",
+        "url": "https://relayorb-rag-prod-q7rroe2exa-uc.a.run.app",
+        "cpu": 1,
+        "memoryGiB": 0.5,
+        "minInstances": 0,
+        "maxInstances": 12,
+        "concurrency": 80,
+        "timeoutSeconds": 300,
+        "billingMode": "instance_based",
+        "annotations": {
+          "autoscaling.knative.dev/maxScale": "12",
+          "run.googleapis.com/client-name": "gcloud",
+          "run.googleapis.com/client-version": "555.0.0",
+          "run.googleapis.com/cpu-throttling": "false",
+          "run.googleapis.com/startup-cpu-boost": "true"
+        },
+        "requestCounts30d": {
+          "2xx": 15658,
+          "4xx": 955,
+          "5xx": 69823
+        },
+        "totalRequests30d": 86436,
+        "billableInstanceSeconds30d": 511308.7,
+        "estimatedMonthlyCostUsd": 9.71
+      },
+      {
+        "project": "relayorb-prod",
+        "name": "relayorb-metrics-scraper-prod",
+        "role": "Prod metrics scraper",
+        "createdAt": null,
+        "url": null,
+        "cpu": 1,
+        "memoryGiB": 0.5,
+        "minInstances": 1,
+        "maxInstances": 1,
+        "concurrency": 1,
+        "timeoutSeconds": null,
+        "billingMode": "instance_based",
+        "annotations": {
+          "autoscaling.knative.dev/minScale": "1",
+          "autoscaling.knative.dev/maxScale": "1",
+          "run.googleapis.com/cpu-throttling": "false"
+        },
+        "configSource": "infra/gcp/scripts/deploy_metrics_scraper.sh",
+        "requestCounts30d": {},
+        "totalRequests30d": 0,
+        "billableInstanceSeconds30d": 2591816.424,
+        "estimatedMonthlyCostUsd": 49.24
+      }
+    ]
+  },
+  "scaleToZeroProjection": {
+    "estimatedMonthlyCostUsd": 0,
+    "note": "All surviving prod services are at minScale=0. With zero traffic, fixed monthly Cloud Run spend falls to zero and only per-request usage accrues when real traffic arrives.",
+    "services": [
+      {
+        "name": "relayorb-gateway-prod",
+        "role": "Gateway",
+        "minInstances": 0,
+        "estimatedMonthlyCostUsd": 0
+      },
+      {
+        "name": "relayorb-registry-prod",
+        "role": "Registry",
+        "minInstances": 0,
+        "estimatedMonthlyCostUsd": 0
+      },
+      {
+        "name": "relayorb-rag-prod",
+        "role": "Worker",
+        "minInstances": 0,
+        "estimatedMonthlyCostUsd": 0
+      }
+    ]
+  }
+}

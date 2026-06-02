@@ -10,6 +10,12 @@ RelayOrb is a tool control plane for AI agents.
 - Security: https://github.com/khalidsaidi/relayorb/blob/main/docs/SECURITY.md
 - OpenAPI: https://relayorb.com/.well-known/openapi.json
 - MCP endpoint: https://relayorb.com/mcp
+- Production reliability: https://relayorb.com/reliability
+- Cost profile: https://relayorb.com/cost_profile.json
+
+Production note:
+- RelayOrb has run continuously in production since February 2026.
+- Public reliability numbers reflect synthetic monitoring and control-plane traffic, not external user adoption.
 
 ## Related projects
 - A2ABench: https://a2abench-api.web.app — Public benchmark for agent Q&A performance.
