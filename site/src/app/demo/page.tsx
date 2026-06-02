@@ -9,10 +9,20 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Demo module guide | RelayOrb",
     description: "Self-host the RelayOrb demo. The hosted anonymous demo has been retired.",
+    images: [
+      {
+        url: "/og-image.png",
+        width: 1200,
+        height: 630,
+        alt: "RelayOrb",
+      },
+    ],
   },
   twitter: {
+    card: "summary_large_image",
     title: "Demo module guide | RelayOrb",
     description: "Self-host the RelayOrb demo. The hosted anonymous demo has been retired.",
+    images: ["/og-image.png"],
   },
 };
 

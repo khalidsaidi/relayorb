@@ -10,10 +10,20 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Public stats | RelayOrb",
     description: "Real-time control-plane counters: invokes, callers, latency, capabilities.",
+    images: [
+      {
+        url: "/og-image.png",
+        width: 1200,
+        height: 630,
+        alt: "RelayOrb",
+      },
+    ],
   },
   twitter: {
+    card: "summary_large_image",
     title: "Public stats | RelayOrb",
     description: "Real-time control-plane counters: invokes, callers, latency, capabilities.",
+    images: ["/og-image.png"],
   },
 };
 

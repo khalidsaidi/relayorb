@@ -32,7 +32,7 @@ export const metadata: Metadata = {
   description:
     "Route agent calls to versioned capabilities with contracts, governance, and observability.",
   openGraph: {
-    title: "RelayOrb - Tool Control Plane for AI Agents",
+    title: "RelayOrb — Tool Control Plane for AI Agents",
     description:
       "Route agent calls to versioned capabilities with contracts, governance, and observability.",
     url: "https://relayorb.com",
@@ -49,7 +49,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "RelayOrb - Tool Control Plane for AI Agents",
+    title: "RelayOrb — Tool Control Plane for AI Agents",
     description:
       "Route agent calls to versioned capabilities with contracts, governance, and observability.",
     images: ["/og-image.png"],

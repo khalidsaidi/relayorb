@@ -82,6 +82,8 @@ async function verifyRoute(routeConfig) {
   const ogDescription = extractMeta(html, "property", "og:description");
   const twitterTitle = extractMeta(html, "name", "twitter:title");
   const twitterDescription = extractMeta(html, "name", "twitter:description");
+  const twitterCard = extractMeta(html, "name", "twitter:card");
+  const twitterImage = extractMeta(html, "name", "twitter:image");
 
   assert(title === routeConfig.title, `${routeConfig.route}: title mismatch: ${title}`);
   assert(!title.includes("RelayOrb | RelayOrb"), `${routeConfig.route}: doubled brand in title`);
@@ -97,6 +99,14 @@ async function verifyRoute(routeConfig) {
   assert(
     twitterDescription === routeConfig.description,
     `${routeConfig.route}: twitter:description mismatch: ${twitterDescription}`,
+  );
+  assert(
+    twitterCard === "summary_large_image",
+    `${routeConfig.route}: twitter:card mismatch: ${twitterCard}`,
+  );
+  assert(
+    twitterImage === "https://relayorb.com/og-image.png",
+    `${routeConfig.route}: twitter:image mismatch: ${twitterImage}`,
   );
   assert(!/twitter:creator/i.test(html), `${routeConfig.route}: unexpected twitter:creator`);
   assert(!/twitter:site/i.test(html), `${routeConfig.route}: unexpected twitter:site`);
