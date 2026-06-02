@@ -6,7 +6,15 @@ const routes = [
     title: "RelayOrb — Tool Control Plane for AI Agents",
     ogTitle: "RelayOrb — Tool Control Plane for AI Agents",
     description:
-      "Route agent calls to versioned capabilities with contracts, governance, and observability.",
+      "Control plane for production AI agents. Versioned tool routing, schema validation, and audit logs for teams operating dozens of agents and tools.",
+    bodyIncludes: /who this is for/i,
+  },
+  {
+    route: "/about",
+    title: "About | RelayOrb",
+    ogTitle: "About | RelayOrb",
+    description:
+      "Control plane for production AI agents. Versioned tool routing, schema validation, and audit logs for teams operating dozens of agents and tools.",
   },
   {
     route: "/reliability",
@@ -123,6 +131,12 @@ async function verifyRoute(routeConfig) {
     `${routeConfig.route}: unexpected twitter.com/relayorb`,
   );
   assert(!/x\.com\/relayorb\b/i.test(html), `${routeConfig.route}: unexpected x.com/relayorb`);
+  if (routeConfig.bodyIncludes) {
+    assert(
+      routeConfig.bodyIncludes.test(html),
+      `${routeConfig.route}: missing required body content`,
+    );
+  }
 
   return {
     route: routeConfig.route,

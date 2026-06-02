@@ -8,6 +8,7 @@ import { Footer } from "@/components/Footer";
 import { OrbBackdrop } from "@/components/OrbBackdrop";
 import { RouteAnalytics } from "@/components/RouteAnalytics";
 import { TrackedLink } from "@/components/TrackedLink";
+import { homepagePersonaDescription } from "@/lib/positioning";
 import { links } from "@/lib/site";
 import "./globals.css";
 
@@ -29,12 +30,10 @@ export const metadata: Metadata = {
     default: "RelayOrb — Tool Control Plane for AI Agents",
     template: "%s | RelayOrb",
   },
-  description:
-    "Route agent calls to versioned capabilities with contracts, governance, and observability.",
+  description: homepagePersonaDescription,
   openGraph: {
     title: "RelayOrb — Tool Control Plane for AI Agents",
-    description:
-      "Route agent calls to versioned capabilities with contracts, governance, and observability.",
+    description: homepagePersonaDescription,
     url: "https://relayorb.com",
     siteName: "RelayOrb",
     images: [
@@ -50,8 +49,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "RelayOrb — Tool Control Plane for AI Agents",
-    description:
-      "Route agent calls to versioned capabilities with contracts, governance, and observability.",
+    description: homepagePersonaDescription,
     images: ["/og-image.png"],
   },
 };
@@ -81,6 +79,14 @@ export default function RootLayout({
               RelayOrb
             </TrackedLink>
             <nav className="hidden items-center gap-4 text-sm text-slate-300 sm:flex">
+              <TrackedLink
+                href="/about"
+                variant="link"
+                eventName="cta_click"
+                eventParams={{ cta: "nav_about", location: "header" }}
+              >
+                About
+              </TrackedLink>
               <TrackedLink
                 href="/demo"
                 variant="link"

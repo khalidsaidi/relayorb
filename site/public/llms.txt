@@ -1,6 +1,7 @@
 # RelayOrb
 
 RelayOrb is a tool control plane for AI agents.
+Who this is for: SRE / platform teams running production AI agents that collectively call many tools. Who this isn't for: solo developers, hobbyists, or anyone without production agents in flight.
 
 - Website: https://relayorb.com
 - API docs: https://github.com/khalidsaidi/relayorb/blob/main/docs/API.md

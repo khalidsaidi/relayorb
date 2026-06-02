@@ -2,6 +2,7 @@ function renderSitemap() {
   const now = new Date().toISOString();
   const urls = [
     "https://relayorb.com/",
+    "https://relayorb.com/about",
     "https://relayorb.com/demo",
     "https://relayorb.com/terraform",
     "https://relayorb.com/privacy",

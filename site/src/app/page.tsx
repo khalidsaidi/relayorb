@@ -12,6 +12,11 @@ import { Capabilities3DShowcase } from "@/components/Capabilities3DShowcase";
 import { CodeBlock } from "@/components/CodeBlock";
 import { Reveal } from "@/components/Reveal";
 import { TrackedLink } from "@/components/TrackedLink";
+import {
+  homepagePersonaDescription,
+  whoItIsntFor,
+  whoItsFor,
+} from "@/lib/positioning";
 import { demoCurl, links, terraformDemoSnippet, terraformProdSnippet } from "@/lib/site";
 
 const features = [
@@ -68,8 +73,7 @@ export default function HomePage() {
               RelayOrb - Tool Control Plane for AI Agents
             </h1>
             <p className="mt-6 max-w-3xl text-lg text-slate-300 sm:text-xl">
-              Route agent calls to versioned capabilities with contracts,
-              governance, and observability.
+              {homepagePersonaDescription}
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <TrackedLink
@@ -145,6 +149,42 @@ export default function HomePage() {
               </Reveal>
             ))}
           </div>
+        </section>
+
+        <section className="py-8" data-analytics-section="home_audience">
+          <Reveal>
+            <h2 className="text-2xl font-semibold sm:text-3xl">Who this is for</h2>
+            <p className="mt-3 max-w-3xl text-slate-300">
+              RelayOrb is for teams that already operate enough agents and
+              tools for ad-hoc wiring to become a reliability problem.
+            </p>
+          </Reveal>
+
+          <div className="mt-6 grid gap-4 lg:grid-cols-3">
+            {whoItsFor.map(persona => (
+              <Reveal key={persona.title}>
+                <article className="h-full rounded-2xl border border-slate-700/70 bg-slate-950/70 p-5">
+                  <h3 className="text-lg font-medium">{persona.title}</h3>
+                  {persona.body.map(paragraph => (
+                    <p key={paragraph} className="mt-3 text-sm text-slate-300">
+                      {paragraph}
+                    </p>
+                  ))}
+                </article>
+              </Reveal>
+            ))}
+          </div>
+
+          <Reveal>
+            <div className="mt-8 rounded-2xl border border-slate-800/80 bg-slate-950/60 p-6">
+              <h3 className="text-xl font-semibold text-slate-100">Who this isn&apos;t for</h3>
+              <ul className="mt-4 space-y-3 text-sm text-slate-300">
+                {whoItIsntFor.map(item => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          </Reveal>
         </section>
 
         <section className="py-8" data-analytics-section="home_how">
