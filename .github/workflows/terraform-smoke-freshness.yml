@@ -1,0 +1,52 @@
+name: Terraform Smoke Freshness
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "25 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  assert-fresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert weekly smoke recency
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const workflow_id = "terraform-registry-modules-smoke.yml";
+            const { owner, repo } = context.repo;
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner,
+              repo,
+              workflow_id,
+              per_page: 20,
+            });
+
+            const successful = runs.find((run) =>
+              run.conclusion === "success" &&
+              (run.event === "schedule" || run.event === "workflow_dispatch")
+            );
+
+            if (!successful) {
+              core.setFailed("No successful terraform registry smoke run found.");
+              return;
+            }
+
+            const latest = new Date(successful.created_at);
+            const now = new Date();
+            const ageDays = (now.getTime() - latest.getTime()) / (1000 * 60 * 60 * 24);
+
+            core.info(`latest_success=${successful.html_url}`);
+            core.info(`latest_created_at=${successful.created_at}`);
+            core.info(`age_days=${ageDays.toFixed(2)}`);
+
+            if (ageDays > 14) {
+              core.setFailed(`Terraform registry smoke is stale: ${ageDays.toFixed(2)}d > 14d`);
+            }
