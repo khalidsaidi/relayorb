@@ -2,8 +2,6 @@ name: Terraform Smoke Freshness
 
 on:
   push:
-    branches:
-      - main
   schedule:
     - cron: "25 6 * * *"
   workflow_dispatch:
