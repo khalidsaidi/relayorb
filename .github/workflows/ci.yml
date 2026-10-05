@@ -6,7 +6,8 @@ on:
   pull_request:
 
 jobs:
-  rust:
+  test:
+    name: test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -37,3 +38,12 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+  # Single status check for branch protection ("rust").
+  rust:
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: All test jobs passed
+        run: test "${{ needs.test.result }}" = "success"
