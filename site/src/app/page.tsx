@@ -1,328 +1,269 @@
-import Script from "next/script";
 import {
-  Activity,
-  FileCheck2,
-  HeartPulse,
-  Lock,
-  Radar,
-  Route,
+  ArrowRight,
+  Bug,
+  Database,
+  FlaskConical,
+  RotateCcw,
+  ShieldCheck,
 } from "lucide-react";
-import { ArchitectureDiagram } from "@/components/ArchitectureDiagram";
-import { Capabilities3DShowcase } from "@/components/Capabilities3DShowcase";
 import { CodeBlock } from "@/components/CodeBlock";
 import { Reveal } from "@/components/Reveal";
 import { TrackedLink } from "@/components/TrackedLink";
-import { demoCurl, links, terraformDemoSnippet, terraformProdSnippet } from "@/lib/site";
+import {
+  ciWorkflowExample,
+  commands,
+  cargoInstallCommand,
+  installCommand,
+  links,
+  mcpConfigExample,
+  useCases,
+} from "@/lib/site";
 
-const features = [
-  {
-    title: "Contract-first validation",
-    body: "JSON Schema input/output validation prevents silent payload drift.",
-    Icon: FileCheck2,
-  },
-  {
-    title: "Governance and ownership",
-    body: "Capability namespaces are governed with explicit ownership boundaries.",
-    Icon: Lock,
-  },
-  {
-    title: "Routing and health discovery",
-    body: "Gateway selects healthy providers through Registry heartbeats.",
-    Icon: Route,
-  },
-  {
-    title: "Idempotency and async jobs",
-    body: "Retry-safe invoke behavior and async jobs in full production mode.",
-    Icon: Radar,
-  },
-  {
-    title: "Metrics, traces, alerts",
-    body: "Prometheus metrics and OTEL traces make tool behavior observable.",
-    Icon: Activity,
-  },
-  {
-    title: "Secure by default",
-    body: "OIDC in prod with private internals behind Cloud Run IAM.",
-    Icon: HeartPulse,
-  },
-];
+const useCaseIcons = [Bug, RotateCcw, FlaskConical, ShieldCheck];
 
-const flow = [
-  "Agent calls Gateway with capability ID and payload.",
-  "Gateway validates auth, policy, and JSON schema contract.",
-  "Registry returns healthy provider candidates.",
-  "Gateway forwards to Worker and validates response schema.",
-  "Metrics/traces are emitted for full request lifecycle visibility.",
-];
+function FlowArrow({ label }: { label: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-1 py-1 text-slate-400 lg:pt-10 lg:pb-0">
+      <ArrowRight className="h-5 w-5 rotate-90 text-cyan-300 lg:rotate-0" aria-hidden />
+      <span className="text-[11px] tracking-[0.12em] uppercase">{label}</span>
+    </div>
+  );
+}
+
+function FlowDiagram() {
+  return (
+    <figure className="rounded-2xl border border-slate-700/70 bg-slate-950/70 p-4 sm:p-6">
+      <figcaption className="sr-only">
+        An AI agent talks to relayorb over stdio, relayorb forwards each message
+        to the MCP server, and every request and response is recorded to a local
+        SQLite file.
+      </figcaption>
+      <div className="grid grid-cols-1 items-start gap-2 lg:grid-cols-[1fr_auto_1fr_auto_1fr] lg:gap-4">
+        <div className="rounded-xl border border-slate-700/70 bg-slate-900/60 p-4">
+          <p className="text-xs tracking-[0.14em] text-slate-400 uppercase">Agent</p>
+          <p className="mt-1 font-medium text-slate-100">Your MCP client</p>
+          <p className="mt-1 text-sm text-slate-400">
+            Claude Desktop, Claude Code, Cursor, or any MCP client
+          </p>
+        </div>
+
+        <FlowArrow label="stdio" />
+
+        <div className="flex flex-col items-stretch">
+          <div className="rounded-xl border border-cyan-300/50 bg-cyan-400/10 p-4 shadow-[0_0_40px_-12px_rgba(88,198,255,0.6)]">
+            <p className="text-xs tracking-[0.14em] text-cyan-300 uppercase">Recorder</p>
+            <p className="mt-1 font-mono font-medium text-cyan-100">relayorb record</p>
+            <p className="mt-1 text-sm text-slate-300">
+              Relays every JSON-RPC message unchanged and keeps a copy
+            </p>
+          </div>
+          <div className="mx-auto h-6 w-px bg-gradient-to-b from-cyan-300/70 to-indigo-300/60" aria-hidden />
+          <div className="flex items-start gap-3 rounded-xl border border-indigo-300/40 bg-indigo-400/10 p-4">
+            <Database className="mt-0.5 h-5 w-5 shrink-0 text-indigo-200" aria-hidden />
+            <div className="min-w-0">
+              <p className="font-medium text-indigo-100">Local SQLite file</p>
+              <p className="mt-1 text-sm break-words text-slate-300">
+                <code>~/.relayorb/recordings.db</code>
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <FlowArrow label="stdio" />
+
+        <div className="rounded-xl border border-slate-700/70 bg-slate-900/60 p-4">
+          <p className="text-xs tracking-[0.14em] text-slate-400 uppercase">Tools</p>
+          <p className="mt-1 font-medium text-slate-100">MCP server</p>
+          <p className="mt-1 text-sm text-slate-400">
+            Any MCP server that runs over stdio, unmodified
+          </p>
+        </div>
+      </div>
+    </figure>
+  );
+}
 
 export default function HomePage() {
   return (
     <div className="relative min-h-screen text-slate-100">
-      <main className="mx-auto w-full max-w-6xl px-6 pb-16 sm:px-8">
-        <section className="pt-24 pb-10" data-analytics-section="home_hero">
+      <main className="mx-auto w-full max-w-6xl px-4 pb-16 sm:px-8">
+        <section className="pt-16 pb-10 sm:pt-24" data-analytics-section="home_hero">
           <Reveal>
-            <p className="mb-4 text-xs uppercase tracking-[0.22em] text-cyan-300">
-              RelayOrb - production-grade tool infrastructure
+            <p className="mb-4 text-xs tracking-[0.22em] text-cyan-300 uppercase">
+              Open source · Apache-2.0 · Runs locally
             </p>
             <h1 className="max-w-3xl text-4xl leading-tight font-semibold sm:text-6xl">
-              RelayOrb - Tool Control Plane for AI Agents
+              RelayOrb
             </h1>
-            <p className="mt-6 max-w-3xl text-lg text-slate-300 sm:text-xl">
-              Route agent calls to versioned capabilities with contracts,
-              governance, and observability.
+            <p className="mt-3 max-w-3xl text-2xl text-slate-100 sm:text-3xl">
+              A flight recorder for AI agents.
             </p>
-            <div className="mt-8 flex flex-wrap gap-3">
-              <TrackedLink
-                href="/demo"
-                variant="primary"
-                eventName="cta_click"
-                eventParams={{ cta: "open_demo_module", location: "hero" }}
-              >
-                Demo Module Guide
-              </TrackedLink>
-              <TrackedLink
-                href="#deploy"
-                variant="secondary"
-                eventName="cta_click"
-                eventParams={{ cta: "deploy_terraform", location: "hero" }}
-              >
-                Deploy with Terraform
-              </TrackedLink>
+            <p className="mt-6 max-w-3xl text-base text-slate-300 sm:text-lg">
+              A single Rust CLI that sits between your agent and its MCP tool
+              servers, records every JSON-RPC message to a local SQLite file,
+              and lets you replay or regression-check those sessions. No
+              account, no cloud, no telemetry. Free.
+            </p>
+
+            <div className="mt-8 max-w-3xl min-w-0">
+              <CodeBlock title="Install" code={installCommand} snippetId="copy_install" />
+              <ul className="mt-3 space-y-1.5 text-sm text-slate-400">
+                <li>
+                  macOS and Linux: the script above downloads the prebuilt
+                  binary to <code className="text-slate-200">~/.local/bin</code>.
+                </li>
+                <li>
+                  Windows: download the zip from{" "}
+                  <TrackedLink
+                    href={links.releases}
+                    variant="link"
+                    eventName="outbound_click"
+                    eventParams={{ destination: "github.com/khalidsaidi/relayorb/releases", location: "hero" }}
+                  >
+                    GitHub Releases
+                  </TrackedLink>
+                  .
+                </li>
+                <li className="break-words">
+                  From source:{" "}
+                  <code className="text-slate-200">{cargoInstallCommand}</code>
+                </li>
+              </ul>
+            </div>
+
+            <div className="mt-6 flex flex-wrap gap-3">
               <TrackedLink
                 href={links.github}
-                variant="ghost"
+                variant="primary"
                 eventName="cta_click"
                 eventParams={{ cta: "view_github", location: "hero" }}
               >
                 View on GitHub
               </TrackedLink>
               <TrackedLink
-                href="/stats"
+                href="#quickstart"
                 variant="ghost"
                 eventName="cta_click"
-                eventParams={{ cta: "view_stats", location: "hero" }}
+                eventParams={{ cta: "quickstart", location: "hero" }}
               >
-                View public stats
-              </TrackedLink>
-              <TrackedLink
-                href="/reliability"
-                variant="ghost"
-                eventName="cta_click"
-                eventParams={{ cta: "view_reliability", location: "hero" }}
-              >
-                30-day reliability report
+                Quickstart
               </TrackedLink>
             </div>
-            <p className="mt-4 text-sm text-slate-400">
-              Open Source · Hosted demo retired · Terraform modules · Weekly
-              module smoke CI
-            </p>
           </Reveal>
-
-          <div className="mt-10">
-            <ArchitectureDiagram />
-          </div>
-        </section>
-
-        <section className="py-8" data-analytics-section="home_why">
-          <Reveal>
-            <h2 className="text-2xl font-semibold sm:text-3xl">Why RelayOrb</h2>
-            <p className="mt-3 max-w-3xl text-slate-300">
-              Ad-hoc tool wiring degrades quickly in production. RelayOrb adds
-              the control-plane guarantees needed to keep agent tool calls
-              reliable and auditable.
-            </p>
-          </Reveal>
-
-          <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {features.map(({ title, body, Icon }) => (
-              <Reveal key={title}>
-                <article className="h-full rounded-2xl border border-slate-700/70 bg-slate-950/70 p-5">
-                  <Icon className="mb-3 h-5 w-5 text-cyan-300" aria-hidden />
-                  <h3 className="text-lg font-medium">{title}</h3>
-                  <p className="mt-2 text-sm text-slate-300">{body}</p>
-                </article>
-              </Reveal>
-            ))}
-          </div>
         </section>
 
         <section className="py-8" data-analytics-section="home_how">
           <Reveal>
             <h2 className="text-2xl font-semibold sm:text-3xl">How it works</h2>
-            <ol className="mt-5 grid gap-3 sm:grid-cols-2">
-              {flow.map(step => (
-                <li
-                  key={step}
-                  className="rounded-xl border border-slate-700/70 bg-slate-950/60 p-4 text-sm text-slate-200"
-                >
-                  {step}
+            <p className="mt-3 max-w-3xl text-slate-300">
+              Point your agent config at <code className="text-cyan-200">relayorb</code>{" "}
+              instead of the MCP server. RelayOrb starts the real server, relays
+              traffic both ways, and records each request and response with
+              its timing.
+            </p>
+          </Reveal>
+          <div className="mt-6">
+            <Reveal>
+              <FlowDiagram />
+            </Reveal>
+          </div>
+        </section>
+
+        <section className="py-8" data-analytics-section="home_use_cases">
+          <Reveal>
+            <h2 className="text-2xl font-semibold sm:text-3xl">What it is for</h2>
+          </Reveal>
+          <div className="mt-6 grid gap-4 sm:grid-cols-2">
+            {useCases.map(({ title, body }, index) => {
+              const Icon = useCaseIcons[index] ?? Bug;
+              return (
+                <Reveal key={title}>
+                  <article className="h-full rounded-2xl border border-slate-700/70 bg-slate-950/70 p-5">
+                    <Icon className="mb-3 h-5 w-5 text-cyan-300" aria-hidden />
+                    <h3 className="text-lg font-medium">{title}</h3>
+                    <p className="mt-2 text-sm text-slate-300">{body}</p>
+                  </article>
+                </Reveal>
+              );
+            })}
+          </div>
+        </section>
+
+        <section id="quickstart" className="scroll-mt-20 py-8" data-analytics-section="home_quickstart">
+          <Reveal>
+            <h2 className="text-2xl font-semibold sm:text-3xl">Record your agent</h2>
+            <p className="mt-3 max-w-3xl text-slate-300">
+              Wrap any stdio MCP server by putting{" "}
+              <code className="text-cyan-200">relayorb record --</code> in front of
+              its command. This works in Claude Desktop, Claude Code, Cursor, and
+              any other MCP client config.
+            </p>
+          </Reveal>
+          <div className="mt-5 min-w-0">
+            <Reveal>
+              <CodeBlock
+                title="MCP client config (e.g. claude_desktop_config.json)"
+                code={mcpConfigExample}
+                snippetId="copy_mcp_config"
+              />
+            </Reveal>
+          </div>
+          <Reveal>
+            <p className="mt-3 text-sm text-slate-400">
+              Then use the agent as usual and run{" "}
+              <code className="text-slate-200">relayorb list</code> and{" "}
+              <code className="text-slate-200">relayorb show fs</code> to see what
+              happened.
+            </p>
+          </Reveal>
+        </section>
+
+        <section id="commands" className="scroll-mt-20 py-8" data-analytics-section="home_commands">
+          <Reveal>
+            <h2 className="text-2xl font-semibold sm:text-3xl">Commands</h2>
+          </Reveal>
+          <div className="mt-6 overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-950/70">
+            <ul className="divide-y divide-slate-800">
+              {commands.map(command => (
+                <li key={command.usage} className="grid gap-2 p-4 sm:p-5 lg:grid-cols-[minmax(0,26rem)_1fr] lg:gap-6">
+                  <code className="min-w-0 text-sm break-words text-cyan-100">
+                    {command.usage}
+                  </code>
+                  <p className="text-sm text-slate-300">{command.summary}</p>
                 </li>
               ))}
-            </ol>
-            <p className="mt-4 max-w-3xl text-sm text-slate-300">
-              Production behavior is published separately in the{" "}
-              <TrackedLink
-                href="/reliability"
-                variant="link"
-                eventName="cta_click"
-                eventParams={{ cta: "open_reliability_report", location: "home_how" }}
-              >
-                30-day reliability report
-              </TrackedLink>
-              . It uses real Cloud Monitoring data and explicitly labels the traffic as
-              synthetic control-plane load rather than public adoption.
-            </p>
-          </Reveal>
-        </section>
-
-        <section className="py-8" data-analytics-section="home_3d_showcase">
-          <Reveal>
-            <h2 className="text-2xl font-semibold sm:text-3xl">See RelayOrb in 3D</h2>
-            <p className="mt-2 max-w-3xl text-slate-300">
-              Interactive control-plane simulation of all six platform
-              capabilities: contracts, governance, routing, replay safety,
-              async jobs, and observability.
-            </p>
-          </Reveal>
-          <div className="mt-5">
-            <Capabilities3DShowcase />
+            </ul>
           </div>
-        </section>
-
-        <section className="py-8" data-analytics-section="home_try">
           <Reveal>
-            <h2 className="text-2xl font-semibold sm:text-3xl">Self-host the demo posture</h2>
-            <p className="mt-2 text-slate-300">
-              The hosted anonymous demo has been retired. The demo module still
-              gives you the same read-only, allowlisted, rate-limited posture
-              in your own project. Canonical guidance stays in
-              <TrackedLink
-                href={links.demoDocs}
-                variant="link"
-                className="ml-1"
-                eventName="cta_click"
-                eventParams={{ cta: "open_demo_docs", location: "home_try" }}
-              >
-                docs/DEMO.md
-              </TrackedLink>
-              .
-            </p>
-          </Reveal>
-
-          <div className="mt-5">
-            <CodeBlock
-              title="Self-hosted demo invoke (rag.search@v1)"
-              code={demoCurl}
-              snippetId="copy_demo_curl"
-            />
             <p className="mt-3 text-sm text-slate-400">
-              Replace <code>YOUR-DEMO-URL</code> with the endpoint from your own
-              demo deployment.
-            </p>
-          </div>
-        </section>
-
-        <section
-          id="deploy"
-          className="py-8"
-          data-analytics-section="home_deploy"
-        >
-          <Reveal>
-            <h2 className="text-2xl font-semibold sm:text-3xl">Deploy with Terraform</h2>
-            <p className="mt-2 text-slate-300">
-              Production and demo postures are available as Terraform Registry
-              modules.
+              Recordings live in <code className="text-slate-200">~/.relayorb/recordings.db</code>.
+              Set <code className="text-slate-200">RELAYORB_DB</code> to use a different file.
             </p>
           </Reveal>
+        </section>
 
-          <div className="mt-6 grid gap-5 lg:grid-cols-2">
+        <section id="ci" className="scroll-mt-20 py-8" data-analytics-section="home_ci">
+          <Reveal>
+            <h2 className="text-2xl font-semibold sm:text-3xl">Regression-test MCP servers in CI</h2>
+            <p className="mt-3 max-w-3xl text-slate-300">
+              Export a known-good session as a fixture and commit it. In CI,{" "}
+              <code className="text-cyan-200">relayorb check</code> re-sends the
+              recorded tool calls to the live server, diffs the answers, and
+              exits non-zero on a mismatch.
+            </p>
+          </Reveal>
+          <div className="mt-5 min-w-0">
             <Reveal>
-              <article className="rounded-2xl border border-indigo-400/30 bg-slate-950/70 p-5">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <h3 className="text-lg font-medium">Prod module (OIDC-first)</h3>
-                  <TrackedLink
-                    href={links.prodModule}
-                    variant="secondary"
-                    className="text-xs"
-                    eventName="cta_click"
-                    eventParams={{ cta: "open_module_prod", location: "deploy_prod" }}
-                  >
-                    Open module
-                  </TrackedLink>
-                </div>
-                <CodeBlock
-                  title="khalidsaidi/relayorb/google"
-                  code={terraformProdSnippet}
-                  snippetId="copy_tf_prod"
-                />
-              </article>
-            </Reveal>
-
-            <Reveal>
-              <article className="rounded-2xl border border-cyan-400/30 bg-slate-950/70 p-5">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <h3 className="text-lg font-medium">Demo module (anonymous posture)</h3>
-                  <TrackedLink
-                    href={links.demoModule}
-                    variant="secondary"
-                    className="text-xs"
-                    eventName="cta_click"
-                    eventParams={{ cta: "open_module_demo", location: "deploy_demo" }}
-                  >
-                    Open module
-                  </TrackedLink>
-                </div>
-                <CodeBlock
-                  title="khalidsaidi/relayorb-demo/google"
-                  code={terraformDemoSnippet}
-                  snippetId="copy_tf_demo"
-                />
-              </article>
+              <CodeBlock title="CI step" code={ciWorkflowExample} snippetId="copy_ci_example" />
             </Reveal>
           </div>
-        </section>
-
-        <section className="py-8" data-analytics-section="home_trust">
           <Reveal>
-            <h2 className="text-2xl font-semibold sm:text-3xl">
-              Open source, production-shaped
-            </h2>
-            <div className="mt-5 grid gap-3 sm:grid-cols-2">
-              <div className="rounded-xl border border-slate-700/70 bg-slate-950/60 p-4 text-sm text-slate-200">
-                Smokes + conformance harness validate behavior before changes
-                ship.
-              </div>
-              <div className="rounded-xl border border-slate-700/70 bg-slate-950/60 p-4 text-sm text-slate-200">
-                Remote Terraform state and deployment verifier keep demo posture
-                stable.
-              </div>
-              <div className="rounded-xl border border-slate-700/70 bg-slate-950/60 p-4 text-sm text-slate-200">
-                Weekly Terraform module smoke workflow catches registry/install
-                regressions.
-              </div>
-              <div className="rounded-xl border border-slate-700/70 bg-slate-950/60 p-4 text-sm text-slate-200">
-                Runbook-driven operations with clear guardrails for public demo
-                safety.
-              </div>
-            </div>
-          </Reveal>
-        </section>
-
-        <section className="py-8" data-analytics-section="home_agentability">
-          <Reveal>
-            <h2 className="text-2xl font-semibold sm:text-3xl">Agentability Report</h2>
-            <p className="mt-2 max-w-3xl text-slate-300">
-              Public machine-readiness report for relayorb.com.
+            <p className="mt-3 max-w-3xl text-sm text-slate-400">
+              Need the opposite? <code className="text-slate-200">relayorb replay fixtures/fs-session.json</code>{" "}
+              stands in for the real server so agent tests run offline with the
+              same answers every time.
             </p>
-            <div className="mt-5">
-              <div
-                data-agentability-domain="relayorb.com"
-                data-agentability-style="card"
-              />
-            </div>
           </Reveal>
-          <Script src="https://agentability.org/embed/widget.js" async />
         </section>
       </main>
     </div>

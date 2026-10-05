@@ -3,11 +3,8 @@
   "canonical_base_url": "https://relayorb.com",
   "product": {
     "name": "RelayOrb",
-    "description": "Tool control plane for AI agents with contract-first validation, governance, routing, and observability.",
+    "description": "A flight recorder for AI agents: an open-source Rust CLI that records MCP tool calls over stdio to local SQLite and replays or regression-checks them.",
     "home_url": "https://relayorb.com"
-  },
-  "contact": {
-    "email": "support@relayorb.com"
   },
   "legal": {
     "privacy_url": "https://relayorb.com/privacy",
@@ -15,63 +12,14 @@
   },
   "entrypoints": {
     "web_app": "https://relayorb.com",
-    "api_base": "http://34.8.48.11/v1"
-  },
-  "callable_surface": {
-    "openapi": "https://relayorb.com/.well-known/openapi.json",
-    "mcp_endpoint": "https://relayorb.com/mcp"
+    "source": "https://github.com/khalidsaidi/relayorb",
+    "releases": "https://github.com/khalidsaidi/relayorb/releases"
   },
   "llm_entrypoints": {
     "llms_txt": "https://relayorb.com/llms.txt",
     "llms_full_txt": "https://relayorb.com/llms-full.txt"
   },
-  "verification": {
-    "discovery_audit_json": "https://agentability.org/v1/evaluations/relayorb.com/latest.json",
-    "discovery_audit_html": "https://agentability.org/reports/relayorb.com"
-  },
   "docs": {
-    "overview": "https://relayorb.com",
-    "api": "https://github.com/khalidsaidi/relayorb/blob/main/docs/API.md",
-    "demo": "https://github.com/khalidsaidi/relayorb/blob/main/docs/DEMO.md",
-    "architecture": "https://github.com/khalidsaidi/relayorb/blob/main/docs/ARCH.md",
-    "runbook": "https://github.com/khalidsaidi/relayorb/blob/main/docs/RUNBOOK.md",
-    "security": "https://github.com/khalidsaidi/relayorb/blob/main/docs/SECURITY.md"
-  },
-  "siblings": {
-    "a2abench": {
-      "name": "A2ABench",
-      "url": "https://a2abench-api.web.app",
-      "stats_url": "https://a2abench-api.web.app/stats",
-      "stats_json_url": "https://a2abench-api.web.app/stats.json",
-      "agent_card_url": "https://a2abench-api.web.app/.well-known/agent.json"
-    },
-    "ragmap": {
-      "name": "Ragmap",
-      "url": "https://ragmap-api.web.app",
-      "stats_url": "https://ragmap-api.web.app/stats",
-      "stats_json_url": "https://ragmap-api.web.app/stats.json",
-      "agent_card_url": "https://ragmap-api.web.app/.well-known/agent.json"
-    },
-    "rootfetch": {
-      "name": "Rootfetch",
-      "url": "https://rootfetch.com",
-      "stats_url": "https://rootfetch.com/stats",
-      "stats_json_url": "https://rootfetch.com/stats.json",
-      "agent_card_url": "https://rootfetch.com/.well-known/agent.json"
-    },
-    "agentability": {
-      "name": "Agentability",
-      "url": "https://agentability.org",
-      "stats_url": "https://agentability.org/stats",
-      "stats_json_url": "https://agentability.org/stats.json",
-      "agent_card_url": "https://agentability.org/.well-known/agent.json"
-    },
-    "aistatusdashboard": {
-      "name": "AIStatusDashboard",
-      "url": "https://aistatusdashboard.com",
-      "stats_url": "https://aistatusdashboard.com/stats",
-      "stats_json_url": "https://aistatusdashboard.com/stats.json",
-      "agent_card_url": "https://aistatusdashboard.com/.well-known/agent.json"
-    }
+    "overview": "https://relayorb.com/docs.md"
   }
 }

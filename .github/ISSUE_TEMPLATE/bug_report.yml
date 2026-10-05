@@ -37,9 +37,8 @@ body:
     attributes:
       label: Component
       options:
-        - gateway
-        - registry
-        - worker-sdk
-        - conformance
-        - terraform/infra
-        - docs
+        - record
+        - show / list / export
+        - replay
+        - check
+        - website / docs

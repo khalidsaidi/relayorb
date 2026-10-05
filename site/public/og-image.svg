@@ -68,17 +68,17 @@
   <text x="175" y="106" text-anchor="middle" fill="#DAEEFF" font-size="18" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="600" letter-spacing="0.04em">OPEN SOURCE</text>
 
   <text x="74" y="214" fill="#F1F7FF" font-size="76" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="700">RelayOrb</text>
-  <text x="74" y="272" fill="#BBD2EF" font-size="34" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="500">Tool Control Plane for AI Agents</text>
-  <text x="74" y="332" fill="#D2E3FA" font-size="25" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="500">Route calls to versioned capabilities with contracts, governance, and observability.</text>
+  <text x="74" y="272" fill="#BBD2EF" font-size="34" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="500">A flight recorder for AI agents</text>
+  <text x="74" y="332" fill="#D2E3FA" font-size="25" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="500">Record, replay, and regression-check MCP tool calls.</text>
 
   <g>
     <rect x="74" y="378" width="272" height="46" rx="12" fill="#101A31" fill-opacity="0.92" stroke="#47D1FF" stroke-opacity="0.58"/>
-    <text x="210" y="407" text-anchor="middle" fill="#D6F4FF" font-size="20" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="600">Anonymous Demo</text>
+    <text x="210" y="407" text-anchor="middle" fill="#D6F4FF" font-size="20" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="600">Local SQLite</text>
 
     <rect x="360" y="378" width="290" height="46" rx="12" fill="#101A31" fill-opacity="0.92" stroke="#8298FF" stroke-opacity="0.55"/>
-    <text x="505" y="407" text-anchor="middle" fill="#E5EAFF" font-size="20" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="600">Deploy with Terraform</text>
+    <text x="505" y="407" text-anchor="middle" fill="#E5EAFF" font-size="20" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="600">Replay in CI</text>
   </g>
 
-  <text x="74" y="484" fill="#9BB3D2" font-size="22" font-family="Inter, Segoe UI, Arial, sans-serif">Open Source · Read-only demo · Weekly module smoke CI</text>
+  <text x="74" y="484" fill="#9BB3D2" font-size="22" font-family="Inter, Segoe UI, Arial, sans-serif">Open source Rust CLI · Apache-2.0 · No cloud, no telemetry</text>
   <text x="74" y="548" fill="#8CA8CC" font-size="22" font-family="Inter, Segoe UI, Arial, sans-serif">relayorb.com</text>
 </svg>

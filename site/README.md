@@ -1,6 +1,7 @@
 # relayorb-site
 
-Public marketing website for RelayOrb.
+Public website for RelayOrb, a flight recorder for AI agents (open-source Rust CLI
+that records MCP tool calls to local SQLite and replays/regression-checks them).
 
 ## Stack
 
@@ -9,12 +10,15 @@ Public marketing website for RelayOrb.
 - Framer Motion (subtle section reveal)
 - GA4 integration with Consent Mode + consent banner
 
-## Pages
+## Routes
 
 - `/` landing page
-- `/demo` anonymous demo details and curl
 - `/privacy` analytics/privacy summary
-- `/terraform` Terraform module usage
+- `/docs.md` markdown docs (source: `src/lib/docsMarkdown.ts`)
+- `/llms.txt` (static, `public/`) and `/llms-full.txt` (same content as `/docs.md`)
+- `/privacy.md`, `/terms.md`, `/cookies.md` markdown mirrors
+- `/sitemap.xml`, `/robots.txt`
+- `/air.json`, `/.well-known/air.json` (static discovery metadata)
 
 ## Run locally
 
@@ -51,8 +55,8 @@ If `NEXT_PUBLIC_GA_MEASUREMENT_ID` is empty, GA scripts are not loaded.
 - Events are sent only when consent is granted.
 - Tracked events:
   - `page_view`
-  - `cta_click` (e.g. `try_demo`, `deploy_terraform`, `view_github`)
-  - `copy_code` (e.g. `copy_demo_curl`, `copy_tf_prod`, `copy_tf_demo`)
+  - `cta_click` (e.g. `view_github`, `quickstart`, `nav_docs`)
+  - `copy_code` (e.g. `copy_install`, `copy_mcp_config`, `copy_ci_example`)
   - `outbound_click`
 
 No PII is intentionally sent in events.
@@ -94,6 +98,4 @@ Defined in `next.config.ts`:
 ## Canonical product links used on site
 
 - GitHub: https://github.com/khalidsaidi/relayorb
-- Demo docs: https://github.com/khalidsaidi/relayorb/blob/main/docs/DEMO.md
-- Terraform prod module: https://registry.terraform.io/modules/khalidsaidi/relayorb/google/latest
-- Terraform demo module: https://registry.terraform.io/modules/khalidsaidi/relayorb-demo/google/latest
+- Releases: https://github.com/khalidsaidi/relayorb/releases

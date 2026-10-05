@@ -1,25 +1,32 @@
 # RelayOrb
 
-RelayOrb is a tool control plane for AI agents.
+> A flight recorder for AI agents. RelayOrb is an open-source Rust CLI (Apache-2.0) that sits between an AI agent (Claude Desktop, Claude Code, Cursor, or any MCP client) and its MCP tool servers over stdio, records every JSON-RPC message to a local SQLite file, and lets you replay or regression-check those sessions. Runs locally or in CI. No account, no cloud, no telemetry.
 
-- Website: https://relayorb.com
-- API docs: https://github.com/khalidsaidi/relayorb/blob/main/docs/API.md
-- Architecture: https://github.com/khalidsaidi/relayorb/blob/main/docs/ARCH.md
-- Demo docs: https://github.com/khalidsaidi/relayorb/blob/main/docs/DEMO.md
-- Runbook: https://github.com/khalidsaidi/relayorb/blob/main/docs/RUNBOOK.md
-- Security: https://github.com/khalidsaidi/relayorb/blob/main/docs/SECURITY.md
-- OpenAPI: https://relayorb.com/.well-known/openapi.json
-- MCP endpoint: https://relayorb.com/mcp
-- Production reliability: https://relayorb.com/reliability
-- Cost profile: https://relayorb.com/cost_profile.json
+## Install
 
-Production note:
-- RelayOrb has run continuously in production since February 2026.
-- Public reliability numbers reflect synthetic monitoring and control-plane traffic, not external user adoption.
+- macOS / Linux: `curl -fsSL https://relayorb.com/install.sh | sh`
+- Windows: download the zip from https://github.com/khalidsaidi/relayorb/releases
+- From source: `cargo install --git https://github.com/khalidsaidi/relayorb relayorb`
 
-## Related projects
-- A2ABench: https://a2abench-api.web.app — Public benchmark for agent Q&A performance.
-- Ragmap: https://ragmap-api.web.app — MCP search and RAG-focused server discovery.
-- Rootfetch: https://rootfetch.com — DNS delegation intelligence with MCP telemetry.
-- Agentability: https://agentability.org — Agent-readiness audit and evidence-backed report publishing.
-- AIStatusDashboard: https://aistatusdashboard.com — Real-time AI provider status monitoring with evidence-backed metrics.
+## Commands
+
+- `relayorb record [--name NAME] -- <mcp server command...>`: wrap a stdio MCP server and record every request/response
+- `relayorb list`: list recorded sessions
+- `relayorb show <session> [--json]`: session timeline (method, tool name, latency, errors)
+- `relayorb export <session> -o session.json`: save a session as a JSON fixture
+- `relayorb replay <session-or-file>`: fake MCP server that answers from the recording
+- `relayorb check <session-or-file> -- <mcp server command...>`: re-send recorded tool calls to the live server, diff answers, exit non-zero on mismatch
+
+Recordings default to `~/.relayorb/recordings.db`; override with `RELAYORB_DB`.
+
+## Docs
+
+- [Full docs (markdown)](https://relayorb.com/docs.md)
+- [Full docs (plain text)](https://relayorb.com/llms-full.txt)
+- [Source code](https://github.com/khalidsaidi/relayorb)
+- [Releases](https://github.com/khalidsaidi/relayorb/releases)
+
+## Optional
+
+- [Privacy](https://relayorb.com/privacy)
+- [License (Apache-2.0)](https://relayorb.com/terms.md)

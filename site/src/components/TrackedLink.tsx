@@ -34,6 +34,10 @@ export function TrackedLink({
   ...rest
 }: Props) {
   const isExternal = typeof href === "string" && href.startsWith("http");
+  // Plain-file routes (markdown/text mirrors) are not React pages, so they
+  // need a normal anchor instead of client-side navigation.
+  const isFileRoute =
+    typeof href === "string" && /\.(md|txt|json|xml)$/.test(href);
   const resolvedEventName =
     eventName === "outbound_github" ? "outbound_click" : eventName;
   const resolvedEventParams = eventParams;
@@ -87,6 +91,14 @@ export function TrackedLink({
         onClick={handleClick}
         {...rest}
       >
+        {children}
+      </a>
+    );
+  }
+
+  if (isFileRoute) {
+    return (
+      <a href={href} className={anchorClass} onClick={handleClick} {...rest}>
         {children}
       </a>
     );

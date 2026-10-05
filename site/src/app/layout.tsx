@@ -26,15 +26,15 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL("https://relayorb.com"),
   title: {
-    default: "RelayOrb — Tool Control Plane for AI Agents",
+    default: "RelayOrb — A flight recorder for AI agents",
     template: "%s | RelayOrb",
   },
   description:
-    "Route agent calls to versioned capabilities with contracts, governance, and observability.",
+    "Open-source CLI that records every MCP tool call between your AI agent and its tool servers to local SQLite, then lets you replay or regression-check those sessions.",
   openGraph: {
-    title: "RelayOrb — Tool Control Plane for AI Agents",
+    title: "RelayOrb — A flight recorder for AI agents",
     description:
-      "Route agent calls to versioned capabilities with contracts, governance, and observability.",
+      "Open-source CLI that records every MCP tool call between your AI agent and its tool servers to local SQLite, then lets you replay or regression-check those sessions.",
     url: "https://relayorb.com",
     siteName: "RelayOrb",
     images: [
@@ -49,9 +49,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "RelayOrb — Tool Control Plane for AI Agents",
+    title: "RelayOrb — A flight recorder for AI agents",
     description:
-      "Route agent calls to versioned capabilities with contracts, governance, and observability.",
+      "Open-source CLI that records every MCP tool call between your AI agent and its tool servers to local SQLite, then lets you replay or regression-check those sessions.",
     images: ["/og-image.png"],
   },
 };
@@ -70,7 +70,7 @@ export default function RootLayout({
         <OrbBackdrop />
 
         <header className="sticky top-0 z-40 border-b border-slate-800/70 bg-slate-950/65 backdrop-blur">
-          <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-4 sm:px-8">
+          <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-4 sm:px-8">
             <TrackedLink
               href="/"
               variant="link"
@@ -80,38 +80,23 @@ export default function RootLayout({
             >
               RelayOrb
             </TrackedLink>
-            <nav className="hidden items-center gap-4 text-sm text-slate-300 sm:flex">
+            <nav className="flex items-center gap-3 text-sm text-slate-300 sm:gap-4">
               <TrackedLink
-                href="/demo"
+                href="/#commands"
                 variant="link"
+                className="hidden sm:inline"
                 eventName="cta_click"
-                eventParams={{ cta: "nav_demo", location: "header" }}
+                eventParams={{ cta: "nav_commands", location: "header" }}
               >
-                Demo
+                Commands
               </TrackedLink>
               <TrackedLink
-                href="/terraform"
+                href="/docs.md"
                 variant="link"
                 eventName="cta_click"
-                eventParams={{ cta: "nav_terraform", location: "header" }}
+                eventParams={{ cta: "nav_docs", location: "header" }}
               >
-                Terraform
-              </TrackedLink>
-              <TrackedLink
-                href="/privacy"
-                variant="link"
-                eventName="cta_click"
-                eventParams={{ cta: "nav_privacy", location: "header" }}
-              >
-                Privacy
-              </TrackedLink>
-              <TrackedLink
-                href="/stats"
-                variant="link"
-                eventName="cta_click"
-                eventParams={{ cta: "nav_stats", location: "header" }}
-              >
-                Stats
+                Docs
               </TrackedLink>
               <TrackedLink
                 href={links.github}

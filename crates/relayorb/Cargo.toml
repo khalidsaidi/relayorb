@@ -1,0 +1,30 @@
+[package]
+name = "relayorb"
+description = "A flight recorder for AI agents: record, replay, and regression-check MCP tool calls."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["mcp", "ai-agents", "replay", "testing", "json-rpc"]
+categories = ["command-line-utilities", "development-tools::testing"]
+
+[[bin]]
+name = "relayorb"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive", "env"] }
+hex = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+sha2 = "0.10"
+tokio = { version = "1.44", features = ["io-std", "io-util", "macros", "process", "rt-multi-thread", "sync", "time", "signal"] }
+uuid = { version = "1.10", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

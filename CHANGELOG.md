@@ -1,31 +1,13 @@
 # Changelog
 
-## v0.1.0 - 2026-02-28
+## v0.2.0 (unreleased)
 
 ### Added
 
-- Anonymous public demo stack on GCP with load balancer entrypoint, Cloud Armor rate controls, and hardened smoke verification.
-- Demo deploy verification gate (`ops/smoke/demo-deploy-verify.sh`) wired into `.github/workflows/deploy-demo.yml`.
-- Capability conformance harness and CI/live conformance workflows.
-- Open source governance docs and templates (`SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, issue templates, roadmap).
-
-### Security
-
-- Registry and worker services are private behind Cloud Run IAM (no public invoker).
-- Internal service-to-service calls use Cloud Run ID tokens (`X-Serverless-Authorization`).
-- Demo enforces read-only capability allowlist, request size bounds, strict timeouts, and rate limiting.
-- Metrics remain bearer-protected in prod/demo.
-
-### Developer Experience
-
-- Documentation funnel clarified:
-  - Try (anonymous demo)
-  - Run locally (docker compose)
-  - Deploy (Terraform)
-  - Extend (worker SDK)
-  - Verify (conformance harness)
-
-### Notes
-
-- Public demo is best-effort and rate-limited for abuse/cost control.
-- Demo is a showcase environment, not a hosted multi-tenant SLA product.
+- `relayorb record`: transparent stdio proxy that records every MCP JSON-RPC message to SQLite.
+- `relayorb list` / `show [--json]`: session timelines with per-call latency and outcome (including MCP tool errors).
+- `relayorb export`: portable JSON session files for committing as test fixtures.
+- `relayorb replay`: serve recorded answers as a fake MCP server.
+- `relayorb check`: re-send recorded calls to a live server and diff the answers; non-zero exit on change, for CI.
+- `relayorb delete`.
+- Prebuilt binaries for Linux, macOS, and Windows.
