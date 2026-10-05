@@ -2,30 +2,27 @@
 
 ## Development Setup
 
-1. Install Rust toolchain from `rust-toolchain.toml`.
-2. Start local dependencies:
-   - `cd ops`
-   - `docker compose up --build`
-3. In another shell, run quality checks:
+1. Install the Rust toolchain from `rust-toolchain.toml`.
+2. Install `python3`, which the integration tests use to run a mock MCP server.
+3. Run the quality checks:
    - `cargo fmt --all`
-   - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+   - `cargo clippy --workspace --all-targets -- -D warnings`
    - `cargo test --workspace`
+
+The website lives in `site/` (`pnpm install && pnpm dev`).
 
 ## Pull Requests
 
-- Keep changes scoped and describe behavior impact.
-- Add or update tests/smokes when behavior changes.
-- Update docs when API, ops, or deployment flows change.
-- Avoid force-pushing over reviewer feedback context unless necessary.
+- Keep changes scoped and describe the behavior impact.
+- Add or update tests when behavior changes. End-to-end tests live in `crates/relayorb/tests/`.
+- Update `README.md` when commands or flags change.
 
 ## Security and Secrets
 
 - Never commit secrets, tokens, or key material.
-- Use Secret Manager and workflow/environment secrets.
-- Do not log auth headers or sensitive payload contents.
+- Recorded sessions can contain sensitive tool data. Don't commit real recordings as fixtures without scrubbing them.
 
 ## Commit Guidance
 
 - Use clear, imperative commit messages.
-- Prefer small commits by concern (code, infra, docs) when practical.
-- Run all required checks before requesting review.
+- Run all checks before requesting review.

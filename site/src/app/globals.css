@@ -23,6 +23,7 @@ body {
 }
 
 body {
+  overflow-x: hidden;
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
@@ -41,42 +42,6 @@ kbd {
 
 pre {
   margin: 0;
-}
-
-.orb-dot-a {
-  animation: orb-dot-a 2.8s linear infinite;
-}
-
-.orb-dot-b {
-  animation: orb-dot-b 2.8s linear infinite;
-}
-
-@keyframes orb-dot-a {
-  0% {
-    cx: 155;
-    opacity: 0;
-  }
-  12% {
-    opacity: 1;
-  }
-  100% {
-    cx: 380;
-    opacity: 0;
-  }
-}
-
-@keyframes orb-dot-b {
-  0% {
-    cx: 395;
-    opacity: 0;
-  }
-  12% {
-    opacity: 1;
-  }
-  100% {
-    cx: 625;
-    opacity: 0;
-  }
 }
 
 /* Keep focus states obvious for accessibility and keyboard nav. */

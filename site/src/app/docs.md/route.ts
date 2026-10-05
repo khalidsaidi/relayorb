@@ -1,11 +1,8 @@
-import { fetchCanonicalMarkdown, markdownResponse } from "@/lib/markdownMirror";
+import { docsMarkdown } from "@/lib/docsMarkdown";
+import { markdownResponse } from "@/lib/markdownMirror";
 
-const fallback = `# RelayOrb docs mirror
+export const dynamic = "force-static";
 
-Canonical docs source: https://github.com/khalidsaidi/relayorb/blob/main/README.md
-`;
-
-export async function GET() {
-  const markdown = (await fetchCanonicalMarkdown("README.md")) || fallback;
-  return markdownResponse(markdown);
+export function GET() {
+  return markdownResponse(docsMarkdown);
 }

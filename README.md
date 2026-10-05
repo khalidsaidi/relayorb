@@ -1,301 +1,136 @@
 # RelayOrb
 
-[![Terraform Registry Modules Smoke](https://github.com/khalidsaidi/relayorb/actions/workflows/terraform-registry-modules-smoke.yml/badge.svg)](https://github.com/khalidsaidi/relayorb/actions/workflows/terraform-registry-modules-smoke.yml)
+**A flight recorder for AI agents.** RelayOrb sits between an AI agent and its MCP tool servers, records every message that passes through, and lets you inspect, replay, and regression-check those sessions.
 
-## Website
+- **Debug** a strange agent run: see exactly which tools were called, with what arguments, what came back, and how long it took.
+- **Reproduce** a bug: replay the recorded session, and the agent gets the same tool answers again.
+- **Test without real tools:** replay a recording instead of hitting live (or paid) APIs. No keys, no network, same answers every time.
+- **Catch regressions in CI:** re-send recorded calls to your MCP server and fail the build if an answer changed.
 
-- Website: https://relayorb.com
-- Try demo: https://relayorb.com/demo
-- Docs: https://relayorb.com (primary overview) + GitHub docs (canonical runbooks/implementation)
-- Production reliability: https://relayorb.com/reliability
-- Real-world cost profile: https://relayorb.com/cost_profile.json
-- Terraform modules:
-  - https://registry.terraform.io/modules/khalidsaidi/relayorb/google/latest
-  - https://registry.terraform.io/modules/khalidsaidi/relayorb-demo/google/latest
+It's a single local binary. No account, no cloud, no telemetry. Recordings stay on your machine in a SQLite file.
 
-relayorb.com is the front door; GitHub remains the canonical source of truth for implementation details and runbooks.
+Website: https://relayorb.com
 
-GitHub metadata status:
-- Homepage URL and discovery topics are configured.
-- Social preview image should be managed in GitHub repo settings (use the site OG artwork).
-
-RelayOrb is a capability gateway for AI agents. It enforces auth and policy, routes to healthy workers via a registry, validates schemas end-to-end, and records deterministic invocation artifacts with request-id idempotency and replay.
-
-Gateway also supports asynchronous execution via `POST /v1/submit` and `GET /v1/jobs/:jobId`.
-
-## Production reliability
-
-RelayOrb has been deployed continuously in production since February 2026. The public reliability report publishes 30 days of Cloud Monitoring and Cloud Logging data from the live control plane:
-
-- Reliability report: https://relayorb.com/reliability
-- Stats JSON: https://relayorb.com/stats.json
-
-The traffic in that report is synthetic monitoring and control-plane traffic, not public user adoption. External invoke counters remain honest at zero.
-
-## Real-world cost profile
-
-RelayOrb also publishes the live Cloud Run cost lesson from operating the control plane:
-
-- Cost profile JSON: https://relayorb.com/cost_profile.json
-
-The cost profile is modeled from Cloud Monitoring billable instance time and public Cloud Billing SKU prices for `us-central1`. It shows the difference between the previous always-warm deployment and the current `minScale=0` posture.
-
-## Project Surfaces
-
-- Open-source core: runtime, SDK, conformance tooling, and docs in this repository.
-- Reference deployment: Terraform and workflows for GCP rollout.
-- Demo posture: self-hosted anonymous showcase environment with LB-only access and private internals.
-
-## Demo Posture
-
-RelayOrb includes a demo posture (no login/API key) with strict safety limits for self-hosted evaluation.
-
-The hosted anonymous demo has been retired. To run the same posture yourself:
+## Install
 
 ```bash
-export RELAYORB_DEMO_URL="https://YOUR-DEMO-URL"
+cargo install --git https://github.com/khalidsaidi/relayorb relayorb
 ```
 
-Invoke `rag.search@v1`:
+Prebuilt binaries for Linux, macOS, and Windows are attached to each [GitHub release](https://github.com/khalidsaidi/relayorb/releases).
 
-```bash
-curl -sS -X POST "$RELAYORB_DEMO_URL/v1/invoke" \
-  -H "content-type: application/json" \
-  -d '{
-    "requestId":"demo-req-1",
-    "caller":{"agentId":"anonymous","role":"anonymous"},
-    "capability":"rag.search@v1",
-    "payload":{"query":"what is relayorb?","topK":3}
-  }' | jq
-```
+## Record
 
-Forbidden capability example (expected `403`):
+Put `relayorb record --` in front of any stdio MCP server command. For example, in Claude Desktop's `claude_desktop_config.json` (Cursor and other MCP clients use the same shape):
 
-```bash
-curl -sS -X POST "$RELAYORB_DEMO_URL/v1/invoke" \
-  -H "content-type: application/json" \
-  -d '{
-    "requestId":"demo-req-forbidden",
-    "caller":{"agentId":"anonymous","role":"anonymous"},
-    "capability":"sql.query@v1",
-    "payload":{"sql":"select 1"}
-  }' | jq
-```
-
-Demo details and limits: [docs/DEMO.md](/home/khalid/relayorb/docs/DEMO.md)
-
-## Components
-
-- `relayorb-gateway`: invoke entrypoint, policy, routing, artifact recording
-- `relayorb-registry`: capability registry + TTL heartbeats
-- `relayorb-worker-sdk`: worker server wrapper and heartbeat client
-- `relayorb-policy`: RBAC/ABAC-lite rules and budget limiter
-- `worker-mock-rag`: sample capability provider (`rag.search@v1`)
-- `agent-client`: sample CLI invoker
-
-## Run Locally
-
-1. Start stack:
-```bash
-cd ops
-docker compose up --build
-```
-
-Optional: enable zero-cost live search results instead of mock responses:
-```bash
-cd ops
-RAG_LIVE_SEARCH=1 docker compose up --build
-```
-
-2. Invoke sample capability:
-```bash
-cd ..
-cargo run -p agent-client -- rag.search@v1 '{"query":"earnings guidance","topK":3}'
-```
-
-3. Replay stored invocation:
-```bash
-curl http://127.0.0.1:8080/v1/replay/<request-id>
-```
-
-4. Run one-command local full-surface proof (invoke/replay/submit/jobs/authz/metrics):
-```bash
-bash ops/smoke/local-full-surface-proof.sh
-```
-
-5. Run a business-readable real-world showcase (batch research, async job, RBAC, replay):
-```bash
-bash ops/smoke/real-world-showcase.sh
-```
-
-6. Optional ephemeral cloud demo proof with automatic destroy:
-```bash
-TF_BACKEND_BUCKET=<demo-tfstate-bucket> \
-TF_VARS_FILE=infra/gcp/terraform/envs/demo/terraform.tfvars \
-bash ops/smoke/ephemeral-demo-proof.sh
-```
-
-## Deploy with Terraform
-
-RelayOrb publishes two Terraform Registry modules:
-
-- Prod-oriented module (OIDC-first): `khalidsaidi/relayorb/google`  
-  https://registry.terraform.io/modules/khalidsaidi/relayorb/google/latest
-- Anonymous demo module (LB-only gateway posture): `khalidsaidi/relayorb-demo/google`  
-  https://registry.terraform.io/modules/khalidsaidi/relayorb-demo/google/latest
-
-Example (prod):
-
-```hcl
-module "relayorb" {
-  source  = "khalidsaidi/relayorb/google"
-  version = "0.1.1"
-
-  project_id     = "relayorb-prod"
-  gateway_image  = "ghcr.io/khalidsaidi/relayorb-gateway:v0.1.1"
-  registry_image = "ghcr.io/khalidsaidi/relayorb-registry:v0.1.1"
-  worker_image   = "ghcr.io/khalidsaidi/relayorb-rag:v0.1.1"
-  scraper_image  = "ghcr.io/khalidsaidi/relayorb-metrics-scraper:v0.1.1"
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "relayorb",
+      "args": ["record", "--name", "fs", "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/Users/me/notes"]
+    }
+  }
 }
 ```
 
-Example (demo):
+With Claude Code:
 
-```hcl
-module "relayorb_demo" {
-  source  = "khalidsaidi/relayorb-demo/google"
-  version = "0.1.0"
-
-  project_id     = "relayorb-demo"
-  gateway_image  = "ghcr.io/khalidsaidi/relayorb-gateway:v0.1.1"
-  registry_image = "ghcr.io/khalidsaidi/relayorb-registry:v0.1.1"
-  worker_image   = "ghcr.io/khalidsaidi/relayorb-rag:v0.1.1"
-  scraper_image  = "ghcr.io/khalidsaidi/relayorb-metrics-scraper:v0.1.1"
-}
-```
-
-Reference Terraform configs also remain in this repo for direct use/customization:
-- Core Terraform: `infra/gcp/terraform/`
-- Anonymous demo env: `infra/gcp/terraform/envs/demo/`
-- Demo deploy workflow: `.github/workflows/deploy-demo.yml`
-
-For reproducibility with in-repo Terraform, pin to a Git tag/commit before applying.
-
-## Write a Capability Worker
-
-1. Define manifest with `capabilityId`, schemas, limits, and routing hints.
-2. Implement `CapabilityHandler` in an SDK-based worker.
-3. Register worker capabilities on startup and send heartbeats.
-4. Add policy rule allowing target role/capability/sideEffects.
-
-## Verify Conformance
-
-Offline validation:
 ```bash
-cargo run -p relayorb-conformance -- validate \
-  --manifest conformance/manifests/rag.search@v1.json \
-  --vectors conformance/vectors/rag.search@v1.json
+claude mcp add fs -- relayorb record --name fs -- npx -y @modelcontextprotocol/server-filesystem ~/notes
 ```
 
-Live runtime validation (worker target):
+The agent works exactly as before, because bytes are forwarded unchanged in both directions. Each time the agent starts the server, a new session is recorded.
+
+## Inspect
+
+```console
+$ relayorb list
+ID        NAME              STARTED (UTC)         MESSAGES  DURATION  COMMAND
+a25198e1  fs                2026-10-05 08:07:09          9      6.0s  npx -y @modelcontextprotocol/server-filesystem /Users/me/notes
+
+$ relayorb show a25198e1
+session a25198e1 (fs)  started 2026-10-05 08:07:09 UTC  (6.0s, exit 0)
+command: npx -y @modelcontextprotocol/server-filesystem /Users/me/notes
+
+    0.035s  ->  initialize                                   49ms  ok
+    0.035s  ->  notifications/initialized
+    0.102s  ->  tools/list                                    4ms  ok
+    1.310s  ->  tools/call list_directory                     6ms  ok
+    2.004s  ->  tools/call read_text_file                     3ms  tool error: Access denied - path outside allowed directories
+```
+
+`relayorb show <id> --json` prints every call with its full params and response, ready for `jq`.
+
+Anywhere a session is expected, you can use its `--name` (the newest session with that name), its id, or any unique id prefix.
+
+## Replay
+
+`relayorb replay` pretends to be the MCP server and answers from a recording:
+
 ```bash
-cargo run -p relayorb-conformance -- run \
-  --target worker \
-  --base-url http://127.0.0.1:8090 \
-  --manifest conformance/manifests/rag.search@v1.json \
-  --vectors conformance/vectors/rag.search@v1.json
+relayorb replay a25198e1
 ```
 
-## Configuration
+Use it anywhere a server command goes, for example in an agent test harness, so the agent runs against recorded tool answers instead of live tools.
 
-Base config is `config/dev.toml`, overridden by env vars:
-- `RELAYORB_ENV`
-- `RELAYORB_REGION`
-- `RELAYORB_SERVICE_NAME`
-- `REGISTRY_URL`
-- `DATABASE_URL`
-- `AUTH_MODE` (`hmac` or `oidc`)
-- `ALLOW_HMAC_IN_PROD` (`true` required to permit HMAC when `RELAYORB_ENV=prod`)
-- `SECRET_AUTH_HMAC` (dev / explicit hmac mode)
-- `OIDC_ISSUER` (prod oidc mode)
-- `OIDC_AUDIENCE` (prod oidc mode)
-- `JWKS_URL` (prod oidc mode)
-- `AUTH_CLOCK_SKEW_SECONDS` (optional, default `120`)
-- `JWKS_REFRESH_INTERVAL_SECONDS` (optional, default `300`)
-- `INTERNAL_IAM_AUTH` (`on|off|auto`, default `auto`; in prod this enables Cloud Run IAM auth for internal service calls)
-- `OTEL_EXPORTER_OTLP_ENDPOINT` (optional)
-- `RELAYORB_METRICS_EXPORTER` (`prometheus` by default; set `none` to disable `/metrics`)
-- `METRICS_AUTH_MODE` (`public` or `bearer`; defaults to `bearer` in prod/demo and `public` elsewhere)
-- `METRICS_BEARER_TOKEN` (required when `METRICS_AUTH_MODE=bearer`)
-- `REGISTRY_OWNERSHIP_POLICY_PATH` (optional, default `config/registry-ownership.toml`)
-- `REGISTRY_WORKER_AUTH_MODE` (`disabled` or `oidc`; optional for registry)
-- `REGISTRY_WORKER_OIDC_ISSUER` (registry worker auth, default `https://accounts.google.com`)
-- `REGISTRY_WORKER_OIDC_AUDIENCE` (required when registry worker auth mode is `oidc`)
-- `REGISTRY_WORKER_JWKS_URL` (registry worker auth, default Google JWKS URL)
-- `REGISTRY_WORKER_AUTH_CLOCK_SKEW_SECONDS` (optional for registry worker auth)
-- `REGISTRY_WORKER_JWKS_REFRESH_INTERVAL_SECONDS` (optional for registry worker auth)
+Matching rules for each incoming request:
+1. Same method and same params (key order and `_meta` are ignored): the recorded answers come back in order.
+2. Otherwise, same method and the same tool, prompt, or resource name: the recorded answers come back in order.
+3. Once those run out, the last answer is repeated. Anything never recorded gets a JSON-RPC error, so the agent never hangs.
 
-## Service naming model
+## Check (regression tests for MCP servers)
 
-Cloud Run services follow `relayorb-<component>-<env>`, for example:
-- `relayorb-gateway-prod`
-- `relayorb-registry-prod`
-- `relayorb-rag-prod`
+Save a session as a fixture and commit it:
 
-Workers should set:
-- `RELAYORB_ENV`
-- `RELAYORB_SERVICE_NAME`
-- `REGISTRY_URL`
-- `RELAYORB_PUBLIC_BASE_URL` (or `WORKER_BASE_URL` alias)
-- `REGISTRY_IDENTITY_AUDIENCE` (required when registry enforces worker OIDC identity)
+```bash
+relayorb export a25198e1 -o tests/fixtures/fs-session.json
+```
 
-Production network posture:
-- Gateway stays public (OIDC-protected at app layer).
-- Registry and workers are private (Cloud Run IAM invoker check + scoped `roles/run.invoker` bindings).
-- Internal calls use `X-Serverless-Authorization: Bearer <id_token>` with audience set to the target service run.app URL.
+Then, in CI, re-send the recorded calls to the current build of the server:
 
-## Observability
+```console
+$ relayorb check tests/fixtures/fs-session.json -- node dist/server.js
+relayorb check: 3 recorded calls against `node dist/server.js`
+  PASS  tools/list                                   11ms
+  FAIL  tools/call list_directory                     4ms
+        ~ result.content[0].text: "[FILE] a.md\n[FILE] b.md" -> "[FILE] a.md"
+  PASS  tools/call read_text_file                     0ms
+2 passed, 1 failed
+```
 
-- Tracing:
-  - JSON structured logs on all services.
-  - Optional OTEL export when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
-  - Trace propagation headers: `x-trace-id` and `traceparent`.
-- Metrics:
-  - Prometheus endpoint on each service:
-    - gateway: `GET /metrics` on port `8080`
-    - registry: `GET /metrics` on port `8081`
-    - worker: `GET /metrics` on port `8090`
-- In prod/demo, `/metrics` is bearer-protected (`METRICS_AUTH_MODE=bearer`).
-  - `relayorb-metrics-scraper-prod` uses an IAM-aware local proxy so each scrape request carries both:
-    - `X-Serverless-Authorization` (Cloud Run IAM ID token)
-    - `Authorization` (metrics bearer token)
-  - Scraped series are exported to Cloud Monitoring as `prometheus.googleapis.com/*`.
-  - All service metrics include the base labels:
-    - `env`, `service_name`, `version`, `region`
-  - Capability/request series also include controlled labels:
-    - `capability_id`, `result`, `error_code` (where applicable)
-  - Core operational series:
-    - `relayorb_gateway_invoke_latency_ms`
-    - `relayorb_gateway_invoke_requests_total`
-    - `relayorb_gateway_idempotency_replays_total`
-    - `relayorb_gateway_jobs_queued`
-    - `relayorb_registry_register_requests_total`
-    - `relayorb_registry_heartbeat_requests_total`
-    - `relayorb_worker_invoke_latency_ms`
+The exit code is `0` when everything matches, `1` when an answer changed, and `2` when the server couldn't be started or initialized. Use `--ignore-key <name>` (repeatable) to skip fields that change on every run, such as timestamps or request ids.
 
-## Security
+## Reference
 
-- No secrets are committed.
-- Use Secret Manager for credentials.
-- Every response includes `requestId` and `traceId`.
-- Async job status reads are creator-or-admin (`GET /v1/jobs/:jobId`).
-- Registry governance smoke can be run manually:
-  - `bash ops/smoke/registry-governance-smoke.sh <registry-url>`
+| Command | What it does |
+|---|---|
+| `relayorb record [--name N] -- <server...>` | Run a stdio MCP server and record all traffic |
+| `relayorb list` | List sessions, newest first |
+| `relayorb show <session> [--json]` | Timeline of calls, latencies, and outcomes |
+| `relayorb export <session> [-o file]` | Save a session as a portable JSON file |
+| `relayorb replay <session-or-file>` | Serve recorded answers as a fake MCP server |
+| `relayorb check <session-or-file> -- <server...>` | Diff a live server against a recording |
+| `relayorb delete <session>` | Delete a session |
 
-## Project Governance
+Recordings are stored in `~/.relayorb/recordings.db`. Override this with `--db <path>` or `RELAYORB_DB`.
 
-- License: [LICENSE](/home/khalid/relayorb/LICENSE)
-- Security reporting: [SECURITY.md](/home/khalid/relayorb/SECURITY.md)
-- Contribution guide: [CONTRIBUTING.md](/home/khalid/relayorb/CONTRIBUTING.md)
-- Code of conduct: [CODE_OF_CONDUCT.md](/home/khalid/relayorb/CODE_OF_CONDUCT.md)
-- Roadmap: [ROADMAP.md](/home/khalid/relayorb/docs/ROADMAP.md)
+### Good to know
+
+- **Recordings contain everything the tools saw and returned**, including file contents, API responses, and any secrets passed as arguments. Treat exported session files accordingly before committing them.
+- RelayOrb supports the stdio transport, which is what local MCP servers use. Streamable HTTP servers aren't supported yet.
+- `check` answers server-initiated requests (sampling, roots) with a "not supported" error, so servers that depend on them won't check cleanly.
+
+## Development
+
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace   # integration tests need python3 for the mock MCP server
+```
+
+The website lives in [`site/`](site/) (Next.js, deployed to Vercel on pushes to `main`).
+
+## License
+
+Apache-2.0
