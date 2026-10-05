@@ -1,16 +1,24 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { readConsent, trackEvent, updateConsent } from "@/lib/analytics";
+
+function subscribe(onChange: () => void) {
+  window.addEventListener("relayorb-analytics-consent", onChange);
+  window.addEventListener("storage", onChange);
+  return () => {
+    window.removeEventListener("relayorb-analytics-consent", onChange);
+    window.removeEventListener("storage", onChange);
+  };
+}
 
 export function ConsentBanner() {
   const [dismissed, setDismissed] = useState(false);
+  // The server (and the hydration pass) render nothing; the banner appears after hydration
+  // only if no choice is stored. Rendering it during hydration caused a mismatch (React #418).
+  const consent = useSyncExternalStore(subscribe, () => readConsent() ?? "unset", () => "server");
 
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  if (dismissed || readConsent()) {
+  if (dismissed || consent !== "unset") {
     return null;
   }
 

@@ -5,6 +5,7 @@ import { links } from "@/lib/site";
 export const metadata: Metadata = {
   title: "Privacy",
   description: "RelayOrb privacy policy and data handling practices.",
+  alternates: { canonical: "/privacy" },
   openGraph: {
     title: "Privacy | RelayOrb",
     description: "RelayOrb privacy policy and data handling practices.",
