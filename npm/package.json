@@ -1,0 +1,49 @@
+{
+  "name": "@khalidsaidi/relayorb",
+  "version": "0.0.0-dev",
+  "description": "Turn real AI agent sessions into tests for MCP servers: record what Claude Code, Cursor, or Codex sends to an MCP server, then check new builds against it or replay it offline.",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "testing",
+    "regression-testing",
+    "record-replay",
+    "debugging",
+    "claude-code",
+    "cursor",
+    "codex",
+    "ai-agents",
+    "llm",
+    "cli",
+    "developer-tools",
+    "json-rpc"
+  ],
+  "homepage": "https://relayorb.com",
+  "bugs": "https://github.com/khalidsaidi/relayorb/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/khalidsaidi/relayorb.git",
+    "directory": "npm"
+  },
+  "license": "Apache-2.0",
+  "bin": {
+    "relayorb": "bin/relayorb.js"
+  },
+  "files": [
+    "bin",
+    "vendor"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

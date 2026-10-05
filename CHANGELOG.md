@@ -1,6 +1,10 @@
 # Changelog
 
-## v0.2.0 (unreleased)
+## v0.2.1
+
+- Published to npm as `@khalidsaidi/relayorb` (`npx @khalidsaidi/relayorb ...`), with prebuilt binaries for macOS, Linux, and Windows bundled in.
+
+## v0.2.0
 
 ### Added
 
