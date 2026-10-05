@@ -19,10 +19,16 @@ Website: https://relayorb.com
 ## Install
 
 ```bash
-cargo install --git https://github.com/khalidsaidi/relayorb relayorb
+curl -fsSL https://relayorb.com/install.sh | sh
 ```
 
-Prebuilt binaries for Linux, macOS, and Windows are attached to each [GitHub release](https://github.com/khalidsaidi/relayorb/releases).
+Or with npm (bundles the prebuilt binary for macOS, Linux, and Windows):
+
+```bash
+npm install -g @khalidsaidi/relayorb    # or run it without installing: npx @khalidsaidi/relayorb --help
+```
+
+Prebuilt binaries are also attached to each [GitHub release](https://github.com/khalidsaidi/relayorb/releases), or build from source with `cargo install --git https://github.com/khalidsaidi/relayorb relayorb`.
 
 ## Record
 
@@ -37,6 +43,13 @@ Put `relayorb record --` in front of any stdio MCP server command. For example, 
     }
   }
 }
+```
+
+Without installing anything, use `npx` as the command:
+
+```json
+"command": "npx",
+"args": ["-y", "@khalidsaidi/relayorb", "record", "--name", "fs", "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/Users/me/notes"]
 ```
 
 With Claude Code:

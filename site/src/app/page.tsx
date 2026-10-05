@@ -155,6 +155,12 @@ export default function HomePage() {
                   macOS and Linux: the script above downloads the prebuilt
                   binary to <code className="text-slate-200">~/.local/bin</code>.
                 </li>
+                <li className="break-words">
+                  npm (any OS):{" "}
+                  <code className="text-slate-200">npm install -g @khalidsaidi/relayorb</code>, or
+                  run it without installing via{" "}
+                  <code className="text-slate-200">npx @khalidsaidi/relayorb</code>.
+                </li>
                 <li>
                   Windows: download the zip from{" "}
                   <TrackedLink
