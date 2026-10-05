@@ -2,9 +2,10 @@ import type { NextConfig } from "next";
 
 const csp = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://www.google-analytics.com",
-  "connect-src 'self' https://www.google-analytics.com https://region1.google-analytics.com https://www.googletagmanager.com",
-  "img-src 'self' data: https://www.google-analytics.com https://www.googletagmanager.com",
+  // Google Analytics 4 hosts, per Google's CSP guidance (GA4 also sends hits to www.google.com).
+  "script-src 'self' 'unsafe-inline' https://*.googletagmanager.com",
+  "connect-src 'self' https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com https://www.google.com",
+  "img-src 'self' data: https://*.google-analytics.com https://*.googletagmanager.com https://www.google.com",
   "style-src 'self' 'unsafe-inline'",
   "font-src 'self' data:",
   "object-src 'none'",
