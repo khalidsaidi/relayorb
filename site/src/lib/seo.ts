@@ -11,7 +11,7 @@ export const softwareApplication = {
   name: siteName,
   url: siteUrl,
   description:
-    "Open-source CLI that records every MCP tool call between an AI agent and its MCP servers, then lets you inspect, replay, and regression-test those sessions.",
+    "Open-source CLI that turns real AI agent sessions into tests for MCP servers: it records the messages between an agent and an MCP server, then checks new server builds against the recording or replays it offline.",
   applicationCategory: "DeveloperApplication",
   applicationSubCategory: "MCP debugging and testing",
   operatingSystem: "macOS, Linux, Windows",

@@ -3,7 +3,6 @@ import {
   Bug,
   Database,
   FlaskConical,
-  RotateCcw,
   ShieldCheck,
 } from "lucide-react";
 import type { Metadata } from "next";
@@ -19,7 +18,7 @@ import {
   installCommand,
   links,
   mcpConfigExample,
-  useCases,
+  audiences,
 } from "@/lib/site";
 import { guides } from "@/lib/guides";
 import { faqPage, softwareApplication, website } from "@/lib/seo";
@@ -31,10 +30,14 @@ export const metadata: Metadata = {
 const homeFaq = [
   {
     q: "What is RelayOrb?",
-    a: "A free, open-source flight recorder for AI agents. It sits between an MCP client (Claude Code, Claude Desktop, Cursor, Codex) and an MCP server, records every JSON-RPC message, and lets you inspect, replay, and regression-test those sessions.",
+    a: "A free, open-source tool that turns real AI agent sessions into tests for MCP servers. It records the messages between an agent (Claude Code, Cursor, Codex, Claude Desktop) and an MCP server, then lets you check new server builds against the recording, replay it so agent tests run offline, or read the raw messages.",
   },
   {
-    q: "How do I see what tools my AI agent called?",
+    q: "Do I need RelayOrb just to see what my agent did?",
+    a: "Usually not. Claude Code, Cursor, and other agent apps already show tool calls. RelayOrb is for when you need the raw protocol messages, a repeatable test, or an offline replay.",
+  },
+  {
+    q: "How do I see the raw MCP messages my agent sent?",
     a: "Wrap the MCP server command with relayorb record -- in your agent's config, use the agent, then run relayorb show <name>. You get every tool call with its arguments, result, latency, and errors.",
   },
   {
@@ -55,7 +58,7 @@ const homeFaq = [
   },
 ];
 
-const useCaseIcons = [Bug, RotateCcw, FlaskConical, ShieldCheck];
+const audienceIcons = [ShieldCheck, FlaskConical, Bug];
 
 function FlowArrow({ label }: { label: string }) {
   return (
@@ -129,19 +132,20 @@ export default function HomePage() {
         <section className="pt-16 pb-10 sm:pt-24" data-analytics-section="home_hero">
           <div>
             <p className="mb-4 text-xs tracking-[0.22em] text-cyan-300 uppercase">
-              Open source · Apache-2.0 · Runs locally
+              Free · Open source · Runs on your machine
             </p>
             <h1 className="max-w-3xl text-4xl leading-tight font-semibold sm:text-6xl">
               RelayOrb
               <span className="mt-3 block text-2xl font-normal text-slate-100 sm:text-3xl">
-                A flight recorder for AI agents and MCP servers.
+                Turn real AI agent sessions into tests for MCP servers.
               </span>
             </h1>
             <p className="mt-6 max-w-3xl text-base text-slate-300 sm:text-lg">
-              A single Rust CLI that sits between your agent and its MCP tool
-              servers, records every JSON-RPC message to a local SQLite file,
-              and lets you replay or regression-check those sessions. No
-              account, no cloud, no telemetry. Free.
+              RelayOrb records the messages between an AI agent (Claude Code,
+              Cursor, Codex, Claude Desktop) and an MCP server. Save a
+              recording, and RelayOrb can check every new build of the server
+              against it, or replay it so agent tests run without the real
+              server.
             </p>
 
             <div className="mt-8 max-w-3xl min-w-0">
@@ -191,10 +195,60 @@ export default function HomePage() {
           </div>
         </section>
 
+        <section id="who" className="scroll-mt-20 py-8" data-analytics-section="home_audiences">
+          <Reveal>
+            <h2 className="text-2xl font-semibold sm:text-3xl">Who it&apos;s for</h2>
+          </Reveal>
+          <div className="mt-6 grid gap-4 lg:grid-cols-3">
+            {audiences.map(({ who, problem, answer, command }, index) => {
+              const Icon = audienceIcons[index] ?? Bug;
+              return (
+                <Reveal key={who}>
+                  <article className="flex h-full flex-col rounded-2xl border border-slate-700/70 bg-slate-950/70 p-5">
+                    <Icon className="mb-3 h-5 w-5 text-cyan-300" aria-hidden />
+                    <h3 className="text-lg font-medium">{who}</h3>
+                    <p className="mt-3 text-sm text-slate-400">
+                      <span className="font-medium text-slate-300">The problem: </span>
+                      {problem}
+                    </p>
+                    <p className="mt-3 text-sm text-slate-300">
+                      <span className="font-medium text-cyan-200">RelayOrb: </span>
+                      {answer}
+                    </p>
+                    <code className="mt-4 block rounded-lg bg-slate-900/80 px-3 py-2 text-xs break-words text-cyan-100">
+                      {command}
+                    </code>
+                  </article>
+                </Reveal>
+              );
+            })}
+          </div>
+          <Reveal>
+            <div className="mt-6 rounded-2xl border border-slate-700/70 bg-slate-900/40 p-5 text-sm text-slate-300">
+              <p className="font-medium text-slate-100">When you don&apos;t need it</p>
+              <ul className="mt-2 list-disc space-y-1.5 pl-5">
+                <li>
+                  You just want to see what your agent did once. Claude Code, Cursor,
+                  and other agent apps already show tool calls and results.
+                </li>
+                <li>
+                  Your MCP server is remote (HTTP). RelayOrb works with local servers
+                  that run over stdio, which is how most MCP servers run today.
+                </li>
+              </ul>
+            </div>
+          </Reveal>
+        </section>
+
         <section className="py-8" data-analytics-section="home_how">
           <Reveal>
             <h2 className="text-2xl font-semibold sm:text-3xl">How it works</h2>
-            <p className="mt-3 max-w-3xl text-slate-300">
+            <ol className="mt-4 max-w-3xl list-decimal space-y-1.5 pl-6 text-slate-300">
+              <li><span className="text-slate-100">Record:</span> put <code className="text-cyan-200">relayorb record --</code> in front of the server command in your agent&apos;s config, and use the agent normally.</li>
+              <li><span className="text-slate-100">Save:</span> <code className="text-cyan-200">relayorb export</code> writes the session to a JSON file you can commit.</li>
+              <li><span className="text-slate-100">Use it:</span> <code className="text-cyan-200">relayorb check</code> tests a server build against it, <code className="text-cyan-200">relayorb replay</code> stands in for the server, and <code className="text-cyan-200">relayorb show</code> lets you read it.</li>
+            </ol>
+            <p className="mt-4 max-w-3xl text-slate-300">
               Point your agent config at <code className="text-cyan-200">relayorb</code>{" "}
               instead of the MCP server. RelayOrb starts the real server, relays
               traffic both ways, and records each request and response with
@@ -208,25 +262,7 @@ export default function HomePage() {
           </div>
         </section>
 
-        <section className="py-8" data-analytics-section="home_use_cases">
-          <Reveal>
-            <h2 className="text-2xl font-semibold sm:text-3xl">What it is for</h2>
-          </Reveal>
-          <div className="mt-6 grid gap-4 sm:grid-cols-2">
-            {useCases.map(({ title, body }, index) => {
-              const Icon = useCaseIcons[index] ?? Bug;
-              return (
-                <Reveal key={title}>
-                  <article className="h-full rounded-2xl border border-slate-700/70 bg-slate-950/70 p-5">
-                    <Icon className="mb-3 h-5 w-5 text-cyan-300" aria-hidden />
-                    <h3 className="text-lg font-medium">{title}</h3>
-                    <p className="mt-2 text-sm text-slate-300">{body}</p>
-                  </article>
-                </Reveal>
-              );
-            })}
-          </div>
-        </section>
+
 
         <section id="quickstart" className="scroll-mt-20 py-8" data-analytics-section="home_quickstart">
           <Reveal>

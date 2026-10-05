@@ -1,13 +1,18 @@
 # RelayOrb
 
-**A flight recorder for AI agents.** RelayOrb sits between an AI agent and its MCP tool servers, records every message that passes through, and lets you inspect, replay, and regression-check those sessions.
+**Turn real AI agent sessions into tests for MCP servers.**
 
-- **Debug** a strange agent run: see exactly which tools were called, with what arguments, what came back, and how long it took.
-- **Reproduce** a bug: replay the recorded session, and the agent gets the same tool answers again.
-- **Test without real tools:** replay a recording instead of hitting live (or paid) APIs. No keys, no network, same answers every time.
-- **Catch regressions in CI:** re-send recorded calls to your MCP server and fail the build if an answer changed.
+RelayOrb records the messages between an AI agent (Claude Code, Cursor, Codex, Claude Desktop) and an MCP server. Save a recording, and RelayOrb can:
 
-It's a single local binary. No account, no cloud, no telemetry. Recordings stay on your machine in a SQLite file.
+- **Check** every new build of your MCP server against it in CI, and fail if any answer changed (`relayorb check`).
+- **Replay** it in place of the real server, so agent tests run offline with the same answers every time (`relayorb replay`).
+- **Show** the raw JSON-RPC traffic when a tool call goes wrong: every request, response, error, and latency (`relayorb show`).
+
+**Who it's for:** people who build MCP servers (the main use), people who build agents or apps on top of MCP tools, and anyone who needs the exact protocol messages to debug a tool call.
+
+**When you don't need it:** if you only want to see what your agent did once, Claude Code, Cursor, and other agent apps already show tool calls. RelayOrb also only works with local (stdio) MCP servers, not remote HTTP ones.
+
+It's a single local binary. No account, no cloud, no telemetry, and free (Apache-2.0).
 
 Website: https://relayorb.com
 

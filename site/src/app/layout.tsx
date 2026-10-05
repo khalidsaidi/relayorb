@@ -25,7 +25,7 @@ const jetbrainsMono = JetBrains_Mono({
 
 const defaultTitle = "RelayOrb: record, replay & test MCP servers";
 const defaultDescription =
-  "Free, open-source flight recorder for AI agents: see every MCP tool call Claude Code, Cursor, or Codex makes, replay it offline, and test MCP servers in CI.";
+  "Free, open-source CLI that turns real AI agent sessions into tests for MCP servers: record Claude Code, Cursor, or Codex, then check or replay in CI.";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://relayorb.com"),
