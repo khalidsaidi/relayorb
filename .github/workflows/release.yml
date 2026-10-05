@@ -72,3 +72,62 @@ jobs:
         run: |
           gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes "See CHANGELOG.md" || true
           gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
+
+  npm:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing (OIDC), no NPM_TOKEN
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Ensure npm supports trusted publishing (>= 11.5.1)
+        run: npm install -g npm@latest && npm --version
+
+      - name: Verify tag matches crate version
+        run: |
+          CRATE_VERSION="$(grep -m1 '^version' Cargo.toml | cut -d '"' -f 2)"
+          if [ "$CRATE_VERSION" != "${TAG#v}" ]; then
+            echo "Tag $TAG does not match crate version $CRATE_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Bundle release binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dl
+          gh release download "$TAG" --dir dl --pattern 'relayorb-*'
+          (cd dl && for f in *.tar.gz *.zip; do sha256sum -c "$f.sha256"; done)
+          for t in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+            tar -xzf "dl/relayorb-$t.tar.gz" -C dl
+            mkdir -p "npm/vendor/$t"
+            install -m 755 "dl/relayorb-$t/relayorb" "npm/vendor/$t/relayorb"
+          done
+          unzip -q "dl/relayorb-x86_64-pc-windows-msvc.zip" -d dl
+          mkdir -p npm/vendor/x86_64-pc-windows-msvc
+          cp dl/relayorb-x86_64-pc-windows-msvc/relayorb.exe npm/vendor/x86_64-pc-windows-msvc/
+          cp README.md LICENSE npm/
+          (cd npm && npm version "${TAG#v}" --no-git-tag-version)
+
+      - name: Smoke test the package
+        run: |
+          cd npm && npm pack
+          npm install -g ./khalidsaidi-relayorb-*.tgz
+          relayorb --version | grep -F "${TAG#v}"
+
+      - name: Publish
+        working-directory: npm
+        run: npm publish --access public
