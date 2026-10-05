@@ -75,6 +75,7 @@ export default function DocsPage() {
           </div>
           <ul className="mt-3 list-disc space-y-1.5 pl-6 text-sm text-slate-300">
             <li>Installs to <code>~/.local/bin</code>. Set <code>RELAYORB_INSTALL_DIR</code> to change it, or <code>RELAYORB_VERSION</code> to pin a release.</li>
+            <li>npm (any OS): <code>npm install -g @khalidsaidi/relayorb</code>, or <code>npx @khalidsaidi/relayorb</code> without installing.</li>
             <li>Windows: download the zip from <a className="text-cyan-200" href={links.releases}>GitHub Releases</a>.</li>
             <li className="break-words">From source: <code>{cargoInstallCommand}</code></li>
           </ul>

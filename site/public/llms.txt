@@ -5,6 +5,7 @@
 ## Install
 
 - macOS / Linux: `curl -fsSL https://relayorb.com/install.sh | sh`
+- npm (any OS): `npm install -g @khalidsaidi/relayorb` or `npx @khalidsaidi/relayorb`
 - Windows: download the zip from https://github.com/khalidsaidi/relayorb/releases
 - From source: `cargo install --git https://github.com/khalidsaidi/relayorb relayorb`
 
