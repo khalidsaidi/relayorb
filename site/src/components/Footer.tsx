@@ -3,7 +3,8 @@ import { TrackedLink } from "@/components/TrackedLink";
 
 const footerLinks = [
   { label: "GitHub", href: links.github, cta: "footer_github" },
-  { label: "Docs", href: "/docs.md", cta: "footer_docs" },
+  { label: "Docs", href: "/docs", cta: "footer_docs" },
+  { label: "Guides", href: "/guides", cta: "footer_guides" },
   { label: "Privacy", href: "/privacy", cta: "footer_privacy" },
   { label: "Terms", href: "/terms.md", cta: "footer_terms" },
 ];

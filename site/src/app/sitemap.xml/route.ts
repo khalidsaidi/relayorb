@@ -1,16 +1,13 @@
-const urls = [
-  "https://relayorb.com/",
-  "https://relayorb.com/privacy",
-  "https://relayorb.com/docs.md",
-  "https://relayorb.com/llms.txt",
-  "https://relayorb.com/llms-full.txt",
-  "https://relayorb.com/privacy.md",
-  "https://relayorb.com/terms.md",
-  "https://relayorb.com/cookies.md",
-];
+import { siteUrl } from "@/lib/seo";
+import { sitemapRoutes } from "@/lib/sitemapRoutes";
 
 function renderSitemap() {
-  const items = urls.map(url => `  <url><loc>${url}</loc></url>`).join("\n");
+  const items = sitemapRoutes
+    .map(
+      r =>
+        `  <url><loc>${siteUrl}${r.path}</loc><lastmod>${r.lastmod}</lastmod><priority>${r.priority.toFixed(1)}</priority></url>`,
+    )
+    .join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${items}\n</urlset>\n`;
 }
 

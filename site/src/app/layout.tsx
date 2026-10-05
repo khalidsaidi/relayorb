@@ -23,35 +23,43 @@ const jetbrainsMono = JetBrains_Mono({
   display: "swap",
 });
 
+const defaultTitle = "RelayOrb: record, replay & test MCP servers";
+const defaultDescription =
+  "Free, open-source flight recorder for AI agents: see every MCP tool call Claude Code, Cursor, or Codex makes, replay it offline, and test MCP servers in CI.";
+
 export const metadata: Metadata = {
   metadataBase: new URL("https://relayorb.com"),
   title: {
-    default: "RelayOrb — A flight recorder for AI agents",
+    default: defaultTitle,
     template: "%s | RelayOrb",
   },
-  description:
-    "Open-source CLI that records every MCP tool call between your AI agent and its tool servers to local SQLite, then lets you replay or regression-check those sessions.",
+  description: defaultDescription,
+  applicationName: "RelayOrb",
+  keywords: [
+    "MCP server",
+    "MCP",
+    "Model Context Protocol",
+    "Claude Code MCP",
+    "Cursor MCP",
+    "Codex MCP",
+    "MCP testing",
+    "MCP debugging",
+    "AI agents",
+  ],
+  robots: { index: true, follow: true, "max-image-preview": "large", "max-snippet": -1 },
   openGraph: {
-    title: "RelayOrb — A flight recorder for AI agents",
-    description:
-      "Open-source CLI that records every MCP tool call between your AI agent and its tool servers to local SQLite, then lets you replay or regression-check those sessions.",
+    title: defaultTitle,
+    description: defaultDescription,
     url: "https://relayorb.com",
     siteName: "RelayOrb",
-    images: [
-      {
-        url: "/og-image.png",
-        width: 1200,
-        height: 630,
-        alt: "RelayOrb",
-      },
-    ],
+    locale: "en_US",
+    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "RelayOrb: a flight recorder for AI agents" }],
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "RelayOrb — A flight recorder for AI agents",
-    description:
-      "Open-source CLI that records every MCP tool call between your AI agent and its tool servers to local SQLite, then lets you replay or regression-check those sessions.",
+    title: defaultTitle,
+    description: defaultDescription,
     images: ["/og-image.png"],
   },
 };
@@ -91,7 +99,15 @@ export default function RootLayout({
                 Commands
               </TrackedLink>
               <TrackedLink
-                href="/docs.md"
+                href="/guides"
+                variant="link"
+                eventName="cta_click"
+                eventParams={{ cta: "nav_guides", location: "header" }}
+              >
+                Guides
+              </TrackedLink>
+              <TrackedLink
+                href="/docs"
                 variant="link"
                 eventName="cta_click"
                 eventParams={{ cta: "nav_docs", location: "header" }}

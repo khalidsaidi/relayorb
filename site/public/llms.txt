@@ -21,10 +21,22 @@ Recordings default to `~/.relayorb/recordings.db`; override with `RELAYORB_DB`.
 
 ## Docs
 
+- [Docs](https://relayorb.com/docs)
 - [Full docs (markdown)](https://relayorb.com/docs.md)
 - [Full docs (plain text)](https://relayorb.com/llms-full.txt)
 - [Source code](https://github.com/khalidsaidi/relayorb)
 - [Releases](https://github.com/khalidsaidi/relayorb/releases)
+
+## Guides
+
+- [What is MCP? What is an MCP server? (Plain-English guide)](https://relayorb.com/guides/what-is-mcp)
+- [Claude Code MCP: add servers and see every tool call](https://relayorb.com/guides/claude-code-mcp)
+- [Cursor MCP: set up servers in mcp.json and debug tool calls](https://relayorb.com/guides/cursor-mcp)
+- [Codex MCP: add MCP servers to OpenAI Codex and record calls](https://relayorb.com/guides/codex-mcp)
+- [Claude Desktop MCP: claude_desktop_config.json guide](https://relayorb.com/guides/claude-desktop-mcp)
+- [GitHub MCP server: set it up and see every tool call](https://relayorb.com/guides/github-mcp-server)
+- [How to test an MCP server (record, replay, CI)](https://relayorb.com/guides/test-mcp-server)
+- [How to debug an MCP server: see every request and response](https://relayorb.com/guides/debug-mcp-server)
 
 ## Optional
 

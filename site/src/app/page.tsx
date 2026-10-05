@@ -6,7 +6,10 @@ import {
   RotateCcw,
   ShieldCheck,
 } from "lucide-react";
+import type { Metadata } from "next";
+import Link from "next/link";
 import { CodeBlock } from "@/components/CodeBlock";
+import { JsonLd } from "@/components/JsonLd";
 import { Reveal } from "@/components/Reveal";
 import { TrackedLink } from "@/components/TrackedLink";
 import {
@@ -18,6 +21,39 @@ import {
   mcpConfigExample,
   useCases,
 } from "@/lib/site";
+import { guides } from "@/lib/guides";
+import { faqPage, softwareApplication, website } from "@/lib/seo";
+
+export const metadata: Metadata = {
+  alternates: { canonical: "/" },
+};
+
+const homeFaq = [
+  {
+    q: "What is RelayOrb?",
+    a: "A free, open-source flight recorder for AI agents. It sits between an MCP client (Claude Code, Claude Desktop, Cursor, Codex) and an MCP server, records every JSON-RPC message, and lets you inspect, replay, and regression-test those sessions.",
+  },
+  {
+    q: "How do I see what tools my AI agent called?",
+    a: "Wrap the MCP server command with relayorb record -- in your agent's config, use the agent, then run relayorb show <name>. You get every tool call with its arguments, result, latency, and errors.",
+  },
+  {
+    q: "How do I test an MCP server?",
+    a: "Record a real session, export it as a JSON fixture, and run relayorb check <fixture> -- <server command> in CI. It re-sends the recorded calls and fails if any answer changed.",
+  },
+  {
+    q: "Which MCP clients does RelayOrb work with?",
+    a: "Any client that starts MCP servers over stdio, including Claude Code, Claude Desktop, Cursor, OpenAI Codex, and VS Code.",
+  },
+  {
+    q: "Does RelayOrb send my data anywhere?",
+    a: "No. It has no account, no cloud, and no telemetry. Recordings stay in a local SQLite file at ~/.relayorb/recordings.db.",
+  },
+  {
+    q: "Is RelayOrb free?",
+    a: "Yes. It is open source under the Apache-2.0 license, with prebuilt binaries for macOS, Linux, and Windows.",
+  },
+];
 
 const useCaseIcons = [Bug, RotateCcw, FlaskConical, ShieldCheck];
 
@@ -86,18 +122,21 @@ function FlowDiagram() {
 export default function HomePage() {
   return (
     <div className="relative min-h-screen text-slate-100">
+      <JsonLd data={softwareApplication} />
+      <JsonLd data={website} />
+      <JsonLd data={faqPage(homeFaq)} />
       <main className="mx-auto w-full max-w-6xl px-4 pb-16 sm:px-8">
         <section className="pt-16 pb-10 sm:pt-24" data-analytics-section="home_hero">
-          <Reveal>
+          <div>
             <p className="mb-4 text-xs tracking-[0.22em] text-cyan-300 uppercase">
               Open source · Apache-2.0 · Runs locally
             </p>
             <h1 className="max-w-3xl text-4xl leading-tight font-semibold sm:text-6xl">
               RelayOrb
+              <span className="mt-3 block text-2xl font-normal text-slate-100 sm:text-3xl">
+                A flight recorder for AI agents and MCP servers.
+              </span>
             </h1>
-            <p className="mt-3 max-w-3xl text-2xl text-slate-100 sm:text-3xl">
-              A flight recorder for AI agents.
-            </p>
             <p className="mt-6 max-w-3xl text-base text-slate-300 sm:text-lg">
               A single Rust CLI that sits between your agent and its MCP tool
               servers, records every JSON-RPC message to a local SQLite file,
@@ -149,7 +188,7 @@ export default function HomePage() {
                 Quickstart
               </TrackedLink>
             </div>
-          </Reveal>
+          </div>
         </section>
 
         <section className="py-8" data-analytics-section="home_how">
@@ -264,6 +303,40 @@ export default function HomePage() {
               same answers every time.
             </p>
           </Reveal>
+        </section>
+        <section id="guides" className="scroll-mt-20 py-8" data-analytics-section="home_guides">
+          <Reveal>
+            <h2 className="text-2xl font-semibold sm:text-3xl">Guides</h2>
+            <p className="mt-3 max-w-3xl text-slate-300">
+              Set up MCP servers in your agent and see exactly what they do.
+            </p>
+          </Reveal>
+          <ul className="mt-6 grid gap-3 sm:grid-cols-2">
+            {guides.map(guide => (
+              <li key={guide.slug}>
+                <Link
+                  href={`/guides/${guide.slug}`}
+                  className="block h-full rounded-xl border border-slate-700/70 bg-slate-950/70 p-4 transition hover:border-cyan-300/60"
+                >
+                  <span className="font-medium text-slate-100">{guide.h1}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section id="faq" className="scroll-mt-20 py-8" data-analytics-section="home_faq">
+          <Reveal>
+            <h2 className="text-2xl font-semibold sm:text-3xl">FAQ</h2>
+          </Reveal>
+          <dl className="mt-6 grid gap-5 sm:grid-cols-2">
+            {homeFaq.map(({ q, a }) => (
+              <div key={q} className="rounded-2xl border border-slate-700/70 bg-slate-950/70 p-5">
+                <dt className="font-medium text-slate-100">{q}</dt>
+                <dd className="mt-2 text-sm text-slate-300">{a}</dd>
+              </div>
+            ))}
+          </dl>
         </section>
       </main>
     </div>
