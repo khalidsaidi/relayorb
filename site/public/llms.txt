@@ -1,6 +1,6 @@
 # RelayOrb
 
-> A flight recorder for AI agents. RelayOrb is an open-source Rust CLI (Apache-2.0) that sits between an AI agent (Claude Desktop, Claude Code, Cursor, or any MCP client) and its MCP tool servers over stdio, records every JSON-RPC message to a local SQLite file, and lets you replay or regression-check those sessions. Runs locally or in CI. No account, no cloud, no telemetry.
+> Turn real AI agent sessions into tests for MCP servers. RelayOrb is an open-source Rust CLI (Apache-2.0) that sits between an AI agent (Claude Desktop, Claude Code, Cursor, or any MCP client) and its MCP tool servers over stdio, records every JSON-RPC message to a local SQLite file, and lets you regression-test MCP servers against those recordings (relayorb check) or replay them so agent tests run offline (relayorb replay). Runs locally or in CI. No account, no cloud, no telemetry.
 
 ## Install
 

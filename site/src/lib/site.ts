@@ -67,22 +67,37 @@ export const commands: Command[] = [
   },
 ];
 
-export const useCases = [
+export type Audience = {
+  who: string;
+  problem: string;
+  answer: string;
+  command: string;
+};
+
+// Ordered by how much RelayOrb helps: MCP server authors get the most out of it.
+export const audiences: Audience[] = [
   {
-    title: "Debug a weird agent run",
-    body: "See exactly which tools the agent called, with what arguments, what came back, how long it took, and where it failed.",
+    who: "You build an MCP server",
+    problem:
+      "A refactor quietly changes a tool's output or schema, and agents that relied on it start failing. Unit tests don't catch it because they don't speak the protocol.",
+    answer:
+      "Record one real session with an agent, commit it, and run relayorb check in CI. Every build is compared against the recording, and the job fails if any answer changed.",
+    command: "relayorb check fixtures/session.json -- node dist/server.js",
   },
   {
-    title: "Reproduce a bug",
-    body: "Replay the recorded session so the agent sees the exact same tool answers that triggered the problem.",
+    who: "You build an agent or app that uses MCP tools",
+    problem:
+      "Your tests hit real tools: they need API keys, cost money, are slow, and return different answers each run.",
+    answer:
+      "Replay a recorded session instead of the real server. Your agent gets the same answers every time, offline, with no keys.",
+    command: "relayorb replay fixtures/session.json",
   },
   {
-    title: "Test without real APIs",
-    body: "Run agents and tests against a recording instead of live or paid services. Deterministic, offline, no keys.",
-  },
-  {
-    title: "Catch MCP server regressions in CI",
-    body: "Commit a session fixture and run relayorb check in CI. The job fails when the server's answers drift.",
+    who: "A tool call went wrong and you need the raw messages",
+    problem:
+      "The server hung, returned something malformed, or the agent sent bad arguments, and your agent app only shows a summary.",
+    answer:
+      "Record the session and read the exact JSON-RPC traffic: every request, response, error, and how long each took.",
+    command: "relayorb show my-server --json",
   },
 ];
-

@@ -5,25 +5,25 @@ import {
   installCommand,
   links,
   mcpConfigExample,
-  useCases,
+  audiences,
 } from "@/lib/site";
 
 const commandList = commands
   .map(command => `- \`${command.usage}\`: ${command.summary}`)
   .join("\n");
 
-const useCaseList = useCases
-  .map((useCase, index) => `${index + 1}. **${useCase.title}.** ${useCase.body}`)
+const useCaseList = audiences
+  .map((a, index) => `${index + 1}. **${a.who}.** ${a.problem} ${a.answer} \`${a.command}\``)
   .join("\n");
 
 export const docsMarkdown = `# RelayOrb
 
-A flight recorder for AI agents.
+Turn real AI agent sessions into tests for MCP servers.
 
-RelayOrb is a single open-source Rust CLI (Apache-2.0) that sits between an AI
-agent (Claude Desktop, Claude Code, Cursor, or any MCP client) and its MCP tool
-servers over stdio. It records every JSON-RPC message to a local SQLite file and
-lets you replay or regression-check those sessions.
+RelayOrb records the messages between an AI agent (Claude Code, Cursor, Codex,
+Claude Desktop) and an MCP server. Save a recording, and RelayOrb can check every
+new build of the server against it, or replay it so agent tests run without the
+real server. It's a single open-source CLI (Apache-2.0).
 
 It runs locally or in CI. No account, no cloud, no telemetry. Free.
 
@@ -67,7 +67,7 @@ Point your agent's MCP config at \`relayorb\` instead of the server. RelayOrb
 starts the real server, relays every request and response unchanged, and
 records each message with its timing.
 
-## Use cases
+## Who it is for
 
 ${useCaseList}
 
