@@ -134,7 +134,12 @@ export function trackPageView(pathWithSearch: string) {
     return;
   }
 
-  window.gtag?.("config", GA_MEASUREMENT_ID, {
-    page_path: sanitizePath(pathWithSearch),
+  // The base config sets send_page_view: false, so a page view must be sent as an explicit
+  // event; re-running `config` with page_path does not send one.
+  const pagePath = sanitizePath(pathWithSearch);
+  window.gtag?.("event", "page_view", {
+    page_path: pagePath,
+    page_location: `${window.location.origin}${pagePath}`,
+    page_title: document.title,
   });
 }
