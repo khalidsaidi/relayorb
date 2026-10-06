@@ -34,10 +34,13 @@ pub async fn run(db_path: &Path, name: Option<String>, command: Vec<String>) -> 
         started_at_ms: now_ms(),
         ended_at_ms: None,
         exit_code: None,
+        killed: false,
     };
 
     let store = Store::open(db_path)?;
     store.create_session(&meta)?;
+    // Held for as long as this recorder runs; see store::live_lock_path.
+    let live_lock = hold_live_lock(db_path, &meta.id);
     let short = &meta.id[..8];
     eprintln!(
         "relayorb: recording session {short}{} -> {}",
@@ -98,7 +101,19 @@ pub async fn run(db_path: &Path, name: Option<String>, command: Vec<String>) -> 
         Ok(Err(err)) => eprintln!("relayorb: recording error: {err:#}"),
         Err(_) => eprintln!("relayorb: recording thread panicked"),
     }
+    if let Some((file, path)) = live_lock {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
     Ok(exit_code.map(|c| c as i32).unwrap_or(1))
+}
+
+fn hold_live_lock(db_path: &Path, session_id: &str) -> Option<(std::fs::File, std::path::PathBuf)> {
+    let path = crate::store::live_lock_path(db_path, session_id);
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    let file = std::fs::File::create(&path).ok()?;
+    file.lock().ok()?;
+    Some((file, path))
 }
 
 /// Copy newline-delimited frames from `reader` to `writer`, reporting each frame for recording.

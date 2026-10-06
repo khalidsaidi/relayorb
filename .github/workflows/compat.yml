@@ -26,12 +26,25 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            label: ubuntu-latest
             bin: target/release/relayorb
             servers: all
-          - os: macos-latest
+          - os: ubuntu-24.04-arm
+            label: linux-arm64
             bin: target/release/relayorb
             servers: filesystem,everything,memory,time,git,fetch
+          - os: macos-latest
+            label: macos-latest
+            bin: target/release/relayorb
+            servers: filesystem,everything,memory,time,git,fetch
+          # The Intel macOS build, run through Rosetta 2 (GitHub has no free Intel Mac runners).
+          - os: macos-latest
+            label: macos-x64-rosetta
+            target: x86_64-apple-darwin
+            bin: target/x86_64-apple-darwin/release/relayorb
+            servers: filesystem,everything,memory,time,git,fetch
           - os: windows-latest
+            label: windows-latest
             bin: target\release\relayorb.exe
             servers: filesystem,everything,memory,time,git,fetch
     runs-on: ${{ matrix.os }}
@@ -40,7 +53,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.label }}
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -50,7 +67,16 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Build relayorb
-        run: cargo build --release --locked
+        shell: bash
+        run: cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+
+      - name: Install Rosetta 2 (to run the Intel build on Apple Silicon)
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: softwareupdate --install-rosetta --agree-to-license || true
+
+      - name: Confirm binary architecture
+        if: runner.os != 'Windows'
+        run: file "${{ matrix.bin }}"
 
       - name: Pre-fetch MCP servers (keeps first-run downloads out of timeouts)
         shell: bash
@@ -65,19 +91,19 @@ jobs:
       - name: Real MCP servers (binary built from this commit)
         env:
           GITHUB_PERSONAL_ACCESS_TOKEN: ${{ matrix.os == 'ubuntu-latest' && secrets.GITHUB_TOKEN || '' }}
-        run: python tests/compat/harness.py --relayorb "${{ matrix.bin }}" --servers ${{ matrix.servers }} --out compat-${{ matrix.os }}.json
+        run: python tests/compat/harness.py --relayorb "${{ matrix.bin }}" --servers ${{ matrix.servers }} --out compat-${{ matrix.label }}.json
 
       - name: Stress tests
         if: always()
-        run: python tests/compat/stress.py --relayorb "${{ matrix.bin }}" --out stress-${{ matrix.os }}.json
+        run: python tests/compat/stress.py --relayorb "${{ matrix.bin }}" --out stress-${{ matrix.label }}.json
 
       - name: Published npm package (npx @khalidsaidi/relayorb@latest)
-        if: always()
-        run: python tests/compat/harness.py --relayorb "npx -y @khalidsaidi/relayorb@latest" --servers filesystem,everything --out npm-${{ matrix.os }}.json
+        if: always() && matrix.target == ''
+        run: python tests/compat/harness.py --relayorb "npx -y @khalidsaidi/relayorb@latest" --servers filesystem,everything --out npm-${{ matrix.label }}.json
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: compat-${{ matrix.os }}
-          path: "*-${{ matrix.os }}.json"
+          name: compat-${{ matrix.label }}
+          path: "*-${{ matrix.label }}.json"

@@ -11,7 +11,13 @@ import glob
 import json
 import os
 
-OS_ORDER = [("ubuntu-latest", "Linux x64"), ("macos-latest", "macOS arm64"), ("windows-latest", "Windows x64")]
+OS_ORDER = [
+    ("ubuntu-latest", "Linux x64"),
+    ("linux-arm64", "Linux arm64"),
+    ("macos-latest", "macOS arm64"),
+    ("macos-x64-rosetta", "macOS x64 (Rosetta)"),
+    ("windows-latest", "Windows x64"),
+]
 
 SERVER_INFO = {
     "filesystem": ("@modelcontextprotocol/server-filesystem", "Node", "reads, directory listing, search, unicode filenames, a denied path"),
@@ -34,12 +40,16 @@ STEP_INFO = [
 ]
 
 AGENT_TESTS = [
-    ("Claude Code 2.1.292", "relayorb binary as the MCP command, filesystem server", "pass", "2026-10-05"),
-    ("Claude Code 2.1.292", "`npx -y @khalidsaidi/relayorb@latest` as the MCP command (no install)", "pass", "2026-10-06"),
-    ("Claude Code 2.1.292", "two runs, file changed in between, `relayorb diff` pinpoints the changed call", "pass", "2026-10-06"),
+    ("Claude Code 2.1.292 (Linux)", "relayorb binary as the MCP command, filesystem server", "pass", "2026-10-05"),
+    ("Claude Code 2.1.292 (Linux)", "`npx -y @khalidsaidi/relayorb@latest` as the MCP command (no install)", "pass", "2026-10-06"),
+    ("Claude Code 2.1.292 (Linux)", "two runs, file changed in between, `relayorb diff` pinpoints the changed call", "pass", "2026-10-06"),
+    ("Codex CLI 0.160.1 (Linux)", "relayorb as an `mcp_servers` command; Codex listed and read files through it", "pass", "2026-10-06"),
+    ("Cursor Agent CLI 2026.09.02 (Linux)", "relayorb in `.cursor/mcp.json`; Cursor listed and read files through it", "pass", "2026-10-06"),
+    ("Cursor Agent CLI 2026.09.02 (Windows)", "`npx -y @khalidsaidi/relayorb` in `.cursor/mcp.json` on Windows", "pass", "2026-10-06"),
 ]
 
 FIXED = [
+    "`list`/`show`: sessions stopped abruptly (Cursor and Codex force-kill their servers) stayed \"running\" forever. They now show as \"killed\" (0.3.3).",
     "`record`: if relayorb was killed (SIGKILL) right after a call, that call could be missing from the recording. Messages are now stored before they are forwarded.",
     "`check`: tools that ask the agent something mid-call (LLM sampling) failed, because check answered with an error. It now answers the way the agent did in the recording.",
     "Windows: `relayorb record -- npx ...` could not start the server (`npx` is a `.cmd` file). Commands are now resolved like `cmd.exe` does. This affected 0.3.0 on Windows.",
@@ -47,11 +57,10 @@ FIXED = [
 ]
 
 NOT_TESTED = [
-    "Agents other than Claude Code: Cursor, Codex, Claude Desktop, VS Code. They use the same stdio protocol, but nobody has run them yet.",
+    "Claude Desktop and VS Code. They use the same stdio protocol as the agents above, but have not been run yet.",
     "Remote MCP servers over HTTP. RelayOrb does not support them yet.",
-    "The Intel macOS and Linux ARM binaries. They are built and published but were not run in this suite.",
     "Alpine Linux (musl). The Linux binaries need glibc.",
-    "Very long-running sessions (hours) and recordings databases larger than a few hundred MB.",
+    "Sessions much longer than the nightly one-hour soak test, and recordings databases larger than a few hundred MB.",
 ]
 
 
@@ -117,6 +126,7 @@ def build(data, run_url: str):
         "servers": servers,
         "stress": stress,
         "agents": [{"agent": a, "setup": s, "result": r, "date": d} for a, s, r, d in AGENT_TESTS],
+        "soak": data.get(("soak", "ubuntu-latest")),
         "fixed": FIXED,
         "not_tested": NOT_TESTED,
     }
@@ -161,7 +171,18 @@ def markdown(r) -> str:
     lines += ["", "SIGTERM and SIGKILL do not exist on Windows, so those two tests are skipped there.", "", "## Real agents (manual)", "", "| Agent | Setup | Result | Date |", "|---|---|---|---|"]
     for a in r["agents"]:
         lines.append(f"| {a['agent']} | {a['setup']} | {a['result']} | {a['date']} |")
-    lines += ["", "## Bugs this suite found (fixed in 0.3.1)", ""]
+    if r.get("soak"):
+        k = r["soak"]
+        lines += [
+            "",
+            "## Soak test (nightly)",
+            "",
+            f"One recording kept busy for {k['minutes']:g} minutes on {k['os']}: {k['calls']:,} calls "
+            f"({k['large_responses']:,} with 200 KB responses, {k['notifications']:,} notifications). "
+            f"Recorded: {k['recorded_calls']:,} of {k['calls']:,}. Memory: {k['rss_mb_after_warmup']} MB after warm-up, "
+            f"{k['rss_mb_end']} MB at the end. Result: {'pass' if k['passed'] else 'FAIL'}.",
+        ]
+    lines += ["", "## Bugs this suite found (all fixed)", ""]
     lines += [f"- {x}" for x in r["fixed"]]
     lines += ["", "## Not tested yet", ""]
     lines += [f"- {x}" for x in r["not_tested"]]

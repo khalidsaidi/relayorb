@@ -159,6 +159,7 @@ fn timeline_json(session: &Session) -> Value {
 fn duration(meta: &SessionMeta) -> String {
     match meta.ended_at_ms {
         Some(end) => format!("{:.1}s", (end - meta.started_at_ms) as f64 / 1000.0),
+        None if meta.killed => "killed".to_string(),
         None => "running".to_string(),
     }
 }

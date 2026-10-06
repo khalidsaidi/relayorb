@@ -1,0 +1,33 @@
+name: Soak
+
+# One relayorb recording kept busy for an hour: every call must be recorded and memory must
+# stay flat. Nightly, because an hour is too long for every change.
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "How long to run"
+        default: "60"
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: cargo build --release --locked
+      - name: Soak
+        run: python tests/compat/soak.py --relayorb target/release/relayorb --minutes ${{ github.event.inputs.minutes || '60' }} --out soak-ubuntu-latest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak
+          path: soak-ubuntu-latest.json

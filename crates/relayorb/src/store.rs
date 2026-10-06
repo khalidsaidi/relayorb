@@ -22,6 +22,9 @@ pub struct SessionMeta {
     pub ended_at_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i64>,
+    /// Never ended, and its recorder is gone (killed abruptly, e.g. SIGKILL by the agent).
+    #[serde(skip)]
+    pub killed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +88,28 @@ pub fn default_db_path() -> PathBuf {
 
 pub struct Store {
     conn: Connection,
+    path: PathBuf,
+}
+
+/// Lock file a recorder holds for as long as it runs. The OS releases the lock when the process
+/// dies, even on SIGKILL, so a session without `ended_at` whose lock is free was killed.
+pub fn live_lock_path(db_path: &Path, session_id: &str) -> PathBuf {
+    let dir = db_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    dir.join(".relayorb-live")
+        .join(format!("{session_id}.lock"))
+}
+
+fn recorder_alive(db_path: &Path, session_id: &str) -> bool {
+    let Ok(file) = std::fs::OpenOptions::new()
+        .write(true)
+        .open(live_lock_path(db_path, session_id))
+    else {
+        return false;
+    };
+    matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock))
 }
 
 impl Store {
@@ -140,7 +165,14 @@ impl Store {
              );
              CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at_ms);",
         )?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            path: path.to_path_buf(),
+        })
+    }
+
+    fn mark_killed(&self, meta: &mut SessionMeta) {
+        meta.killed = meta.ended_at_ms.is_none() && !recorder_alive(&self.path, &meta.id);
     }
 
     pub fn create_session(&self, meta: &SessionMeta) -> Result<()> {
@@ -196,7 +228,11 @@ impl Store {
         let rows = stmt.query_map(params![limit as i64], |row| {
             Ok((meta_from_row(row)?, row.get::<_, i64>(6)?))
         })?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        let mut sessions: Vec<(SessionMeta, i64)> = rows.collect::<Result<_, _>>()?;
+        for (meta, _) in &mut sessions {
+            self.mark_killed(meta);
+        }
+        Ok(sessions)
     }
 
     /// Resolve a session name (newest session with that name), full id, or unique id prefix.
@@ -244,7 +280,7 @@ impl Store {
 
     pub fn load(&self, prefix: &str) -> Result<Session> {
         let id = self.resolve_id(prefix)?;
-        let meta = self
+        let mut meta = self
             .conn
             .query_row(
                 "SELECT id, name, command, started_at_ms, ended_at_ms, exit_code FROM sessions WHERE id = ?1",
@@ -253,6 +289,7 @@ impl Store {
             )
             .optional()?
             .ok_or_else(|| anyhow!("session {id} disappeared"))?;
+        self.mark_killed(&mut meta);
         let mut stmt = self.conn.prepare(
             "SELECT seq, ts_ms, direction, kind, method, rpc_id, body
              FROM messages WHERE session_id = ?1 ORDER BY seq",
@@ -320,6 +357,7 @@ fn meta_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionMeta> {
         started_at_ms: row.get(3)?,
         ended_at_ms: row.get(4)?,
         exit_code: row.get(5)?,
+        killed: false,
     })
 }
 
@@ -446,6 +484,7 @@ mod tests {
                 started_at_ms: 0,
                 ended_at_ms: Some(100),
                 exit_code: Some(0),
+                killed: false,
             },
             messages: vec![
                 rec(
