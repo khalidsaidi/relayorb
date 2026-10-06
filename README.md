@@ -119,6 +119,29 @@ relayorb check: 3 recorded calls against `node dist/server.js`
 
 The exit code is `0` when everything matches, `1` when an answer changed, and `2` when the server couldn't be started or initialized. Use `--ignore-key <name>` (repeatable) to skip fields that change on every run, such as timestamps or request ids.
 
+## Diff (why did this run behave differently?)
+
+Agents don't do the same thing twice. When one run fails and another passes, `relayorb diff` finds the first tool call where they went different ways: a different tool, different arguments, or the same call getting a different answer.
+
+```console
+$ relayorb diff notes~1 notes
+relayorb diff: A = 1e9ae080 (notes)   B = e41ecc9a (notes)
+  client    A: claude-code 2.1.292              B: claude-code 2.1.292
+  server    A: secure-filesystem-server 0.2.0   B: secure-filesystem-server 0.2.0
+  protocol  A: 2025-11-25                       B: 2025-11-25
+  calls     A: 4                                B: 4
+
+First divergence at call #3 (2 matching calls before it): same call, different answer
+  A: tools/call list_directory   {"name":"list_directory",...}  [ok]
+  B: tools/call list_directory   {"name":"list_directory",...}  [ok]
+     ~ result.content[0].text: "[FILE] cal.txt\n[FILE] todo.txt" -> "[FILE] cal.txt\n[FILE] health.txt\n[FILE] todo.txt"
+```
+
+- `name~1` is the run before the newest one with that name, so `relayorb diff fs~1 fs` compares your last two runs. Exported JSON files work too.
+- The header shows each run's agent build, server version, and protocol, which come from the recorded `initialize`. A host update is often the answer to "what changed?".
+- `--all` lists every difference, `--ignore-key` skips noisy fields, and `--json` gives machine-readable output. That makes it easy to group many failed runs by their first divergence.
+- Exit code: `0` when the runs match, `1` when they diverge.
+
 ## Reference
 
 | Command | What it does |
@@ -129,6 +152,7 @@ The exit code is `0` when everything matches, `1` when an answer changed, and `2
 | `relayorb export <session> [-o file]` | Save a session as a portable JSON file |
 | `relayorb replay <session-or-file>` | Serve recorded answers as a fake MCP server |
 | `relayorb check <session-or-file> -- <server...>` | Diff a live server against a recording |
+| `relayorb diff <run-a> <run-b>` | Find the first tool call where two runs diverged |
 | `relayorb delete <session>` | Delete a session |
 
 Recordings are stored in `~/.relayorb/recordings.db`. Override this with `--db <path>` or `RELAYORB_DB`.

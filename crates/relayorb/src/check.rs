@@ -189,7 +189,7 @@ fn spawn_reader(stdout: tokio::process::ChildStdout) -> mpsc::UnboundedReceiver<
 }
 
 /// Drop the envelope (`id`, `jsonrpc`) and any ignored keys, at any depth.
-fn normalize(body: &Value, ignore_keys: &[String]) -> Value {
+pub fn normalize(body: &Value, ignore_keys: &[String]) -> Value {
     fn strip(value: &Value, ignore: &[String]) -> Value {
         match value {
             Value::Object(map) => Value::Object(

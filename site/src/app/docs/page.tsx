@@ -45,6 +45,12 @@ const sections = [
     body: "relayorb check <session-or-file> -- <server command> starts the server, repeats the handshake, re-sends each recorded request, and diffs the answers. Exit code 0 means everything matched, 1 means an answer changed, and 2 means the server couldn't start or initialize. Use --ignore-key <name> (repeatable) for fields that change every run, and --timeout <seconds> for slow servers.",
     code: "relayorb check fixtures/fs.json --ignore-key timestamp -- npx -y @modelcontextprotocol/server-filesystem ./testdata",
   },
+  {
+    id: "diff",
+    heading: "Diff",
+    body: "relayorb diff <run-a> <run-b> compares two runs call by call and reports the first point where they diverged: a different tool or method, the same tool with different arguments, or the same call getting a different answer. The header shows each run's agent build, server version, and protocol version, taken from the recorded initialize. Use name~1 for the run before the newest one with that name. --all lists every difference, --ignore-key skips noisy fields, and --json gives machine-readable output for grouping many runs. Exit code 0 means the runs match and 1 means they diverge.",
+    code: "relayorb diff notes~1 notes\nrelayorb diff run-a.json run-b.json --json | jq '.first_divergence'",
+  },
 ];
 
 export default function DocsPage() {

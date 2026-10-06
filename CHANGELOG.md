@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.0
+
+- `relayorb diff <run-a> <run-b>`: find the first tool call where two runs diverged (different tool, different arguments, or different answer), with each run's agent build, server version, and protocol. `--all`, `--ignore-key`, `--json`; exit 1 when runs differ.
+- Session references accept `name~N` for the Nth run before the newest one with that name (`fs~1` = previous run).
+
 ## v0.2.1
 
 - Published to npm as `@khalidsaidi/relayorb` (`npx @khalidsaidi/relayorb ...`), with prebuilt binaries for macOS, Linux, and Windows bundled in.
