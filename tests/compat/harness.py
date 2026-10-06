@@ -113,7 +113,10 @@ class Client:
             left = deadline - time.time()
             if left <= 0:
                 raise TimeoutError(f"no answer to {method} within {timeout}s")
-            msg = self.messages.get(timeout=left)
+            try:
+                msg = self.messages.get(timeout=left)
+            except queue.Empty:
+                raise TimeoutError(f"no answer to {method} within {timeout:g}s{self.stderr_tail()}") from None
             if msg is None:
                 raise EOFError(f"process closed its output while waiting for {method}{self.stderr_tail()}")
             if "method" in msg and "id" in msg:
@@ -205,6 +208,8 @@ def generic_scenario(c: Client, init: dict, pick_tools: list[str], extra_calls=(
 
 def run_session(cmd: list[str], scenario, env=None, cwd=None, stderr_path=None):
     c = Client(cmd, env=env, cwd=cwd, stderr_path=stderr_path)
+    # Start-up can include first-run downloads (npx/uvx fetching the server and its runtime),
+    # so initialize gets a longer allowance than ordinary calls.
     init = c.request(
         "initialize",
         {
@@ -212,6 +217,7 @@ def run_session(cmd: list[str], scenario, env=None, cwd=None, stderr_path=None):
             "capabilities": {"roots": {"listChanged": False}, "sampling": {}},
             "clientInfo": {"name": "relayorb-compat-harness", "version": "1.0"},
         },
+        timeout=240,
     )
     if "error" in init:
         raise RuntimeError(f"initialize failed: {init['error']}")
