@@ -1,11 +1,13 @@
 name: Soak
 
 # One relayorb recording kept busy for an hour: every call must be recorded and memory must
-# stay flat. Nightly, because an hour is too long for every change.
+# stay flat. Runs when the program code changes on main, or by hand.
 
 on:
-  schedule:
-    - cron: "17 7 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
   workflow_dispatch:
     inputs:
       minutes:

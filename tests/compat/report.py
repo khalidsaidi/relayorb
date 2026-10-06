@@ -187,7 +187,7 @@ def markdown(r) -> str:
         k = r["soak"]
         lines += [
             "",
-            "## Soak test (nightly)",
+            "## Soak test",
             "",
             f"One recording ({k['relayorb']}) kept busy for {k['minutes']:g} minutes on {k['os']}: {k['calls']:,} calls "
             f"({k['large_responses']:,} with 200 KB responses, {k['notifications']:,} notifications). "

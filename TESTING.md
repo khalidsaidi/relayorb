@@ -69,7 +69,7 @@ SIGTERM and SIGKILL do not exist on Windows, so those two tests are skipped ther
 | Cursor Agent CLI 2026.09.02 (Windows) | `npx -y @khalidsaidi/relayorb` in `.cursor/mcp.json` on Windows | pass | 2026-10-06 |
 | Claude Desktop 1.44121.2 (Windows) | `npx -y @khalidsaidi/relayorb` in `claude_desktop_config.json`, everything server: `echo` and `get-sum` recorded with their answers | pass | 2026-10-06 |
 
-## Soak test (nightly)
+## Soak test
 
 One recording (relayorb 0.3.2) kept busy for 60 minutes on Linux 6.6.87.2-microsoft-standard-WSL2 x86_64: 167,111 calls (3,343 with 200 KB responses, 84,400 notifications). Recorded: 167,111 of 167,111. Memory: 9.9 MB after warm-up, 9.9 MB at the end. Recordings database: 776.0 MB. Result: pass.
 
