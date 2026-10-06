@@ -88,6 +88,15 @@ jobs:
           uvx mcp-server-git --help >/dev/null 2>&1 || true
           uvx mcp-server-fetch --help >/dev/null 2>&1 || true
 
+      - name: Pre-fetch Python MCP servers for x86_64 (Rosetta row)
+        if: matrix.target == 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          # Processes started under Rosetta see an Intel Mac, so uvx resolves x86_64 Python and wheels.
+          arch -x86_64 uvx mcp-server-time --help >/dev/null 2>&1 || true
+          arch -x86_64 uvx mcp-server-git --help >/dev/null 2>&1 || true
+          arch -x86_64 uvx mcp-server-fetch --help >/dev/null 2>&1 || true
+
       - name: Real MCP servers (binary built from this commit)
         env:
           GITHUB_PERSONAL_ACCESS_TOKEN: ${{ matrix.os == 'ubuntu-latest' && secrets.GITHUB_TOKEN || '' }}

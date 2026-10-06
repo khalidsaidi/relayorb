@@ -203,8 +203,8 @@ def generic_scenario(c: Client, init: dict, pick_tools: list[str], extra_calls=(
             c.request("prompts/get", {"name": p["name"], "arguments": args})
 
 
-def run_session(cmd: list[str], scenario, env=None, cwd=None):
-    c = Client(cmd, env=env, cwd=cwd)
+def run_session(cmd: list[str], scenario, env=None, cwd=None, stderr_path=None):
+    c = Client(cmd, env=env, cwd=cwd, stderr_path=stderr_path)
     init = c.request(
         "initialize",
         {
@@ -374,7 +374,7 @@ def test_server(relayorb: list[str], spec: dict, work: str) -> dict:
 
     # 1. record
     rec_cmd = relayorb + ["--db", db, "record", "--name", name, "--"] + spec["cmd"]
-    client, code = run_session(rec_cmd, spec["scenario"], env=env_for(1))
+    client, code = run_session(rec_cmd, spec["scenario"], env=env_for(1), stderr_path=os.path.join(work, f"{name}.stderr"))
     steps["record"] = code == 0
     result["calls"] = len(client.received)
     result["notifications"] = client.notifications

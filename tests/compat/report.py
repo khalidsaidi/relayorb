@@ -46,6 +46,15 @@ AGENT_TESTS = [
     ("Codex CLI 0.160.1 (Linux)", "relayorb as an `mcp_servers` command; Codex listed and read files through it", "pass", "2026-10-06"),
     ("Cursor Agent CLI 2026.09.02 (Linux)", "relayorb in `.cursor/mcp.json`; Cursor listed and read files through it", "pass", "2026-10-06"),
     ("Cursor Agent CLI 2026.09.02 (Windows)", "`npx -y @khalidsaidi/relayorb` in `.cursor/mcp.json` on Windows", "pass", "2026-10-06"),
+    ("Claude Desktop 1.44121.2 (Windows)", "`npx -y @khalidsaidi/relayorb` in `claude_desktop_config.json`, everything server: `echo` and `get-sum` recorded with their answers", "pass", "2026-10-06"),
+]
+
+# Things the agent tests surfaced that are not RelayOrb's to fix.
+FINDINGS = [
+    "Claude Desktop 1.44121.2 rejects tools whose `outputSchema` declares JSON Schema draft-07, and the official Node servers "
+    "(`server-filesystem`, `server-memory`, part of `server-everything`) currently declare draft-07. Those tools fail in Claude "
+    "Desktop with or without RelayOrb: the recorded `tools/list` is byte-identical to the server's own output. "
+    "`relayorb show --json` is how this was diagnosed.",
 ]
 
 FIXED = [
@@ -57,7 +66,7 @@ FIXED = [
 ]
 
 NOT_TESTED = [
-    "Claude Desktop and VS Code. They use the same stdio protocol as the agents above, but have not been run yet.",
+    "VS Code. It uses the same stdio protocol as the agents above, but has not been run yet.",
     "Remote MCP servers over HTTP. RelayOrb does not support them yet.",
     "Alpine Linux (musl). The Linux binaries need glibc.",
     "Sessions much longer than the nightly one-hour soak test, and recordings databases larger than a few hundred MB.",
@@ -128,6 +137,7 @@ def build(data, run_url: str):
         "agents": [{"agent": a, "setup": s, "result": r, "date": d} for a, s, r, d in AGENT_TESTS],
         "soak": data.get(("soak", "ubuntu-latest")),
         "fixed": FIXED,
+        "findings": FINDINGS,
         "not_tested": NOT_TESTED,
     }
 
@@ -182,6 +192,8 @@ def markdown(r) -> str:
             f"Recorded: {k['recorded_calls']:,} of {k['calls']:,}. Memory: {k['rss_mb_after_warmup']} MB after warm-up, "
             f"{k['rss_mb_end']} MB at the end. Result: {'pass' if k['passed'] else 'FAIL'}.",
         ]
+    lines += ["", "## Compatibility notes (not RelayOrb bugs)", ""]
+    lines += [f"- {x}" for x in r.get("findings", [])]
     lines += ["", "## Bugs this suite found (all fixed)", ""]
     lines += [f"- {x}" for x in r["fixed"]]
     lines += ["", "## Not tested yet", ""]

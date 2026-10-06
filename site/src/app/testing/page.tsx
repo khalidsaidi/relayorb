@@ -147,6 +147,20 @@ export default function TestingPage() {
           />
         </section>
 
+        {"findings" in results && results.findings.length > 0 && (
+          <section className="mt-12">
+            <h2 className="text-2xl font-semibold">Compatibility notes</h2>
+            <p className="mt-1 text-sm text-slate-400">Found while testing agents. Not RelayOrb bugs.</p>
+            <ul className="mt-3 list-disc space-y-2 pl-6 text-sm text-slate-300">
+              {results.findings.map(x => (
+                <li key={x}>
+                  <Ticks text={x} />
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
         {"soak" in results && results.soak && (
           <section className="mt-12">
             <h2 className="text-2xl font-semibold">Soak test</h2>
