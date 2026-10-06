@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Copy, Check } from "lucide-react";
-import { trackEvent } from "@/lib/analytics";
+import { track } from "@/lib/analytics";
 
 type Props = {
   title: string;
@@ -17,16 +17,14 @@ export function CodeBlock({ title, code, snippetId }: Props) {
     try {
       await navigator.clipboard.writeText(code);
       setCopied(true);
-      trackEvent("copy_code", {
-        snippet: snippetId,
-        location: "code_block",
-      });
+      track("code_copy", { snippet: snippetId, copy_method: "button" });
+      if (/install/.test(snippetId)) {
+        // Key event: the strongest signal someone is about to use RelayOrb.
+        track("install_copy", { snippet: snippetId, copy_method: "button" });
+      }
       setTimeout(() => setCopied(false), 1400);
     } catch {
-      trackEvent("copy_code_failed", {
-        snippet: snippetId,
-        location: "code_block",
-      });
+      track("code_copy_failed", { snippet: snippetId, copy_method: "button" });
     }
   };
 
