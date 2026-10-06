@@ -65,6 +65,11 @@ export const commands: Command[] = [
     summary:
       "Re-send the recorded tool calls to the live server and diff the answers. Exits non-zero on a mismatch.",
   },
+  {
+    usage: "relayorb diff <run-a> <run-b>",
+    summary:
+      "Compare two runs and show the first tool call where they diverged: a different tool, different arguments, or a different answer, plus each run's agent and server versions.",
+  },
 ];
 
 export type Audience = {
@@ -97,7 +102,7 @@ export const audiences: Audience[] = [
     problem:
       "The server hung, returned something malformed, or the agent sent bad arguments, and your agent app only shows a summary.",
     answer:
-      "Record the session and read the exact JSON-RPC traffic: every request, response, error, and how long each took.",
-    command: "relayorb show my-server --json",
+      "Record the session and read the exact JSON-RPC traffic: every request, response, error, and how long each took. Compare it with a run that worked to see the first call where they went different ways.",
+    command: "relayorb diff my-server~1 my-server",
   },
 ];

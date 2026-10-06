@@ -17,6 +17,7 @@
 - `relayorb export <session> -o session.json`: save a session as a JSON fixture
 - `relayorb replay <session-or-file>`: fake MCP server that answers from the recording
 - `relayorb check <session-or-file> -- <mcp server command...>`: re-send recorded tool calls to the live server, diff answers, exit non-zero on mismatch
+- `relayorb diff <run-a> <run-b>`: first tool call where two runs diverged (tool, arguments, or answer), with each run's agent/server versions; `name~1` = previous run; `--json` for grouping runs
 
 Recordings default to `~/.relayorb/recordings.db`; override with `RELAYORB_DB`.
 

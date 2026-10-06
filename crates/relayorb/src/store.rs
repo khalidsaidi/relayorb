@@ -182,14 +182,27 @@ impl Store {
 
     /// Resolve a session name (newest session with that name), full id, or unique id prefix.
     pub fn resolve_id(&self, prefix: &str) -> Result<String> {
+        // `name~N`: the Nth run before the newest session with that name (`name~0` = newest).
+        let (name, offset) = match prefix.rsplit_once('~') {
+            Some((name, n)) if !name.is_empty() && n.parse::<u32>().is_ok() => {
+                (name, n.parse::<u32>().unwrap_or(0))
+            }
+            _ => (prefix, 0),
+        };
         let by_name: Option<String> = self
             .conn
             .query_row(
-                "SELECT id FROM sessions WHERE name = ?1 ORDER BY started_at_ms DESC LIMIT 1",
-                params![prefix],
+                "SELECT id FROM sessions WHERE name = ?1 ORDER BY started_at_ms DESC LIMIT 1 OFFSET ?2",
+                params![name, offset],
                 |row| row.get(0),
             )
             .optional()?;
+        if by_name.is_none() && offset > 0 {
+            bail!(
+                "there is no run '{prefix}': fewer than {} recorded sessions named '{name}'",
+                offset + 1
+            );
+        }
         if let Some(id) = by_name {
             return Ok(id);
         }

@@ -4,6 +4,7 @@
 //! then inspect, replay, or regression-check those sessions.
 
 mod check;
+mod diff;
 mod message;
 mod record;
 mod replay;
@@ -51,7 +52,7 @@ enum Cmd {
     },
     /// Show what happened in a session: every call, its latency, and its outcome
     Show {
-        /// Session name, id (or unique prefix), or a session JSON file
+        /// Session name (name~1 = the run before the newest), id or prefix, or a session JSON file
         session: String,
         /// Print machine-readable JSON instead
         #[arg(long)]
@@ -67,12 +68,12 @@ enum Cmd {
     },
     /// Pretend to be the MCP server, answering from a recording (no real tools needed)
     Replay {
-        /// Session name, id (or unique prefix), or a session JSON file
+        /// Session name (name~1 = the run before the newest), id or prefix, or a session JSON file
         session: String,
     },
     /// Re-send recorded calls to a live MCP server and report any answer that changed
     Check {
-        /// Session name, id (or unique prefix), or a session JSON file
+        /// Session name (name~1 = the run before the newest), id or prefix, or a session JSON file
         session: String,
         /// Seconds to wait for each answer
         #[arg(long, default_value_t = 30)]
@@ -83,6 +84,22 @@ enum Cmd {
         /// The MCP server command, after `--`
         #[arg(last = true, required = true, value_name = "SERVER_COMMAND")]
         command: Vec<String>,
+    },
+    /// Compare two runs and show the first tool call where they diverge
+    Diff {
+        /// Run A: session name (name~1 = the run before the newest), id, or JSON file
+        a: String,
+        /// Run B: session name, id, or JSON file
+        b: String,
+        /// Ignore this JSON key wherever it appears in answers (repeatable)
+        #[arg(long = "ignore-key", value_name = "KEY")]
+        ignore_keys: Vec<String>,
+        /// List every difference, not just the first
+        #[arg(long)]
+        all: bool,
+        /// Print machine-readable JSON (e.g. to group many failed runs by first divergence)
+        #[arg(long)]
+        json: bool,
     },
     /// Delete a recorded session
     #[command(alias = "rm")]
@@ -134,6 +151,21 @@ async fn run(cli: Cli) -> Result<i32> {
             };
             check::run(store::load_session(&db, &session)?, command, opts).await
         }
+        Cmd::Diff {
+            a,
+            b,
+            ignore_keys,
+            all,
+            json,
+        } => diff::run(
+            store::load_session(&db, &a)?,
+            store::load_session(&db, &b)?,
+            diff::Options {
+                ignore_keys,
+                all,
+                json,
+            },
+        ),
         Cmd::Delete { session } => {
             let store = store::Store::open(&db)?;
             let id = store.resolve_id(&session)?;

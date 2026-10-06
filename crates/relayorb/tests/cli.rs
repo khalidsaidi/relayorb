@@ -182,3 +182,63 @@ fn list_without_database() {
     assert!(out.status.success());
     assert!(stdout(&out).contains("No recordings yet"));
 }
+
+/// Record the standard session against the mock server with extra environment (no assertions).
+fn record_with_env(db: &Path, env: &[(&str, &str)]) {
+    let mut cmd = relayorb(db);
+    cmd.args(["record", "--name", "mock", "--"])
+        .args(mock_server())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let (_, code) = converse(cmd.spawn().unwrap(), &session_requests());
+    assert_eq!(code, 0);
+    // Distinct start times so name~N ordering is stable.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+}
+
+#[test]
+fn diff_finds_first_divergence_between_runs() {
+    let (_dir, db) = tmp_db();
+    record_with_env(&db, &[]);
+    record_with_env(&db, &[]);
+
+    // Two identical runs: exit 0.
+    let same = run(relayorb(&db).args(["diff", "mock~1", "mock"]));
+    let text = stdout(&same);
+    assert_eq!(same.status.code(), Some(0), "{text}");
+    assert!(text.contains("No divergence"), "{text}");
+    assert!(text.contains("client    A: test 0"), "{text}");
+
+    // A regressed server: the first divergence is the add call's answer.
+    record_with_env(&db, &[("MOCK_VERSION", "2")]);
+    let changed = run(relayorb(&db).args(["diff", "mock~1", "mock"]));
+    let text = stdout(&changed);
+    assert_eq!(changed.status.code(), Some(1), "{text}");
+    assert!(text.contains("First divergence at call #2"), "{text}");
+    assert!(text.contains("same call, different answer"), "{text}");
+    assert!(
+        text.contains(r#"result.content[0].text: "5" -> "6""#),
+        "{text}"
+    );
+    assert!(text.contains("server    A: mock 1"), "{text}");
+    assert!(text.contains("<- differs"), "{text}");
+
+    // JSON output for scripts that group many runs.
+    let json_out: Value = serde_json::from_str(&stdout(&run(
+        relayorb(&db).args(["diff", "mock~1", "mock", "--json"])
+    )))
+    .unwrap();
+    assert_eq!(json_out["identical"], false);
+    assert_eq!(json_out["first_divergence"]["call"], 2);
+    assert_eq!(json_out["first_divergence"]["kind"], "different_result");
+    assert_eq!(json_out["b"]["server"], "mock 2");
+
+    // Out-of-range history is a clear error, not a silent fallback.
+    let missing = run(relayorb(&db).args(["diff", "mock~9", "mock"]));
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("fewer than 10"));
+}
