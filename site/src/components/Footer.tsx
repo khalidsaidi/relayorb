@@ -5,6 +5,7 @@ const footerLinks = [
   { label: "GitHub", href: links.github, cta: "footer_github" },
   { label: "Docs", href: "/docs", cta: "footer_docs" },
   { label: "Guides", href: "/guides", cta: "footer_guides" },
+  { label: "Test results", href: "/testing", cta: "footer_testing" },
   { label: "Privacy", href: "/privacy", cta: "footer_privacy" },
   { label: "Terms", href: "/terms.md", cta: "footer_terms" },
   { label: "RootFetch: domain stats", href: "https://rootfetch.com/", cta: "footer_rootfetch" },

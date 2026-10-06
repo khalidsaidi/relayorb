@@ -1,0 +1,227 @@
+{
+  "version": "0.3.1",
+  "date": "2026-10-06",
+  "run_url": "https://github.com/khalidsaidi/relayorb/actions/runs/37524395200",
+  "platforms": [
+    "Linux x64",
+    "macOS arm64",
+    "Windows x64"
+  ],
+  "summary": {
+    "Real MCP servers (binary)": {
+      "Linux x64": "7/7",
+      "macOS arm64": "6/6",
+      "Windows x64": "6/6"
+    },
+    "Stress tests": {
+      "Linux x64": "10/10",
+      "macOS arm64": "10/10",
+      "Windows x64": "8/8 (2 skipped)"
+    },
+    "npm package (npx)": {
+      "Linux x64": "2/2",
+      "macOS arm64": "2/2",
+      "Windows x64": "2/2"
+    }
+  },
+  "steps": [
+    {
+      "step": "record",
+      "meaning": "recorded through `relayorb record` with a real MCP client"
+    },
+    {
+      "step": "transparent",
+      "meaning": "every response recorded equals what the client received"
+    },
+    {
+      "step": "show",
+      "meaning": "`show --json` lists every call"
+    },
+    {
+      "step": "export",
+      "meaning": "`export` writes a session file"
+    },
+    {
+      "step": "replay",
+      "meaning": "`replay` returns the recorded answers for the same calls"
+    },
+    {
+      "step": "check",
+      "meaning": "`check` re-runs the calls against the live server"
+    },
+    {
+      "step": "diff",
+      "meaning": "`diff` compares two runs"
+    }
+  ],
+  "servers": [
+    {
+      "server": "filesystem",
+      "package": "@modelcontextprotocol/server-filesystem",
+      "runtime": "Node",
+      "covers": "reads, directory listing, search, unicode filenames, a denied path",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "pass"
+    },
+    {
+      "server": "everything",
+      "package": "@modelcontextprotocol/server-everything",
+      "runtime": "Node",
+      "covers": "the MCP reference test server: progress notifications, LLM sampling requests from the server, images, resources, prompts, structured content",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "pass"
+    },
+    {
+      "server": "memory",
+      "package": "@modelcontextprotocol/server-memory",
+      "runtime": "Node",
+      "covers": "writes then reads a knowledge graph",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "pass"
+    },
+    {
+      "server": "time",
+      "package": "mcp-server-time",
+      "runtime": "Python",
+      "covers": "deterministic conversion plus a clock that changes every run",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "pass"
+    },
+    {
+      "server": "git",
+      "package": "mcp-server-git",
+      "runtime": "Python",
+      "covers": "status and log on a real repository",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "pass"
+    },
+    {
+      "server": "fetch",
+      "package": "mcp-server-fetch",
+      "runtime": "Python",
+      "covers": "fetches a live web page",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "pass"
+    },
+    {
+      "server": "github",
+      "package": "github/github-mcp-server",
+      "runtime": "Go (Docker)",
+      "covers": "GitHub's official server, read-only: repository search and file contents",
+      "Linux x64": "pass",
+      "macOS arm64": "-",
+      "Windows x64": "-"
+    }
+  ],
+  "stress": [
+    {
+      "test": "large_payload",
+      "detail": "5 MB response relayed, recorded, and replayed intact (0.11s through the proxy)",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "pass"
+    },
+    {
+      "test": "long_session",
+      "detail": "2,000 sequential calls, all recorded (0.41 ms per round trip incl. client)",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "pass"
+    },
+    {
+      "test": "concurrent",
+      "detail": "5 recordings started at the same instant on a new database, 200 calls each, nothing lost",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "pass"
+    },
+    {
+      "test": "server_crash",
+      "detail": "server died mid-call: agent sees end-of-stream, relayorb exits with the server's code (3), session saved with the unanswered call",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "pass"
+    },
+    {
+      "test": "sigterm",
+      "detail": "SIGTERM to relayorb: server stopped, session saved (relayorb exit 1)",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "skipped"
+    },
+    {
+      "test": "sigkill",
+      "detail": "relayorb killed with SIGKILL: server exits on its own (stdin closes), calls recorded so far are kept; session stays marked running",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "skipped"
+    },
+    {
+      "test": "garbage",
+      "detail": "non-JSON line on stdout: forwarded untouched, recorded and shown as (not JSON-RPC), session continues",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "pass"
+    },
+    {
+      "test": "batch",
+      "detail": "JSON-RPC batch: both calls recorded and paired; replay answers a batch with a batch",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "pass"
+    },
+    {
+      "test": "unicode",
+      "detail": "unicode, emoji, line/paragraph separators, escapes: byte-exact through the proxy and in the recording",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "pass"
+    },
+    {
+      "test": "flood",
+      "detail": "2,000 progress notifications during one call: all forwarded in order and recorded",
+      "Linux x64": "pass",
+      "macOS arm64": "pass",
+      "Windows x64": "pass"
+    }
+  ],
+  "agents": [
+    {
+      "agent": "Claude Code 2.1.292",
+      "setup": "relayorb binary as the MCP command, filesystem server",
+      "result": "pass",
+      "date": "2026-10-05"
+    },
+    {
+      "agent": "Claude Code 2.1.292",
+      "setup": "`npx -y @khalidsaidi/relayorb@latest` as the MCP command (no install)",
+      "result": "pass",
+      "date": "2026-10-06"
+    },
+    {
+      "agent": "Claude Code 2.1.292",
+      "setup": "two runs, file changed in between, `relayorb diff` pinpoints the changed call",
+      "result": "pass",
+      "date": "2026-10-06"
+    }
+  ],
+  "fixed": [
+    "`record`: if relayorb was killed (SIGKILL) right after a call, that call could be missing from the recording. Messages are now stored before they are forwarded.",
+    "`check`: tools that ask the agent something mid-call (LLM sampling) failed, because check answered with an error. It now answers the way the agent did in the recording.",
+    "Windows: `relayorb record -- npx ...` could not start the server (`npx` is a `.cmd` file). Commands are now resolved like `cmd.exe` does. This affected 0.3.0 on Windows.",
+    "Windows: when several recordings started at the same instant on a new database, one could exit with \"database is locked\". Database setup now retries."
+  ],
+  "not_tested": [
+    "Agents other than Claude Code: Cursor, Codex, Claude Desktop, VS Code. They use the same stdio protocol, but nobody has run them yet.",
+    "Remote MCP servers over HTTP. RelayOrb does not support them yet.",
+    "The Intel macOS and Linux ARM binaries. They are built and published but were not run in this suite.",
+    "Alpine Linux (musl). The Linux binaries need glibc.",
+    "Very long-running sessions (hours) and recordings databases larger than a few hundred MB."
+  ]
+}

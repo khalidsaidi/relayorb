@@ -77,7 +77,7 @@ export function pageMeta(pathname: string): { pageType: PageType; contentSlug: s
   if (path.startsWith("/guides/")) {
     return { pageType: "guide", contentSlug: path.slice("/guides/".length).split("/")[0] };
   }
-  if (path === "/docs") return { pageType: "docs", contentSlug: "" };
+  if (path === "/docs" || path === "/testing") return { pageType: "docs", contentSlug: "" };
   if (path === "/privacy") return { pageType: "legal", contentSlug: "" };
   return { pageType: "other", contentSlug: "" };
 }
