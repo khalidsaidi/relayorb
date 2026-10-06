@@ -88,11 +88,20 @@ jobs:
           uvx mcp-server-git --help >/dev/null 2>&1 || true
           uvx mcp-server-fetch --help >/dev/null 2>&1 || true
 
+      - name: Use an x86_64 Python for uvx (Rosetta row)
+        if: matrix.target == 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          # Under Rosetta, uvx resolves x86_64 wheels; it must also run them with an x86_64 Python
+          # (not the runner's arm64 one) and keep them in a separate cache, like a real Intel Mac.
+          echo "UV_PYTHON_PREFERENCE=only-managed" >> "$GITHUB_ENV"
+          echo "UV_CACHE_DIR=$RUNNER_TEMP/uv-x86_64" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_INSTALL_DIR=$RUNNER_TEMP/uv-python-x86_64" >> "$GITHUB_ENV"
+
       - name: Pre-fetch Python MCP servers for x86_64 (Rosetta row)
         if: matrix.target == 'x86_64-apple-darwin'
         shell: bash
         run: |
-          # Processes started under Rosetta see an Intel Mac, so uvx resolves x86_64 Python and wheels.
           arch -x86_64 uvx mcp-server-time --help >/dev/null 2>&1 || true
           arch -x86_64 uvx mcp-server-git --help >/dev/null 2>&1 || true
           arch -x86_64 uvx mcp-server-fetch --help >/dev/null 2>&1 || true
