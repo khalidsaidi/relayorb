@@ -165,11 +165,12 @@ export default function TestingPage() {
           <section className="mt-12">
             <h2 className="text-2xl font-semibold">Soak test</h2>
             <p className="mt-3 max-w-3xl text-slate-300">
-              One recording kept busy for {results.soak.minutes} minutes: {results.soak.calls.toLocaleString("en-US")} calls
+              One recording ({results.soak.relayorb}) kept busy for {results.soak.minutes} minutes: {results.soak.calls.toLocaleString("en-US")} calls
               ({results.soak.large_responses.toLocaleString("en-US")} with 200 KB responses,{" "}
               {results.soak.notifications.toLocaleString("en-US")} notifications).{" "}
               {results.soak.recorded_calls.toLocaleString("en-US")} of {results.soak.calls.toLocaleString("en-US")} recorded.
-              Memory: {results.soak.rss_mb_after_warmup} MB after warm-up, {results.soak.rss_mb_end} MB at the end.{" "}
+              Memory: {results.soak.rss_mb_after_warmup} MB after warm-up, {results.soak.rss_mb_end} MB at the end.
+              Recordings database: {results.soak.db_mb} MB.{" "}
               <span className={results.soak.passed ? "text-emerald-300" : "text-rose-300"}>
                 {results.soak.passed ? "pass" : "FAIL"}
               </span>

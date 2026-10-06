@@ -16,17 +16,19 @@ It's a single local binary. No account, no cloud, no telemetry, and free (Apache
 
 Website: https://relayorb.com
 
+<!-- tested:start -->
 ## Tested
 
-RelayOrb 0.3.1 is tested on every change against 7 real MCP servers (filesystem, everything, memory, time, git, fetch, and GitHub's official server), plus 10 stress tests: 5 MB payloads, 2,000-call sessions, parallel recordings, crashes and kills, batches, unicode, and notification floods. They run on Linux, macOS, and Windows, with both the binary and the npm package:
+RelayOrb 0.3.3 is tested against 7 real MCP servers (filesystem, everything, memory, time, git, fetch, and GitHub's official server) and 10 stress tests: 5 MB payloads, 2,000-call sessions, parallel recordings, crashes and kills, batches, unicode, and notification floods. They run on Linux x64, Linux arm64, macOS arm64, macOS x64 (Rosetta), Windows x64:
 
-| | Linux x64 | macOS arm64 | Windows x64 |
-|---|---|---|---|
-| Real MCP servers (binary) | 7/7 | 6/6 | 6/6 |
-| Stress tests | 10/10 | 10/10 | 8/8 (2 skipped) |
-| npm package (npx) | 2/2 | 2/2 | 2/2 |
+| | Linux x64 | Linux arm64 | macOS arm64 | macOS x64 (Rosetta) | Windows x64 |
+|---|---|---|---|---|---|
+| Real MCP servers (binary) | 7/7 | 6/6 | 6/6 | 6/6 | 6/6 |
+| Stress tests | 10/10 | 10/10 | 10/10 | 10/10 | 9/9 (1 skipped) |
+| npm package (npx, 0.3.2) | 2/2 | 2/2 | 2/2 | - | 2/2 |
 
-It has also been tested with Claude Code as the agent. Cursor, Codex, and Claude Desktop haven't been tested yet. Full results, including the bugs the suite found and what's still untested: [TESTING.md](https://github.com/khalidsaidi/relayorb/blob/main/TESTING.md) · [relayorb.com/testing](https://relayorb.com/testing)
+Tested as the MCP layer of real agents: Claude Code, Claude Desktop, Codex CLI, Cursor Agent CLI. A one-hour soak test (167,111 calls) recorded every call with flat memory (9.9 MB). Full results, including the bugs the tests found and what isn't tested yet: [TESTING.md](https://github.com/khalidsaidi/relayorb/blob/main/TESTING.md) · [relayorb.com/testing](https://relayorb.com/testing)
+<!-- tested:end -->
 
 ## Install
 

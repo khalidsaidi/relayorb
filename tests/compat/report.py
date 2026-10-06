@@ -87,7 +87,7 @@ def mark(passed: bool, skipped: bool = False) -> str:
 
 
 def build(data, run_url: str):
-    version = next(iter(data.values()))["relayorb"].replace("relayorb ", "")
+    version = data[("compat", "ubuntu-latest")]["relayorb"].replace("relayorb ", "")
     date = max(d["date"] for d in data.values())
     oses = [(k, label) for k, label in OS_ORDER if ("compat", k) in data]
 
@@ -121,6 +121,8 @@ def build(data, run_url: str):
             row[label] = mark(r["passed"], str(r["detail"]).startswith("skipped"))
         stress.append(row)
 
+    npm_versions = sorted({d["relayorb"].replace("relayorb ", "") for (kind, _), d in data.items() if kind == "npm"})
+    npm_label = f"npm package (npx, {', '.join(npm_versions)})" if npm_versions else "npm package (npx)"
     return {
         "version": version,
         "date": date,
@@ -129,7 +131,7 @@ def build(data, run_url: str):
         "summary": {
             "Real MCP servers (binary)": summary("compat"),
             "Stress tests": summary("stress"),
-            "npm package (npx)": summary("npm"),
+            npm_label: summary("npm"),
         },
         "steps": [{"step": s, "meaning": m} for s, m in STEP_INFO],
         "servers": servers,
@@ -187,10 +189,10 @@ def markdown(r) -> str:
             "",
             "## Soak test (nightly)",
             "",
-            f"One recording kept busy for {k['minutes']:g} minutes on {k['os']}: {k['calls']:,} calls "
+            f"One recording ({k['relayorb']}) kept busy for {k['minutes']:g} minutes on {k['os']}: {k['calls']:,} calls "
             f"({k['large_responses']:,} with 200 KB responses, {k['notifications']:,} notifications). "
             f"Recorded: {k['recorded_calls']:,} of {k['calls']:,}. Memory: {k['rss_mb_after_warmup']} MB after warm-up, "
-            f"{k['rss_mb_end']} MB at the end. Result: {'pass' if k['passed'] else 'FAIL'}.",
+            f"{k['rss_mb_end']} MB at the end. Recordings database: {k['db_mb']:,} MB. Result: {'pass' if k['passed'] else 'FAIL'}.",
         ]
     lines += ["", "## Compatibility notes (not RelayOrb bugs)", ""]
     lines += [f"- {x}" for x in r.get("findings", [])]
@@ -201,12 +203,62 @@ def markdown(r) -> str:
     return "\n".join(lines) + "\n"
 
 
+README_START = "<!-- tested:start -->"
+README_END = "<!-- tested:end -->"
+
+
+def readme_section(r) -> str:
+    p = r["platforms"]
+    table = ["| | " + " | ".join(p) + " |", "|---|" + "---|" * len(p)]
+    for name, row in r["summary"].items():
+        table.append(f"| {name} | " + " | ".join(row.get(x, "-") for x in p) + " |")
+    agents = sorted({a["agent"].split(" (")[0].rsplit(" ", 1)[0] for a in r["agents"]})
+    soak = ""
+    if r.get("soak"):
+        k = r["soak"]
+        soak = f" A one-hour soak test ({k['calls']:,} calls) recorded every call with flat memory ({k['rss_mb_end']} MB)."
+    return "\n".join(
+        [
+            README_START,
+            "## Tested",
+            "",
+            f"RelayOrb {r['version']} is tested against 7 real MCP servers (filesystem, everything, memory, time, git, fetch, "
+            "and GitHub's official server) and 10 stress tests: 5 MB payloads, 2,000-call sessions, parallel recordings, "
+            f"crashes and kills, batches, unicode, and notification floods. They run on {', '.join(p)}:",
+            "",
+            *table,
+            "",
+            f"Tested as the MCP layer of real agents: {', '.join(agents)}.{soak} Full results, including the bugs the tests "
+            "found and what isn't tested yet: [TESTING.md](https://github.com/khalidsaidi/relayorb/blob/main/TESTING.md) · "
+            "[relayorb.com/testing](https://relayorb.com/testing)",
+            README_END,
+        ]
+    )
+
+
+def update_readme(path: str, r) -> None:
+    text = open(path).read()
+    section = readme_section(r)
+    if README_START in text:
+        start = text.index(README_START)
+        end = text.index(README_END) + len(README_END)
+        text = text[:start] + section + text[end:]
+    else:
+        # First run: replace the hand-written "## Tested" section, up to the next heading.
+        start = text.index("## Tested")
+        end = text.index("\n## ", start + 1) + 1
+        text = text[:start] + section + "\n\n" + text[end:]
+    with open(path, "w") as f:
+        f.write(text)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("results_dir")
     ap.add_argument("--run-url", required=True)
     ap.add_argument("--md", default="TESTING.md")
     ap.add_argument("--json", default="site/src/data/test-results.json")
+    ap.add_argument("--readme", default="README.md")
     args = ap.parse_args()
     report = build(load(args.results_dir), args.run_url)
     with open(args.md, "w") as f:
@@ -215,7 +267,9 @@ def main():
     with open(args.json, "w") as f:
         json.dump(report, f, indent=2)
         f.write("\n")
-    print(f"wrote {args.md} and {args.json}")
+    if args.readme:
+        update_readme(args.readme, report)
+    print(f"wrote {args.md}, {args.json}, and the Tested section of {args.readme}")
 
 
 if __name__ == "__main__":
