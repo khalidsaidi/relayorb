@@ -7,6 +7,7 @@ const footerLinks = [
   { label: "Guides", href: "/guides", cta: "footer_guides" },
   { label: "Privacy", href: "/privacy", cta: "footer_privacy" },
   { label: "Terms", href: "/terms.md", cta: "footer_terms" },
+  { label: "RootFetch: domain stats", href: "https://rootfetch.com/", cta: "footer_rootfetch" },
 ];
 
 export function Footer() {
