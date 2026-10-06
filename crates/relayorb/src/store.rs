@@ -99,6 +99,9 @@ impl Store {
         // Agents often start several servers at once, each wrapped in its own recorder.
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // WAL + NORMAL: committed messages survive a process crash or kill (only an OS crash can
+        // lose the last ones), and each commit avoids an fsync, which keeps recording fast.
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS sessions (
                id TEXT PRIMARY KEY,

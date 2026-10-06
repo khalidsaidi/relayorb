@@ -36,12 +36,19 @@ pub struct Replayer {
 }
 
 impl Replayer {
+    /// Answers requests the agent sent, from the server's recorded responses.
     pub fn new(session: &Session) -> Self {
+        Self::answering(session, Direction::ClientToServer)
+    }
+
+    /// Answers requests that travelled in `direction` with the recorded responses to them.
+    /// `ServerToClient` gives the agent's recorded answers to server-initiated requests
+    /// (sampling, roots, elicitation), which `relayorb check` uses to stand in for the agent.
+    pub fn answering(session: &Session, direction: Direction) -> Self {
         let mut exact: HashMap<String, Queue> = HashMap::new();
         let mut loose: HashMap<String, Queue> = HashMap::new();
         for ex in session.exchanges() {
-            // Only answers the server gave to the agent; requests the server made are not replayed.
-            if ex.request.direction != Direction::ClientToServer {
+            if ex.request.direction != direction {
                 continue;
             }
             let (Some(method), Some(response)) = (&ex.request.message.method, ex.response) else {

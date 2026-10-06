@@ -10,6 +10,7 @@ use tokio::process::{ChildStdin, Command};
 use tokio::sync::mpsc;
 
 use crate::message::{self, Direction, Kind, Message};
+use crate::replay::Replayer;
 use crate::store::Session;
 
 const MAX_DIFFS_SHOWN: usize = 8;
@@ -42,7 +43,7 @@ pub async fn run(session: Session, command: Vec<String>, opts: Options) -> Resul
         bail!("the recording has no answered requests to check");
     }
 
-    let mut child = Command::new(program)
+    let mut child = Command::new(crate::spawn::program(program))
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -55,6 +56,7 @@ pub async fn run(session: Session, command: Vec<String>, opts: Options) -> Resul
         rx: spawn_reader(child.stdout.take().expect("piped stdout")),
         next_id: 0,
         timeout: opts.timeout,
+        agent_answers: Replayer::answering(&session, Direction::ServerToClient),
     };
 
     let init_params = initialize
@@ -130,6 +132,8 @@ struct Server {
     rx: mpsc::UnboundedReceiver<Message>,
     next_id: u64,
     timeout: Duration,
+    /// The agent's recorded answers to server-initiated requests (sampling, roots, ...).
+    agent_answers: Replayer,
 }
 
 impl Server {
@@ -159,11 +163,15 @@ impl Server {
             match msg.kind {
                 Kind::Response if msg.rpc_id.as_deref() == Some(want.as_str()) => return Ok(msg),
                 // The server asked us something (roots, sampling, ...). We are not a real client.
+                // The server asked the agent something (sampling, roots, ...): answer the way the
+                // agent did in the recording, or with an error if it never came up.
                 Kind::Request => {
-                    let reply = json!({
-                        "jsonrpc": "2.0",
-                        "id": msg.body.get("id").cloned().unwrap_or(Value::Null),
-                        "error": {"code": -32601, "message": "relayorb check does not support server requests"}
+                    let reply = self.agent_answers.answer(&msg).unwrap_or_else(|| {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": msg.body.get("id").cloned().unwrap_or(Value::Null),
+                            "error": {"code": -32601, "message": "relayorb check: no recorded answer"}
+                        })
                     });
                     self.send(&reply).await?;
                 }

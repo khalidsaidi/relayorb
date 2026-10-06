@@ -46,6 +46,13 @@ fn converse(mut child: std::process::Child, requests: &[Value]) -> (Vec<Value>, 
                 "server closed early"
             );
             let msg: Value = serde_json::from_str(&line).unwrap();
+            // Answer server-initiated requests (sampling) like a real agent would.
+            if msg.get("method").is_some() && msg.get("id").is_some() {
+                let reply = json!({"jsonrpc":"2.0","id":msg["id"],"result":{"role":"assistant","content":{"type":"text","text":"hi from the agent"},"model":"test","stopReason":"endTurn"}});
+                writeln!(stdin, "{reply}").unwrap();
+                stdin.flush().unwrap();
+                continue;
+            }
             if msg.get("id") == req.get("id") {
                 answers.push(msg);
                 break;
@@ -241,4 +248,41 @@ fn diff_finds_first_divergence_between_runs() {
     let missing = run(relayorb(&db).args(["diff", "mock~9", "mock"]));
     assert_eq!(missing.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&missing.stderr).contains("fewer than 10"));
+}
+
+#[test]
+fn check_answers_server_requests_from_the_recording() {
+    let (dir, db) = tmp_db();
+    let mut requests = session_requests();
+    requests.push(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"ask","arguments":{}}}));
+    let child = relayorb(&db)
+        .args(["record", "--name", "ask", "--"])
+        .args(mock_server())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let (answers, code) = converse(child, &requests);
+    assert_eq!(code, 0);
+    assert_eq!(
+        answers[4]["result"]["content"][0]["text"],
+        "hi from the agent"
+    );
+
+    // The server asks the agent again during check; relayorb answers as the agent did.
+    let fixture = dir.path().join("ask.json");
+    assert!(
+        run(relayorb(&db).args(["export", "ask", "-o"]).arg(&fixture))
+            .status
+            .success()
+    );
+    let out = run(relayorb(&db)
+        .args(["check"])
+        .arg(&fixture)
+        .arg("--")
+        .args(mock_server()));
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(text.contains("PASS  tools/call ask"), "{text}");
 }

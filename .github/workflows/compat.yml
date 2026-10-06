@@ -1,0 +1,83 @@
+name: Compatibility
+
+# Real MCP servers and stress tests through RelayOrb on Linux, macOS, and Windows.
+# Results are uploaded as artifacts and summarized in TESTING.md.
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "tests/compat/**"
+      - ".github/workflows/compat.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "tests/compat/**"
+      - ".github/workflows/compat.yml"
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  compat:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bin: target/release/relayorb
+            servers: all
+          - os: macos-latest
+            bin: target/release/relayorb
+            servers: filesystem,everything,memory,time,git,fetch
+          - os: windows-latest
+            bin: target\release\relayorb.exe
+            servers: filesystem,everything,memory,time,git,fetch
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Build relayorb
+        run: cargo build --release --locked
+
+      - name: Pre-fetch MCP servers (keeps first-run downloads out of timeouts)
+        shell: bash
+        run: |
+          npx -y @modelcontextprotocol/server-everything --help >/dev/null 2>&1 < /dev/null || true
+          npx -y @modelcontextprotocol/server-filesystem --help >/dev/null 2>&1 < /dev/null || true
+          npx -y @modelcontextprotocol/server-memory --help >/dev/null 2>&1 < /dev/null || true
+          uvx mcp-server-time --help >/dev/null 2>&1 || true
+          uvx mcp-server-git --help >/dev/null 2>&1 || true
+          uvx mcp-server-fetch --help >/dev/null 2>&1 || true
+
+      - name: Real MCP servers (binary built from this commit)
+        env:
+          GITHUB_PERSONAL_ACCESS_TOKEN: ${{ matrix.os == 'ubuntu-latest' && secrets.GITHUB_TOKEN || '' }}
+        run: python tests/compat/harness.py --relayorb "${{ matrix.bin }}" --servers ${{ matrix.servers }} --out compat-${{ matrix.os }}.json
+
+      - name: Stress tests
+        if: always()
+        run: python tests/compat/stress.py --relayorb "${{ matrix.bin }}" --out stress-${{ matrix.os }}.json
+
+      - name: Published npm package (npx @khalidsaidi/relayorb@latest)
+        if: always()
+        run: python tests/compat/harness.py --relayorb "npx -y @khalidsaidi/relayorb@latest" --servers filesystem,everything --out npm-${{ matrix.os }}.json
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-${{ matrix.os }}
+          path: "*-${{ matrix.os }}.json"

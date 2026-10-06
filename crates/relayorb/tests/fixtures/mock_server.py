@@ -11,6 +11,7 @@ TOOLS = [
     {"name": "add", "description": "Add two numbers",
      "inputSchema": {"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}}},
     {"name": "fail", "description": "Always fails", "inputSchema": {"type": "object"}},
+    {"name": "ask", "description": "Asks the client to sample an LLM, returns its answer", "inputSchema": {"type": "object"}},
 ]
 
 
@@ -36,6 +37,18 @@ def handle(req):
         args = params.get("arguments", {})
         total = args.get("a", 0) + args.get("b", 0) + (1 if VERSION == "2" else 0)
         result = {"content": [{"type": "text", "text": str(total)}], "isError": False}
+    elif method == "tools/call" and params.get("name") == "ask":
+        # Server-initiated request mid-call: wait for the client's answer before replying.
+        send({"jsonrpc": "2.0", "id": "srv-1", "method": "sampling/createMessage",
+              "params": {"messages": [{"role": "user", "content": {"type": "text", "text": "say hi"}}], "maxTokens": 5}})
+        answer = None
+        for line in sys.stdin:
+            msg = json.loads(line)
+            if msg.get("id") == "srv-1":
+                answer = msg
+                break
+        text = (answer or {}).get("result", {}).get("content", {}).get("text") or "no answer: " + json.dumps((answer or {}).get("error"))
+        result = {"content": [{"type": "text", "text": text}], "isError": False}
     elif method == "tools/call" and params.get("name") == "fail":
         result = {"content": [{"type": "text", "text": "boom"}], "isError": True}
     else:

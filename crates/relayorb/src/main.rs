@@ -9,6 +9,7 @@ mod message;
 mod record;
 mod replay;
 mod show;
+mod spawn;
 mod store;
 
 use std::path::PathBuf;
