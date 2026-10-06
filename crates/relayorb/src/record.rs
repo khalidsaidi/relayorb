@@ -1,7 +1,8 @@
 //! `relayorb record`: a transparent stdio proxy that records every MCP message.
 //!
-//! Bytes are forwarded unchanged in both directions; recording happens on a copy,
-//! so a recording failure never corrupts the agent <-> server conversation.
+//! Bytes are forwarded unchanged in both directions. Each frame is stored before it is
+//! forwarded, so whatever the other side has seen is already in the recording; a recording
+//! failure is reported but never blocks or corrupts the agent <-> server conversation.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -10,12 +11,14 @@ use std::sync::mpsc;
 use anyhow::{bail, Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::oneshot;
 
 use crate::message::{self, Direction};
 use crate::store::{now_ms, Recorded, SessionMeta, Store};
 
 enum Event {
-    Frame(Direction, i64, String),
+    /// A frame to record. The sender is acknowledged once it is stored.
+    Frame(Direction, i64, String, oneshot::Sender<()>),
     Done(Option<i64>),
 }
 
@@ -49,7 +52,7 @@ pub async fn run(db_path: &Path, name: Option<String>, command: Vec<String>) -> 
     let session_id = meta.id.clone();
     let writer = std::thread::spawn(move || write_events(store, &session_id, rx));
 
-    let mut child = Command::new(program)
+    let mut child = Command::new(crate::spawn::program(program))
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -112,11 +115,19 @@ where
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
+        // Store the frame before forwarding it, so anything the other side has seen is already
+        // in the recording, even if relayorb is killed right after.
+        let text = String::from_utf8_lossy(&buf).into_owned();
+        let (stored_tx, stored_rx) = oneshot::channel();
+        if tx
+            .send(Event::Frame(direction, now_ms(), text, stored_tx))
+            .is_ok()
+        {
+            let _ = stored_rx.await;
+        }
         if writer.write_all(&buf).await.is_err() || writer.flush().await.is_err() {
             break;
         }
-        let text = String::from_utf8_lossy(&buf).into_owned();
-        let _ = tx.send(Event::Frame(direction, now_ms(), text));
     }
     let _ = writer.shutdown().await;
 }
@@ -126,7 +137,7 @@ fn write_events(store: Store, session_id: &str, rx: mpsc::Receiver<Event>) -> Re
     let mut exit_code = None;
     for event in rx {
         match event {
-            Event::Frame(direction, ts_ms, text) => {
+            Event::Frame(direction, ts_ms, text, stored) => {
                 for message in message::parse_line(&text) {
                     let rec = Recorded {
                         seq,
@@ -139,6 +150,7 @@ fn write_events(store: Store, session_id: &str, rx: mpsc::Receiver<Event>) -> Re
                     }
                     seq += 1;
                 }
+                let _ = stored.send(());
             }
             Event::Done(code) => exit_code = code,
         }
