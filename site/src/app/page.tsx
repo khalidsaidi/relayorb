@@ -198,6 +198,17 @@ export default function HomePage() {
                 Quickstart
               </TrackedLink>
             </div>
+            <p className="mt-4 text-sm text-slate-400">
+              Tested on Linux, macOS, and Windows against 7 real MCP servers and 10 stress tests.{" "}
+              <TrackedLink
+                href="/testing"
+                variant="link"
+                eventName="cta_click"
+                eventParams={{ cta: "test_results", location: "hero" }}
+              >
+                See the results
+              </TrackedLink>
+            </p>
           </div>
         </section>
 

@@ -27,7 +27,7 @@ var p = location.pathname;
 var kind = p === '/' ? 'home'
   : p === '/guides' ? 'guides_index'
   : p.indexOf('/guides/') === 0 ? 'guide'
-  : p === '/docs' ? 'docs'
+  : p === '/docs' || p === '/testing' ? 'docs'
   : p === '/privacy' ? 'legal'
   : 'other';
 var slug = kind === 'guide' ? (p.split('/')[2] || '(none)') : '(none)';

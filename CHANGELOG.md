@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.2
+
+- Docs only: test results (TESTING.md, relayorb.com/testing, and a summary in the README, which is what npm shows). The code is the same as 0.3.1.
+
 ## v0.3.1
 
 - `record` stores each message before forwarding it, so everything the agent or server has seen is in the recording even if relayorb is killed. SQLite now uses `synchronous=NORMAL` (WAL), which keeps that fast.

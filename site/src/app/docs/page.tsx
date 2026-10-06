@@ -135,7 +135,11 @@ export default function DocsPage() {
           </p>
           <p className="mt-3 text-slate-300">
             RelayOrb supports the stdio transport used by local MCP servers. Streamable HTTP servers
-            aren&apos;t supported yet.
+            aren&apos;t supported yet. See the{" "}
+            <Link className="text-cyan-200" href="/testing">
+              test results
+            </Link>{" "}
+            for which servers, agents, and platforms have been verified.
           </p>
         </section>
       </main>
