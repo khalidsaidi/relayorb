@@ -147,10 +147,41 @@ export default function TestingPage() {
           />
         </section>
 
+        {"findings" in results && results.findings.length > 0 && (
+          <section className="mt-12">
+            <h2 className="text-2xl font-semibold">Compatibility notes</h2>
+            <p className="mt-1 text-sm text-slate-400">Found while testing agents. Not RelayOrb bugs.</p>
+            <ul className="mt-3 list-disc space-y-2 pl-6 text-sm text-slate-300">
+              {results.findings.map(x => (
+                <li key={x}>
+                  <Ticks text={x} />
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {"soak" in results && results.soak && (
+          <section className="mt-12">
+            <h2 className="text-2xl font-semibold">Soak test</h2>
+            <p className="mt-3 max-w-3xl text-slate-300">
+              One recording ({results.soak.relayorb}) kept busy for {results.soak.minutes} minutes: {results.soak.calls.toLocaleString("en-US")} calls
+              ({results.soak.large_responses.toLocaleString("en-US")} with 200 KB responses,{" "}
+              {results.soak.notifications.toLocaleString("en-US")} notifications).{" "}
+              {results.soak.recorded_calls.toLocaleString("en-US")} of {results.soak.calls.toLocaleString("en-US")} recorded.
+              Memory: {results.soak.rss_mb_after_warmup} MB after warm-up, {results.soak.rss_mb_end} MB at the end.
+              Recordings database: {results.soak.db_mb} MB.{" "}
+              <span className={results.soak.passed ? "text-emerald-300" : "text-rose-300"}>
+                {results.soak.passed ? "pass" : "FAIL"}
+              </span>
+            </p>
+          </section>
+        )}
+
         <section className="mt-12 grid gap-6 md:grid-cols-2">
           <div className="rounded-2xl border border-slate-700/70 bg-slate-950/70 p-5">
             <h2 className="text-xl font-semibold">Bugs this suite found</h2>
-            <p className="mt-1 text-sm text-slate-400">All fixed in 0.3.1.</p>
+            <p className="mt-1 text-sm text-slate-400">All fixed.</p>
             <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-300">
               {results.fixed.map(x => (
                 <li key={x}>

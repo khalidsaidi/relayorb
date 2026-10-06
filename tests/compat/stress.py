@@ -145,12 +145,13 @@ def t_sigterm(x: Ctx):
     if WINDOWS:
         return "skipped on Windows (no SIGTERM)"
     db = x.db()
-    c = x.recorder(db, "term", ["--marker-term"])
+    marker = f"--marker-term-{os.getpid()}-{time.time_ns()}"
+    c = x.recorder(db, "term", [marker])
     x.call(c, "echo", text="hi")
     c.proc.send_signal(signal.SIGTERM)
     code = c.proc.wait(timeout=15)
     time.sleep(0.5)
-    left = subprocess.run(["pgrep", "-f", "stress_server.py --marker-term"], capture_output=True, text=True).stdout.split()
+    left = subprocess.run(["pgrep", "-f", f"stress_server.py {marker}"], capture_output=True, text=True).stdout.split()
     assert not left, f"server still running after SIGTERM: {left}"
     shown = x.show(db, "term")
     assert shown["session"].get("ended_at_ms"), "session not finished"
@@ -158,23 +159,27 @@ def t_sigterm(x: Ctx):
 
 
 def t_sigkill(x: Ctx):
-    if WINDOWS:
-        return "skipped on Windows (no SIGKILL)"
     db = x.db()
-    c = x.recorder(db, "kill", ["--marker-kill"])
+    marker = f"--marker-kill-{os.getpid()}-{time.time_ns()}"  # unique: stale processes can't match
+    c = x.recorder(db, "kill", [marker])
     x.call(c, "echo", text="hi")
-    c.proc.kill()
+    listed = x.run(db, ["list"]).stdout.decode()
+    assert "running" in listed, f"live session not shown as running: {listed}"
+    c.proc.kill()  # SIGKILL on Unix, TerminateProcess on Windows
     c.proc.wait(timeout=15)
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        left = subprocess.run(["pgrep", "-f", "stress_server.py --marker-kill"], capture_output=True, text=True).stdout.split()
-        if not left:
-            break
-        time.sleep(0.2)
-    assert not left, f"server orphaned after relayorb was killed: {left}"
+    if not WINDOWS:
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            left = subprocess.run(["pgrep", "-f", f"stress_server.py {marker}"], capture_output=True, text=True).stdout.split()
+            if not left:
+                break
+            time.sleep(0.2)
+        assert not left, f"server orphaned after relayorb was killed: {left}"
     calls = [k for k in x.show(db, "kill")["calls"] if k["direction"] == "c2s"]
     assert len(calls) == 2, len(calls)
-    return "relayorb killed with SIGKILL: server exits on its own (stdin closes), calls recorded so far are kept; session stays marked running"
+    listed = x.run(db, ["list"]).stdout.decode()
+    assert "killed" in listed, f"killed session not shown as killed: {listed}"
+    return "relayorb force-killed (how Cursor and Codex stop servers): every call up to the kill is kept, the server exits on its own, and the session shows as killed"
 
 
 def t_garbage(x: Ctx):

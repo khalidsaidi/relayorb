@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.3
+
+- `list` and `show` mark sessions as "killed" when the recorder was stopped abruptly and never finished (Cursor and Codex force-kill their MCP servers). Until now those stayed "running" forever. Recorders hold an OS file lock while they run, which the OS releases even on SIGKILL.
+- Tested with Codex CLI and Cursor Agent CLI (Linux and Windows), on Linux arm64, and with the Intel macOS build via Rosetta. Nightly one-hour soak test.
+
 ## v0.3.2
 
 - Docs only: test results (TESTING.md, relayorb.com/testing, and a summary in the README, which is what npm shows). The code is the same as 0.3.1.

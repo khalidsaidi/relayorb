@@ -113,7 +113,10 @@ class Client:
             left = deadline - time.time()
             if left <= 0:
                 raise TimeoutError(f"no answer to {method} within {timeout}s")
-            msg = self.messages.get(timeout=left)
+            try:
+                msg = self.messages.get(timeout=left)
+            except queue.Empty:
+                raise TimeoutError(f"no answer to {method} within {timeout:g}s{self.stderr_tail()}") from None
             if msg is None:
                 raise EOFError(f"process closed its output while waiting for {method}{self.stderr_tail()}")
             if "method" in msg and "id" in msg:
@@ -203,8 +206,10 @@ def generic_scenario(c: Client, init: dict, pick_tools: list[str], extra_calls=(
             c.request("prompts/get", {"name": p["name"], "arguments": args})
 
 
-def run_session(cmd: list[str], scenario, env=None, cwd=None):
-    c = Client(cmd, env=env, cwd=cwd)
+def run_session(cmd: list[str], scenario, env=None, cwd=None, stderr_path=None):
+    c = Client(cmd, env=env, cwd=cwd, stderr_path=stderr_path)
+    # Start-up can include first-run downloads (npx/uvx fetching the server and its runtime),
+    # so initialize gets a longer allowance than ordinary calls.
     init = c.request(
         "initialize",
         {
@@ -212,6 +217,7 @@ def run_session(cmd: list[str], scenario, env=None, cwd=None):
             "capabilities": {"roots": {"listChanged": False}, "sampling": {}},
             "clientInfo": {"name": "relayorb-compat-harness", "version": "1.0"},
         },
+        timeout=240,
     )
     if "error" in init:
         raise RuntimeError(f"initialize failed: {init['error']}")
@@ -374,7 +380,7 @@ def test_server(relayorb: list[str], spec: dict, work: str) -> dict:
 
     # 1. record
     rec_cmd = relayorb + ["--db", db, "record", "--name", name, "--"] + spec["cmd"]
-    client, code = run_session(rec_cmd, spec["scenario"], env=env_for(1))
+    client, code = run_session(rec_cmd, spec["scenario"], env=env_for(1), stderr_path=os.path.join(work, f"{name}.stderr"))
     steps["record"] = code == 0
     result["calls"] = len(client.received)
     result["notifications"] = client.notifications
