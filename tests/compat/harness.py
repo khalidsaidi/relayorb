@@ -46,12 +46,13 @@ def resolve(cmd: list[str]) -> list[str]:
 class Client:
     """Minimal MCP stdio client. Answers server-initiated requests like a real host would."""
 
-    def __init__(self, cmd: list[str], env: dict | None = None, cwd: str | None = None):
+    def __init__(self, cmd: list[str], env: dict | None = None, cwd: str | None = None, stderr_path: str | None = None):
+        self.stderr_path = stderr_path
         self.proc = subprocess.Popen(
             resolve(cmd),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=open(stderr_path, "wb") if stderr_path else subprocess.DEVNULL,
             env={**os.environ, **(env or {})},
             cwd=cwd,
         )
@@ -114,7 +115,7 @@ class Client:
                 raise TimeoutError(f"no answer to {method} within {timeout}s")
             msg = self.messages.get(timeout=left)
             if msg is None:
-                raise EOFError(f"process closed its output while waiting for {method}")
+                raise EOFError(f"process closed its output while waiting for {method}{self.stderr_tail()}")
             if "method" in msg and "id" in msg:
                 self._answer_server_request(msg)
             elif "method" in msg:
@@ -122,6 +123,17 @@ class Client:
             elif msg.get("id") == rid:
                 self.received.append(msg)
                 return msg
+
+    def stderr_tail(self) -> str:
+        if not self.stderr_path:
+            return ""
+        try:
+            self.proc.wait(timeout=5)
+            with open(self.stderr_path, "rb") as f:
+                tail = f.read().decode("utf-8", "replace").strip().splitlines()[-3:]
+            return f" (exit {self.proc.returncode}; stderr: {' / '.join(tail) or '-'})"
+        except Exception:  # noqa: BLE001
+            return ""
 
     def notify(self, method: str, params=None):
         msg = {"jsonrpc": "2.0", "method": method}

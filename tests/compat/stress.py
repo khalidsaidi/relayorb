@@ -37,7 +37,7 @@ class Ctx:
 
     def recorder(self, db: str, name: str, extra_server_args=()):
         cmd = self.relayorb + ["--db", db, "record", "--name", name, "--"] + SERVER + list(extra_server_args)
-        c = harness.Client(cmd)
+        c = harness.Client(cmd, stderr_path=os.path.join(self.work, f"{name}.stderr"))
         init = c.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "stress", "version": "1"}})
         assert "result" in init, init
         c.notify("notifications/initialized")
@@ -99,9 +99,11 @@ def t_long_session(x: Ctx):
 def t_concurrent(x: Ctx):
     db = x.db()
     errors = []
+    start = threading.Barrier(5)  # all five create the brand-new database at the same instant
 
     def worker(i):
         try:
+            start.wait()
             c = x.recorder(db, f"par{i}")
             for j in range(200):
                 assert text_of(x.call(c, "echo", text=f"{i}-{j}")) == f"{i}-{j}"
@@ -118,7 +120,7 @@ def t_concurrent(x: Ctx):
     for i in range(5):
         n = len([k for k in x.show(db, f"par{i}")["calls"] if k["direction"] == "c2s"])
         assert n == 201, (i, n)
-    return "5 recordings at once into one database, 200 calls each, nothing lost"
+    return "5 recordings started at the same instant on a new database, 200 calls each, nothing lost"
 
 
 def t_server_crash(x: Ctx):

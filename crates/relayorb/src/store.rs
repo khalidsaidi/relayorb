@@ -95,8 +95,24 @@ impl Store {
                     .with_context(|| format!("creating {}", parent.display()))?;
             }
         }
+        // Agents often start several servers at once, each wrapped in its own recorder, and they
+        // may all set up a new database at the same moment. Some of that setup (switching to WAL)
+        // reports "locked" without waiting on the busy handler, notably on Windows: retry it.
+        let mut attempt = 0;
+        loop {
+            match Self::connect(path) {
+                Ok(store) => return Ok(store),
+                Err(err) if attempt < 50 && is_locked(&err) => {
+                    attempt += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(50 + 10 * attempt));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    fn connect(path: &Path) -> Result<Self> {
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
-        // Agents often start several servers at once, each wrapped in its own recorder.
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         // WAL + NORMAL: committed messages survive a process crash or kill (only an OS crash can
@@ -283,6 +299,16 @@ impl Store {
             .execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
         Ok(())
     }
+}
+
+fn is_locked(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy || e.code == rusqlite::ErrorCode::DatabaseLocked
+        )
+    })
 }
 
 fn meta_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionMeta> {

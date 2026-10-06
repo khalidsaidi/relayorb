@@ -10,6 +10,11 @@ Also accepts JSON-RPC batches (arrays).
 import json
 import sys
 
+# MCP stdio is UTF-8. Python on Windows defaults piped streams to the legacy code page,
+# which cannot encode emoji, so set it explicitly.
+sys.stdin.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8")
+
 TOOLS = [{"name": n, "inputSchema": {"type": "object"}} for n in ("big", "echo", "flood", "garbage", "crash")]
 
 
