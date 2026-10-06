@@ -33,21 +33,26 @@ export default function PrivacyPage() {
 
       <section className="mt-6 space-y-4 text-slate-300" data-analytics-section="privacy_intro">
         <p>
-          relayorb.com uses Google Analytics 4 (GA4) for basic product analytics:
-          page views and non-identifying interaction events (for example, CTA
-          clicks and snippet copy actions).
+          relayorb.com uses Google Analytics 4 (GA4) to understand how the site is
+          used: page views, non-identifying interaction events (for example link
+          clicks, code copies, and scroll depth), and page performance (Core Web
+          Vitals).
         </p>
         <p>
-          We do not intentionally send personal data to GA4. Events are limited
-          to coarse metadata such as UI location and action label.
+          We do not intentionally send personal data to GA4. Events carry coarse
+          metadata such as the page type, the link or button label, and where on
+          the page it was. Google Signals and ad features are off.
         </p>
         <p>
-          Analytics is consent-controlled. Default consent is denied until you
-          click <strong>Accept analytics</strong> in the banner.
+          GA4 runs in Google&apos;s consent mode. Until you click{" "}
+          <strong>Accept analytics</strong>, analytics cookies are denied: GA4
+          receives only cookie-free pings that do not identify your browser
+          across visits. Accepting allows analytics cookies, so repeat visits can
+          be counted.
         </p>
         <p>
-          Rejecting analytics keeps storage denied and does not emit analytics
-          events.
+          Rejecting keeps analytics cookies denied for good; the cookie-free pings
+          described above still apply.
         </p>
         <p>
           You can revoke by clearing site data/local storage for this domain.
@@ -76,31 +81,40 @@ export default function PrivacyPage() {
         <h2 className="text-xl font-medium text-slate-100">Analytics events in use</h2>
         <ul className="mt-4 list-disc space-y-2 pl-5 text-sm">
           <li>
-            <code>page_view</code> on route loads after consent.
+            <code>page_view</code> on every page load and in-site navigation.
           </li>
           <li>
-            <code>cta_click</code> for primary navigation and action links.
+            <code>cta_click / nav_click</code> for action links and other internal links.
           </li>
           <li>
-            <code>nav_click</code> for non-CTA internal navigation links.
+            <code>outbound_click / github_click</code> for links to other sites (github_click for GitHub).
           </li>
           <li>
-            <code>copy_code</code> for copy-to-clipboard actions.
+            <code>code_copy / install_copy</code> when code is copied (install_copy for install commands).
           </li>
           <li>
-            <code>copy_code_failed</code> when clipboard copy is blocked.
-          </li>
-          <li>
-            <code>outbound_click</code> for external links.
-          </li>
-          <li>
-            <code>consent_choice</code> when analytics consent is accepted.
+            <code>code_copy_failed</code> when clipboard copy is blocked.
           </li>
           <li>
             <code>section_view</code> once per section per page visit.
           </li>
           <li>
             <code>scroll_depth</code> at 25/50/75/100% milestones.
+          </li>
+          <li>
+            <code>read_complete</code> after scrolling 75% of a page and staying 30 seconds.
+          </li>
+          <li>
+            <code>page_exit</code> when you leave a page, with seconds on page and deepest scroll.
+          </li>
+          <li>
+            <code>web_vital</code> page performance measurements (LCP, INP, CLS, FCP, TTFB).
+          </li>
+          <li>
+            <code>page_not_found</code> when a page does not exist.
+          </li>
+          <li>
+            <code>consent_choice</code> when you accept or reject analytics.
           </li>
         </ul>
       </section>

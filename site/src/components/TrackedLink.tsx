@@ -3,7 +3,7 @@
 import type { AnchorHTMLAttributes, ReactNode } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
-import { sanitizePath, trackEvent } from "@/lib/analytics";
+import { sanitizePath, track } from "@/lib/analytics";
 
 type Props = AnchorHTMLAttributes<HTMLAnchorElement> & {
   children: ReactNode;
@@ -61,23 +61,33 @@ export function TrackedLink({
       : undefined;
 
   const handleClick = () => {
-    if (resolvedEventName) {
-      trackEvent(resolvedEventName, resolvedEventParams ?? {});
+    const label =
+      (resolvedEventParams?.cta as string | undefined) ??
+      (typeof children === "string" ? children : undefined) ??
+      destination ??
+      "link";
+    const linkParams = { cta: label, ui_location: location, link_url: destination ?? "" };
+
+    if (resolvedEventName === "cta_click") {
+      track("cta_click", linkParams);
+    } else if (resolvedEventName && resolvedEventName !== "outbound_click") {
+      track(resolvedEventName, linkParams);
+    } else if (!isExternal) {
+      track("nav_click", linkParams);
     }
 
-    if (isExternal && resolvedEventName !== "outbound_click") {
-      trackEvent("outbound_click", {
-        destination: destination ?? "external",
-        location,
-      });
-      return;
-    }
-
-    if (!isExternal && !resolvedEventName) {
-      trackEvent("nav_click", {
-        destination: destination ?? "internal",
-        location,
-      });
+    if (isExternal && typeof href === "string") {
+      let domain = "external";
+      try {
+        domain = new URL(href).hostname;
+      } catch {
+        // keep "external"
+      }
+      track("outbound_click", { ...linkParams, link_domain: domain });
+      if (domain === "github.com") {
+        // Key event: someone went to the code or the releases.
+        track("github_click", linkParams);
+      }
     }
   };
 
@@ -89,6 +99,7 @@ export function TrackedLink({
         target={target ?? "_blank"}
         rel={rel ?? "noreferrer"}
         onClick={handleClick}
+        data-tracked=""
         {...rest}
       >
         {children}
@@ -98,14 +109,14 @@ export function TrackedLink({
 
   if (isFileRoute) {
     return (
-      <a href={href} className={anchorClass} onClick={handleClick} {...rest}>
+      <a href={href} className={anchorClass} onClick={handleClick} data-tracked="" {...rest}>
         {children}
       </a>
     );
   }
 
   return (
-    <Link href={href} className={anchorClass} onClick={handleClick} {...rest}>
+    <Link href={href} className={anchorClass} onClick={handleClick} data-tracked="" {...rest}>
       {children}
     </Link>
   );
