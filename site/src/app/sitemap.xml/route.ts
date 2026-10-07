@@ -1,6 +1,8 @@
 import { siteUrl } from "@/lib/seo";
 import { sitemapRoutes } from "@/lib/sitemapRoutes";
 
+export const dynamic = "force-static";
+
 function renderSitemap() {
   const items = sitemapRoutes
     .map(

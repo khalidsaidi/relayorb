@@ -4,7 +4,7 @@ const csp = [
   "default-src 'self'",
   // Google Analytics 4 hosts, per Google's CSP guidance (GA4 also sends hits to www.google.com).
   "script-src 'self' 'unsafe-inline' https://*.googletagmanager.com",
-  "connect-src 'self' https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com https://www.google.com",
+  "connect-src 'self' https://identitytoolkit.googleapis.com https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com https://www.google.com",
   "img-src 'self' data: https://*.google-analytics.com https://*.googletagmanager.com https://www.google.com",
   "style-src 'self' 'unsafe-inline'",
   "font-src 'self' data:",
@@ -16,6 +16,7 @@ const csp = [
 ].join("; ");
 
 const nextConfig: NextConfig = {
+  output: "export",
   turbopack: {
     root: process.cwd(),
   },

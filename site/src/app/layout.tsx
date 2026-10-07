@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { Suspense } from "react";
 import { AnalyticsScripts } from "@/components/AnalyticsScripts";
@@ -69,6 +70,11 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className="dark">
+      <head>
+        <Script id="auth-action-url-scrub" strategy="beforeInteractive">
+          {`if (location.pathname === "/auth/action" && location.search) history.replaceState(null, "", location.pathname);`}
+        </Script>
+      </head>
       <body className={`${inter.variable} ${jetbrainsMono.variable} antialiased`}>
         <AnalyticsScripts />
         <Suspense fallback={null}>

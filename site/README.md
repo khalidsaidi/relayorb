@@ -74,16 +74,20 @@ Use GA4 Realtime and DebugView (not the GA Home summary tile):
    - `outbound_click`
 4. Optional local debug: use GA DebugView in a development session only; do not ship permanent debug flags in production.
 
-## Deploy (Vercel)
+## Deploy (Firebase Hosting)
 
-1. Import this repo into Vercel.
-2. Set env var:
-   - `NEXT_PUBLIC_GA_MEASUREMENT_ID`
-3. Add domains:
-   - `relayorb.com`
-   - `www.relayorb.com`
-4. Ensure redirect `www -> relayorb.com` is active.
-5. Verify HTTPS certs are issued for both domains.
+The site is statically exported to `out/` and deployed from the repository root:
+
+```bash
+pnpm --dir site install --frozen-lockfile
+pnpm --dir site build
+firebase deploy --only hosting --project relayorb-prod
+```
+
+GitHub Actions uses Workload Identity Federation for Firebase Hosting deploys.
+Set `NEXT_PUBLIC_GA_MEASUREMENT_ID` as a repository secret to enable analytics.
+The Firebase Hosting site serves `relayorb.com`; `www.relayorb.com` redirects to
+the apex domain.
 
 ## Security headers
 
