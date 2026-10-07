@@ -185,7 +185,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace   # integration tests need python3 for the mock MCP server
 ```
 
-The website lives in [`site/`](site/) (Next.js, deployed to Vercel on pushes to `main`).
+The website lives in [`site/`](site/) (Next.js, statically exported and deployed to Firebase Hosting on pushes to `main`).
 
 ## License
 

@@ -1,5 +1,7 @@
 import { markdownResponse } from "@/lib/markdownMirror";
 
+export const dynamic = "force-static";
+
 const body = `# RelayOrb cookies mirror
 
 Canonical source: https://relayorb.com/privacy

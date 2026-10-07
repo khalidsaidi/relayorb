@@ -15,3 +15,7 @@ coverage/
 .ai/notes/private/**
 .ai/.secret
 node_modules
+.firebase/
+firebase-debug.log
+site/.next/
+site/out/

@@ -1,5 +1,7 @@
 import { fetchCanonicalMarkdown, markdownResponse } from "@/lib/markdownMirror";
 
+export const dynamic = "force-static";
+
 const fallback = `# RelayOrb terms mirror
 
 Canonical docs source: https://github.com/khalidsaidi/relayorb/blob/main/LICENSE
